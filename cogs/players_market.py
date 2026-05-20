@@ -33,6 +33,21 @@ class PlayersMarket(commands.Cog):
     async def cog_load(self):
         await self.pm.ensure_bootstrap(int(time.time()))
 
+    # ───────────────── 자동완성 ─────────────────
+    async def player_id_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        try:
+            rows = await self.pm.search_players(current, limit=10)
+            choices = []
+            for pid, name, nation, pos, age, ovr, potg, price, retired in rows:
+                tag = " (은퇴)" if int(retired) == 1 else ""
+                label = f"{name}{tag} | {pos} OVR{ovr} | {int(price):,}원"
+                choices.append(app_commands.Choice(name=label[:100], value=pid))
+            return choices
+        except Exception:
+            return []
+
     # ───────────────── 시장 상태 ─────────────────
     @app_commands.command(name="시장", description="시장 오픈/클로즈 상태를 확인합니다.")
     async def market_status(self, interaction: discord.Interaction):
@@ -75,7 +90,8 @@ class PlayersMarket(commands.Cog):
         await interaction.followup.send(embed=_embed("🔎 선수검색", "\n".join(lines), interaction.user))
 
     @app_commands.command(name="선수", description="선수 상세 정보를 봅니다.")
-    @app_commands.describe(player_id="선수 ID")
+    @app_commands.describe(player_id="선수 이름 또는 ID")
+    @app_commands.autocomplete(player_id=player_id_autocomplete)
     async def player_info(self, interaction: discord.Interaction, player_id: str):
         await interaction.response.defer()
         row = await self.pm.get_player(player_id)
@@ -130,7 +146,8 @@ class PlayersMarket(commands.Cog):
 
     # ───────────────── 거래 ─────────────────
     @app_commands.command(name="구매", description="시장가로 선수를 구매합니다. (시장 오픈 시간만)")
-    @app_commands.describe(player_id="선수 ID", qty="수량")
+    @app_commands.describe(player_id="선수 이름 또는 ID", qty="수량")
+    @app_commands.autocomplete(player_id=player_id_autocomplete)
     async def buy(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
         await interaction.response.defer(ephemeral=True)
         now = int(time.time())
@@ -145,7 +162,8 @@ class PlayersMarket(commands.Cog):
         await interaction.followup.send(msg, ephemeral=True)
 
     @app_commands.command(name="판매", description="시장가로 선수를 판매합니다. (수수료 5%, 시장 오픈 시간만)")
-    @app_commands.describe(player_id="선수 ID", qty="수량")
+    @app_commands.describe(player_id="선수 이름 또는 ID", qty="수량")
+    @app_commands.autocomplete(player_id=player_id_autocomplete)
     async def sell(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
         await interaction.response.defer(ephemeral=True)
         now = int(time.time())
@@ -208,7 +226,8 @@ class PlayersMarket(commands.Cog):
 
     # ───────────────── 시세 그래프 ─────────────────
     @app_commands.command(name="시세", description="선수 가격 변동 그래프를 봅니다.")
-    @app_commands.describe(player_id="선수 ID", hours="조회 시간(기본 24시간)")
+    @app_commands.describe(player_id="선수 이름 또는 ID", hours="조회 시간(기본 24시간)")
+    @app_commands.autocomplete(player_id=player_id_autocomplete)
     async def chart(self, interaction: discord.Interaction, player_id: str, hours: int = 24):
         import datetime as dt
         import matplotlib.dates as mdates
@@ -276,6 +295,38 @@ class PlayersMarket(commands.Cog):
         )
         e.set_image(url="attachment://chart.png")
         await interaction.followup.send(embed=e, file=file)
+
+    # ───────────────── 팩 정보 ─────────────────
+    @app_commands.command(name="팩정보", description="팩 종류별 가격과 등급 확률을 확인합니다.")
+    async def pack_info(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        grade_emoji = {"S": "🔴", "A": "🟠", "B": "🟡", "C": "🟢", "D": "⚪"}
+        pack_emoji  = {"브론즈": "🥉", "실버": "🥈", "골드": "🥇", "플래티넘": "💎", "아이콘": "👑"}
+
+        embed = discord.Embed(
+            title="🎁 팩 정보",
+            description="각 팩의 가격과 등급별 확률입니다.\nS등급이 가장 높고 D등급이 가장 낮습니다.",
+            color=0x2ecc71,
+        )
+
+        for pack_name, pack_data in PACKS.items():
+            price = pack_data["price"]
+            weights = pack_data["weights"]
+            prob_text = "  ".join(
+                f"{grade_emoji.get(g, g)}`{g}` {w * 100:.1f}%"
+                for g, w in weights
+            )
+            icon = pack_emoji.get(pack_name, "🎁")
+            embed.add_field(
+                name=f"{icon} {pack_name}팩  |  {price:,}원 / 장",
+                value=prob_text,
+                inline=False,
+            )
+
+        embed.set_footer(text="최대 10장까지 한 번에 구매 가능 · 수수료 없음")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
 
 async def setup(bot):
     await bot.add_cog(PlayersMarket(bot))
