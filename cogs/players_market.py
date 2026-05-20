@@ -59,7 +59,7 @@ class PlayersMarket(commands.Cog):
     @app_commands.describe(q="검색어(비우면 고가 TOP)")
     async def search(self, interaction: discord.Interaction, q: str = ""):
         try:
-            await interaction.response.defer(thinking=True)
+            await interaction.response.defer(ephemeral=True)
         except (discord.NotFound, discord.HTTPException):
             return
 
@@ -215,7 +215,7 @@ class PlayersMarket(commands.Cog):
         from matplotlib.ticker import FuncFormatter
 
         try:
-            await interaction.response.defer(thinking=True)
+            await interaction.response.defer(ephemeral=True)
         except (discord.NotFound, discord.HTTPException):
             return
 
