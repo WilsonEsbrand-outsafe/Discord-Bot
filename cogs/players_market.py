@@ -37,6 +37,7 @@ class PlayersMarket(commands.Cog):
     async def player_id_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
+        """선수 정보·시세 조회용 — 은퇴 선수도 포함"""
         try:
             rows = await self.pm.search_players(current, limit=10)
             choices = []
@@ -47,6 +48,54 @@ class PlayersMarket(commands.Cog):
             return choices
         except Exception:
             return []
+
+    async def active_player_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """구매용 — 활동 중인 선수만 표시"""
+        try:
+            rows = await self.pm.search_players(current, limit=15)
+            choices = []
+            for pid, name, nation, pos, age, ovr, potg, price, retired in rows:
+                if int(retired) == 1:
+                    continue
+                label = f"{name} | {pos} OVR{ovr} | {int(price):,}원"
+                choices.append(app_commands.Choice(name=label[:100], value=pid))
+            return choices[:10]
+        except Exception:
+            return []
+
+    async def holding_player_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """판매용 — 내가 보유한 활동 선수만 표시"""
+        try:
+            rows = await self.pm.list_holdings(interaction.user.id, limit=25)
+            choices = []
+            for pid, name, nation, pos, age, ovr, potg, retired, qty, price in rows:
+                if int(retired) == 1:
+                    continue
+                label = f"{name} x{qty} | {pos} OVR{ovr} | {int(price):,}원"
+                if current and current.lower() not in label.lower():
+                    continue
+                choices.append(app_commands.Choice(name=label[:100], value=pid))
+            return choices[:10]
+        except Exception:
+            return []
+
+    async def pack_type_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """팩 종류 자동완성"""
+        pack_emoji = {"브론즈": "🥉", "실버": "🥈", "골드": "🥇", "플래티넘": "💎", "아이콘": "👑"}
+        return [
+            app_commands.Choice(
+                name=f"{pack_emoji.get(k, '🎁')} {k}팩  |  {PACKS[k]['price']:,}원 / 장",
+                value=k,
+            )
+            for k in PACKS
+            if not current or current in k
+        ]
 
     # ───────────────── 시장 상태 ─────────────────
     @app_commands.command(name="시장", description="시장 오픈/클로즈 상태를 확인합니다.")
@@ -61,7 +110,12 @@ class PlayersMarket(commands.Cog):
             now = int(time.time())
             st = await self.pm.market_status(now)
 
-            msg = f"**{st.reason}**\n다음 변경: <t:{st.next_change_ts}:f>"
+            status_emoji = "🟢" if st.is_open else "🔴"
+            msg = (
+                f"{status_emoji} **{st.reason}**\n"
+                f"운영 시간: 매일 **09:00 ~ 23:00 KST**\n"
+                f"다음 변경: <t:{st.next_change_ts}:f>"
+            )
             await interaction.followup.send(
                 embed=_embed("📈 선수 시장", msg, interaction.user),
                 ephemeral=True
@@ -147,7 +201,7 @@ class PlayersMarket(commands.Cog):
     # ───────────────── 거래 ─────────────────
     @app_commands.command(name="구매", description="시장가로 선수를 구매합니다. (시장 오픈 시간만)")
     @app_commands.describe(player_id="선수 이름 또는 ID", qty="수량")
-    @app_commands.autocomplete(player_id=player_id_autocomplete)
+    @app_commands.autocomplete(player_id=active_player_autocomplete)
     async def buy(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
         await interaction.response.defer(ephemeral=True)
         now = int(time.time())
@@ -163,7 +217,7 @@ class PlayersMarket(commands.Cog):
 
     @app_commands.command(name="판매", description="시장가로 선수를 판매합니다. (수수료 5%, 시장 오픈 시간만)")
     @app_commands.describe(player_id="선수 이름 또는 ID", qty="수량")
-    @app_commands.autocomplete(player_id=player_id_autocomplete)
+    @app_commands.autocomplete(player_id=holding_player_autocomplete)
     async def sell(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
         await interaction.response.defer(ephemeral=True)
         now = int(time.time())
@@ -179,6 +233,7 @@ class PlayersMarket(commands.Cog):
     # ───────────────── 팩 ─────────────────
     @app_commands.command(name="선수팩", description="선수팩을 구매합니다. (종류별 확률/가격 차등)")
     @app_commands.describe(종류="브론즈/실버/골드/플래티넘/아이콘", 장수="1~10")
+    @app_commands.autocomplete(종류=pack_type_autocomplete)
     async def pack(self, interaction: discord.Interaction, 종류: str, 장수: int = 1):
         await interaction.response.defer()
 
