@@ -784,15 +784,14 @@ class PlayerMarketDB:
                                 chosen = (random.choice(grade_map[gg]), gg)
                                 break
                         if chosen is None:
-                            # 전체 활성화된 선수 중 하나를 무작위로 추출
                             any_player_id = random.choice([pid for lst in grade_map.values() for pid in lst])
-                            # 해당 선수의 실제 등급(g)을 찾음
                             actual_grade = "D"
                             for grade, pids in grade_map.items():
                                 if any_player_id in pids:
                                     actual_grade = grade
                                     break
                             chosen = (any_player_id, actual_grade)
+                        results.append(chosen)
 
                     for pid, _g in results:
                         con.execute(
