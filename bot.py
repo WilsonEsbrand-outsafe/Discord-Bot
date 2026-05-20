@@ -228,13 +228,13 @@ async def sync_guild(guild: discord.abc.Snowflake):
     except Exception as e:
         print(f"❌ Sync failed for guild {gid}:", repr(e))
 
-
 @bot.event
 async def on_ready():
     print(f"🤖 로그인 성공: {bot.user} (ID: {bot.user.id})")
 
-    # ✅ 코그를 먼저 전부 로드
-    for ext in ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market"):
+    # 모든 코그를 순회하며 로드하도록 수정
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial")
+    for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
             print(f"🧩 {ext} 로드 완료")
@@ -287,8 +287,6 @@ async def on_ready():
         asyncio.create_task(month_loop())
         print("✅ [PM] 시장 틱/월 진행 루프 시작")
 
-from discord import app_commands
-
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: Exception):
     # 원래 에러는 로그로 남기기
@@ -320,8 +318,9 @@ async def sync_and_reload(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
 
-    # ✅ 코그 리로드(없으면 로드)
-    for ext in ("cogs.fixtures", "cogs.economy", "cogs.toto"):
+    # 리로드 대상 목록에 전체 추가
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial")
+    for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)
         except commands.ExtensionNotLoaded:
@@ -722,121 +721,6 @@ async def user_help(interaction: discord.Interaction):
 
     # 실행한 사람에게만 확인 메시지
     await interaction.response.send_message("✅ 안내 메시지를 채널에 전송했습니다.", ephemeral=True)
-
-# ───────────────── /명령어 자동 생성(드롭다운) ─────────────────
-def _is_owner_only_command(cmd: app_commands.Command) -> bool:
-    # owner_only 체크가 걸린 명령어는 제외
-    for chk in getattr(cmd, "checks", []):
-        if getattr(chk, "__name__", "") == "owner_only":
-            return True
-    return False
-
-def _guess_category_from_module(cmd: app_commands.Command) -> str:
-    # 콜백 모듈명으로 대충 분류 (cogs.* 기준)
-    cb = getattr(cmd, "callback", None)
-    mod = getattr(cb, "__module__", "") if cb else ""
-
-    if "fixtures" in mod:
-        return "📅 경기 정보"
-    if "economy" in mod:
-        return "💰 재화 시스템"
-    if "toto" in mod:
-        # 요청대로 토토는 재화 시스템 안에 포함
-        return "💰 재화 시스템"
-    return "🧩 기타"
-
-def _flatten_commands(cmds: list[app_commands.Command]) -> list[tuple[str, str, app_commands.Command]]:
-    """
-    (표시용 슬래시 텍스트, 설명, 원본 커맨드) 리스트로 평탄화
-    그룹/서브커맨드는 /그룹 서브 형태로 펼침
-    """
-    out: list[tuple[str, str, app_commands.Command]] = []
-
-    for c in cmds:
-        # Group인 경우 하위 커맨드 펼치기
-        if isinstance(c, app_commands.Group):
-            group_name = c.name
-            for sc in c.commands:
-                # sc는 Command 또는 Group일 수 있음(2단계까지 처리)
-                if isinstance(sc, app_commands.Group):
-                    for ssc in sc.commands:
-                        out.append((f"/{group_name} {sc.name} {ssc.name}", (ssc.description or ""), ssc))
-                else:
-                    out.append((f"/{group_name} {sc.name}", (sc.description or ""), sc))
-        else:
-            out.append((f"/{c.name}", (c.description or ""), c))
-
-    return out
-
-def build_user_help_embeds(bot: commands.Bot) -> list[discord.Embed]:
-    # 트리에서 모든 커맨드 가져오기
-    raw_cmds = bot.tree.get_commands()
-
-    flat = _flatten_commands(raw_cmds)
-
-    # owner_only 제외 + 설명 없는 건 이름만 표시되게
-    filtered = [(n, d, c) for (n, d, c) in flat if not _is_owner_only_command(c)]
-
-    # 카테고리별로 모으기
-    buckets: dict[str, list[tuple[str, str]]] = {}
-    for name, desc, cmd in filtered:
-        cat = _guess_category_from_module(cmd)
-        buckets.setdefault(cat, []).append((name, desc))
-
-    # 보기 좋게 정렬
-    for cat in buckets:
-        buckets[cat].sort(key=lambda x: x[0])
-
-    # 임베드 생성
-    embeds: list[discord.Embed] = []
-    for cat in ["📅 경기 정보", "💰 재화 시스템", "🧩 기타"]:
-        if cat not in buckets:
-            continue
-
-        lines = []
-        for name, desc in buckets[cat]:
-            if desc:
-                lines.append(f"• **{name}**\n  {desc}")
-            else:
-                lines.append(f"• **{name}**")
-
-        e = discord.Embed(
-            title=cat,
-            description="\n".join(lines) if lines else "표시할 명령어가 없습니다.",
-            color=0x2ecc71,
-        )
-        embeds.append(e)
-
-    # 카테고리가 전부 비었으면 최소 1장
-    if not embeds:
-        embeds.append(discord.Embed(title="명령어", description="표시할 명령어가 없습니다.", color=0x2ecc71))
-
-    return embeds
-
-class UserHelpDropdown(discord.ui.Select):
-    def __init__(self, embeds: list[discord.Embed]):
-        self.embeds = embeds
-        options = []
-        for i, e in enumerate(embeds):
-            options.append(
-                discord.SelectOption(
-                    label=e.title[:100] if e.title else f"페이지 {i+1}",
-                    value=str(i),
-                    description="이 페이지로 이동",
-                )
-            )
-
-        super().__init__(placeholder="페이지 선택", min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        idx = int(self.values[0])
-        await interaction.response.edit_message(embed=self.embeds[idx], view=self.view)
-
-class UserHelpView(discord.ui.View):
-    def __init__(self, embeds: list[discord.Embed]):
-        super().__init__(timeout=300)
-        self.embeds = embeds
-        self.add_item(UserHelpDropdown(embeds))
 
 # ───────────────── 실행부 ─────────────────
 async def main():
