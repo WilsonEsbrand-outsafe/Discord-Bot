@@ -36,6 +36,7 @@ class PatchNotesCog(commands.Cog):
                 CREATE TABLE IF NOT EXISTS patch_notes (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     version      TEXT    NOT NULL,
+                    content      TEXT    NOT NULL DEFAULT '',
                     announced_at INTEGER NOT NULL DEFAULT 0
                 )
                 """
@@ -52,12 +53,15 @@ class PatchNotesCog(commands.Cog):
         finally:
             con.close()
 
-    def _save_patch(self, version: str, now_ts: int):
+    def _save_patch(self, version: str, content: str, now_ts: int):
         con = self._connect()
         try:
             con.execute(
-                "INSERT INTO patch_notes(version, announced_at) VALUES(?, ?)",
-                (version, now_ts),
+                """
+                INSERT INTO patch_notes(version, content, announced_at)
+                VALUES(?, ?, ?)
+                """,
+                (version, content, now_ts),
             )
             con.commit()
         finally:
@@ -122,7 +126,7 @@ class PatchNotesCog(commands.Cog):
         self, interaction: discord.Interaction, version: str, content: str
     ):
         now_ts = int(time.time())
-        await asyncio.to_thread(self._save_patch, version, now_ts)
+        await asyncio.to_thread(self._save_patch, version, content, now_ts)
         embed = self._make_embed(version, content, now_ts)
 
         success, fail = 0, 0
