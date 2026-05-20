@@ -147,14 +147,15 @@ class PlayersMarket(commands.Cog):
     @app_commands.describe(player_id="선수 이름 또는 ID")
     @app_commands.autocomplete(player_id=player_id_autocomplete)
     async def player_info(self, interaction: discord.Interaction, player_id: str):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         row = await self.pm.get_player(player_id)
         if not row:
-            return await interaction.followup.send("선수를 찾을 수 없습니다.")
+            return await interaction.followup.send("선수를 찾을 수 없습니다.", ephemeral=True)
 
         (pid, name, nation, pos, age, ovr, potg, basev, retired, price, floor_p, ceil_p, last_ts) = row
         have = await self.pm.get_holding(interaction.user.id, pid)
         tag = "은퇴" if int(retired) == 1 else "활동"
+        retire_note = "\n- ⚠️ 은퇴 선수는 기준가의 30%로 방출 가능" if int(retired) == 1 else ""
 
         desc = (
             f"**{name}** (`{pid}`)\n"
@@ -165,37 +166,50 @@ class PlayersMarket(commands.Cog):
             f"- 현재가: **{int(price):,}원**\n"
             f"- 가격 범위: {int(floor_p):,} ~ {int(ceil_p):,}\n"
             f"- 내 보유: **{have}장**"
+            f"{retire_note}"
         )
-        await interaction.followup.send(embed=_embed("📌 선수 정보", desc, interaction.user))
+        await interaction.followup.send(embed=_embed("📌 선수 정보", desc, interaction.user), ephemeral=True)
 
     # ───────────────── 보유 ─────────────────
     @app_commands.command(name="보유", description="내가 보유한 선수 목록을 봅니다.")
-    async def holdings(self, interaction: discord.Interaction):
-        # ✅ interaction 만료/이미 응답 케이스 안전 처리
+    @app_commands.describe(페이지="페이지 번호 (기본 1, 페이지당 20명)")
+    async def holdings(self, interaction: discord.Interaction, 페이지: int = 1):
         try:
             await interaction.response.defer()
         except (discord.NotFound, discord.HTTPException):
             return
 
         try:
-            rows = await self.pm.list_holdings(interaction.user.id, limit=25)
-            if not rows:
+            per_page = 20
+            페이지 = max(1, 페이지)
+            offset = (페이지 - 1) * per_page
+
+            total_count = await self.pm.count_holdings(interaction.user.id)
+            if total_count == 0:
                 return await interaction.followup.send("보유한 선수가 없습니다.")
 
+            total_pages = max(1, (total_count + per_page - 1) // per_page)
+            if 페이지 > total_pages:
+                return await interaction.followup.send(f"해당 페이지가 없습니다. (최대 {total_pages}페이지)")
+
+            rows = await self.pm.list_holdings(interaction.user.id, limit=per_page, offset=offset)
+            total_value = await self.pm.portfolio_value(interaction.user.id)
+
             lines = []
-            total = 0
             for pid, name, nation, pos, age, ovr, potg, retired, qty, price in rows:
                 tag = " (은퇴)" if int(retired) == 1 else ""
-                v = int(qty) * int(price)
-                total += v
                 lines.append(f"`{pid}` {name}{tag} x{qty} / {pos} / OVR {ovr} / POT {potg} / {int(price):,}원")
 
+            header = (
+                f"총 **{total_count}명** 보유 | 전체 평가액: **{total_value:,}원**\n"
+                f"페이지 {페이지} / {total_pages}\n\n"
+            )
+
             await interaction.followup.send(
-                embed=_embed("📦 내 보유", f"총 평가액: **{total:,}원**\n\n" + "\n".join(lines), interaction.user)
+                embed=_embed("📦 내 보유", header + "\n".join(lines), interaction.user)
             )
 
         except (discord.NotFound, discord.HTTPException):
-            # followup 단계에서 interaction이 죽었을 때도 조용히 종료
             return
 
     # ───────────────── 거래 ─────────────────

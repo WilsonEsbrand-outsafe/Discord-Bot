@@ -593,8 +593,9 @@ class PlayerMarketDB:
                     con.close()
             return await self._run(work)
 
-    async def list_holdings(self, user_id: int, limit: int = 25):
+    async def list_holdings(self, user_id: int, limit: int = 20, offset: int = 0):
         limit = max(1, min(50, int(limit)))
+        offset = max(0, int(offset))
         async with self._lock:
             def work():
                 con = self._connect()
@@ -608,10 +609,43 @@ class PlayerMarketDB:
                         JOIN pm_market m ON m.player_id=h.player_id
                         WHERE h.user_id=? AND h.qty>0
                         ORDER BY (h.qty*m.price) DESC
-                        LIMIT ?
+                        LIMIT ? OFFSET ?
                         """,
-                        (int(user_id), int(limit)),
+                        (int(user_id), int(limit), int(offset)),
                     ).fetchall()
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def count_holdings(self, user_id: int) -> int:
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    row = con.execute(
+                        "SELECT COUNT(*) FROM pm_holdings WHERE user_id=? AND qty>0",
+                        (int(user_id),),
+                    ).fetchone()
+                    return int(row[0]) if row else 0
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def portfolio_value(self, user_id: int) -> int:
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    row = con.execute(
+                        """
+                        SELECT COALESCE(SUM(h.qty * m.price), 0)
+                        FROM pm_holdings h
+                        JOIN pm_market m ON m.player_id=h.player_id
+                        WHERE h.user_id=? AND h.qty>0
+                        """,
+                        (int(user_id),),
+                    ).fetchone()
+                    return int(row[0]) if row else 0
                 finally:
                     con.close()
             return await self._run(work)
@@ -660,26 +694,29 @@ class PlayerMarketDB:
         if bal < cost:
             return False, f"잔액이 부족합니다. 필요: {cost:,} / 보유: {bal:,}"
 
+        # holdings 먼저 업데이트 → 성공 후 잔액 차감 (돈 먼저 빠지는 버그 방지)
+        try:
+            async with self._lock:
+                def work():
+                    con = self._connect()
+                    try:
+                        con.execute(
+                            """
+                            INSERT INTO pm_holdings(user_id, player_id, qty)
+                            VALUES(?, ?, ?)
+                            ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty
+                            """,
+                            (int(user_id), pid, int(qty)),
+                        )
+                        con.commit()
+                    finally:
+                        con.close()
+                await self._run(work)
+        except Exception:
+            return False, "거래 처리 중 오류가 발생했습니다. 잔액은 차감되지 않았습니다."
+
         await add_balance(user_id, -cost)
-
-        async with self._lock:
-            def work():
-                con = self._connect()
-                try:
-                    con.execute(
-                        """
-                        INSERT INTO pm_holdings(user_id, player_id, qty)
-                        VALUES(?, ?, ?)
-                        ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty
-                        """,
-                        (int(user_id), pid, int(qty)),
-                    )
-                    con.commit()
-                finally:
-                    con.close()
-            await self._run(work)
-
-        return True, f"✅ 구매 완료: `{pid}` x{qty} / 총 {cost:,}원"
+        return True, f"✅ 구매 완료: `{pid}` **{name}** x{qty} / 총 {cost:,}원"
 
     async def sell_to_market(self, *, user_id: int, player_id: str, qty: int, now_ts: int, add_balance):
         pid = (player_id or "").strip()
@@ -696,12 +733,36 @@ class PlayerMarketDB:
             return False, "선수를 찾을 수 없습니다."
 
         (_pid, name, nation, pos, age, ovr, potg, basev, retired, price, *_rest) = row
-        if int(retired) == 1:
-            return False, "은퇴 선수는 시장에 판매할 수 없습니다."
 
         have = await self.get_holding(user_id, pid)
         if have < qty:
             return False, f"보유 수량이 부족합니다. 보유: {have} / 판매 요청: {qty}"
+
+        # 은퇴 선수: 기준가의 30% 방출 (수수료 없음, 시장 시간 무관)
+        if int(retired) == 1:
+            compensation = int(int(basev) * 0.30) * qty
+            async with self._lock:
+                def work_ret():
+                    con = self._connect()
+                    try:
+                        con.execute("BEGIN IMMEDIATE;")
+                        con.execute(
+                            "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=?",
+                            (int(qty), int(user_id), pid),
+                        )
+                        con.execute("COMMIT;")
+                    except Exception:
+                        try: con.execute("ROLLBACK;")
+                        except Exception: pass
+                        raise
+                    finally:
+                        con.close()
+                await self._run(work_ret)
+            await add_balance(user_id, compensation)
+            return True, (
+                f"✅ 은퇴 선수 방출: `{pid}` **{name}** x{qty}\n"
+                f"기준가 {int(basev):,}원 × 30% → **{compensation:,}원** 수령"
+            )
 
         gross = int(price) * qty
         fee = int(gross * SELL_FEE_RATE)
@@ -726,11 +787,15 @@ class PlayerMarketDB:
             await self._run(work)
 
         await add_balance(user_id, net)
-        return True, f"✅ 판매 완료: `{pid}` x{qty} / 총 {gross:,}원 (수수료 {fee:,}) → 실수령 {net:,}원"
+        return True, f"✅ 판매 완료: `{pid}` **{name}** x{qty} / 총 {gross:,}원 (수수료 {fee:,}) → 실수령 {net:,}원"
 
     async def buy_pack(self, *, user_id: int, pack_type: str, pulls: int, now_ts: int, get_balance, add_balance):
         pack_type = (pack_type or "").strip()
         pulls = max(1, min(PACK_MAX_PULLS, int(pulls)))
+
+        if not self._is_market_open(now_ts):
+            st = await self.market_status(now_ts)
+            return False, f"지금은 시장이 닫혀 있습니다. 팩 구매는 시장 오픈 시간(09:00~23:00 KST)에만 가능합니다. (다음 변경: <t:{st.next_change_ts}:f>)", None
 
         if pack_type not in PACKS:
             return False, "존재하지 않는 팩입니다. (브론즈/실버/골드/플래티넘/아이콘)", None
