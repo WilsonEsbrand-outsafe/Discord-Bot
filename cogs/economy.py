@@ -34,7 +34,7 @@ def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
 
 class Economy(commands.Cog):
     TRAIN_COOLDOWN = 30
-    PENALTY_COOLDOWN = 0
+    PENALTY_COOLDOWN = 30
 
     # ✅ 훈련 이벤트(고정 범위 내에서 수익/손실)
     TRAIN_EVENTS = [
@@ -98,8 +98,8 @@ class Economy(commands.Cog):
             "success_rate": 0.75,
             "win": (2000, 8000),
             "lose": (-4000, -1500),
-            "success_text": "클린! 림에도 안걸렸습니다.",
-            "fail_text": "백보드에 맞고 튕겨져 나옵니다.",
+            "success_text": "묵직한 타격감! 폼이 완벽합니다.",
+            "fail_text": "타이밍이 어긋나 손목을 삐끗했습니다.",
         },
         {
             "name": "스파이크 훈련",
@@ -122,7 +122,7 @@ class Economy(commands.Cog):
     async def wallet(self, interaction: discord.Interaction):
         bal = await self.db.get_balance(interaction.user.id)
         e = _embed("💰 지갑", f"{interaction.user.mention} 잔액: **{bal:,}**", interaction.user)
-        await interaction.response.send_message(embed=e)
+        await interaction.response.send_message(embed=e, ephemeral=True)
 
     @app_commands.command(name="출석", description="하루 1번 출석 보상을 받습니다.")
     async def daily(self, interaction: discord.Interaction):

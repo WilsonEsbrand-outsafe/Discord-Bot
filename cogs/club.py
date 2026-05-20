@@ -59,6 +59,20 @@ class Club(commands.Cog):
         )
         await interaction.followup.send(embed=_embed("🏟️ 내 구단", desc, interaction.user), ephemeral=True)
 
+    @app_commands.command(name="구단명변경", description="내 구단 이름을 변경합니다. (최대 30자)")
+    @app_commands.describe(이름="새 구단 이름")
+    async def rename_club(self, interaction: discord.Interaction, 이름: str):
+        await interaction.response.defer(ephemeral=True)
+
+        ok, msg = await self.clubs.rename_club(interaction.user.id, 이름.strip())
+        if not ok:
+            return await interaction.followup.send(f"❌ {msg}", ephemeral=True)
+
+        await interaction.followup.send(
+            f"✅ 구단명이 **{이름.strip()}**으로 변경됐습니다.",
+            ephemeral=True,
+        )
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Club(bot))

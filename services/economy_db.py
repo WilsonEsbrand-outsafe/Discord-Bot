@@ -863,6 +863,29 @@ class EconomyDB:
                     con.close()
             return await self._run(work)
 
+    async def toto_list_user_bets(self, user_id: int, limit: int = 20):
+        """유저의 베팅 내역 (정산 완료 포함, 최신순)"""
+        limit = max(1, min(50, int(limit)))
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    return con.execute(
+                        """
+                        SELECT b.match_id, m.home, m.away, m.kickoff_ts, m.status, m.result,
+                               b.pick, b.amount, b.odds_locked, b.settled, b.payout
+                        FROM toto_bets b
+                        JOIN toto_matches m ON m.match_id=b.match_id
+                        WHERE b.user_id=?
+                        ORDER BY m.kickoff_ts DESC
+                        LIMIT ?
+                        """,
+                        (int(user_id), int(limit)),
+                    ).fetchall()
+                finally:
+                    con.close()
+            return await self._run(work)
+
     async def toto_list_in_progress(self, now_ts: int, limit: int = 20):
         """
         진행중(킥오프 지남 + 아직 정산 전) 경기 목록

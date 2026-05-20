@@ -4,9 +4,10 @@ import discord
 import aiohttp
 import os
 import asyncio
+import datetime as dt
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 from auth import owner_only
 from services.football_api import FootballAPI
 
@@ -41,6 +42,24 @@ class Toto(commands.Cog):
         self.api = FootballAPI(self.session)
         # ✅ 자동정산 루프 시작
         self._auto_task = asyncio.create_task(self._auto_settle_loop())
+
+    # ───────────── 자동완성 ─────────────
+    async def match_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        try:
+            now_ts = int(time.time())
+            rows = await self.db.toto_list_open_matches(now_ts, limit=15)
+            choices = []
+            for match_id, home, away, kickoff_ts, *_ in rows:
+                local_dt = dt.datetime.fromtimestamp(int(kickoff_ts))
+                label = f"{home} vs {away} ({local_dt.strftime('%m/%d %H:%M')})"
+                if current and current.lower() not in label.lower() and current not in str(match_id):
+                    continue
+                choices.append(app_commands.Choice(name=label[:100], value=str(match_id)))
+            return choices[:10]
+        except Exception:
+            return []
 
     async def cog_unload(self):
         if self.session and not self.session.closed:
@@ -226,7 +245,8 @@ class Toto(commands.Cog):
         await interaction.followup.send(embed=e)
 
     @app_commands.command(name="베팅", description="경기에 베팅합니다. (픽: 1/X/2)")
-    @app_commands.describe(match_id="경기 ID", pick="1(홈승) / X(무) / 2(원정승)", amount="베팅 금액")
+    @app_commands.describe(match_id="경기 선택", pick="1(홈승) / X(무) / 2(원정승)", amount="베팅 금액")
+    @app_commands.autocomplete(match_id=match_autocomplete)
     async def bet(self, interaction: discord.Interaction, match_id: str, pick: str, amount: int):
         await interaction.response.defer()
 
@@ -282,34 +302,43 @@ class Toto(commands.Cog):
         e.add_field(name="예상 지급(적중 시)", value=f"{int(int(amount)*float(odds)):,}원", inline=False)
         await interaction.followup.send(embed=e)
 
-    @app_commands.command(name="내베팅", description="내 베팅 내역을 확인합니다.")
+    @app_commands.command(name="내베팅", description="최근 베팅 내역을 확인합니다. (정산 완료 포함)")
     async def my_bets(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
 
-        # 간단: 오픈 경기 중에서만 내 베팅 찾기
-        now_ts = int(time.time())
-        rows = await self.db.toto_list_open_matches(now_ts, limit=30)
-        found = []
-        for match_id, home, away, kickoff_ts, *_ in rows:
-            b = await self.db.toto_get_bet(interaction.user.id, match_id)
-            if b:
-                _, pick, amount, odds_locked, settled, payout = b
-                found.append((home, away, kickoff_ts, match_id, pick, amount, odds_locked, settled, payout))
+        rows = await self.db.toto_list_user_bets(interaction.user.id, limit=20)
+        if not rows:
+            return await interaction.followup.send("베팅 내역이 없습니다.", ephemeral=True)
 
-        if not found:
-            return await interaction.followup.send("현재 오픈 경기 중, 내 베팅이 없습니다.")
+        e = discord.Embed(title="🧾 내 베팅 내역 (최근 20건)")
+        total_bet = 0
+        total_payout = 0
 
-        e = discord.Embed(title="🧾 내 베팅 (오픈 경기)")
-        for home, away, kickoff_ts, match_id, pick, amount, odds_locked, *_ in found:
+        for match_id, home, away, kickoff_ts, status, result, pick, amount, odds_locked, settled, payout in rows:
+            total_bet += int(amount)
+            total_payout += int(payout)
+
+            if int(settled) == 1:
+                win = int(payout) > 0
+                result_text = f"{'✅ 적중' if win else '❌ 미적중'} | 지급: **{int(payout):,}원**"
+            elif status == "closed":
+                result_text = "🟡 경기 중 (정산 대기)"
+            else:
+                result_text = f"🟢 베팅 진행중 | 킥오프: {_fmt_ts(kickoff_ts)}"
+
             e.add_field(
                 name=f"{home} vs {away}",
                 value=(
-                    f"ID: `{match_id}` / 킥오프: {_fmt_ts(kickoff_ts)}\n"
-                    f"픽: **{_pick_name(pick)}** / 금액: **{int(amount):,}원** / 배당: **{odds_locked}**"
+                    f"픽: **{_pick_name(pick)}** | 베팅: **{int(amount):,}원** | 배당: {odds_locked}\n"
+                    f"{result_text}"
                 ),
                 inline=False,
             )
-        await interaction.followup.send(embed=e)
+
+        profit = total_payout - total_bet
+        sign = "+" if profit >= 0 else ""
+        e.set_footer(text=f"총 베팅: {total_bet:,}원 | 총 수령: {total_payout:,}원 | 손익: {sign}{profit:,}원")
+        await interaction.followup.send(embed=e, ephemeral=True)
 
     @app_commands.command(name="베팅취소", description="내 베팅을 취소하고 전액 환불받습니다. (경기 시작 전만)")
     @app_commands.describe(match_id="경기 ID")
@@ -382,7 +411,7 @@ class Toto(commands.Cog):
         competition = (competition or "PL").strip().upper()
 
         # 다음 경기들(SCHEDULED/TIMED) 가져오기
-        today_utc = datetime.utcnow().date().isoformat()
+        today_utc = datetime.now(tz=timezone.utc).date().isoformat()
         year_end = f"{season + 1}-06-30"
         matches = await self.api.competition_matches(
             competition_code=competition,

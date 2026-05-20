@@ -52,6 +52,33 @@ class ClubDB:
                     con.close()
             return await self._run(work)
 
+    async def rename_club(self, user_id: int, new_name: str) -> Tuple[bool, str]:
+        new_name = (new_name or "").strip()
+        if not new_name:
+            return (False, "구단 이름이 비어 있습니다.")
+        if len(new_name) > 30:
+            return (False, "구단 이름은 30자 이내여야 합니다.")
+
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    exists = con.execute(
+                        "SELECT 1 FROM clubs WHERE user_id=?",
+                        (int(user_id),),
+                    ).fetchone()
+                    if not exists:
+                        return (False, "구단이 없습니다. `/구단생성`을 먼저 해주세요.")
+                    con.execute(
+                        "UPDATE clubs SET club_name=? WHERE user_id=?",
+                        (new_name, int(user_id)),
+                    )
+                    con.commit()
+                    return (True, "구단명 변경 완료")
+                finally:
+                    con.close()
+            return await self._run(work)
+
     async def create_club(self, user_id: int, club_name: str, now_ts: int) -> Tuple[bool, str]:
         club_name = (club_name or "").strip()
         if not club_name:
