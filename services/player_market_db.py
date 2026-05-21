@@ -81,6 +81,34 @@ def retire_prob(age: int) -> float:
 # 포지션
 POSITIONS = ["GK", "DF", "MF", "FW"]
 
+# ───────────── 아마추어 스타터 스쿼드 (구단 생성 시 자동 지급) ─────────────
+# GK 2 · DF 5 · MF 6 · FW 5 = 18명
+# base_value=0, pot_grade='아마추어' — 이적시장 가치 없는 더미 카드
+AMATEUR_SQUAD: list[dict] = [
+    # GK
+    {"player_id": "AMT_GK_01", "name": "막아라", "position": "GK"},
+    {"player_id": "AMT_GK_02", "name": "손장군", "position": "GK"},
+    # DF
+    {"player_id": "AMT_DF_01", "name": "안들어", "position": "DF"},
+    {"player_id": "AMT_DF_02", "name": "철벽준", "position": "DF"},
+    {"player_id": "AMT_DF_03", "name": "담장원", "position": "DF"},
+    {"player_id": "AMT_DF_04", "name": "버팀민", "position": "DF"},
+    {"player_id": "AMT_DF_05", "name": "막을수", "position": "DF"},
+    # MF
+    {"player_id": "AMT_MF_01", "name": "연결하", "position": "MF"},
+    {"player_id": "AMT_MF_02", "name": "패스왕", "position": "MF"},
+    {"player_id": "AMT_MF_03", "name": "달려봐", "position": "MF"},
+    {"player_id": "AMT_MF_04", "name": "중원진", "position": "MF"},
+    {"player_id": "AMT_MF_05", "name": "열심이", "position": "MF"},
+    {"player_id": "AMT_MF_06", "name": "따라가", "position": "MF"},
+    # FW
+    {"player_id": "AMT_FW_01", "name": "슛돌이", "position": "FW"},
+    {"player_id": "AMT_FW_02", "name": "골넣어", "position": "FW"},
+    {"player_id": "AMT_FW_03", "name": "빗나강", "position": "FW"},
+    {"player_id": "AMT_FW_04", "name": "기적이", "position": "FW"},
+    {"player_id": "AMT_FW_05", "name": "차봐요", "position": "FW"},
+]
+
 # ───────────── 팩 5종(가격/확률) ─────────────
 PACKS = {
     "브론즈": {
@@ -406,12 +434,46 @@ class PlayerMarketDB:
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_trade_items_tid ON pm_trade_items(trade_id)")
 
+            # ── 아마추어 선수 시드 (INSERT OR IGNORE → 멱등)
+            for _p in AMATEUR_SQUAD:
+                con.execute(
+                    """
+                    INSERT OR IGNORE INTO pm_players
+                        (player_id, name, nation, position, age, ovr, pot,
+                         pot_grade, base_value, retired, created_month, updated_ts)
+                    VALUES (?, ?, '대한민국', ?, 22, 50, 50, '아마추어', 0, 0, 0, 0)
+                    """,
+                    (_p["player_id"], _p["name"], _p["position"]),
+                )
+
             con.commit()
         finally:
             con.close()
 
     async def _run(self, fn, *args):
         return await asyncio.to_thread(fn, *args)
+
+    # ───────────────── 아마추어 스쿼드 지급 ─────────────────
+
+    async def give_amateur_squad(self, user_id: int) -> int:
+        """구단 생성 시 아마추어 스타터 스쿼드 18명을 보유 목록에 추가합니다.
+        이미 보유 중인 선수는 스킵(INSERT OR IGNORE). 추가된 선수 수 반환."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    added = 0
+                    for _p in AMATEUR_SQUAD:
+                        res = con.execute(
+                            "INSERT OR IGNORE INTO pm_holdings (user_id, player_id, qty) VALUES (?, ?, 1)",
+                            (int(user_id), _p["player_id"]),
+                        )
+                        added += res.rowcount
+                    con.commit()
+                    return added
+                finally:
+                    con.close()
+            return await asyncio.to_thread(work)
 
     # ───────────────── 시간/상태 ─────────────────
     def _kst_hour(self, now_ts: int) -> int:

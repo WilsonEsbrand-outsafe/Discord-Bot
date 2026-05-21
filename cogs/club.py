@@ -1,11 +1,13 @@
 # cogs/club.py
+import asyncio
 import time
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from services.club_db import ClubDB
-from services.economy_db import EconomyDB  # ✅ 추가
+from services.economy_db import EconomyDB
+from services.player_market_db import PlayerMarketDB
 
 
 def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
@@ -20,7 +22,8 @@ class Club(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.clubs = ClubDB()
-        self.money = EconomyDB()  # ✅ 추가
+        self.money = EconomyDB()
+        self.pm = PlayerMarketDB()
 
     @app_commands.command(name="구단생성", description="내 구단을 생성합니다. (구단명: 내 닉네임 FC)")
     async def create_club(self, interaction: discord.Interaction):
@@ -33,14 +36,19 @@ class Club(commands.Cog):
         if not ok:
             return await interaction.followup.send(f"❌ {msg}", ephemeral=True)
 
-        # ✅ 보너스 지급(성공 시 1회)
-        new_bal = await self.money.add_balance(interaction.user.id, self.BONUS)
+        # 보너스 지급 + 아마추어 스쿼드 지급 (동시 실행)
+        new_bal, squad_added = await asyncio.gather(
+            self.money.add_balance(interaction.user.id, self.BONUS),
+            self.pm.give_amateur_squad(interaction.user.id),
+        )
 
         await interaction.followup.send(
             f"✅ {msg}\n"
             f"구단명: **{club_name}**\n"
-            f"구단 생성 보너스: **+{self.BONUS:,}원**\n"
-            f"현재 잔액: **{new_bal:,}원**",
+            f"구단 생성 보너스: **+{self.BONUS:,}원** | 현재 잔액: **{new_bal:,}원**\n\n"
+            f"⚽ **아마추어 스쿼드 {squad_added}명 지급 완료!**\n"
+            f"GK 2 · DF 5 · MF 6 · FW 5\n"
+            f"`/내선수`에서 확인하세요.",
             ephemeral=True,
         )
 
