@@ -613,7 +613,7 @@ class PlayerMarketDB:
         return max(1_000, floor_p), max(floor_p + 1_000, ceil_p)
 
     def _new_player_id(self, now_ts: int) -> str:
-        return f"P{now_ts}{random.randint(1000, 9999)}"
+        return f"P{now_ts}{random.randint(10_000_000, 99_999_999)}"
 
     def _spawn_player(self, month_index: int, now_ts: int, force_grade: Optional[str] = None) -> Dict:
         age = random.randint(17, 22)
