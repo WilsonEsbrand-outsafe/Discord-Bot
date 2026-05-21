@@ -617,6 +617,18 @@ def _is_owner_only_command(cmd: app_commands.Command) -> bool:
             return True
     return False
 
+HIDDEN_COMMANDS: set[str] = {"명령어", "겨울결산", "winterrecap"}
+
+CATEGORY_ORDER: list[str] = [
+    "📅 경기 정보",
+    "💰 경제",
+    "🎰 토토",
+    "⚽ 선수 & 이적시장",
+    "🤝 트레이드",
+    "🏟️ 클럽",
+    "🧩 기타",
+]
+
 def _guess_category_from_module(cmd: app_commands.Command) -> str:
     cb = getattr(cmd, "callback", None)
     mod = getattr(cb, "__module__", "") if cb else ""
@@ -624,9 +636,15 @@ def _guess_category_from_module(cmd: app_commands.Command) -> str:
     if "fixtures" in mod:
         return "📅 경기 정보"
     if "economy" in mod:
-        return "💰 재화 시스템"
+        return "💰 경제"
     if "toto" in mod:
-        return "💰 재화 시스템"
+        return "🎰 토토"
+    if "players_market" in mod:
+        return "⚽ 선수 & 이적시장"
+    if "trade" in mod:
+        return "🤝 트레이드"
+    if "club" in mod:
+        return "🏟️ 클럽"
     return "🧩 기타"
 
 def _flatten_commands(cmds: list[app_commands.Command]) -> list[tuple[str, str, app_commands.Command]]:
@@ -650,7 +668,10 @@ def build_user_help_embeds(bot: commands.Bot) -> list[discord.Embed]:
     raw_cmds = bot.tree.get_commands()
     flat = _flatten_commands(raw_cmds)
 
-    filtered = [(n, d, c) for (n, d, c) in flat if not _is_owner_only_command(c)]
+    filtered = [
+        (n, d, c) for (n, d, c) in flat
+        if not _is_owner_only_command(c) and c.name not in HIDDEN_COMMANDS
+    ]
 
     buckets: dict[str, list[tuple[str, str]]] = {}
     for name, desc, cmd in filtered:
@@ -661,16 +682,16 @@ def build_user_help_embeds(bot: commands.Bot) -> list[discord.Embed]:
         buckets[cat].sort(key=lambda x: x[0])
 
     embeds: list[discord.Embed] = []
-    for cat in ["📅 경기 정보", "💰 재화 시스템", "🧩 기타"]:
+    for cat in CATEGORY_ORDER:
         if cat not in buckets:
             continue
 
         lines = []
         for name, desc in buckets[cat]:
             if desc:
-                lines.append(f"• **{name}**\n  {desc}")
+                lines.append(f"`{name}` — {desc}")
             else:
-                lines.append(f"• **{name}**")
+                lines.append(f"`{name}`")
 
         e = discord.Embed(
             title=cat,
