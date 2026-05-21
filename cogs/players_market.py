@@ -282,7 +282,7 @@ class PlayersMarket(commands.Cog):
             return
 
     # ───────────────── 거래 ─────────────────
-    @app_commands.command(name="구매", description="시장가로 선수를 구매합니다. (시장 오픈 시간만)")
+    @app_commands.command(name="시장구매", description="시스템 시장가로 선수를 직접 구매합니다. (시장 오픈 시간만)")
     @app_commands.describe(player_id="선수 이름 또는 ID", qty="수량")
     @app_commands.autocomplete(player_id=active_player_autocomplete)
     async def buy(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
@@ -509,7 +509,7 @@ class PlayersMarket(commands.Cog):
             embed=_embed("🏟️ 이적시장", header + "\n".join(lines), interaction.user)
         )
 
-    @app_commands.command(name="이적구매", description="이적시장 매물을 구매합니다. (플랫폼 수수료 5%)")
+    @app_commands.command(name="구매", description="이적시장 매물을 구매합니다. (플랫폼 수수료 5%)")
     @app_commands.describe(매물번호="매물 번호 (/이적시장 에서 확인)", 수량="구매 수량")
     @app_commands.autocomplete(매물번호=listing_autocomplete)
     async def buy_transfer(self, interaction: discord.Interaction, 매물번호: str, 수량: int = 1):
