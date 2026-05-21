@@ -6,7 +6,7 @@ import time
 import asyncio
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import matplotlib
 matplotlib.use("Agg")
@@ -29,9 +29,27 @@ class PlayersMarket(commands.Cog):
         self.bot = bot
         self.money = EconomyDB()
         self.pm = PlayerMarketDB()
+        self.expire_task.start()
+
+    def cog_unload(self):
+        self.expire_task.cancel()
 
     async def cog_load(self):
         await self.pm.ensure_bootstrap(int(time.time()))
+
+    @tasks.loop(minutes=10)
+    async def expire_task(self):
+        """만료된 이적시장 매물 자동 반환 (10분마다)"""
+        try:
+            count = await self.pm.expire_listings(int(time.time()))
+            if count > 0:
+                print(f"[이적시장] 만료 처리: {count}건")
+        except Exception as e:
+            print(f"[이적시장] expire_task 오류: {e}")
+
+    @expire_task.before_loop
+    async def before_expire_task(self):
+        await self.bot.wait_until_ready()
 
     # ───────────────── 자동완성 ─────────────────
     async def player_id_autocomplete(
@@ -96,6 +114,57 @@ class PlayersMarket(commands.Cog):
             for k in PACKS
             if not current or current in k
         ]
+
+    async def retired_holding_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """방출용 — 내가 보유한 은퇴 선수만 표시"""
+        try:
+            rows = await self.pm.list_holdings(interaction.user.id, limit=25)
+            choices = []
+            for pid, name, nation, pos, age, ovr, potg, retired, qty, price in rows:
+                if int(retired) != 1:
+                    continue
+                label = f"(은퇴) {name} x{qty} | {pos} OVR{ovr}"
+                if current and current.lower() not in label.lower():
+                    continue
+                choices.append(app_commands.Choice(name=label[:100], value=pid))
+            return choices[:10]
+        except Exception:
+            return []
+
+    async def my_listing_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """내 매물 자동완성 (즉시판매·취소용)"""
+        try:
+            rows = await self.pm.get_my_listings(interaction.user.id)
+            now = int(time.time())
+            choices = []
+            for lid, pid, qty, price_per, listed_at, expires_at, instant_sell_at, name, nation, pos, age, ovr, potg, base_value in rows:
+                can_instant = now >= int(instant_sell_at)
+                tag = "✅즉시가능" if can_instant else "⏳대기중"
+                label = f"#{lid} {name} x{qty} | {int(price_per):,}원 | {tag}"
+                if current and current not in label and current not in str(lid):
+                    continue
+                choices.append(app_commands.Choice(name=label[:100], value=str(lid)))
+            return choices[:10]
+        except Exception:
+            return []
+
+    async def listing_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """이적시장 매물 자동완성 (구매용)"""
+        try:
+            rows = await self.pm.get_listings(current, limit=10)
+            choices = []
+            for lid, seller_id, pid, qty, price_per, listed_at, expires_at, instant_sell_at, name, nation, pos, age, ovr, potg, base_value in rows:
+                label = f"#{lid} {name} x{qty} | {pos} OVR{ovr}/{potg} | {int(price_per):,}원"
+                choices.append(app_commands.Choice(name=label[:100], value=str(lid)))
+            return choices[:10]
+        except Exception:
+            return []
 
     # ───────────────── 시장 상태 ─────────────────
     @app_commands.command(name="시장", description="시장 오픈/클로즈 상태를 확인합니다.")
@@ -229,20 +298,23 @@ class PlayersMarket(commands.Cog):
         )
         await interaction.followup.send(msg, ephemeral=True)
 
-    @app_commands.command(name="판매", description="시장가로 선수를 판매합니다. (수수료 5%, 시장 오픈 시간만)")
-    @app_commands.describe(player_id="선수 이름 또는 ID", qty="수량")
+    @app_commands.command(name="판매", description="선수를 이적시장에 등록합니다. (12h 후 즉시판매 가능 / 72h 후 자동 만료)")
+    @app_commands.describe(player_id="등록할 선수", 가격="1장당 희망 가격(원)", 수량="등록 수량")
     @app_commands.autocomplete(player_id=holding_player_autocomplete)
-    async def sell(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
+    async def sell(self, interaction: discord.Interaction, player_id: str, 가격: int, 수량: int = 1):
         await interaction.response.defer(ephemeral=True)
         now = int(time.time())
-        ok, msg = await self.pm.sell_to_market(
-            user_id=interaction.user.id,
+        ok, msg = await self.pm.create_listing(
+            seller_id=interaction.user.id,
             player_id=player_id,
-            qty=qty,
+            qty=수량,
+            price_per=가격,
             now_ts=now,
-            add_balance=self.money.add_balance,
         )
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(
+            embed=_embed("📋 이적시장 등록" if ok else "❌ 등록 실패", msg, interaction.user),
+            ephemeral=True,
+        )
 
     # ───────────────── 팩 ─────────────────
     @app_commands.command(name="선수팩", description="선수팩을 구매합니다. (종류별 확률/가격 차등)")
@@ -395,6 +467,184 @@ class PlayersMarket(commands.Cog):
 
         embed.set_footer(text="최대 10장까지 한 번에 구매 가능 · 수수료 없음")
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ───────────────── 이적시장 ─────────────────
+
+    @app_commands.command(name="이적시장", description="유저들이 올린 이적시장 매물을 조회합니다.")
+    @app_commands.describe(검색어="선수명/국적/포지션/등급 검색 (비우면 최신순)", 페이지="페이지 번호")
+    async def transfer_market(self, interaction: discord.Interaction, 검색어: str = "", 페이지: int = 1):
+        try:
+            await interaction.response.defer()
+        except (discord.NotFound, discord.HTTPException):
+            return
+
+        per_page = 10
+        페이지 = max(1, 페이지)
+        offset = (페이지 - 1) * per_page
+
+        total = await self.pm.count_listings(검색어)
+        if total == 0:
+            return await interaction.followup.send(
+                embed=_embed("🏟️ 이적시장", "현재 등록된 매물이 없습니다.", interaction.user)
+            )
+
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        if 페이지 > total_pages:
+            return await interaction.followup.send(f"❌ 페이지가 없습니다. (최대 {total_pages}페이지)")
+
+        rows = await self.pm.get_listings(검색어, limit=per_page, offset=offset)
+        now = int(time.time())
+
+        lines = []
+        for lid, seller_id, pid, qty, price_per, listed_at, expires_at, instant_sell_at, name, nation, pos, age, ovr, potg, base_value in rows:
+            time_left = max(0, int(expires_at) - now)
+            h = time_left // 3600
+            lines.append(
+                f"`#{lid}` **{name}** | {pos} OVR **{ovr}** / {potg}등급\n"
+                f"　{nation} · {age}세 | **{int(price_per):,}원** × {qty}장 | 만료 {h}h"
+            )
+
+        header = f"총 **{total}건** 매물 | 페이지 {페이지}/{total_pages}\n\n"
+        await interaction.followup.send(
+            embed=_embed("🏟️ 이적시장", header + "\n".join(lines), interaction.user)
+        )
+
+    @app_commands.command(name="이적구매", description="이적시장 매물을 구매합니다. (플랫폼 수수료 5%)")
+    @app_commands.describe(매물번호="매물 번호 (/이적시장 에서 확인)", 수량="구매 수량")
+    @app_commands.autocomplete(매물번호=listing_autocomplete)
+    async def buy_transfer(self, interaction: discord.Interaction, 매물번호: str, 수량: int = 1):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            lid = int(str(매물번호).lstrip("#"))
+        except ValueError:
+            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.", ephemeral=True)
+
+        now = int(time.time())
+        ok, msg = await self.pm.buy_listing(
+            listing_id=lid,
+            buyer_id=interaction.user.id,
+            qty=수량,
+            now_ts=now,
+            get_balance=self.money.get_balance,
+            add_balance=self.money.add_balance,
+        )
+        bal = await self.money.get_balance(interaction.user.id)
+        if ok:
+            msg += f"\n현재 잔액: **{bal:,}원**"
+        await interaction.followup.send(
+            embed=_embed("✅ 이적 구매" if ok else "❌ 구매 실패", msg, interaction.user),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="내매물", description="내가 이적시장에 등록한 활성 매물을 확인합니다.")
+    async def my_listings(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        rows = await self.pm.get_my_listings(interaction.user.id)
+        if not rows:
+            return await interaction.followup.send(
+                embed=_embed("📋 내 매물", "등록된 매물이 없습니다.", interaction.user),
+                ephemeral=True,
+            )
+
+        now = int(time.time())
+        lines = []
+        for lid, pid, qty, price_per, listed_at, expires_at, instant_sell_at, name, nation, pos, age, ovr, potg, base_value in rows:
+            can_instant = now >= int(instant_sell_at)
+            instant_tag = "✅ 즉시판매 가능" if can_instant else f"⏳ {max(0, int(instant_sell_at) - now) // 3600}h 후 즉시판매"
+            h_left = max(0, int(expires_at) - now) // 3600
+            lines.append(
+                f"`#{lid}` **{name}** x{qty} | {pos} OVR {ovr}\n"
+                f"　**{int(price_per):,}원**/장 | 만료 {h_left}h | {instant_tag}"
+            )
+
+        await interaction.followup.send(
+            embed=_embed("📋 내 매물", "\n".join(lines), interaction.user),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="즉시판매", description="이적시장 등록 후 12시간이 지난 매물을 기준가의 70%에 즉시 판매합니다.")
+    @app_commands.describe(매물번호="즉시판매할 매물 번호 (/내매물 에서 확인)")
+    @app_commands.autocomplete(매물번호=my_listing_autocomplete)
+    async def instant_sell(self, interaction: discord.Interaction, 매물번호: str):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            lid = int(str(매물번호).lstrip("#"))
+        except ValueError:
+            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.", ephemeral=True)
+
+        now = int(time.time())
+        ok, msg = await self.pm.instant_sell_listing(
+            listing_id=lid,
+            seller_id=interaction.user.id,
+            now_ts=now,
+            add_balance=self.money.add_balance,
+        )
+        if ok:
+            bal = await self.money.get_balance(interaction.user.id)
+            msg += f"\n현재 잔액: **{bal:,}원**"
+        await interaction.followup.send(
+            embed=_embed("💸 즉시판매" if ok else "❌ 즉시판매 실패", msg, interaction.user),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="이적취소", description="이적시장 매물을 취소하고 선수를 돌려받습니다.")
+    @app_commands.describe(매물번호="취소할 매물 번호 (/내매물 에서 확인)")
+    @app_commands.autocomplete(매물번호=my_listing_autocomplete)
+    async def cancel_listing_cmd(self, interaction: discord.Interaction, 매물번호: str):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            lid = int(str(매물번호).lstrip("#"))
+        except ValueError:
+            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.", ephemeral=True)
+
+        ok, msg = await self.pm.cancel_listing(
+            listing_id=lid,
+            seller_id=interaction.user.id,
+        )
+        await interaction.followup.send(
+            embed=_embed("✅ 매물 취소" if ok else "❌ 취소 실패", msg, interaction.user),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="방출", description="은퇴 선수를 기준가의 30%에 즉시 방출합니다.")
+    @app_commands.describe(player_id="방출할 은퇴 선수 ID", qty="수량")
+    @app_commands.autocomplete(player_id=retired_holding_autocomplete)
+    async def release(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
+        await interaction.response.defer(ephemeral=True)
+
+        row = await self.pm.get_player(player_id)
+        if not row:
+            return await interaction.followup.send("❌ 선수를 찾을 수 없습니다.", ephemeral=True)
+
+        # row: pid, name, nation, pos, age, ovr, potg, basev, retired, price, floor_p, ceil_p, last_ts
+        retired = int(row[8])
+        name    = row[1]
+        if retired != 1:
+            return await interaction.followup.send(
+                embed=_embed(
+                    "❌ 방출 실패",
+                    f"**{name}**은(는) 은퇴 선수가 아닙니다.\n활성 선수는 `/판매`로 이적시장에 등록하세요.",
+                    interaction.user,
+                ),
+                ephemeral=True,
+            )
+
+        now = int(time.time())
+        ok, msg = await self.pm.sell_to_market(
+            user_id=interaction.user.id,
+            player_id=player_id,
+            qty=qty,
+            now_ts=now,
+            add_balance=self.money.add_balance,
+        )
+        if ok:
+            bal = await self.money.get_balance(interaction.user.id)
+            msg += f"\n현재 잔액: **{bal:,}원**"
+        await interaction.followup.send(
+            embed=_embed("💀 선수 방출" if ok else "❌ 방출 실패", msg, interaction.user),
+            ephemeral=True,
+        )
 
 
 async def setup(bot):

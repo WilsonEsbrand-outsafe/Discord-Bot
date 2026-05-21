@@ -24,6 +24,12 @@ MONTHS_PER_YEAR = 12
 
 SELL_FEE_RATE = 0.05
 
+# 이적시장 파라미터
+LISTING_DURATION    = 72 * 3600   # 72시간 후 만료
+INSTANT_SELL_DELAY  = 12 * 3600   # 12시간 후 즉시판매 가능
+INSTANT_SELL_RATE   = 0.70        # 즉시판매 수령 비율 (기준가의 70%)
+TRANSFER_FEE_RATE   = 0.05        # 이적시장 거래 수수료 5%
+
 # 시장 변동폭
 TICK_CAP = 0.13  # ±13%
 SIGMA = 0.035    # 체감: 보통 ±2~6%, 가끔 큰 틱
@@ -346,6 +352,25 @@ class PlayerMarketDB:
                 """
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_holdings_user ON pm_holdings(user_id)")
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pm_listings (
+                    listing_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    seller_id       INTEGER NOT NULL,
+                    player_id       TEXT    NOT NULL,
+                    qty             INTEGER NOT NULL DEFAULT 1,
+                    price_per       INTEGER NOT NULL,
+                    listed_at       INTEGER NOT NULL,
+                    expires_at      INTEGER NOT NULL,
+                    instant_sell_at INTEGER NOT NULL,
+                    status          TEXT    NOT NULL DEFAULT 'active'
+                )
+                """
+            )
+            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_listings_seller ON pm_listings(seller_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_listings_status ON pm_listings(status)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_listings_pid    ON pm_listings(player_id)")
 
             con.commit()
         finally:
@@ -740,10 +765,6 @@ class PlayerMarketDB:
         if qty <= 0:
             return False, "수량은 1 이상이어야 합니다."
 
-        if not self._is_market_open(now_ts):
-            st = await self.market_status(now_ts)
-            return False, f"지금은 시장이 닫혀 있습니다. (다음 변경: <t:{st.next_change_ts}:f>)"
-
         row = await self.get_player(pid)
         if not row:
             return False, "선수를 찾을 수 없습니다."
@@ -779,6 +800,11 @@ class PlayerMarketDB:
                 f"✅ 은퇴 선수 방출: `{pid}` **{name}** x{qty}\n"
                 f"기준가 {int(basev):,}원 × 30% → **{compensation:,}원** 수령"
             )
+
+        # 활성 선수: 시장 오픈 시간에만 거래 가능
+        if not self._is_market_open(now_ts):
+            st = await self.market_status(now_ts)
+            return False, f"지금은 시장이 닫혀 있습니다. (다음 변경: <t:{st.next_change_ts}:f>)"
 
         gross = int(price) * qty
         fee = int(gross * SELL_FEE_RATE)
@@ -1100,4 +1126,428 @@ class PlayerMarketDB:
                 finally:
                     con.close()
 
+            return await self._run(work)
+
+    # ───────────────── 이적시장 ─────────────────
+
+    async def create_listing(
+        self, *, seller_id: int, player_id: str, qty: int, price_per: int, now_ts: int
+    ) -> Tuple[bool, str]:
+        """선수를 이적시장에 등록 (보유에서 차감)"""
+        pid = (player_id or "").strip()
+        qty = int(qty)
+        price_per = int(price_per)
+
+        if qty <= 0:
+            return False, "수량은 1 이상이어야 합니다."
+        if price_per <= 0:
+            return False, "가격은 1원 이상이어야 합니다."
+
+        row = await self.get_player(pid)
+        if not row:
+            return False, "선수를 찾을 수 없습니다."
+
+        (_pid, name, _nat, _pos, _age, _ovr, _potg, _basev, retired, *_rest) = row
+        if int(retired) == 1:
+            return False, "은퇴 선수는 이적시장에 등록할 수 없습니다. `/방출` 명령어를 사용하세요."
+
+        have = await self.get_holding(seller_id, pid)
+        if have < qty:
+            return False, f"보유 수량이 부족합니다. 보유: {have} / 등록 요청: {qty}"
+
+        expires_at      = now_ts + LISTING_DURATION
+        instant_sell_at = now_ts + INSTANT_SELL_DELAY
+
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    con.execute("BEGIN IMMEDIATE;")
+                    con.execute(
+                        "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=?",
+                        (qty, int(seller_id), pid),
+                    )
+                    cur = con.execute(
+                        """
+                        INSERT INTO pm_listings(seller_id, player_id, qty, price_per,
+                                                listed_at, expires_at, instant_sell_at, status)
+                        VALUES(?, ?, ?, ?, ?, ?, ?, 'active')
+                        """,
+                        (int(seller_id), pid, qty, price_per, now_ts, expires_at, instant_sell_at),
+                    )
+                    lid = cur.lastrowid
+                    con.commit()
+                    return lid
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            lid = await self._run(work)
+
+        return True, (
+            f"✅ 이적시장 등록 완료\n"
+            f"매물 번호: **#{lid}** | **{name}** x{qty}\n"
+            f"등록가: **{price_per:,}원** / 장\n"
+            f"⏳ 12시간 후 즉시판매 가능 · 72시간 후 자동 만료(선수 반환)"
+        )
+
+    async def get_listings(self, q: str = "", limit: int = 10, offset: int = 0) -> List:
+        """이적시장 활성 매물 조회"""
+        q = (q or "").strip()
+        limit  = max(1, min(25, int(limit)))
+        offset = max(0, int(offset))
+        now_ts = int(time.time())
+
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    if not q:
+                        return con.execute(
+                            """
+                            SELECT l.listing_id, l.seller_id, l.player_id, l.qty, l.price_per,
+                                   l.listed_at, l.expires_at, l.instant_sell_at,
+                                   p.name, p.nation, p.position, p.age, p.ovr, p.pot_grade, p.base_value
+                            FROM pm_listings l
+                            JOIN pm_players p ON p.player_id=l.player_id
+                            WHERE l.status='active' AND l.expires_at > ?
+                            ORDER BY l.listed_at DESC
+                            LIMIT ? OFFSET ?
+                            """,
+                            (now_ts, limit, offset),
+                        ).fetchall()
+
+                    like = f"%{q}%"
+                    return con.execute(
+                        """
+                        SELECT l.listing_id, l.seller_id, l.player_id, l.qty, l.price_per,
+                               l.listed_at, l.expires_at, l.instant_sell_at,
+                               p.name, p.nation, p.position, p.age, p.ovr, p.pot_grade, p.base_value
+                        FROM pm_listings l
+                        JOIN pm_players p ON p.player_id=l.player_id
+                        WHERE l.status='active' AND l.expires_at > ?
+                          AND (p.name LIKE ? OR p.nation LIKE ? OR p.position LIKE ?
+                               OR p.pot_grade LIKE ? OR l.player_id LIKE ?)
+                        ORDER BY l.price_per ASC
+                        LIMIT ? OFFSET ?
+                        """,
+                        (now_ts, like, like, like, like, like, limit, offset),
+                    ).fetchall()
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def count_listings(self, q: str = "") -> int:
+        """이적시장 활성 매물 수"""
+        q = (q or "").strip()
+        now_ts = int(time.time())
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    if not q:
+                        row = con.execute(
+                            "SELECT COUNT(*) FROM pm_listings WHERE status='active' AND expires_at > ?",
+                            (now_ts,),
+                        ).fetchone()
+                    else:
+                        like = f"%{q}%"
+                        row = con.execute(
+                            """
+                            SELECT COUNT(*) FROM pm_listings l
+                            JOIN pm_players p ON p.player_id=l.player_id
+                            WHERE l.status='active' AND l.expires_at > ?
+                              AND (p.name LIKE ? OR p.nation LIKE ? OR p.position LIKE ?
+                                   OR p.pot_grade LIKE ? OR l.player_id LIKE ?)
+                            """,
+                            (now_ts, like, like, like, like, like),
+                        ).fetchone()
+                    return int(row[0]) if row else 0
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def get_my_listings(self, user_id: int) -> List:
+        """내 이적시장 활성 매물 조회"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    return con.execute(
+                        """
+                        SELECT l.listing_id, l.player_id, l.qty, l.price_per,
+                               l.listed_at, l.expires_at, l.instant_sell_at,
+                               p.name, p.nation, p.position, p.age, p.ovr, p.pot_grade, p.base_value
+                        FROM pm_listings l
+                        JOIN pm_players p ON p.player_id=l.player_id
+                        WHERE l.seller_id=? AND l.status='active'
+                        ORDER BY l.listed_at DESC
+                        """,
+                        (int(user_id),),
+                    ).fetchall()
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def buy_listing(
+        self, *, listing_id: int, buyer_id: int, qty: int, now_ts: int, get_balance, add_balance
+    ) -> Tuple[bool, str]:
+        """이적시장 매물 구매 (수수료 5%)"""
+        qty = int(qty)
+        if qty <= 0:
+            return False, "수량은 1 이상이어야 합니다."
+
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    row = con.execute(
+                        """
+                        SELECT l.seller_id, l.player_id, l.qty, l.price_per, l.expires_at,
+                               p.name
+                        FROM pm_listings l
+                        JOIN pm_players p ON p.player_id=l.player_id
+                        WHERE l.listing_id=? AND l.status='active'
+                        """,
+                        (int(listing_id),),
+                    ).fetchone()
+                    if not row:
+                        return None, "매물을 찾을 수 없습니다. (이미 판매됐거나 취소된 매물)"
+
+                    seller_id, pid, avail_qty, price_per, expires_at, name = row
+
+                    if int(buyer_id) == int(seller_id):
+                        return None, "자신의 매물은 구매할 수 없습니다."
+                    if now_ts > int(expires_at):
+                        return None, "만료된 매물입니다."
+                    if qty > int(avail_qty):
+                        return None, f"요청 수량이 초과됩니다. 남은 수량: **{int(avail_qty)}장**"
+
+                    total_cost  = int(price_per) * qty
+                    fee         = int(total_cost * TRANSFER_FEE_RATE)
+                    seller_gets = total_cost - fee
+                    remaining   = int(avail_qty) - qty
+
+                    con.execute("BEGIN IMMEDIATE;")
+                    if remaining <= 0:
+                        con.execute(
+                            "UPDATE pm_listings SET status='sold', qty=0 WHERE listing_id=?",
+                            (int(listing_id),),
+                        )
+                    else:
+                        con.execute(
+                            "UPDATE pm_listings SET qty=? WHERE listing_id=?",
+                            (remaining, int(listing_id)),
+                        )
+                    con.execute(
+                        """
+                        INSERT INTO pm_holdings(user_id, player_id, qty)
+                        VALUES(?, ?, ?)
+                        ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty
+                        """,
+                        (int(buyer_id), str(pid), qty),
+                    )
+                    con.commit()
+                    return (int(seller_id), str(pid), qty, total_cost, fee, seller_gets, name), None
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            result, err = await self._run(work)
+
+        if err:
+            return False, err
+
+        seller_id, pid, qty_bought, total_cost, fee, seller_gets, name = result
+
+        # 잔액 반영 (잔액 확인은 lock 밖에서 — 실패 시 holdings rollback 불가이므로 순서 중요)
+        bal = await get_balance(buyer_id)
+        if bal < total_cost:
+            # 재고를 이미 차감했으므로 롤백
+            async with self._lock:
+                def rollback():
+                    con = self._connect()
+                    try:
+                        con.execute("BEGIN IMMEDIATE;")
+                        con.execute(
+                            "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=?",
+                            (qty_bought, int(buyer_id), pid),
+                        )
+                        # 매물 복원
+                        remaining_now = int(avail_qty) - qty_bought  # type: ignore
+                        if remaining_now <= 0:
+                            con.execute(
+                                "UPDATE pm_listings SET status='active', qty=? WHERE listing_id=?",
+                                (qty_bought, int(listing_id)),
+                            )
+                        else:
+                            con.execute(
+                                "UPDATE pm_listings SET qty=qty+? WHERE listing_id=?",
+                                (qty_bought, int(listing_id)),
+                            )
+                        con.commit()
+                    except Exception:
+                        try: con.execute("ROLLBACK;")
+                        except Exception: pass
+                    finally:
+                        con.close()
+                await self._run(rollback)
+            return False, f"잔액이 부족합니다. 필요: {total_cost:,} / 보유: {bal:,}"
+
+        await add_balance(buyer_id, -total_cost)
+        await add_balance(seller_id, seller_gets)
+        return True, (
+            f"✅ 이적 구매 완료: **{name}** x{qty_bought}\n"
+            f"총액: **{total_cost:,}원** (플랫폼 수수료 {fee:,}원)\n"
+            f"판매자 수령: **{seller_gets:,}원**"
+        )
+
+    async def cancel_listing(self, *, listing_id: int, seller_id: int) -> Tuple[bool, str]:
+        """이적시장 매물 취소 (선수 보유 반환)"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    row = con.execute(
+                        """
+                        SELECT l.seller_id, l.player_id, l.qty, p.name
+                        FROM pm_listings l
+                        JOIN pm_players p ON p.player_id=l.player_id
+                        WHERE l.listing_id=? AND l.status='active'
+                        """,
+                        (int(listing_id),),
+                    ).fetchone()
+                    if not row:
+                        return False, "매물을 찾을 수 없습니다. (이미 판매됐거나 취소된 매물)"
+
+                    s_id, pid, qty, name = row
+                    if int(s_id) != int(seller_id):
+                        return False, "본인의 매물만 취소할 수 있습니다."
+
+                    con.execute("BEGIN IMMEDIATE;")
+                    con.execute(
+                        "UPDATE pm_listings SET status='cancelled' WHERE listing_id=?",
+                        (int(listing_id),),
+                    )
+                    con.execute(
+                        """
+                        INSERT INTO pm_holdings(user_id, player_id, qty)
+                        VALUES(?, ?, ?)
+                        ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty
+                        """,
+                        (int(s_id), str(pid), int(qty)),
+                    )
+                    con.commit()
+                    return True, f"✅ 매물 취소 완료: **{name}** x{int(qty)} 보유 반환"
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def instant_sell_listing(
+        self, *, listing_id: int, seller_id: int, now_ts: int, add_balance
+    ) -> Tuple[bool, str]:
+        """즉시판매 — 등록 12시간 후 가능, 기준가 × 70%"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    row = con.execute(
+                        """
+                        SELECT l.seller_id, l.player_id, l.qty, l.instant_sell_at,
+                               p.name, p.base_value
+                        FROM pm_listings l
+                        JOIN pm_players p ON p.player_id=l.player_id
+                        WHERE l.listing_id=? AND l.status='active'
+                        """,
+                        (int(listing_id),),
+                    ).fetchone()
+                    if not row:
+                        return None, "매물을 찾을 수 없습니다. (이미 판매됐거나 취소된 매물)"
+
+                    s_id, pid, qty, instant_sell_at, name, base_value = row
+                    if int(s_id) != int(seller_id):
+                        return None, "본인의 매물만 즉시판매할 수 있습니다."
+                    if now_ts < int(instant_sell_at):
+                        rem = int(instant_sell_at) - now_ts
+                        h = rem // 3600
+                        m = (rem % 3600) // 60
+                        return None, f"아직 즉시판매 가능 시간이 아닙니다.\n남은 시간: **{h}시간 {m}분**"
+
+                    payout  = int(int(base_value) * INSTANT_SELL_RATE) * int(qty)
+                    fee_amt = int(int(base_value) * (1.0 - INSTANT_SELL_RATE)) * int(qty)
+
+                    con.execute("BEGIN IMMEDIATE;")
+                    con.execute(
+                        "UPDATE pm_listings SET status='sold', qty=0 WHERE listing_id=?",
+                        (int(listing_id),),
+                    )
+                    con.commit()
+                    return (int(s_id), int(qty), payout, fee_amt, name, int(base_value)), None
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            result, err = await self._run(work)
+
+        if err:
+            return False, err
+
+        _s_id, qty, payout, fee_amt, name, base_value = result
+        await add_balance(seller_id, payout)
+        return True, (
+            f"✅ 즉시판매 완료: **{name}** x{qty}\n"
+            f"기준가: **{base_value:,}원** × 70% × {qty}장\n"
+            f"수수료(30%): **{fee_amt:,}원**\n"
+            f"실수령: **{payout:,}원**"
+        )
+
+    async def expire_listings(self, now_ts: int) -> int:
+        """만료된 매물 처리 (선수 자동 반환)"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    rows = con.execute(
+                        """
+                        SELECT listing_id, seller_id, player_id, qty
+                        FROM pm_listings
+                        WHERE status='active' AND expires_at <= ?
+                        """,
+                        (int(now_ts),),
+                    ).fetchall()
+                    if not rows:
+                        return 0
+
+                    con.execute("BEGIN IMMEDIATE;")
+                    for lid, s_id, pid, qty in rows:
+                        con.execute(
+                            "UPDATE pm_listings SET status='expired' WHERE listing_id=?",
+                            (int(lid),),
+                        )
+                        con.execute(
+                            """
+                            INSERT INTO pm_holdings(user_id, player_id, qty)
+                            VALUES(?, ?, ?)
+                            ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty
+                            """,
+                            (int(s_id), str(pid), int(qty)),
+                        )
+                    con.commit()
+                    return len(rows)
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
             return await self._run(work)
