@@ -529,6 +529,53 @@ class PlayerMarketDB:
 
         await self.ensure_active_pool(now_ts, target=300)
 
+    async def reset_system_pool(self, now_ts: int) -> tuple[int, int]:
+        """유저가 보유하지 않은 일반 선수를 전부 삭제하고 새로 스폰합니다.
+        AMT_ 아마추어 선수는 항상 보존됩니다.
+        Returns: (삭제된 선수 수, 새로 활성화된 선수 수)"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    # 보존 목록: 유저 보유 중인 선수 + 아마추어 더미
+                    held = {row[0] for row in con.execute(
+                        "SELECT DISTINCT player_id FROM pm_holdings WHERE qty > 0"
+                    ).fetchall()}
+                    amt = {p["player_id"] for p in AMATEUR_SQUAD}
+                    keep = held | amt
+
+                    # keep 외 전부 삭제 (CASCADE → pm_market, pm_price_history 자동 정리)
+                    all_pids = [row[0] for row in con.execute(
+                        "SELECT player_id FROM pm_players"
+                    ).fetchall()]
+                    to_delete = [pid for pid in all_pids if pid not in keep]
+
+                    for pid in to_delete:
+                        con.execute("DELETE FROM pm_players WHERE player_id=?", (pid,))
+                    con.commit()
+                    return len(to_delete)
+                finally:
+                    con.close()
+            deleted = await asyncio.to_thread(work)
+
+        # lock 밖에서 새 선수 스폰 (ensure_active_pool이 lock을 다시 획득함)
+        await self.ensure_active_pool(now_ts, target=300)
+
+        # 새로 생성된 활성 일반 선수 수 집계
+        async with self._lock:
+            def count_work():
+                con = self._connect()
+                try:
+                    row = con.execute(
+                        "SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"
+                    ).fetchone()
+                    return int(row[0]) if row else 0
+                finally:
+                    con.close()
+            spawned = await asyncio.to_thread(count_work)
+
+        return deleted, spawned
+
     async def market_status(self, now_ts: int) -> MarketStatus:
         open_ = self._is_market_open(now_ts)
         if open_:

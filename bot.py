@@ -609,6 +609,29 @@ async def announce_embed(
 async def announce_embed_error(interaction: discord.Interaction, error: Exception):
     await owner_only_error(interaction, error)
 
+# ───────────────── 슬래시: 선수 풀 초기화 ─────────────────
+@app_commands.guild_only()
+@app_commands.check(owner_only)
+@bot.tree.command(name="선수풀초기화", description="[관리자] 시스템 선수 풀을 초기화하고 새로 스폰합니다. (유저 보유 선수 유지)")
+async def reset_player_pool(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    from services.player_market_db import PlayerMarketDB
+    pm = PlayerMarketDB()
+    deleted, spawned = await pm.reset_system_pool(int(time.time()))
+
+    await interaction.followup.send(
+        f"✅ **선수 풀 초기화 완료**\n"
+        f"- 삭제된 선수: **{deleted:,}명**\n"
+        f"- 새로 활성화된 선수: **{spawned:,}명**\n"
+        f"(유저 보유 선수 및 아마추어 더미는 유지됩니다)",
+        ephemeral=True,
+    )
+
+@reset_player_pool.error
+async def reset_player_pool_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    await owner_only_error(interaction, error)
+
 # ───────────────── /명령어 자동 생성(드롭다운) ─────────────────
 def _is_owner_only_command(cmd: app_commands.Command) -> bool:
     # owner_only 체크가 걸린 명령어는 제외
