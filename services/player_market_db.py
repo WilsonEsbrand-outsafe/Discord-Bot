@@ -38,22 +38,22 @@ ADVERSE_PROB = 0.01
 
 # 성장 확률(월 1회)
 GROWTH_PROB_BY_AGE = [
-    (18, 0.06),  # 17~18
-    (20, 0.05),  # 19~20
-    (22, 0.04),  # 21~22
-    (24, 0.03),  # 23~24
-    (26, 0.02),  # 25~26
-    (28, 0.01),  # 27~28
-    (999, 0.00), # 29+
+    (18, 0.40),  # 17~18 (전성기 전 폭발 성장)
+    (20, 0.35),  # 19~20
+    (22, 0.28),  # 21~22
+    (24, 0.20),  # 23~24
+    (26, 0.12),  # 25~26
+    (28, 0.05),  # 27~28
+    (999, 0.00), # 29+ (성장 없음)
 ]
 
 def growth_penalty(gap: int) -> float:
     if gap >= 10:
         return 1.0
     if 5 <= gap <= 9:
-        return 0.6
+        return 0.7
     if 1 <= gap <= 4:
-        return 0.3
+        return 0.4
     return 0.0
 
 # 은퇴 확률(월)
@@ -402,12 +402,27 @@ class PlayerMarketDB:
 
     # ───────────────── 가치 계산/스폰 ─────────────────
     def _compute_base_value(self, age: int, ovr: int, pot: int) -> int:
-        # OVR^2 기반 + 잠재 갭 프리미엄 + 노화 페널티
-        core = (ovr * ovr) * 40
+        # ── OVR 지수 곡선 (OVR 55 기준 50k, 10 오를 때마다 ~2배)
+        # OVR 65→~200k / 75→~800k / 85→~3M / 90→~7M / 95→~20M
+        ovr_f = max(0, ovr - 55)
+        core = int(50_000 * (1.15 ** ovr_f))
+
+        # ── 잠재 프리미엄 (어릴수록, 갭 클수록 가중치 큼)
         gap = max(0, pot - ovr)
-        youth_bonus = gap * (2500 if age <= 22 else 1200)
-        age_penalty = max(0, age - 29) * 3500
-        v = int(core + youth_bonus - age_penalty)
+        if age <= 21:
+            pot_mult = 1.0 + gap * 0.030
+        elif age <= 26:
+            pot_mult = 1.0 + gap * 0.018
+        else:
+            pot_mult = 1.0 + gap * 0.008
+
+        # ── 노화 페널티 (30세부터 매년 12% 감가)
+        if age >= 30:
+            age_factor = max(0.20, 1.0 - (age - 29) * 0.12)
+        else:
+            age_factor = 1.0
+
+        v = int(core * pot_mult * age_factor)
         return max(10_000, v)
 
     def _compute_floor_ceil(self, base_value: int) -> Tuple[int, int]:
@@ -420,7 +435,6 @@ class PlayerMarketDB:
 
     def _spawn_player(self, month_index: int, now_ts: int, force_grade: Optional[str] = None) -> Dict:
         age = random.randint(17, 22)
-        ovr = random.randint(55, 72)
 
         if force_grade == "S":
             pot = random.randint(90, 95)
@@ -445,7 +459,9 @@ class PlayerMarketDB:
             else:
                 pot = random.randint(66, 71)
 
-        pot = max(pot, ovr)
+        # OVR: POT 기준 15~30 아래에서 시작 (등급이 높을수록 더 높은 출발점)
+        gap_start = random.randint(15, 30)
+        ovr = max(50, pot - gap_start)
 
         nation = pick_weighted_nation()
         name = random_name_by_nation(nation)
@@ -998,7 +1014,7 @@ class PlayerMarketDB:
                             gap = max(0, pot - ovr)
                             p_growth = base_p * growth_penalty(int(gap))
                             if p_growth > 0 and random.random() < p_growth:
-                                inc = 2 if random.random() < 0.10 else 1
+                                inc = 2 if random.random() < 0.25 else 1
                                 ovr = min(pot, ovr + inc)
 
                             # 은퇴
