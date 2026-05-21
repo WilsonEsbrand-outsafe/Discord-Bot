@@ -446,6 +446,20 @@ class PlayerMarketDB:
                     (_p["player_id"], _p["name"], _p["position"]),
                 )
 
+            # ── 기존 구단주 마이그레이션: clubs 테이블의 모든 유저에게 아마추어 스쿼드 일괄 지급
+            _clubs_exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='clubs'"
+            ).fetchone()
+            if _clubs_exists:
+                con.execute("""
+                    INSERT OR IGNORE INTO pm_holdings (user_id, player_id, qty)
+                    SELECT c.user_id, ap.player_id, 1
+                    FROM clubs c
+                    CROSS JOIN (
+                        SELECT player_id FROM pm_players WHERE pot_grade = '아마추어'
+                    ) ap
+                """)
+
             con.commit()
         finally:
             con.close()
