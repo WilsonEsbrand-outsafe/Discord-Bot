@@ -754,12 +754,12 @@ class PlayerMarketDB:
                     return con.execute(
                         """
                         SELECT h.player_id, p.name, p.nation, p.position, p.age, p.ovr, p.pot_grade, p.retired,
-                               h.qty, m.price
+                               h.qty, COALESCE(m.price, 0)
                         FROM pm_holdings h
                         JOIN pm_players p ON p.player_id=h.player_id
-                        JOIN pm_market m ON m.player_id=h.player_id
+                        LEFT JOIN pm_market m ON m.player_id=h.player_id
                         WHERE h.user_id=? AND h.qty>0
-                        ORDER BY (h.qty*m.price) DESC
+                        ORDER BY (h.qty * COALESCE(m.price, 0)) DESC
                         LIMIT ? OFFSET ?
                         """,
                         (int(user_id), int(limit), int(offset)),
@@ -789,9 +789,9 @@ class PlayerMarketDB:
                 try:
                     row = con.execute(
                         """
-                        SELECT COALESCE(SUM(h.qty * m.price), 0)
+                        SELECT COALESCE(SUM(h.qty * COALESCE(m.price, 0)), 0)
                         FROM pm_holdings h
-                        JOIN pm_market m ON m.player_id=h.player_id
+                        LEFT JOIN pm_market m ON m.player_id=h.player_id
                         WHERE h.user_id=? AND h.qty>0
                         """,
                         (int(user_id),),
