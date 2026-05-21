@@ -233,7 +233,7 @@ async def on_ready():
     print(f"🤖 로그인 성공: {bot.user} (ID: {bot.user.id})")
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes")
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade")
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -319,7 +319,7 @@ async def sync_and_reload(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes")
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade")
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)

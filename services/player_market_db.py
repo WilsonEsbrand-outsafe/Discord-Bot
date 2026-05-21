@@ -5,6 +5,7 @@ import asyncio
 import random
 import sqlite3
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
@@ -26,6 +27,7 @@ SELL_FEE_RATE = 0.05
 
 # 이적시장 파라미터
 LISTING_DURATION    = 72 * 3600   # 72시간 후 만료
+TRADE_EXPIRE        = 86400       # 트레이드 제안 24시간 후 만료
 INSTANT_SELL_DELAY  = 12 * 3600   # 12시간 후 즉시판매 가능
 INSTANT_SELL_RATE   = 0.70        # 즉시판매 수령 비율 (기준가의 70%)
 TRANSFER_FEE_RATE   = 0.05        # 이적시장 거래 수수료 5%
@@ -371,6 +373,38 @@ class PlayerMarketDB:
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_listings_seller ON pm_listings(seller_id)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_listings_status ON pm_listings(status)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_listings_pid    ON pm_listings(player_id)")
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pm_trades (
+                    trade_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proposer_id   INTEGER NOT NULL,
+                    receiver_id   INTEGER NOT NULL,
+                    proposer_cash INTEGER NOT NULL DEFAULT 0,
+                    receiver_cash INTEGER NOT NULL DEFAULT 0,
+                    status        TEXT    NOT NULL DEFAULT 'pending',
+                    created_at    INTEGER NOT NULL,
+                    expires_at    INTEGER NOT NULL
+                )
+                """
+            )
+            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_trades_proposer ON pm_trades(proposer_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_trades_receiver ON pm_trades(receiver_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_trades_status   ON pm_trades(status)")
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pm_trade_items (
+                    item_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id  INTEGER NOT NULL,
+                    side      TEXT    NOT NULL,
+                    player_id TEXT    NOT NULL,
+                    qty       INTEGER NOT NULL DEFAULT 1,
+                    FOREIGN KEY(trade_id) REFERENCES pm_trades(trade_id)
+                )
+                """
+            )
+            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_trade_items_tid ON pm_trade_items(trade_id)")
 
             con.commit()
         finally:
@@ -1510,6 +1544,352 @@ class PlayerMarketDB:
             f"수수료(30%): **{fee_amt:,}원**\n"
             f"실수령: **{payout:,}원**"
         )
+
+    # ───────────────── 트레이드 ─────────────────
+
+    async def create_trade(
+        self, *,
+        proposer_id: int, receiver_id: int,
+        proposer_pids: List[str], receiver_pids: List[str],
+        proposer_cash: int, receiver_cash: int,
+        now_ts: int, get_balance,
+    ) -> Tuple[bool, any, dict]:
+        """트레이드 제안 생성 — 제안자 선수는 즉시 escrow(보유에서 차감)"""
+        prop_qty = Counter(proposer_pids)   # {pid: qty}
+        recv_qty = Counter(receiver_pids)
+
+        # 사전 검증 (lock 밖)
+        prop_details: List[Tuple[str, str, int]] = []
+        for pid, qty in prop_qty.items():
+            row = await self.get_player(pid)
+            if not row:
+                return False, f"선수를 찾을 수 없습니다: `{pid}`", {}
+            name, retired = row[1], int(row[8])
+            if retired == 1:
+                return False, f"은퇴 선수는 트레이드할 수 없습니다: **{name}**", {}
+            have = await self.get_holding(proposer_id, pid)
+            if have < qty:
+                return False, f"보유 수량 부족: **{name}** (보유 {have} / 필요 {qty})", {}
+            prop_details.append((pid, name, qty))
+
+        recv_details: List[Tuple[str, str, int]] = []
+        for pid, qty in recv_qty.items():
+            row = await self.get_player(pid)
+            if not row:
+                return False, f"선수를 찾을 수 없습니다: `{pid}`", {}
+            name, retired = row[1], int(row[8])
+            if retired == 1:
+                return False, f"은퇴 선수는 트레이드할 수 없습니다: **{name}**", {}
+            recv_details.append((pid, name, qty))
+
+        if proposer_cash > 0:
+            bal = await get_balance(proposer_id)
+            if bal < proposer_cash:
+                return False, f"현금 잔액 부족 (보유 {bal:,} / 필요 {proposer_cash:,})", {}
+
+        expires_at = now_ts + TRADE_EXPIRE
+
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    # 재검증 (lock 안)
+                    for pid, qty in prop_qty.items():
+                        row = con.execute(
+                            "SELECT qty FROM pm_holdings WHERE user_id=? AND player_id=?",
+                            (int(proposer_id), pid),
+                        ).fetchone()
+                        have = int(row[0]) if row else 0
+                        if have < qty:
+                            return None, f"보유 수량이 변경됐습니다. 다시 시도하세요. ({pid})"
+
+                    con.execute("BEGIN IMMEDIATE;")
+                    # 제안자 선수 차감 (escrow)
+                    for pid, qty in prop_qty.items():
+                        con.execute(
+                            "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=?",
+                            (qty, int(proposer_id), pid),
+                        )
+                    # trade 레코드
+                    cur = con.execute(
+                        """
+                        INSERT INTO pm_trades(proposer_id, receiver_id, proposer_cash, receiver_cash,
+                                              status, created_at, expires_at)
+                        VALUES(?, ?, ?, ?, 'pending', ?, ?)
+                        """,
+                        (int(proposer_id), int(receiver_id),
+                         int(proposer_cash), int(receiver_cash), now_ts, expires_at),
+                    )
+                    tid = cur.lastrowid
+                    for pid, qty in prop_qty.items():
+                        con.execute(
+                            "INSERT INTO pm_trade_items(trade_id, side, player_id, qty) VALUES(?, 'proposer', ?, ?)",
+                            (tid, pid, qty),
+                        )
+                    for pid, qty in recv_qty.items():
+                        con.execute(
+                            "INSERT INTO pm_trade_items(trade_id, side, player_id, qty) VALUES(?, 'receiver', ?, ?)",
+                            (tid, pid, qty),
+                        )
+                    con.commit()
+                    return tid, None
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            tid, err = await self._run(work)
+
+        if err:
+            return False, err, {}
+        details = {"proposer_items": prop_details, "receiver_items": recv_details}
+        return True, tid, details
+
+    async def accept_trade(
+        self, *, trade_id: int, receiver_id: int, now_ts: int, get_balance, add_balance
+    ) -> Tuple[bool, str]:
+        """트레이드 수락 — 선수 교환 + 현금 처리"""
+        # 정보 조회 (lock 밖)
+        async with self._lock:
+            def get_info():
+                con = self._connect()
+                try:
+                    trade = con.execute(
+                        "SELECT proposer_id, receiver_id, proposer_cash, receiver_cash, status, expires_at FROM pm_trades WHERE trade_id=?",
+                        (int(trade_id),),
+                    ).fetchone()
+                    if not trade:
+                        return None, None
+                    items = con.execute(
+                        "SELECT side, player_id, qty FROM pm_trade_items WHERE trade_id=?",
+                        (int(trade_id),),
+                    ).fetchall()
+                    return trade, items
+                finally:
+                    con.close()
+            trade, items = await self._run(get_info)
+
+        if not trade:
+            return False, "트레이드를 찾을 수 없습니다."
+
+        proposer_id, r_id, prop_cash, recv_cash, status, expires_at = trade
+        if int(r_id) != int(receiver_id):
+            return False, "본인의 트레이드만 수락할 수 있습니다."
+        if status != "pending":
+            return False, "이미 처리된 트레이드입니다."
+        if now_ts > int(expires_at):
+            return False, "만료된 트레이드입니다."
+
+        proposer_items = [(pid, qty) for side, pid, qty in items if side == "proposer"]
+        receiver_items = [(pid, qty) for side, pid, qty in items if side == "receiver"]
+
+        # 현금 검증
+        if int(prop_cash) > 0:
+            bal = await get_balance(proposer_id)
+            if bal < int(prop_cash):
+                return False, f"제안자의 현금이 부족합니다. (필요 {int(prop_cash):,} / 보유 {bal:,})"
+        if int(recv_cash) > 0:
+            bal = await get_balance(receiver_id)
+            if bal < int(recv_cash):
+                return False, f"현금이 부족합니다. (필요 {int(recv_cash):,} / 보유 {bal:,})"
+
+        # 실행 (lock 안)
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    # 상태 재확인
+                    s = con.execute("SELECT status FROM pm_trades WHERE trade_id=?", (int(trade_id),)).fetchone()
+                    if not s or s[0] != "pending":
+                        return None, "이미 처리된 트레이드입니다."
+
+                    # 수신자 보유 검증
+                    for pid, qty in receiver_items:
+                        row = con.execute(
+                            "SELECT qty FROM pm_holdings WHERE user_id=? AND player_id=?",
+                            (int(receiver_id), pid),
+                        ).fetchone()
+                        have = int(row[0]) if row else 0
+                        if have < qty:
+                            nr = con.execute("SELECT name FROM pm_players WHERE player_id=?", (pid,)).fetchone()
+                            name = nr[0] if nr else pid
+                            return None, f"보유 수량 부족: **{name}** (보유 {have} / 필요 {qty})"
+
+                    con.execute("BEGIN IMMEDIATE;")
+                    # 수신자 선수 차감
+                    for pid, qty in receiver_items:
+                        con.execute(
+                            "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=?",
+                            (qty, int(receiver_id), pid),
+                        )
+                    # 제안자 escrow 선수 → 수신자
+                    for pid, qty in proposer_items:
+                        con.execute(
+                            "INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(?, ?, ?) ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty",
+                            (int(receiver_id), pid, qty),
+                        )
+                    # 수신자 선수 → 제안자
+                    for pid, qty in receiver_items:
+                        con.execute(
+                            "INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(?, ?, ?) ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty",
+                            (int(proposer_id), pid, qty),
+                        )
+                    con.execute("UPDATE pm_trades SET status='accepted' WHERE trade_id=?", (int(trade_id),))
+                    con.commit()
+                    return True, None
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            ok_r, err = await self._run(work)
+
+        if err or not ok_r:
+            return False, err or "처리 중 오류가 발생했습니다."
+
+        # 현금 이동
+        if int(prop_cash) > 0:
+            await add_balance(proposer_id, -int(prop_cash))
+            await add_balance(receiver_id, int(prop_cash))
+        if int(recv_cash) > 0:
+            await add_balance(receiver_id, -int(recv_cash))
+            await add_balance(proposer_id, int(recv_cash))
+
+        return True, "✅ 트레이드 체결 완료! 선수들이 교환됐습니다."
+
+    async def reject_trade(self, *, trade_id: int, receiver_id: int) -> Tuple[bool, str]:
+        """트레이드 거절 — 제안자 선수 반환"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    trade = con.execute(
+                        "SELECT proposer_id, receiver_id, status FROM pm_trades WHERE trade_id=?",
+                        (int(trade_id),),
+                    ).fetchone()
+                    if not trade:
+                        return False, "트레이드를 찾을 수 없습니다."
+                    proposer_id, r_id, status = trade
+                    if int(r_id) != int(receiver_id):
+                        return False, "본인의 트레이드만 거절할 수 있습니다."
+                    if status != "pending":
+                        return False, "이미 처리된 트레이드입니다."
+
+                    items = con.execute(
+                        "SELECT player_id, qty FROM pm_trade_items WHERE trade_id=? AND side='proposer'",
+                        (int(trade_id),),
+                    ).fetchall()
+                    con.execute("BEGIN IMMEDIATE;")
+                    for pid, qty in items:
+                        con.execute(
+                            "INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(?, ?, ?) ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty",
+                            (int(proposer_id), pid, int(qty)),
+                        )
+                    con.execute("UPDATE pm_trades SET status='rejected' WHERE trade_id=?", (int(trade_id),))
+                    con.commit()
+                    return True, "트레이드가 거절됐습니다. 제안자에게 선수들이 반환됩니다."
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def cancel_trade(self, *, trade_id: int, proposer_id: int) -> Tuple[bool, str]:
+        """트레이드 취소 — 제안자 선수 반환"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    trade = con.execute(
+                        "SELECT proposer_id, status FROM pm_trades WHERE trade_id=?",
+                        (int(trade_id),),
+                    ).fetchone()
+                    if not trade:
+                        return False, "트레이드를 찾을 수 없습니다."
+                    p_id, status = trade
+                    if int(p_id) != int(proposer_id):
+                        return False, "본인이 제안한 트레이드만 취소할 수 있습니다."
+                    if status != "pending":
+                        return False, "이미 처리된 트레이드입니다."
+
+                    items = con.execute(
+                        "SELECT player_id, qty FROM pm_trade_items WHERE trade_id=? AND side='proposer'",
+                        (int(trade_id),),
+                    ).fetchall()
+                    con.execute("BEGIN IMMEDIATE;")
+                    for pid, qty in items:
+                        con.execute(
+                            "INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(?, ?, ?) ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty",
+                            (int(p_id), pid, int(qty)),
+                        )
+                    con.execute("UPDATE pm_trades SET status='cancelled' WHERE trade_id=?", (int(trade_id),))
+                    con.commit()
+                    return True, "✅ 트레이드 취소 완료. 선수들이 보유 목록으로 반환됩니다."
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def get_my_pending_trades(self, user_id: int) -> List:
+        """대기 중인 트레이드 목록 (제안자 or 수신자)"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    return con.execute(
+                        """
+                        SELECT trade_id, proposer_id, receiver_id, proposer_cash, receiver_cash, expires_at
+                        FROM pm_trades
+                        WHERE (proposer_id=? OR receiver_id=?) AND status='pending'
+                        ORDER BY created_at DESC
+                        """,
+                        (int(user_id), int(user_id)),
+                    ).fetchall()
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def expire_trades(self, now_ts: int) -> int:
+        """만료된 트레이드 처리 — 제안자 선수 자동 반환"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    rows = con.execute(
+                        "SELECT trade_id, proposer_id FROM pm_trades WHERE status='pending' AND expires_at <= ?",
+                        (int(now_ts),),
+                    ).fetchall()
+                    if not rows:
+                        return 0
+
+                    con.execute("BEGIN IMMEDIATE;")
+                    for tid, proposer_id in rows:
+                        items = con.execute(
+                            "SELECT player_id, qty FROM pm_trade_items WHERE trade_id=? AND side='proposer'",
+                            (int(tid),),
+                        ).fetchall()
+                        for pid, qty in items:
+                            con.execute(
+                                "INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(?, ?, ?) ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty",
+                                (int(proposer_id), pid, int(qty)),
+                            )
+                        con.execute("UPDATE pm_trades SET status='expired' WHERE trade_id=?", (int(tid),))
+                    con.commit()
+                    return len(rows)
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            return await self._run(work)
 
     async def expire_listings(self, now_ts: int) -> int:
         """만료된 매물 처리 (선수 자동 반환)"""
