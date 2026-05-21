@@ -42,7 +42,7 @@ class Economy(commands.Cog):
             "name": "지구력 훈련",
             "emoji": "🏃",
             "success_rate": 0.80,
-            "win": (1500, 7500),
+            "win": (2500, 12000),
             "lose": (-3500, -1000),
             "success_text": "호흡이 안정적으로 잡혔습니다.",
             "fail_text": "무리해서 컨디션이 떨어졌습니다.",
@@ -51,7 +51,7 @@ class Economy(commands.Cog):
             "name": "드리블 훈련",
             "emoji": "🧠",
             "success_rate": 0.80,
-            "win": (1500, 7500),
+            "win": (2500, 12000),
             "lose": (-3500, -1000),
             "success_text": "수비를 깔끔하게 벗겨냈습니다.",
             "fail_text": "볼을 빼앗겼습니다.",
@@ -60,7 +60,7 @@ class Economy(commands.Cog):
             "name": "페널티킥 훈련",
             "emoji": "🥅",
             "success_rate": 2/3,
-            "win": (3000, 10000),
+            "win": (5000, 15000),
             "lose": (-5000, -2000),
             "success_text": "연습이지만 아주 깔끔한 골입니다.",
             "fail_text": "골키퍼가 읽었습니다.",
@@ -69,7 +69,7 @@ class Economy(commands.Cog):
             "name": "야구 타격 훈련",
             "emoji": "⚾",
             "success_rate": 2/3,
-            "win": (3000, 10000),
+            "win": (5000, 15000),
             "lose": (-5000, -2000),
             "success_text": "정타! 타이밍이 맞았습니다.",
             "fail_text": "헛스윙… 타이밍이 늦었습니다.",
@@ -78,7 +78,7 @@ class Economy(commands.Cog):
             "name": "프리킥 훈련",
             "emoji": "🎯",
             "success_rate": 0.40,
-            "win": (5000, 13500),
+            "win": (8000, 20000),
             "lose": (-7500, -3000),
             "success_text": "환상적인 궤적입니다.",
             "fail_text": "벽에 걸렸습니다.",
@@ -87,7 +87,7 @@ class Economy(commands.Cog):
             "name": "자유투 훈련",
             "emoji": "🏀",
             "success_rate": 2/3,
-            "win": (3000, 10000),
+            "win": (5000, 15000),
             "lose": (-5000, -2000),
             "success_text": "클린! 림에도 안걸렸습니다.",
             "fail_text": "백보드에 맞고 튕겨져 나옵니다.",
@@ -96,7 +96,7 @@ class Economy(commands.Cog):
             "name": "샌드백 훈련",
             "emoji": "🥊",
             "success_rate": 0.75,
-            "win": (2000, 8000),
+            "win": (3000, 12000),
             "lose": (-4000, -1500),
             "success_text": "묵직한 타격감! 폼이 완벽합니다.",
             "fail_text": "타이밍이 어긋나 손목을 삐끗했습니다.",
@@ -105,7 +105,7 @@ class Economy(commands.Cog):
             "name": "스파이크 훈련",
             "emoji": "🏐",
             "success_rate": 2/3,
-            "win": (3000, 10000),
+            "win": (5000, 15000),
             "lose": (-5000, -2000),
             "success_text": "인! 깔끔한 스파이크!",
             "fail_text": "아웃! 실력이 그게 뭔가요?",
@@ -128,7 +128,7 @@ class Economy(commands.Cog):
     async def daily(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        reward = 10000
+        reward = 30000
         now_ts = int(time.time())
 
         try:
