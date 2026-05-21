@@ -240,7 +240,7 @@ class PlayersMarket(commands.Cog):
         await interaction.followup.send(embed=_embed("📌 선수 정보", desc, interaction.user), ephemeral=True)
 
     # ───────────────── 보유 ─────────────────
-    @app_commands.command(name="보유", description="내가 보유한 선수 목록을 봅니다.")
+    @app_commands.command(name="내선수", description="내가 보유한 선수 목록을 봅니다.")
     @app_commands.describe(페이지="페이지 번호 (기본 1, 페이지당 20명)")
     async def holdings(self, interaction: discord.Interaction, 페이지: int = 1):
         try:
