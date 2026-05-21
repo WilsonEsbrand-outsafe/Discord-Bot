@@ -282,22 +282,6 @@ class PlayersMarket(commands.Cog):
             return
 
     # ───────────────── 거래 ─────────────────
-    @app_commands.command(name="시장구매", description="시스템 시장가로 선수를 직접 구매합니다. (시장 오픈 시간만)")
-    @app_commands.describe(player_id="선수 이름 또는 ID", qty="수량")
-    @app_commands.autocomplete(player_id=active_player_autocomplete)
-    async def buy(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
-        await interaction.response.defer(ephemeral=True)
-        now = int(time.time())
-        ok, msg = await self.pm.buy_from_market(
-            user_id=interaction.user.id,
-            player_id=player_id,
-            qty=qty,
-            now_ts=now,
-            get_balance=self.money.get_balance,
-            add_balance=self.money.add_balance,
-        )
-        await interaction.followup.send(msg, ephemeral=True)
-
     @app_commands.command(name="판매", description="선수를 이적시장에 등록합니다. (12h 후 즉시판매 가능 / 72h 후 자동 만료)")
     @app_commands.describe(player_id="등록할 선수", 가격="1장당 희망 가격(원)", 수량="등록 수량")
     @app_commands.autocomplete(player_id=holding_player_autocomplete)
