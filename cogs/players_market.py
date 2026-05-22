@@ -19,6 +19,19 @@ matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 
 from services.economy_db import EconomyDB
 from services.player_market_db import PlayerMarketDB, PACKS
 
+_PRICE_LABELS = ["🔴 대박", "🟠 이득", "🟡 본전", "🟢 손해", "⚪ 폭망"]
+
+def _price_label(player_price: int, pack_price: int) -> str:
+    """현재가 / 팩 단가 비율로 결과 등급 라벨 반환."""
+    if pack_price <= 0:
+        return "⚪ 폭망"
+    ratio = player_price / pack_price
+    if ratio >= 5:   return "🔴 대박"
+    if ratio >= 2:   return "🟠 이득"
+    if ratio >= 0.8: return "🟡 본전"
+    if ratio >= 0.3: return "🟢 손해"
+    return "⚪ 폭망"
+
 def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
     e = discord.Embed(title=title, description=desc, color=0x2ecc71)
     e.set_author(name=user.display_name, icon_url=user.display_avatar.url)
@@ -324,26 +337,28 @@ class PlayersMarket(commands.Cog):
         if not ok or not results:
             return await interaction.followup.send(embed=_embed("❌ 선수팩", msg, interaction.user))
 
-        grade_cnt = {"S": 0, "A": 0, "B": 0, "C": 0, "D": 0}
+        pack_price_per = PACKS[종류]["price"]
+        label_cnt = {k: 0 for k in _PRICE_LABELS}
         lines = []
         total_value = 0
 
-        for pid, g in results:
-            grade_cnt[g] = grade_cnt.get(g, 0) + 1
+        for pid, pull_price in results:
+            label = _price_label(pull_price, pack_price_per)
+            label_cnt[label] += 1
             row = await self.pm.get_player(pid)
             if not row:
-                lines.append(f"• `{pid}` / POT {g}")
+                lines.append(f"• {label} `{pid}`")
                 continue
             (_, name, nation, pos, age, ovr, potg, basev, retired, price, *_rest) = row
             total_value += int(price)
-            lines.append(f"• `{pid}` {name} ({nation}) {pos} / OVR {ovr} / POT {g} / {int(price):,}원")
+            lines.append(f"• {label} `{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{int(price):,}원**")
 
         bal = await self.money.get_balance(interaction.user.id)
-        price = PACKS[종류]["price"]
+        grade_summary = " / ".join(f"{k} {v}" for k, v in label_cnt.items() if v > 0)
         summary = (
             f"{msg}\n"
-            f"팩 단가: **{price:,}원** / 현재 잔액: **{bal:,}원**\n"
-            f"등급: S {grade_cnt['S']} / A {grade_cnt['A']} / B {grade_cnt['B']} / C {grade_cnt['C']} / D {grade_cnt['D']}\n"
+            f"팩 단가: **{pack_price_per:,}원** / 현재 잔액: **{bal:,}원**\n"
+            f"{grade_summary}\n"
             f"획득 현재가 합: **{total_value:,}원**\n\n"
             f"획득 목록(최대 10개 표시):\n" + "\n".join(lines[:10])
         )
@@ -422,30 +437,30 @@ class PlayersMarket(commands.Cog):
         await interaction.followup.send(embed=e, file=file)
 
     # ───────────────── 팩 정보 ─────────────────
-    @app_commands.command(name="팩정보", description="팩 종류별 가격과 등급 확률을 확인합니다.")
+    @app_commands.command(name="팩정보", description="팩 종류별 가격과 뽑기 분포를 확인합니다.")
     async def pack_info(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        grade_emoji = {"S": "🔴", "A": "🟠", "B": "🟡", "C": "🟢", "D": "⚪"}
-        pack_emoji  = {"브론즈": "🥉", "실버": "🥈", "골드": "🥇", "플래티넘": "💎", "아이콘": "👑"}
+        pack_emoji = {"브론즈": "🥉", "실버": "🥈", "골드": "🥇", "플래티넘": "💎", "아이콘": "👑"}
 
         embed = discord.Embed(
             title="🎁 팩 정보",
-            description="각 팩의 가격과 등급별 확률입니다.\nS등급이 가장 높고 D등급이 가장 낮습니다.",
+            description=(
+                "팩 가격 = 뽑기 분포의 중심\n"
+                "**팩 단가와 비슷한 선수**가 가장 많이 나오고,\n"
+                "비싼 선수일수록 확률이 급격히 낮아집니다.\n\n"
+                "🔴 대박 `≥ 5배` · 🟠 이득 `≥ 2배` · 🟡 본전 `≥ 0.8배`\n"
+                "🟢 손해 `≥ 0.3배` · ⚪ 폭망 `< 0.3배`"
+            ),
             color=0x2ecc71,
         )
 
         for pack_name, pack_data in PACKS.items():
             price = pack_data["price"]
-            weights = pack_data["weights"]
-            prob_text = "  ".join(
-                f"{grade_emoji.get(g, g)}`{g}` {w * 100:.1f}%"
-                for g, w in weights
-            )
             icon = pack_emoji.get(pack_name, "🎁")
             embed.add_field(
                 name=f"{icon} {pack_name}팩  |  {price:,}원 / 장",
-                value=prob_text,
+                value=f"중심가 **{price:,}원** 근처 선수가 가장 많이 출현",
                 inline=False,
             )
 

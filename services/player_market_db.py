@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 import sqlite3
 import time
@@ -111,28 +112,28 @@ AMATEUR_SQUAD: list[dict] = [
 
 # ───────────── 팩 5종(가격/확률) ─────────────
 PACKS = {
-    "브론즈": {
-        "price": 30000,
-        "weights": [("S", 0.001), ("A", 0.009), ("B", 0.09), ("C", 0.50), ("D", 0.40)],
-    },
-    "실버": {
-        "price": 80000,
-        "weights": [("S", 0.005), ("A", 0.045), ("B", 0.25), ("C", 0.50), ("D", 0.20)],
-    },
-    "골드": {
-        "price": 200000,
-        "weights": [("S", 0.015), ("A", 0.135), ("B", 0.45), ("C", 0.35), ("D", 0.05)],
-    },
-    "플래티넘": {
-        "price": 400000,
-        "weights": [("S", 0.07), ("A", 0.23), ("B", 0.50), ("C", 0.20), ("D", 0.00)],
-    },
-    "아이콘": {
-        "price": 800000,
-        "weights": [("S", 0.15), ("A", 0.35), ("B", 0.40), ("C", 0.10), ("D", 0.00)],
-    },
+    "브론즈":   {"price":  30_000},
+    "실버":     {"price":  80_000},
+    "골드":     {"price": 200_000},
+    "플래티넘": {"price": 400_000},
+    "아이콘":   {"price": 800_000},
 }
 PACK_MAX_PULLS = 10
+
+def _pack_weight(player_price: int, pack_price: int) -> float:
+    """팩 가격 기준 비대칭 가우시안 가중치.
+    - peak  : player_price == pack_price → 1.0
+    - 싼 쪽 : 완만한 감소  (sigma = pack_price × 0.6)
+    - 비싼 쪽: 급격한 감소  (sigma = pack_price × 0.3, ceiling = 0.1)
+    """
+    p = max(1.0, float(player_price))
+    P = max(1.0, float(pack_price))
+    if p <= P:
+        sigma = P * 0.6
+        return math.exp(-0.5 * ((P - p) / sigma) ** 2)
+    else:
+        sigma = P * 0.3
+        return 0.1 * math.exp(-0.5 * ((p - P) / sigma) ** 2)
 
 # ───────────── 국적 풀(가중치) ─────────────
 # 숫자는 상대 비율(총합 1.0 필요 없음)
@@ -1000,71 +1001,48 @@ class PlayerMarketDB:
             return False, "존재하지 않는 팩입니다. (브론즈/실버/골드/플래티넘/아이콘)", None
 
         pack = PACKS[pack_type]
-        price = int(pack["price"])
-        total_cost = price * pulls
+        pack_price = int(pack["price"])
+        total_cost = pack_price * pulls
 
         bal = await get_balance(user_id)
         if bal < total_cost:
             return False, f"잔액이 부족합니다. 필요: {total_cost:,} / 보유: {bal:,}", None
 
-        # 선차감(실패 거의 없음. active 풀 비면 환불)
+        # 선차감 (풀 비면 환불)
         await add_balance(user_id, -total_cost)
-
-        order = ["S", "A", "B", "C", "D"]
 
         async with self._lock:
             def work():
                 con = self._connect()
                 try:
+                    # 아마추어 더미 제외, 현재 시장가 기준 풀 조회
                     rows = con.execute(
-                        "SELECT player_id, pot_grade FROM pm_players WHERE retired=0"
+                        """
+                        SELECT p.player_id, COALESCE(m.price, p.base_value)
+                        FROM pm_players p
+                        LEFT JOIN pm_market m ON m.player_id = p.player_id
+                        WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                        """
                     ).fetchall()
 
-                    grade_map: Dict[str, List[str]] = {"S": [], "A": [], "B": [], "C": [], "D": []}
-                    for pid, g in rows:
-                        g = str(g)
-                        if g in grade_map:
-                            grade_map[g].append(str(pid))
-
-                    if sum(len(v) for v in grade_map.values()) == 0:
+                    if not rows:
                         return ("EMPTY", [])
 
-                    def pick_grade() -> str:
-                        r = random.random()
-                        acc = 0.0
-                        for g, w in pack["weights"]:
-                            acc += float(w)
-                            if r <= acc:
-                                return str(g)
-                        return "D"
+                    # 팩 가격 기준 비대칭 가우시안 가중치 부여
+                    players = [(str(r[0]), int(r[1])) for r in rows]
+                    weights = [_pack_weight(pp, pack_price) for _, pp in players]
 
-                    results: List[Tuple[str, str]] = []
+                    results: List[Tuple[str, int]] = []
                     for _ in range(pulls):
-                        want = pick_grade()
-                        start = order.index(want) if want in order else 4
-                        chosen = None
-                        for gg in order[start:]:
-                            if grade_map[gg]:
-                                chosen = (random.choice(grade_map[gg]), gg)
-                                break
-                        if chosen is None:
-                            any_player_id = random.choice([pid for lst in grade_map.values() for pid in lst])
-                            actual_grade = "D"
-                            for grade, pids in grade_map.items():
-                                if any_player_id in pids:
-                                    actual_grade = grade
-                                    break
-                            chosen = (any_player_id, actual_grade)
-                        results.append(chosen)
-
-                    for pid, _g in results:
+                        chosen_pid, chosen_price = random.choices(players, weights=weights, k=1)[0]
+                        results.append((chosen_pid, chosen_price))
                         con.execute(
                             """
                             INSERT INTO pm_holdings(user_id, player_id, qty)
                             VALUES(?, ?, 1)
                             ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+1
                             """,
-                            (int(user_id), str(pid)),
+                            (int(user_id), str(chosen_pid)),
                         )
 
                     con.commit()
