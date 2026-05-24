@@ -112,11 +112,12 @@ AMATEUR_SQUAD: list[dict] = [
 
 # ───────────── 팩 5종(가격/확률) ─────────────
 PACKS = {
-    "브론즈":   {"price":  30_000},
-    "실버":     {"price":  80_000},
-    "골드":     {"price": 200_000},
-    "플래티넘": {"price": 400_000},
-    "아이콘":   {"price": 800_000},
+    # rank_from/rank_to: 현재가 기준 내림차순 랭킹 범위 (1 = 가장 비싼 선수)
+    "브론즈":   {"price":  30_000, "rank_from": 101, "rank_to": 300},
+    "실버":     {"price":  80_000, "rank_from":  61, "rank_to": 200},
+    "골드":     {"price": 200_000, "rank_from":  31, "rank_to": 120},
+    "플래티넘": {"price": 400_000, "rank_from":  11, "rank_to":  60},
+    "아이콘":   {"price": 800_000, "rank_from":   1, "rank_to":  30},
 }
 PACK_MAX_PULLS = 10
 
@@ -1011,21 +1012,29 @@ class PlayerMarketDB:
             def work():
                 con = self._connect()
                 try:
-                    # 아마추어 더미 제외, 현재 시장가 기준 풀 조회
+                    # 아마추어 더미 제외, 현재 시장가 기준 전체 풀 조회 후 가격 내림차순 정렬
                     rows = con.execute(
                         """
                         SELECT p.player_id, COALESCE(m.price, p.base_value)
                         FROM pm_players p
                         LEFT JOIN pm_market m ON m.player_id = p.player_id
                         WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                        ORDER BY COALESCE(m.price, p.base_value) DESC
                         """
                     ).fetchall()
 
                     if not rows:
                         return ("EMPTY", [])
 
+                    # TOP PRICE 범위 슬라이싱 (rank_from~rank_to, 1-indexed)
+                    rank_from = int(pack.get("rank_from", 1))
+                    rank_to   = int(pack.get("rank_to", len(rows)))
+                    pool = rows[rank_from - 1 : rank_to]
+                    if not pool:
+                        pool = rows  # 풀이 비면 전체 폴백
+
                     # 팩 가격 기준 비대칭 가우시안 가중치 부여
-                    players = [(str(r[0]), int(r[1])) for r in rows]
+                    players = [(str(r[0]), int(r[1])) for r in pool]
                     weights = [_pack_weight(pp, pack_price) for _, pp in players]
 
                     results: List[Tuple[str, int]] = []
