@@ -993,10 +993,6 @@ class PlayerMarketDB:
         pack_type = (pack_type or "").strip()
         pulls = max(1, min(PACK_MAX_PULLS, int(pulls)))
 
-        if not self._is_market_open(now_ts):
-            st = await self.market_status(now_ts)
-            return False, f"지금은 시장이 닫혀 있습니다. 팩 구매는 시장 오픈 시간(09:00~23:00 KST)에만 가능합니다. (다음 변경: <t:{st.next_change_ts}:f>)", None
-
         if pack_type not in PACKS:
             return False, "존재하지 않는 팩입니다. (브론즈/실버/골드/플래티넘/아이콘)", None
 
