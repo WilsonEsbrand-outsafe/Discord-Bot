@@ -589,7 +589,7 @@ class PlayerMarketDB:
         # ── OVR 지수 곡선 (OVR 55 기준 50k, 10 오를 때마다 ~2배)
         # OVR 65→~200k / 75→~800k / 85→~3M / 90→~7M / 95→~20M
         ovr_f = max(0, ovr - 55)
-        core = int(22_000 * (1.15 ** ovr_f))
+        core = int(22_000 * (1.20 ** ovr_f))
 
         # ── 잠재 프리미엄 (어릴수록, 갭 클수록 가중치 큼)
         gap = max(0, pot - ovr)
