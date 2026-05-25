@@ -130,11 +130,11 @@ def _pack_weight(player_price: int, pack_price: int) -> float:
     p = max(1.0, float(player_price))
     P = max(1.0, float(pack_price))
     if p <= P:
-        sigma = P * 0.6
+        sigma = P * 0.35  # 좁게 → 팩 가격 아래 선수 확률 급감
         return math.exp(-0.5 * ((P - p) / sigma) ** 2)
     else:
-        sigma = P * 0.3
-        return 0.1 * math.exp(-0.5 * ((p - P) / sigma) ** 2)
+        sigma = P * 0.25  # 비싼 쪽도 급감
+        return 0.08 * math.exp(-0.5 * ((p - P) / sigma) ** 2)
 
 # ───────────── 국적 풀(가중치) ─────────────
 # 숫자는 상대 비율(총합 1.0 필요 없음)
