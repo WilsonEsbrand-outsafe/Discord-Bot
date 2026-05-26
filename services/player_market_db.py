@@ -124,17 +124,17 @@ PACK_MAX_PULLS = 10
 def _pack_weight(player_price: int, pack_price: int) -> float:
     """팩 가격 기준 비대칭 가우시안 가중치.
     - peak  : player_price == pack_price → 1.0
-    - 싼 쪽 : 완만한 감소  (sigma = pack_price × 0.6)
-    - 비싼 쪽: 급격한 감소  (sigma = pack_price × 0.3, ceiling = 0.1)
+    - 싼 쪽 : sigma = pack_price × 0.35  (팩 가격 아래 선수 확률 급감)
+    - 비싼 쪽: sigma = pack_price × 0.45, ceiling = 0.30  (이득 가능성 확보)
     """
     p = max(1.0, float(player_price))
     P = max(1.0, float(pack_price))
     if p <= P:
-        sigma = P * 0.35  # 좁게 → 팩 가격 아래 선수 확률 급감
+        sigma = P * 0.35  # 싼 선수는 확률 급감
         return math.exp(-0.5 * ((P - p) / sigma) ** 2)
     else:
-        sigma = P * 0.25  # 비싼 쪽도 급감
-        return 0.08 * math.exp(-0.5 * ((p - P) / sigma) ** 2)
+        sigma = P * 0.55  # 비싼 선수 분포 넓게
+        return 0.80 * math.exp(-0.5 * ((p - P) / sigma) ** 2)
 
 # ───────────── 국적 풀(가중치) ─────────────
 # 숫자는 상대 비율(총합 1.0 필요 없음)
