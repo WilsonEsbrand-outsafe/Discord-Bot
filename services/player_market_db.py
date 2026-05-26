@@ -1662,7 +1662,7 @@ class PlayerMarketDB:
 
     async def direct_instant_sell(
         self, *, user_id: int, player_id: str, qty: int, now_ts: int, add_balance
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, int]:  # (ok, msg, payout)
         """보유 선수 즉시 매각 (매물 등록·대기 없음).
         시장 시간 무관, 항상 기준가 × 50% 지급.
         아마추어 선수 및 은퇴 선수는 불가.
@@ -1721,16 +1721,13 @@ class PlayerMarketDB:
             result, err = await self._run(work)
 
         if err:
-            return False, err
+            return False, err, 0
 
         name, base_value, payout, fee_amt = result
         await add_balance(user_id, payout)
         return True, (
-            f"✅ 즉시 매각: **{name}** x{qty}\n"
-            f"기준가: **{base_value:,}원** × 50% × {qty}장\n"
-            f"수수료(50%): **{fee_amt:,}원**\n"
-            f"실수령: **{payout:,}원**"
-        )
+            f"✅ **{name}** x{qty} — 기준가 {base_value:,}원 × 50% → **{payout:,}원**"
+        ), payout
 
     # ───────────────── 트레이드 ─────────────────
 

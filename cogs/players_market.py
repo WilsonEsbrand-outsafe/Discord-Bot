@@ -606,24 +606,67 @@ class PlayersMarket(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="즉시판매", description="보유 선수를 기준가의 50%에 즉시 매각합니다. 시장 시간 무관, 매물 등록 불필요.")
-    @app_commands.describe(player_id="판매할 선수", qty="수량")
-    @app_commands.autocomplete(player_id=holding_player_autocomplete)
-    async def quick_sell(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
+    @app_commands.command(name="즉시판매", description="보유 선수를 기준가의 50%에 즉시 매각합니다. 최대 5명 동시 판매 가능.")
+    @app_commands.describe(
+        선수1="판매할 선수 1",
+        선수2="판매할 선수 2 (선택)",
+        선수3="판매할 선수 3 (선택)",
+        선수4="판매할 선수 4 (선택)",
+        선수5="판매할 선수 5 (선택)",
+    )
+    @app_commands.autocomplete(
+        선수1=holding_player_autocomplete,
+        선수2=holding_player_autocomplete,
+        선수3=holding_player_autocomplete,
+        선수4=holding_player_autocomplete,
+        선수5=holding_player_autocomplete,
+    )
+    async def quick_sell(
+        self,
+        interaction: discord.Interaction,
+        선수1: str,
+        선수2: str = "",
+        선수3: str = "",
+        선수4: str = "",
+        선수5: str = "",
+    ):
         await interaction.response.defer(ephemeral=True)
         now = int(time.time())
-        ok, msg = await self.pm.direct_instant_sell(
-            user_id=interaction.user.id,
-            player_id=player_id,
-            qty=qty,
-            now_ts=now,
-            add_balance=self.money.add_balance,
-        )
-        if ok:
-            bal = await self.money.get_balance(interaction.user.id)
-            msg += f"\n현재 잔액: **{bal:,}원**"
+
+        pids = [p for p in [선수1, 선수2, 선수3, 선수4, 선수5] if p.strip()]
+        # 중복 제거 (순서 유지)
+        seen, unique_pids = set(), []
+        for p in pids:
+            if p not in seen:
+                seen.add(p)
+                unique_pids.append(p)
+
+        lines = []
+        total_payout = 0
+        any_ok = False
+
+        for pid in unique_pids:
+            ok, msg, payout = await self.pm.direct_instant_sell(
+                user_id=interaction.user.id,
+                player_id=pid,
+                qty=1,
+                now_ts=now,
+                add_balance=self.money.add_balance,
+            )
+            if ok:
+                any_ok = True
+                total_payout += payout
+                lines.append(msg)
+            else:
+                lines.append(f"❌ `{pid}` — {msg}")
+
+        bal = await self.money.get_balance(interaction.user.id)
+        summary = "\n".join(lines)
+        if any_ok:
+            summary += f"\n\n💰 총 실수령: **{total_payout:,}원** | 현재 잔액: **{bal:,}원**"
+
         await interaction.followup.send(
-            embed=_embed("💸 즉시판매 완료" if ok else "❌ 즉시판매 실패", msg, interaction.user),
+            embed=_embed("💸 즉시판매" if any_ok else "❌ 즉시판매 실패", summary, interaction.user),
             ephemeral=True,
         )
 
