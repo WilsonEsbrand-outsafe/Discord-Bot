@@ -606,6 +606,27 @@ class PlayersMarket(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="급전", description="보유 선수를 즉시 매각합니다. 시장 오픈 70% / 시장 외 50%. 매물 등록 불필요.")
+    @app_commands.describe(player_id="매각할 선수", qty="수량")
+    @app_commands.autocomplete(player_id=holding_player_autocomplete)
+    async def quick_sell(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
+        await interaction.response.defer(ephemeral=True)
+        now = int(time.time())
+        ok, msg = await self.pm.direct_instant_sell(
+            user_id=interaction.user.id,
+            player_id=player_id,
+            qty=qty,
+            now_ts=now,
+            add_balance=self.money.add_balance,
+        )
+        if ok:
+            bal = await self.money.get_balance(interaction.user.id)
+            msg += f"\n현재 잔액: **{bal:,}원**"
+        await interaction.followup.send(
+            embed=_embed("💸 급전 매각" if ok else "❌ 매각 실패", msg, interaction.user),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="방출", description="은퇴 선수를 기준가의 30%에 즉시 방출합니다.")
     @app_commands.describe(player_id="방출할 은퇴 선수 ID", qty="수량")
     @app_commands.autocomplete(player_id=retired_holding_autocomplete)

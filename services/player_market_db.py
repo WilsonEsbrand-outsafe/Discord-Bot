@@ -1660,6 +1660,82 @@ class PlayerMarketDB:
             f"실수령: **{payout:,}원**"
         )
 
+    async def direct_instant_sell(
+        self, *, user_id: int, player_id: str, qty: int, now_ts: int, add_balance
+    ) -> Tuple[bool, str]:
+        """보유 선수 즉시 매각 (매물 등록·대기 없음).
+        시장 오픈 중: 기준가 × 70% / 시장 외 시간: 기준가 × 50%
+        아마추어 선수 및 은퇴 선수는 불가.
+        """
+        market_open = self._is_market_open(now_ts)
+        rate = INSTANT_SELL_RATE if market_open else INSTANT_SELL_RATE_OFF
+
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    # 선수 정보
+                    row = con.execute(
+                        "SELECT name, base_value, retired FROM pm_players WHERE player_id=?",
+                        (str(player_id),),
+                    ).fetchone()
+                    if not row:
+                        return None, "선수를 찾을 수 없습니다."
+                    name, base_value, retired = row
+                    if str(player_id).startswith("AMT_"):
+                        return None, "아마추어 선수는 매각할 수 없습니다."
+                    if int(retired) == 1:
+                        return None, "은퇴 선수는 `/방출` 명령어를 사용해 주세요."
+
+                    # 보유 수량 확인
+                    have_row = con.execute(
+                        "SELECT qty FROM pm_holdings WHERE user_id=? AND player_id=?",
+                        (int(user_id), str(player_id)),
+                    ).fetchone()
+                    have = int(have_row[0]) if have_row else 0
+                    if have < qty:
+                        return None, f"보유 수량이 부족합니다. (보유: {have}장 / 요청: {qty}장)"
+
+                    payout  = int(int(base_value) * rate) * qty
+                    fee_amt = int(int(base_value) * (1.0 - rate)) * qty
+
+                    con.execute("BEGIN IMMEDIATE;")
+                    new_qty = have - qty
+                    if new_qty <= 0:
+                        con.execute(
+                            "DELETE FROM pm_holdings WHERE user_id=? AND player_id=?",
+                            (int(user_id), str(player_id)),
+                        )
+                    else:
+                        con.execute(
+                            "UPDATE pm_holdings SET qty=? WHERE user_id=? AND player_id=?",
+                            (new_qty, int(user_id), str(player_id)),
+                        )
+                    con.commit()
+                    return (name, int(base_value), payout, fee_amt), None
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            result, err = await self._run(work)
+
+        if err:
+            return False, err
+
+        name, base_value, payout, fee_amt = result
+        rate_pct = int(rate * 100)
+        fee_pct  = 100 - rate_pct
+        tag = "📈 시장 오픈" if market_open else "🌙 시장 외 시간"
+        await add_balance(user_id, payout)
+        return True, (
+            f"✅ 즉시 매각: **{name}** x{qty}  ({tag})\n"
+            f"기준가: **{base_value:,}원** × {rate_pct}% × {qty}장\n"
+            f"수수료({fee_pct}%): **{fee_amt:,}원**\n"
+            f"실수령: **{payout:,}원**"
+        )
+
     # ───────────────── 트레이드 ─────────────────
 
     async def create_trade(
