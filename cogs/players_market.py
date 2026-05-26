@@ -169,7 +169,9 @@ class QuickSellView(discord.ui.View):
 
     # ── 판매 처리 ──
     async def _do_sell(self, interaction: discord.Interaction, pids: list[str]):
-        total_payout, lines = 0, []
+        total_payout, sold, failed = 0, 0, 0
+        detail_lines = []  # 소량(≤10)일 때만 개별 표시
+
         for pid in pids:
             ok, msg, payout = await self.pm.direct_instant_sell(
                 user_id=self.user.id, player_id=pid, qty=1,
@@ -177,14 +179,29 @@ class QuickSellView(discord.ui.View):
             )
             if ok:
                 total_payout += payout
-                lines.append(msg)
+                sold += 1
+                if len(pids) <= 10:
+                    detail_lines.append(msg)
             else:
-                lines.append(f"❌ {msg}")
+                failed += 1
+                if len(pids) <= 10:
+                    detail_lines.append(f"❌ {msg}")
             self.holdings = [h for h in self.holdings if h[0] != pid]
 
         bal = await self.money.get_balance(self.user.id)
-        result = "\n".join(lines) + f"\n\n💰 총 실수령: **{total_payout:,}원** | 잔액: **{bal:,}원**"
-        await interaction.followup.send(result, ephemeral=True)
+
+        # 결과 메시지 — 대량이면 요약, 소량이면 상세
+        if detail_lines:
+            body = "\n".join(detail_lines)
+        else:
+            body = f"✅ **{sold}명** 판매 완료" + (f"  |  ❌ 실패 {failed}건" if failed else "")
+        body += f"\n\n💰 총 실수령: **{total_payout:,}원** | 잔액: **{bal:,}원**"
+
+        # 2000자 초과 방지
+        if len(body) > 1900:
+            body = f"✅ **{sold}명** 판매 완료\n💰 총 실수령: **{total_payout:,}원** | 잔액: **{bal:,}원**"
+
+        await interaction.followup.send(body, ephemeral=True)
 
         if not self.holdings:
             self.clear_items()
@@ -200,13 +217,13 @@ class QuickSellView(discord.ui.View):
     async def _on_select(self, interaction: discord.Interaction):
         if interaction.user.id != self.user.id:
             return await interaction.response.send_message("본인만 사용할 수 있습니다.", ephemeral=True)
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         await self._do_sell(interaction, interaction.data["values"])
 
     async def _sell_all(self, interaction: discord.Interaction):
         if interaction.user.id != self.user.id:
             return await interaction.response.send_message("본인만 사용할 수 있습니다.", ephemeral=True)
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         await self._do_sell(interaction, [h[0] for h in list(self.holdings)])
 
 
