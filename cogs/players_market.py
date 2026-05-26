@@ -606,7 +606,7 @@ class PlayersMarket(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="급전", description="보유 선수를 즉시 매각합니다. 시장 오픈 70% / 시장 외 50%. 매물 등록 불필요.")
+    @app_commands.command(name="급전", description="보유 선수를 기준가의 50%에 즉시 매각합니다. 시장 시간 무관, 매물 등록 불필요.")
     @app_commands.describe(player_id="매각할 선수", qty="수량")
     @app_commands.autocomplete(player_id=holding_player_autocomplete)
     async def quick_sell(self, interaction: discord.Interaction, player_id: str, qty: int = 1):

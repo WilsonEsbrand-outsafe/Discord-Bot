@@ -1664,11 +1664,10 @@ class PlayerMarketDB:
         self, *, user_id: int, player_id: str, qty: int, now_ts: int, add_balance
     ) -> Tuple[bool, str]:
         """보유 선수 즉시 매각 (매물 등록·대기 없음).
-        시장 오픈 중: 기준가 × 70% / 시장 외 시간: 기준가 × 50%
+        시장 시간 무관, 항상 기준가 × 50% 지급.
         아마추어 선수 및 은퇴 선수는 불가.
         """
-        market_open = self._is_market_open(now_ts)
-        rate = INSTANT_SELL_RATE if market_open else INSTANT_SELL_RATE_OFF
+        rate = INSTANT_SELL_RATE_OFF  # 항상 50%
 
         async with self._lock:
             def work():
@@ -1725,14 +1724,11 @@ class PlayerMarketDB:
             return False, err
 
         name, base_value, payout, fee_amt = result
-        rate_pct = int(rate * 100)
-        fee_pct  = 100 - rate_pct
-        tag = "📈 시장 오픈" if market_open else "🌙 시장 외 시간"
         await add_balance(user_id, payout)
         return True, (
-            f"✅ 즉시 매각: **{name}** x{qty}  ({tag})\n"
-            f"기준가: **{base_value:,}원** × {rate_pct}% × {qty}장\n"
-            f"수수료({fee_pct}%): **{fee_amt:,}원**\n"
+            f"✅ 즉시 매각: **{name}** x{qty}\n"
+            f"기준가: **{base_value:,}원** × 50% × {qty}장\n"
+            f"수수료(50%): **{fee_amt:,}원**\n"
             f"실수령: **{payout:,}원**"
         )
 
