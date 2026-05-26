@@ -562,8 +562,8 @@ class PlayersMarket(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="즉시판매", description="등록 12시간 후 즉시 판매. 시장 오픈 중 70% / 시장 외 시간(급전) 50%.")
-    @app_commands.describe(매물번호="즉시판매할 매물 번호 (/내매물 에서 확인)")
+    @app_commands.command(name="매각", description="등록 매물을 즉시 판매. 시장 오픈 중 70% / 시장 외 시간 50%.")
+    @app_commands.describe(매물번호="매각할 매물 번호 (/내매물 에서 확인)")
     @app_commands.autocomplete(매물번호=my_listing_autocomplete)
     async def instant_sell(self, interaction: discord.Interaction, 매물번호: str):
         await interaction.response.defer(ephemeral=True)
@@ -583,7 +583,7 @@ class PlayersMarket(commands.Cog):
             bal = await self.money.get_balance(interaction.user.id)
             msg += f"\n현재 잔액: **{bal:,}원**"
         await interaction.followup.send(
-            embed=_embed("💸 즉시판매" if ok else "❌ 즉시판매 실패", msg, interaction.user),
+            embed=_embed("💸 매각 완료" if ok else "❌ 매각 실패", msg, interaction.user),
             ephemeral=True,
         )
 
@@ -606,8 +606,8 @@ class PlayersMarket(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="급전", description="보유 선수를 기준가의 50%에 즉시 매각합니다. 시장 시간 무관, 매물 등록 불필요.")
-    @app_commands.describe(player_id="매각할 선수", qty="수량")
+    @app_commands.command(name="즉시판매", description="보유 선수를 기준가의 50%에 즉시 매각합니다. 시장 시간 무관, 매물 등록 불필요.")
+    @app_commands.describe(player_id="판매할 선수", qty="수량")
     @app_commands.autocomplete(player_id=holding_player_autocomplete)
     async def quick_sell(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
         await interaction.response.defer(ephemeral=True)
@@ -623,7 +623,7 @@ class PlayersMarket(commands.Cog):
             bal = await self.money.get_balance(interaction.user.id)
             msg += f"\n현재 잔액: **{bal:,}원**"
         await interaction.followup.send(
-            embed=_embed("💸 급전 매각" if ok else "❌ 매각 실패", msg, interaction.user),
+            embed=_embed("💸 즉시판매 완료" if ok else "❌ 즉시판매 실패", msg, interaction.user),
             ephemeral=True,
         )
 
