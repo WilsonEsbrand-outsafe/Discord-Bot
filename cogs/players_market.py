@@ -26,10 +26,10 @@ def _price_label(player_price: int, pack_price: int) -> str:
     if pack_price <= 0:
         return "⚪ 폭망"
     ratio = player_price / pack_price
-    if ratio >= 5:   return "🔴 대박"
-    if ratio >= 2:   return "🟠 이득"
-    if ratio >= 0.8: return "🟡 본전"
-    if ratio >= 0.3: return "🟢 손해"
+    if ratio >= 3.0: return "🔴 대박"
+    if ratio >= 1.3: return "🟠 이득"
+    if ratio >= 0.9: return "🟡 본전"
+    if ratio >= 0.5: return "🟢 손해"
     return "⚪ 폭망"
 
 def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
