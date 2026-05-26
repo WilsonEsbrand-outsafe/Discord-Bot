@@ -205,14 +205,14 @@ class QuickSellView(discord.ui.View):
 
         if not self.holdings:
             self.clear_items()
-            await interaction.message.edit(
+            await interaction.edit_original_response(
                 embed=discord.Embed(title="💸 즉시판매", description="판매할 선수가 없습니다.", color=0x95a5a6),
                 view=self,
             )
         else:
             self.page = min(self.page, self._total_pages - 1)
             self._rebuild()
-            await interaction.message.edit(embed=self.make_embed(), view=self)
+            await interaction.edit_original_response(embed=self.make_embed(), view=self)
 
     async def _on_select(self, interaction: discord.Interaction):
         if interaction.user.id != self.user.id:
@@ -289,18 +289,19 @@ class PlayersMarket(commands.Cog):
     async def holding_player_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
-        """판매용 — 내가 보유한 활동 선수만 표시"""
+        """판매용 — 내가 보유한 활동 선수 전체에서 검색"""
         try:
-            rows = await self.pm.list_holdings(interaction.user.id, limit=25)
+            rows = await self.pm.list_holdings(interaction.user.id, limit=9999)
+            q = current.lower()
             choices = []
             for pid, name, nation, pos, age, ovr, potg, retired, qty, price in rows:
                 if int(retired) == 1:
                     continue
                 label = f"{name} x{qty} | {pos} OVR{ovr} | {int(price):,}원"
-                if current and current.lower() not in label.lower():
+                if q and q not in name.lower() and q not in pid.lower() and q not in pos.lower():
                     continue
                 choices.append(app_commands.Choice(name=label[:100], value=pid))
-            return choices[:10]
+            return choices[:25]
         except Exception:
             return []
 
@@ -321,18 +322,19 @@ class PlayersMarket(commands.Cog):
     async def retired_holding_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
-        """방출용 — 내가 보유한 은퇴 선수만 표시"""
+        """방출용 — 내가 보유한 은퇴 선수 전체에서 검색"""
         try:
-            rows = await self.pm.list_holdings(interaction.user.id, limit=25)
+            rows = await self.pm.list_holdings(interaction.user.id, limit=9999)
+            q = current.lower()
             choices = []
             for pid, name, nation, pos, age, ovr, potg, retired, qty, price in rows:
                 if int(retired) != 1:
                     continue
                 label = f"(은퇴) {name} x{qty} | {pos} OVR{ovr}"
-                if current and current.lower() not in label.lower():
+                if q and q not in name.lower() and q not in pid.lower():
                     continue
                 choices.append(app_commands.Choice(name=label[:100], value=pid))
-            return choices[:10]
+            return choices[:25]
         except Exception:
             return []
 

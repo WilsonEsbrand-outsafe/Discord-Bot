@@ -123,7 +123,7 @@ class Trade(commands.Cog):
             prefix = ", ".join(parts[:-1])   # 이미 확정된 앞 부분
             last   = parts[-1]               # 현재 입력 중인 마지막 토큰
 
-            rows = await self.pm.list_holdings(interaction.user.id, limit=50)
+            rows = await self.pm.list_holdings(interaction.user.id, limit=9999)
             choices = []
             for pid, name, nation, pos, age, ovr, potg, retired, qty, price in rows:
                 if int(retired) == 1:
