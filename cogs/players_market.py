@@ -37,6 +37,179 @@ def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
     e.set_author(name=user.display_name, icon_url=user.display_avatar.url)
     return e
 
+# ───────────────── 즉시판매 UI ─────────────────
+_SORT_LABELS = [
+    ("💰 가격↓", "price", True),
+    ("📊 OVR↓",  "ovr",   True),
+    ("🏃 포지션", "pos",   False),
+]
+
+class QuickSellView(discord.ui.View):
+    """보유 선수 즉시판매 인터랙티브 UI — 정렬·페이지·복수선택·전체판매 지원"""
+    PAGE_SIZE = 25
+
+    def __init__(self, holdings: list, pm, money, user: discord.abc.User, now_ts: int):
+        super().__init__(timeout=180)
+        # 아마추어·은퇴 제외
+        self.holdings = [
+            h for h in holdings
+            if not str(h[0]).startswith("AMT_") and int(h[7]) == 0
+        ]
+        self.pm = pm
+        self.money = money
+        self.user = user
+        self.now_ts = now_ts
+        self.sort_key = "price"
+        self.sort_desc = True
+        self.page = 0
+        self._rebuild()
+
+    # ── 정렬·페이지 헬퍼 ──
+    def _sorted(self):
+        idx = {"price": 9, "ovr": 5, "pos": 3}[self.sort_key]
+        return sorted(self.holdings, key=lambda x: x[idx], reverse=self.sort_desc)
+
+    @property
+    def _total_pages(self):
+        return max(1, (len(self.holdings) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+
+    def _page_items(self):
+        s = self._sorted()
+        return s[self.page * self.PAGE_SIZE:(self.page + 1) * self.PAGE_SIZE]
+
+    # ── UI 재구성 ──
+    def _rebuild(self):
+        self.clear_items()
+        items = self._page_items()
+        if not items:
+            return
+
+        # Row 0: 선수 다중 선택 드롭다운
+        options = [
+            discord.SelectOption(
+                label=f"{name} x{qty}"[:25],
+                description=f"{pos} OVR{ovr} | {int(price):,}→{int(price)//2:,}원"[:50],
+                value=pid,
+            )
+            for pid, name, nation, pos, age, ovr, potg, retired, qty, price in items
+        ]
+        sel = discord.ui.Select(
+            placeholder="판매할 선수 선택 (복수 선택 가능)",
+            min_values=1, max_values=len(options),
+            options=options, row=0,
+        )
+        sel.callback = self._on_select
+        self.add_item(sel)
+
+        # Row 1: 정렬 버튼
+        for label, key, desc in _SORT_LABELS:
+            active = (self.sort_key == key)
+            btn = discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.primary if active else discord.ButtonStyle.secondary,
+                row=1,
+            )
+            btn.callback = self._make_sort_cb(key, desc)
+            self.add_item(btn)
+
+        # Row 2: 페이지 이동 + 전체 판매
+        if self._total_pages > 1:
+            prev = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary,
+                                     row=2, disabled=self.page == 0)
+            prev.callback = self._prev
+            self.add_item(prev)
+
+            next_ = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary,
+                                      row=2, disabled=self.page >= self._total_pages - 1)
+            next_.callback = self._next
+            self.add_item(next_)
+
+        all_btn = discord.ui.Button(
+            label=f"🗑️ 전체 판매 ({len(self.holdings)}명)",
+            style=discord.ButtonStyle.danger, row=2,
+        )
+        all_btn.callback = self._sell_all
+        self.add_item(all_btn)
+
+    def make_embed(self) -> discord.Embed:
+        items = self._page_items()
+        total_receive = sum(int(h[9]) for h in self.holdings) // 2
+        lines = [
+            f"`{name}` x{qty} | {pos} OVR{ovr} | {int(price):,}원 → **{int(price)//2:,}원**"
+            for pid, name, nation, pos, age, ovr, potg, retired, qty, price in items
+        ]
+        desc = (
+            f"보유 **{len(self.holdings)}명** | 전체 즉판 예상: **{total_receive:,}원**\n"
+            f"페이지 {self.page+1}/{self._total_pages}\n\n"
+            + "\n".join(lines)
+        )
+        return discord.Embed(title="💸 즉시판매", description=desc, color=0xe74c3c)
+
+    # ── 콜백 팩토리 ──
+    def _make_sort_cb(self, key, desc):
+        async def cb(interaction: discord.Interaction):
+            if interaction.user.id != self.user.id:
+                return await interaction.response.send_message("본인만 사용할 수 있습니다.", ephemeral=True)
+            self.sort_key = key; self.sort_desc = desc; self.page = 0
+            self._rebuild()
+            await interaction.response.edit_message(embed=self.make_embed(), view=self)
+        return cb
+
+    async def _prev(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("본인만 사용할 수 있습니다.", ephemeral=True)
+        self.page -= 1; self._rebuild()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("본인만 사용할 수 있습니다.", ephemeral=True)
+        self.page += 1; self._rebuild()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    # ── 판매 처리 ──
+    async def _do_sell(self, interaction: discord.Interaction, pids: list[str]):
+        total_payout, lines = 0, []
+        for pid in pids:
+            ok, msg, payout = await self.pm.direct_instant_sell(
+                user_id=self.user.id, player_id=pid, qty=1,
+                now_ts=self.now_ts, add_balance=self.money.add_balance,
+            )
+            if ok:
+                total_payout += payout
+                lines.append(msg)
+            else:
+                lines.append(f"❌ {msg}")
+            self.holdings = [h for h in self.holdings if h[0] != pid]
+
+        bal = await self.money.get_balance(self.user.id)
+        result = "\n".join(lines) + f"\n\n💰 총 실수령: **{total_payout:,}원** | 잔액: **{bal:,}원**"
+        await interaction.followup.send(result, ephemeral=True)
+
+        if not self.holdings:
+            self.clear_items()
+            await interaction.message.edit(
+                embed=discord.Embed(title="💸 즉시판매", description="판매할 선수가 없습니다.", color=0x95a5a6),
+                view=self,
+            )
+        else:
+            self.page = min(self.page, self._total_pages - 1)
+            self._rebuild()
+            await interaction.message.edit(embed=self.make_embed(), view=self)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("본인만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.defer()
+        await self._do_sell(interaction, interaction.data["values"])
+
+    async def _sell_all(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("본인만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.defer()
+        await self._do_sell(interaction, [h[0] for h in list(self.holdings)])
+
+
 class PlayersMarket(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -606,69 +779,19 @@ class PlayersMarket(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="즉시판매", description="보유 선수를 기준가의 50%에 즉시 매각합니다. 최대 5명 동시 판매 가능.")
-    @app_commands.describe(
-        선수1="판매할 선수 1",
-        선수2="판매할 선수 2 (선택)",
-        선수3="판매할 선수 3 (선택)",
-        선수4="판매할 선수 4 (선택)",
-        선수5="판매할 선수 5 (선택)",
-    )
-    @app_commands.autocomplete(
-        선수1=holding_player_autocomplete,
-        선수2=holding_player_autocomplete,
-        선수3=holding_player_autocomplete,
-        선수4=holding_player_autocomplete,
-        선수5=holding_player_autocomplete,
-    )
-    async def quick_sell(
-        self,
-        interaction: discord.Interaction,
-        선수1: str,
-        선수2: str = "",
-        선수3: str = "",
-        선수4: str = "",
-        선수5: str = "",
-    ):
+    @app_commands.command(name="즉시판매", description="보유 선수를 기준가 50%에 즉시 매각합니다. 정렬·복수선택·전체판매 지원.")
+    async def quick_sell(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        holdings = await self.pm.list_holdings(interaction.user.id, limit=9999)
+        if not holdings:
+            return await interaction.followup.send("보유한 선수가 없습니다.", ephemeral=True)
+
         now = int(time.time())
+        view = QuickSellView(holdings, self.pm, self.money, interaction.user, now)
+        if not view.holdings:
+            return await interaction.followup.send("즉시판매 가능한 선수가 없습니다. (아마추어·은퇴 선수 제외)", ephemeral=True)
 
-        pids = [p for p in [선수1, 선수2, 선수3, 선수4, 선수5] if p.strip()]
-        # 중복 제거 (순서 유지)
-        seen, unique_pids = set(), []
-        for p in pids:
-            if p not in seen:
-                seen.add(p)
-                unique_pids.append(p)
-
-        lines = []
-        total_payout = 0
-        any_ok = False
-
-        for pid in unique_pids:
-            ok, msg, payout = await self.pm.direct_instant_sell(
-                user_id=interaction.user.id,
-                player_id=pid,
-                qty=1,
-                now_ts=now,
-                add_balance=self.money.add_balance,
-            )
-            if ok:
-                any_ok = True
-                total_payout += payout
-                lines.append(msg)
-            else:
-                lines.append(f"❌ `{pid}` — {msg}")
-
-        bal = await self.money.get_balance(interaction.user.id)
-        summary = "\n".join(lines)
-        if any_ok:
-            summary += f"\n\n💰 총 실수령: **{total_payout:,}원** | 현재 잔액: **{bal:,}원**"
-
-        await interaction.followup.send(
-            embed=_embed("💸 즉시판매" if any_ok else "❌ 즉시판매 실패", summary, interaction.user),
-            ephemeral=True,
-        )
+        await interaction.followup.send(embed=view.make_embed(), view=view, ephemeral=True)
 
     @app_commands.command(name="방출", description="은퇴 선수를 기준가의 30%에 즉시 방출합니다.")
     @app_commands.describe(player_id="방출할 은퇴 선수 ID", qty="수량")
