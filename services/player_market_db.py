@@ -30,7 +30,8 @@ SELL_FEE_RATE = 0.05
 LISTING_DURATION    = 72 * 3600   # 72시간 후 만료
 TRADE_EXPIRE        = 86400       # 트레이드 제안 24시간 후 만료
 INSTANT_SELL_DELAY  = 12 * 3600   # 12시간 후 즉시판매 가능
-INSTANT_SELL_RATE   = 0.70        # 즉시판매 수령 비율 (기준가의 70%)
+INSTANT_SELL_RATE     = 0.70      # 즉시판매 수령 비율 — 시장 오픈 중 (기준가의 70%)
+INSTANT_SELL_RATE_OFF = 0.50      # 즉시판매 수령 비율 — 시장 외 시간 급전 (기준가의 50%)
 TRANSFER_FEE_RATE   = 0.05        # 이적시장 거래 수수료 5%
 
 # 시장 변동폭
@@ -1594,7 +1595,12 @@ class PlayerMarketDB:
     async def instant_sell_listing(
         self, *, listing_id: int, seller_id: int, now_ts: int, add_balance
     ) -> Tuple[bool, str]:
-        """즉시판매 — 등록 12시간 후 가능, 기준가 × 70%"""
+        """즉시판매 — 등록 12시간 후 가능.
+        시장 오픈 중: 기준가 × 70% / 시장 외 시간(급전): 기준가 × 50%
+        """
+        market_open = self._is_market_open(now_ts)
+        rate = INSTANT_SELL_RATE if market_open else INSTANT_SELL_RATE_OFF
+
         async with self._lock:
             def work():
                 con = self._connect()
@@ -1621,8 +1627,8 @@ class PlayerMarketDB:
                         m = (rem % 3600) // 60
                         return None, f"아직 즉시판매 가능 시간이 아닙니다.\n남은 시간: **{h}시간 {m}분**"
 
-                    payout  = int(int(base_value) * INSTANT_SELL_RATE) * int(qty)
-                    fee_amt = int(int(base_value) * (1.0 - INSTANT_SELL_RATE)) * int(qty)
+                    payout  = int(int(base_value) * rate) * int(qty)
+                    fee_amt = int(int(base_value) * (1.0 - rate)) * int(qty)
 
                     con.execute("BEGIN IMMEDIATE;")
                     con.execute(
@@ -1643,11 +1649,14 @@ class PlayerMarketDB:
             return False, err
 
         _s_id, qty, payout, fee_amt, name, base_value = result
+        rate_pct = int(rate * 100)
+        fee_pct  = 100 - rate_pct
+        tag = "📈 시장 오픈" if market_open else "🌙 시장 외 시간(급전)"
         await add_balance(seller_id, payout)
         return True, (
-            f"✅ 즉시판매 완료: **{name}** x{qty}\n"
-            f"기준가: **{base_value:,}원** × 70% × {qty}장\n"
-            f"수수료(30%): **{fee_amt:,}원**\n"
+            f"✅ 즉시판매 완료: **{name}** x{qty}  ({tag})\n"
+            f"기준가: **{base_value:,}원** × {rate_pct}% × {qty}장\n"
+            f"수수료({fee_pct}%): **{fee_amt:,}원**\n"
             f"실수령: **{payout:,}원**"
         )
 
