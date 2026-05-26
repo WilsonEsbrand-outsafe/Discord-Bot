@@ -112,16 +112,63 @@ class Trade(commands.Cog):
             return []
         return [p.strip() for p in s.replace("，", ",").split(",") if p.strip()]
 
+    # ───────────────── 자동완성 ─────────────────
+
+    async def my_player_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """내선수 자동완성 — 쉼표 구분 다중 입력 지원. 마지막 토큰 기준으로 내 보유 선수 검색."""
+        try:
+            parts = [p.strip() for p in current.replace("，", ",").split(",")]
+            prefix = ", ".join(parts[:-1])   # 이미 확정된 앞 부분
+            last   = parts[-1]               # 현재 입력 중인 마지막 토큰
+
+            rows = await self.pm.list_holdings(interaction.user.id, limit=50)
+            choices = []
+            for pid, name, nation, pos, age, ovr, potg, retired, qty, price in rows:
+                if int(retired) == 1:
+                    continue
+                label = f"{name} x{qty} | {pos} OVR{ovr} | {int(price):,}원"
+                if last and last.lower() not in name.lower() and last.lower() not in pid.lower():
+                    continue
+                value = f"{prefix}, {pid}".lstrip(", ") if prefix else pid
+                choices.append(app_commands.Choice(name=label[:100], value=value))
+            return choices[:10]
+        except Exception:
+            return []
+
+    async def all_player_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """원하는선수 자동완성 — 쉼표 구분 다중 입력 지원. 마지막 토큰 기준으로 전체 선수 검색."""
+        try:
+            parts = [p.strip() for p in current.replace("，", ",").split(",")]
+            prefix = ", ".join(parts[:-1])
+            last   = parts[-1]
+
+            rows = await self.pm.search_players(last, limit=10)
+            choices = []
+            for pid, name, nation, pos, age, ovr, potg, price, retired in rows:
+                if int(retired) == 1:
+                    continue
+                label = f"{name} | {pos} OVR{ovr} | {int(price):,}원"
+                value = f"{prefix}, {pid}".lstrip(", ") if prefix else pid
+                choices.append(app_commands.Choice(name=label[:100], value=value))
+            return choices[:10]
+        except Exception:
+            return []
+
     # ───────────────── 커맨드 ─────────────────
 
     @app_commands.command(name="트레이드", description="다른 유저에게 선수 트레이드를 제안합니다.")
     @app_commands.describe(
         상대방="트레이드 상대",
-        내선수="내가 주는 선수 ID, 쉼표로 구분 (예: P123,P456). 없으면 빈칸",
-        원하는선수="내가 받을 선수 ID, 쉼표로 구분. 없으면 빈칸",
+        내선수="내가 주는 선수 (자동완성 지원, 여러 명은 선택 후 쉼표로 추가)",
+        원하는선수="내가 받을 선수 (자동완성 지원, 여러 명은 선택 후 쉼표로 추가)",
         내현금="내가 추가로 지불할 현금 (없으면 0)",
         원하는현금="상대가 추가로 지불할 현금 (없으면 0)",
     )
+    @app_commands.autocomplete(내선수=my_player_autocomplete, 원하는선수=all_player_autocomplete)
     async def propose(
         self,
         interaction: discord.Interaction,
