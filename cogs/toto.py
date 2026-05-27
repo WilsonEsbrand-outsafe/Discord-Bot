@@ -137,34 +137,35 @@ class Toto(commands.Cog):
         except Exception:
             pass
 
-    async def _do_import(self, competition: str = "PL", limit: int = 10) -> int:
+    async def _do_import(self, competition: str = "PL", limit: int = 10) -> dict:
         """
         football-data.org에서 예정 경기를 가져와 DB에 등록합니다.
-        season_year를 넘기지 않아 API가 현재 시즌을 자동 선택합니다.
-        반환값: 등록된 경기 수
+        반환값: {"fetched": int, "added": int, "odds_events": int, "odds_applied": int, "error": str|None}
         """
+        result = {"fetched": 0, "added": 0, "odds_events": 0, "odds_applied": 0, "error": None}
+
         if not self.api:
-            return 0
+            result["error"] = "API 미초기화"
+            return result
 
         now_utc   = datetime.now(tz=timezone.utc)
         today_str = now_utc.date().isoformat()
-        # 오늘부터 1년 6개월 뒤까지 — 월드컵·컵대회 등 어떤 대회도 포함
-        far_date  = now_utc.replace(year=now_utc.year + 1, month=now_utc.month).date()
-        far_str   = far_date.isoformat()
-        fetch     = limit * 3  # 중복/이미 등록된 것을 감안해 넉넉히 가져옴
+        far_str   = now_utc.replace(year=now_utc.year + 1).date().isoformat()
+        fetch     = limit * 3
 
+        matches: list[dict] = []
         try:
             matches = await self.api.competition_matches(
                 competition_code=competition,
-                season_year=None,        # API가 현재 시즌 자동 선택
+                season_year=None,
                 status="SCHEDULED",
                 date_from=today_str,
                 date_to=far_str,
                 limit=fetch,
             )
         except Exception as e:
-            print(f"[AUTO-IMPORT] {competition} SCHEDULED 조회 실패: {e}")
-            matches = []
+            result["error"] = f"SCHEDULED 조회 실패: {e}"
+            print(f"[IMPORT] {competition} {result['error']}")
 
         try:
             timed = await self.api.competition_matches(
@@ -182,18 +183,19 @@ class Toto(commands.Cog):
         except Exception:
             pass
 
-        # The Odds API에서 해당 대회 배당 가져오기 (실패해도 기본값으로 진행)
+        result["fetched"] = len(matches)
+
+        # The Odds API 배당 가져오기
         odds_events: list[dict] = []
         if self.odds:
             try:
                 odds_events = await self.odds.get_events(competition)
+                result["odds_events"] = len(odds_events)
             except Exception as e:
                 print(f"[ODDS] {competition} 배당 조회 실패: {e}")
 
-        added = 0
-        odds_applied = 0
         for m in matches:
-            if added >= limit:
+            if result["added"] >= limit:
                 break
             mid      = str(m.get("id"))
             home     = (m.get("homeTeam") or {}).get("name") or "HOME"
@@ -203,35 +205,22 @@ class Toto(commands.Cog):
                 continue
             kickoff_ts = int(datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).timestamp())
 
-            # 기본 배당으로 먼저 등록
             await self.db.toto_upsert_match(
-                match_id=mid,
-                home=home,
-                away=away,
-                kickoff_ts=kickoff_ts,
-                base_home=self.BASE_HOME,
-                base_draw=self.BASE_DRAW,
-                base_away=self.BASE_AWAY,
+                match_id=mid, home=home, away=away, kickoff_ts=kickoff_ts,
+                base_home=self.BASE_HOME, base_draw=self.BASE_DRAW, base_away=self.BASE_AWAY,
             )
-            added += 1
+            result["added"] += 1
 
-            # 실제 배당으로 업데이트 시도
             if odds_events and self.odds:
                 ev = OddsAPI.find_match(home, away, kickoff_ts, odds_events)
                 if ev:
                     h2h = OddsAPI.extract_h2h(ev)
                     if h2h:
-                        oh, od, oa = h2h
-                        await self.db.toto_update_base_odds(mid, oh, od, oa)
-                        odds_applied += 1
+                        await self.db.toto_update_base_odds(mid, *h2h)
+                        result["odds_applied"] += 1
 
-        msg = f"[AUTO-IMPORT] {competition}: {added}경기 등록"
-        if odds_events:
-            msg += f" (배당 적용 {odds_applied}/{added})"
-        else:
-            msg += " (배당 API 없음 → 기본값 사용)"
-        print(msg)
-        return added
+        print(f"[IMPORT] {competition}: API {result['fetched']}개 → 등록 {result['added']}개 / 배당 {result['odds_applied']}개")
+        return result
 
     async def _auto_import_loop(self):
         """
@@ -246,13 +235,10 @@ class Toto(commands.Cog):
                 if self.api:
                     total = 0
                     for comp in self.AUTO_IMPORT_COMPETITIONS:
-                        n = await self._do_import(
-                            competition=comp,
-                            limit=self.AUTO_IMPORT_FETCH,
-                        )
-                        total += n
-                        await asyncio.sleep(1)  # 대회 간 API 과호출 방지
-                    print(f"[AUTO-IMPORT] 완료: {total}경기 등록 ({', '.join(self.AUTO_IMPORT_COMPETITIONS)})")
+                        r = await self._do_import(competition=comp, limit=self.AUTO_IMPORT_FETCH)
+                        total += r["added"]
+                        await asyncio.sleep(1)
+                    print(f"[AUTO-IMPORT] 완료: 총 {total}경기 등록")
 
             except asyncio.CancelledError:
                 break
@@ -552,9 +538,20 @@ class Toto(commands.Cog):
         limit       = max(1, min(20, int(limit)))
         competition = (competition or "PL").strip().upper()
 
-        added = await self._do_import(competition=competition, limit=limit)
+        r = await self._do_import(competition=competition, limit=limit)
+
+        lines = [
+            f"**대회**: {competition}",
+            f"**API 수신**: {r['fetched']}경기",
+            f"**DB 등록**: {r['added']}경기",
+            f"**배당 적용**: {r['odds_applied']}/{r['added']} "
+            + ("✅" if r['odds_applied'] > 0 else "❌ (기본값 사용)"),
+        ]
+        if r["error"]:
+            lines.append(f"⚠️ 오류: `{r['error']}`")
+
         await interaction.followup.send(
-            f"✅ 등록 완료: {added}경기 (대회 {competition})",
+            "\n".join(lines),
             ephemeral=True,
         )
 
