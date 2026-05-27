@@ -173,8 +173,10 @@ class QuickSellView(discord.ui.View):
         detail_lines = []  # 소량(≤10)일 때만 개별 표시
 
         for pid in pids:
+            matching = next((h for h in self.holdings if h[0] == pid), None)
+            qty = int(matching[8]) if matching else 1
             ok, msg, payout = await self.pm.direct_instant_sell(
-                user_id=self.user.id, player_id=pid, qty=1,
+                user_id=self.user.id, player_id=pid, qty=qty,
                 now_ts=self.now_ts, add_balance=self.money.add_balance,
             )
             if ok:
