@@ -142,7 +142,7 @@ class Toto(commands.Cog):
         football-data.org에서 예정 경기를 가져와 DB에 등록합니다.
         반환값: {"fetched": int, "added": int, "odds_events": int, "odds_applied": int, "error": str|None}
         """
-        result = {"fetched": 0, "added": 0, "odds_events": 0, "odds_applied": 0, "error": None}
+        result: dict = {"fetched": 0, "added": 0, "odds_events": 0, "odds_applied": 0, "error": None, "notes": []}
 
         if not self.api:
             result["error"] = "API 미초기화"
@@ -214,6 +214,7 @@ class Toto(commands.Cog):
             )
             result["added"] += 1
 
+            result["notes"].append(f"`{home}` vs `{away}`")
             if odds_events and self.odds:
                 ev = OddsAPI.find_match(home, away, kickoff_ts, odds_events)
                 if ev:
@@ -221,6 +222,16 @@ class Toto(commands.Cog):
                     if h2h:
                         await self.db.toto_update_base_odds(mid, *h2h)
                         result["odds_applied"] += 1
+                        result["notes"][-1] += f" → 배당 {h2h[0]}/{h2h[1]}/{h2h[2]}"
+                    else:
+                        result["notes"][-1] += f" → 이벤트 매칭됨, h2h 추출 실패 (`{ev.get('home_team')}` vs `{ev.get('away_team')}`)"
+                else:
+                    # 가장 유사한 이벤트 이름 힌트
+                    hint = odds_events[0] if odds_events else None
+                    if hint:
+                        result["notes"][-1] += f" → 매칭 실패 (Odds API 예시: `{hint.get('home_team')}` vs `{hint.get('away_team')}`)"
+            elif not odds_events:
+                result["notes"][-1] += " → Odds API 이벤트 없음"
 
         print(f"[IMPORT] {competition}: API {result['fetched']}개 → 등록 {result['added']}개 / 배당 {result['odds_applied']}개")
         return result
@@ -547,16 +558,16 @@ class Toto(commands.Cog):
             f"**대회**: {competition}",
             f"**API 수신**: {r['fetched']}경기",
             f"**DB 등록**: {r['added']}경기",
+            f"**배당 이벤트**: {r['odds_events']}개 (The Odds API)",
             f"**배당 적용**: {r['odds_applied']}/{r['added']} "
             + ("✅" if r['odds_applied'] > 0 else "❌ (기본값 사용)"),
         ]
         if r["error"]:
             lines.append(f"⚠️ 오류: `{r['error']}`")
+        for note in r.get("notes", []):
+            lines.append(f"• {note}")
 
-        await interaction.followup.send(
-            "\n".join(lines),
-            ephemeral=True,
-        )
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="경기삭제", description="(관리자) 오픈된 토토 경기를 환불 후 삭제합니다.")
     @app_commands.describe(match_id="경기 ID")
