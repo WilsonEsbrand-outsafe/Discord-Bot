@@ -1,7 +1,9 @@
 # services/odds_api.py
 import os
+import re
 import asyncio
 import aiohttp
+import unicodedata
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from typing import Optional
@@ -25,9 +27,52 @@ SPORT_KEYS: dict[str, str] = {
     "BSA": "soccer_brazil_campeonato",
 }
 
+# 팀명에서 제거할 접두·접미 클럽 약어
+_STRIP_WORDS = re.compile(
+    r'\b(fc|afc|sc|ac|cf|bfc|fk|sk|as|ss|us|cd|rcd|sd|ud|ca|rc|sv|vfb|rb|bvb|ssc|calcio|futbol|football|club|city|united|rovers|wanderers|athletic|athletico|atletico)\b',
+    re.IGNORECASE,
+)
 
-def _sim(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+def _normalize(name: str) -> str:
+    """
+    팀명 정규화:
+    1. 유니코드 발음기호 제거 (München→Munchen, Atlético→Atletico)
+    2. 소문자화
+    3. 클럽 접두·접미 약어 제거
+    4. 특수문자→공백, 중복 공백 제거
+    """
+    # NFD 분해 후 발음기호(Mn 카테고리) 제거
+    name = unicodedata.normalize("NFD", name)
+    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
+    name = name.lower()
+    # 클럽 약어 제거
+    name = _STRIP_WORDS.sub(" ", name)
+    # 특수문자 → 공백
+    name = re.sub(r"[^\w\s]", " ", name)
+    # 중복 공백 정리
+    return re.sub(r"\s+", " ", name).strip()
+
+
+def _team_sim(a: str, b: str) -> float:
+    """
+    두 팀명의 유사도를 계산합니다.
+    - 단어 집합 Jaccard 유사도
+    - 문자열 SequenceMatcher 유사도
+    두 값 중 높은 쪽을 반환합니다.
+    """
+    na, nb = _normalize(a), _normalize(b)
+    if not na or not nb:
+        return 0.0
+
+    # Jaccard (단어 집합 겹침)
+    wa, wb = set(na.split()), set(nb.split())
+    jaccard = len(wa & wb) / len(wa | wb) if (wa | wb) else 0.0
+
+    # SequenceMatcher (문자 수준)
+    char_sim = SequenceMatcher(None, na, nb).ratio()
+
+    return max(jaccard, char_sim)
 
 
 class OddsAPI:
@@ -53,11 +98,11 @@ class OddsAPI:
 
         url = f"{BASE}/sports/{sport}/odds"
         params = {
-            "apiKey":      self.api_key,
-            "regions":     "eu",
-            "markets":     "h2h",
-            "dateFormat":  "iso",
-            "oddsFormat":  "decimal",
+            "apiKey":     self.api_key,
+            "regions":    "eu",
+            "markets":    "h2h",
+            "dateFormat": "iso",
+            "oddsFormat": "decimal",
         }
 
         for attempt in range(3):
@@ -66,7 +111,7 @@ class OddsAPI:
                     if r.status == 401:
                         print("[ODDS] API 키 오류 (401)")
                         return []
-                    if r.status == 404 or r.status == 422:
+                    if r.status in (404, 422):
                         print(f"[ODDS] {competition_code}: 해당 시즌 데이터 없음 ({r.status})")
                         return []
                     if r.status in (429, 500, 502, 503) and attempt < 2:
@@ -85,9 +130,7 @@ class OddsAPI:
         return []
 
     @staticmethod
-    def extract_h2h(
-        event: dict,
-    ) -> Optional[tuple[float, float, float]]:
+    def extract_h2h(event: dict) -> Optional[tuple[float, float, float]]:
         """
         이벤트에서 북메이커 평균 홈/무/원정 배당을 추출합니다.
         배당이 없으면 None 반환.
@@ -110,7 +153,7 @@ class OddsAPI:
                         continue
                     if name == "Draw":
                         draw_prices.append(price)
-                    elif _sim(name, home_team) >= 0.5:
+                    elif _team_sim(name, home_team) >= 0.4:
                         home_prices.append(price)
                     else:
                         away_prices.append(price)
@@ -129,12 +172,12 @@ class OddsAPI:
         away: str,
         kickoff_ts: int,
         events: list[dict],
-        time_tol: int = 7200,    # 킥오프 허용 오차 (초), 기본 2시간
-        name_thr:  float = 0.45, # 팀명 유사도 최소 임계값
+        time_tol: int = 7200,   # 킥오프 허용 오차 (초), 기본 2시간
+        name_thr:  float = 0.35, # 정규화 후 팀명 유사도 임계값
     ) -> Optional[dict]:
         """
         football-data.org 경기와 The Odds API 이벤트를 시각+팀명으로 매칭.
-        가장 유사한 이벤트를 반환하며, 기준 미달이면 None.
+        정규화된 팀명 유사도를 사용하여 언어 표기 차이를 보정합니다.
         """
         best_event: Optional[dict] = None
         best_score = 0.0
@@ -153,7 +196,7 @@ class OddsAPI:
             ev_home = ev.get("home_team", "")
             ev_away = ev.get("away_team", "")
 
-            score = (_sim(home, ev_home) + _sim(away, ev_away)) / 2
+            score = (_team_sim(home, ev_home) + _team_sim(away, ev_away)) / 2
             if score > best_score and score >= name_thr:
                 best_score = score
                 best_event = ev
