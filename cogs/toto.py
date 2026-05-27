@@ -614,5 +614,30 @@ class Toto(commands.Cog):
         await interaction.followup.send(f"✅ {msg}", ephemeral=True)
         await self._notify_settle_dm(match_id.strip())
 
+    @app_commands.command(name="배당확인", description="(관리자) The Odds API에서 현재 배당 가능한 축구 대회 목록을 확인합니다.")
+    @app_commands.check(owner_only)
+    async def check_odds_sports(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if not self.odds:
+            return await interaction.followup.send("❌ Odds API 미초기화", ephemeral=True)
+
+        sports = await self.odds.list_active_sports()
+        soccer = [s for s in sports if "soccer" in s.get("key", "")]
+
+        if not soccer:
+            return await interaction.followup.send(
+                "현재 배당 있는 축구 대회가 없습니다. (ODDS_API_KEY 확인 필요)", ephemeral=True
+            )
+
+        lines = [f"`{s['key']}` — {s.get('title', '')}" for s in soccer]
+        text = "\n".join(lines)
+        # 2000자 제한 대비
+        if len(text) > 1800:
+            text = text[:1800] + "\n…(생략)"
+
+        await interaction.followup.send(f"**현재 배당 있는 축구 대회:**\n{text}", ephemeral=True)
+
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(Toto(bot))

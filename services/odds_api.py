@@ -83,6 +83,22 @@ class OddsAPI:
     def _enabled(self) -> bool:
         return bool(self.api_key)
 
+    async def list_active_sports(self) -> list[dict]:
+        """현재 배당이 있는 스포츠 목록을 반환합니다."""
+        if not self._enabled():
+            return []
+        try:
+            async with self.session.get(
+                f"{BASE}/sports",
+                params={"apiKey": self.api_key, "all": "false"},
+                timeout=20,
+            ) as r:
+                if r.status != 200:
+                    return []
+                return await r.json()
+        except Exception:
+            return []
+
     async def get_events(self, competition_code: str) -> list[dict]:
         """
         대회의 예정 경기 배당 목록을 가져옵니다.
@@ -99,7 +115,7 @@ class OddsAPI:
         url = f"{BASE}/sports/{sport}/odds"
         params = {
             "apiKey":     self.api_key,
-            "regions":    "eu",
+            "regions":    "eu,uk,au",   # 더 넓은 범위로 조회
             "markets":    "h2h",
             "dateFormat": "iso",
             "oddsFormat": "decimal",
@@ -108,19 +124,21 @@ class OddsAPI:
         for attempt in range(3):
             try:
                 async with self.session.get(url, params=params, timeout=20) as r:
+                    remaining = r.headers.get("x-requests-remaining", "?")
+                    used      = r.headers.get("x-requests-used", "?")
+                    print(f"[ODDS] {competition_code}: HTTP {r.status} | 잔여 {remaining} / 사용 {used}")
                     if r.status == 401:
                         print("[ODDS] API 키 오류 (401)")
                         return []
                     if r.status in (404, 422):
-                        print(f"[ODDS] {competition_code}: 해당 시즌 데이터 없음 ({r.status})")
+                        print(f"[ODDS] {competition_code}: 대회 없음 또는 플랜 미지원 ({r.status})")
                         return []
                     if r.status in (429, 500, 502, 503) and attempt < 2:
                         await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     r.raise_for_status()
                     data = await r.json()
-                    remaining = r.headers.get("x-requests-remaining", "?")
-                    print(f"[ODDS] {competition_code}: {len(data)}경기 수신 (잔여 요청: {remaining})")
+                    print(f"[ODDS] {competition_code}: {len(data)}경기 수신")
                     return data
             except Exception as e:
                 if attempt >= 2:
