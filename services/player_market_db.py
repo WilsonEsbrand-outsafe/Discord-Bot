@@ -1626,11 +1626,10 @@ class PlayerMarketDB:
     async def instant_sell_listing(
         self, *, listing_id: int, seller_id: int, now_ts: int, add_balance
     ) -> Tuple[bool, str]:
-        """즉시판매 — 등록 12시간 후 가능.
-        시장 오픈 중: 기준가 × 70% / 시장 외 시간(급전): 기준가 × 50%
+        """매각 — 이적시장 등록 후 12시간 대기, 항상 기준가 × 70%.
+        시장 오픈/외 무관하게 70% 고정.
         """
-        market_open = self._is_market_open(now_ts)
-        rate = INSTANT_SELL_RATE if market_open else INSTANT_SELL_RATE_OFF
+        rate = INSTANT_SELL_RATE  # 항상 70%
 
         async with self._lock:
             def work():
@@ -1682,10 +1681,9 @@ class PlayerMarketDB:
         _s_id, qty, payout, fee_amt, name, base_value = result
         rate_pct = int(rate * 100)
         fee_pct  = 100 - rate_pct
-        tag = "📈 시장 오픈" if market_open else "🌙 시장 외 시간(급전)"
         await add_balance(seller_id, payout)
         return True, (
-            f"✅ 즉시판매 완료: **{name}** x{qty}  ({tag})\n"
+            f"✅ 매각 완료: **{name}** x{qty}\n"
             f"기준가: **{base_value:,}원** × {rate_pct}% × {qty}장\n"
             f"수수료({fee_pct}%): **{fee_amt:,}원**\n"
             f"실수령: **{payout:,}원**"

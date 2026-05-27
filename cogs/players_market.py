@@ -754,7 +754,7 @@ class PlayersMarket(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="매각", description="이적시장 등록 매물을 즉시 판매합니다. 시장 오픈 중에만 가능 (기준가 70%).")
+    @app_commands.command(name="매각", description="이적시장 등록 후 12시간 뒤 즉시 판매 가능. 기준가의 70% 지급.")
     @app_commands.describe(매물번호="매각할 매물 번호 (/내매물 에서 확인)")
     @app_commands.autocomplete(매물번호=my_listing_autocomplete)
     async def instant_sell(self, interaction: discord.Interaction, 매물번호: str):
