@@ -632,6 +632,28 @@ async def reset_player_pool(interaction: discord.Interaction):
 async def reset_player_pool_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     await owner_only_error(interaction, error)
 
+# ───────────────── 슬래시: 가격 범위 재계산 ─────────────────
+@app_commands.guild_only()
+@app_commands.check(owner_only)
+@bot.tree.command(name="가격범위재계산", description="[관리자] 모든 선수의 floor/ceil을 현재 공식으로 즉시 재계산합니다.")
+async def recalc_price_ranges(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    from services.player_market_db import PlayerMarketDB
+    pm = PlayerMarketDB()
+    count = await pm.recalculate_price_ranges(int(time.time()))
+
+    await interaction.followup.send(
+        f"✅ **가격 범위 재계산 완료**\n"
+        f"- 업데이트된 선수: **{count:,}명**\n"
+        f"- 새 범위: 기준가 × 0.70 ~ × 1.55",
+        ephemeral=True,
+    )
+
+@recalc_price_ranges.error
+async def recalc_price_ranges_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    await owner_only_error(interaction, error)
+
 # ───────────────── /명령어 자동 생성(드롭다운) ─────────────────
 def _is_owner_only_command(cmd: app_commands.Command) -> bool:
     # owner_only 체크가 걸린 명령어는 제외
