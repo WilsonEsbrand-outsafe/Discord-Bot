@@ -114,7 +114,7 @@ AMATEUR_SQUAD: list[dict] = [
 # ───────────── 팩 5종(가격/확률) ─────────────
 PACKS = {
     # rank_from/rank_to: 현재가 기준 내림차순 랭킹 범위 (1 = 가장 비싼 선수)
-    "브론즈":   {"price":    55_000, "rank_from": 101, "rank_to": 300},
+    "브론즈":   {"price":    55_000, "rank_from": 201, "rank_to": 300},
     "실버":     {"price":    60_000, "rank_from":  61, "rank_to": 200},
     "골드":     {"price":   200_000, "rank_from":  31, "rank_to": 120},
     "플래티넘": {"price": 1_000_000, "rank_from":  11, "rank_to":  60},
