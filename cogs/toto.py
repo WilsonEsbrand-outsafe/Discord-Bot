@@ -153,35 +153,38 @@ class Toto(commands.Cog):
         far_str   = now_utc.replace(year=now_utc.year + 1).date().isoformat()
         fetch     = limit * 3
 
-        matches: list[dict] = []
-        try:
-            matches = await self.api.competition_matches(
-                competition_code=competition,
-                season_year=None,
-                status="SCHEDULED",
-                date_from=today_str,
-                date_to=far_str,
-                limit=fetch,
-            )
-        except Exception as e:
-            result["error"] = f"SCHEDULED 조회 실패: {e}"
-            print(f"[IMPORT] {competition} {result['error']}")
+        async def _fetch(season_year: int | None) -> list[dict]:
+            """SCHEDULED + TIMED 병합해서 반환. 실패 시 빈 리스트."""
+            out: list[dict] = []
+            for status in ("SCHEDULED", "TIMED"):
+                try:
+                    rows = await self.api.competition_matches(
+                        competition_code=competition,
+                        season_year=season_year,
+                        status=status,
+                        date_from=today_str,
+                        date_to=far_str,
+                        limit=fetch,
+                    )
+                    by_id = {m["id"]: m for m in out}
+                    for r in rows:
+                        by_id.setdefault(r["id"], r)
+                    out = list(by_id.values())
+                except Exception as e:
+                    print(f"[IMPORT] {competition} {status} 조회 실패(season={season_year}): {e}")
+            return sorted(out, key=lambda m: m.get("utcDate") or "")
 
-        try:
-            timed = await self.api.competition_matches(
-                competition_code=competition,
-                season_year=None,
-                status="TIMED",
-                date_from=today_str,
-                date_to=far_str,
-                limit=fetch,
-            )
-            by_id = {m["id"]: m for m in matches}
-            for t in timed:
-                by_id.setdefault(t["id"], t)
-            matches = sorted(by_id.values(), key=lambda m: m.get("utcDate") or "")
-        except Exception:
-            pass
+        # 1차: season 없이 조회 (API가 현재 시즌 자동 선택)
+        matches = await _fetch(None)
+
+        # 2차: 결과가 없으면 작년·올해·내년 시즌 순서로 재시도
+        if not matches:
+            year = now_utc.year
+            for season_year in [year - 1, year, year + 1]:
+                matches = await _fetch(season_year)
+                if matches:
+                    print(f"[IMPORT] {competition}: season={season_year} 폴백으로 {len(matches)}경기 수신")
+                    break
 
         result["fetched"] = len(matches)
 
