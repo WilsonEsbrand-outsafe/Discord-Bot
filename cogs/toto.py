@@ -10,6 +10,7 @@ from discord.ext import commands
 from datetime import datetime, timezone
 from auth import owner_only
 from services.football_api import FootballAPI
+from services.odds_api import OddsAPI
 
 
 from services.economy_db import EconomyDB
@@ -30,18 +31,28 @@ class Toto(commands.Cog):
     SMOOTHING = 50
     CAP_PCT = 0.20
 
+    # 자동 경기 등록 설정
+    AUTO_IMPORT_COMPETITIONS = ["PL", "CL", "PD", "WC"]  # 자동 등록할 대회 코드
+    AUTO_IMPORT_FETCH        = 10       # 대회당 한 번에 가져올 최대 경기 수
+    AUTO_IMPORT_INTERVAL     = 3600 * 6 # 체크 주기 (6시간)
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = EconomyDB()
         self.session: aiohttp.ClientSession | None = None
         self.api: FootballAPI | None = None
+        self.odds: OddsAPI | None = None
         self._auto_task: asyncio.Task | None = None
+        self._import_task: asyncio.Task | None = None
 
     async def cog_load(self):
         self.session = aiohttp.ClientSession()
-        self.api = FootballAPI(self.session)
-        # ✅ 자동정산 루프 시작
+        self.api  = FootballAPI(self.session)
+        self.odds = OddsAPI(self.session)
+        # 자동정산 루프 시작
         self._auto_task = asyncio.create_task(self._auto_settle_loop())
+        # 자동 경기 등록 루프 시작
+        self._import_task = asyncio.create_task(self._auto_import_loop())
 
     # ───────────── 자동완성 ─────────────
     async def match_autocomplete(
@@ -64,9 +75,12 @@ class Toto(commands.Cog):
     async def cog_unload(self):
         if self.session and not self.session.closed:
             await self.session.close()
-                
+
         if self._auto_task and not self._auto_task.done():
             self._auto_task.cancel()
+
+        if self._import_task and not self._import_task.done():
+            self._import_task.cancel()
 
     async def _notify_settle_dm(self, match_id: str):
         """
@@ -122,6 +136,130 @@ class Toto(commands.Cog):
 
         except Exception:
             pass
+
+    async def _do_import(self, competition: str = "PL", limit: int = 10) -> int:
+        """
+        football-data.org에서 예정 경기를 가져와 DB에 등록합니다.
+        season_year를 넘기지 않아 API가 현재 시즌을 자동 선택합니다.
+        반환값: 등록된 경기 수
+        """
+        if not self.api:
+            return 0
+
+        now_utc   = datetime.now(tz=timezone.utc)
+        today_str = now_utc.date().isoformat()
+        # 오늘부터 1년 6개월 뒤까지 — 월드컵·컵대회 등 어떤 대회도 포함
+        far_date  = now_utc.replace(year=now_utc.year + 1, month=now_utc.month).date()
+        far_str   = far_date.isoformat()
+        fetch     = limit * 3  # 중복/이미 등록된 것을 감안해 넉넉히 가져옴
+
+        try:
+            matches = await self.api.competition_matches(
+                competition_code=competition,
+                season_year=None,        # API가 현재 시즌 자동 선택
+                status="SCHEDULED",
+                date_from=today_str,
+                date_to=far_str,
+                limit=fetch,
+            )
+        except Exception as e:
+            print(f"[AUTO-IMPORT] {competition} SCHEDULED 조회 실패: {e}")
+            matches = []
+
+        try:
+            timed = await self.api.competition_matches(
+                competition_code=competition,
+                season_year=None,
+                status="TIMED",
+                date_from=today_str,
+                date_to=far_str,
+                limit=fetch,
+            )
+            by_id = {m["id"]: m for m in matches}
+            for t in timed:
+                by_id.setdefault(t["id"], t)
+            matches = sorted(by_id.values(), key=lambda m: m.get("utcDate") or "")
+        except Exception:
+            pass
+
+        # The Odds API에서 해당 대회 배당 가져오기 (실패해도 기본값으로 진행)
+        odds_events: list[dict] = []
+        if self.odds:
+            try:
+                odds_events = await self.odds.get_events(competition)
+            except Exception as e:
+                print(f"[ODDS] {competition} 배당 조회 실패: {e}")
+
+        added = 0
+        odds_applied = 0
+        for m in matches:
+            if added >= limit:
+                break
+            mid      = str(m.get("id"))
+            home     = (m.get("homeTeam") or {}).get("name") or "HOME"
+            away     = (m.get("awayTeam") or {}).get("name") or "AWAY"
+            utc_iso  = m.get("utcDate")
+            if not utc_iso:
+                continue
+            kickoff_ts = int(datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).timestamp())
+
+            # 기본 배당으로 먼저 등록
+            await self.db.toto_upsert_match(
+                match_id=mid,
+                home=home,
+                away=away,
+                kickoff_ts=kickoff_ts,
+                base_home=self.BASE_HOME,
+                base_draw=self.BASE_DRAW,
+                base_away=self.BASE_AWAY,
+            )
+            added += 1
+
+            # 실제 배당으로 업데이트 시도
+            if odds_events and self.odds:
+                ev = OddsAPI.find_match(home, away, kickoff_ts, odds_events)
+                if ev:
+                    h2h = OddsAPI.extract_h2h(ev)
+                    if h2h:
+                        oh, od, oa = h2h
+                        await self.db.toto_update_base_odds(mid, oh, od, oa)
+                        odds_applied += 1
+
+        msg = f"[AUTO-IMPORT] {competition}: {added}경기 등록"
+        if odds_events:
+            msg += f" (배당 적용 {odds_applied}/{added})"
+        else:
+            msg += " (배당 API 없음 → 기본값 사용)"
+        print(msg)
+        return added
+
+    async def _auto_import_loop(self):
+        """
+        AUTO_IMPORT_INTERVAL초(기본 6시간)마다 설정된 모든 대회의
+        예정 경기를 자동 등록합니다. upsert로 중복을 처리하므로
+        이미 등록된 경기는 건드리지 않습니다.
+        """
+        await asyncio.sleep(15)  # 정산 루프 뒤에 살짝 늦게 시작
+
+        while True:
+            try:
+                if self.api:
+                    total = 0
+                    for comp in self.AUTO_IMPORT_COMPETITIONS:
+                        n = await self._do_import(
+                            competition=comp,
+                            limit=self.AUTO_IMPORT_FETCH,
+                        )
+                        total += n
+                        await asyncio.sleep(1)  # 대회 간 API 과호출 방지
+                    print(f"[AUTO-IMPORT] 완료: {total}경기 등록 ({', '.join(self.AUTO_IMPORT_COMPETITIONS)})")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[AUTO-IMPORT] 오류: {e}")
+
+            await asyncio.sleep(self.AUTO_IMPORT_INTERVAL)
 
     async def _auto_settle_loop(self):
         """
@@ -235,18 +373,23 @@ class Toto(commands.Cog):
             e.add_field(
                 name=f"{home} vs {away}",
                 value=(
-                    f"ID: `{match_id}`\n"
                     f"킥오프: {_fmt_ts(kickoff_ts)}\n"
-                    f"배당:\n**1 - {oh}**\n**X - {od}**\n**2 - {oa}**"
+                    f"배당: **1** {oh} · **X** {od} · **2** {oa}\n"
+                    f"ID: `{match_id}`"
                 ),
                 inline=False,
             )
 
         await interaction.followup.send(embed=e)
 
-    @app_commands.command(name="베팅", description="경기에 베팅합니다. (픽: 1/X/2)")
-    @app_commands.describe(match_id="경기 선택", pick="1(홈승) / X(무) / 2(원정승)", amount="베팅 금액")
+    @app_commands.command(name="베팅", description="경기에 베팅합니다.")
+    @app_commands.describe(match_id="경기 선택", pick="베팅할 결과", amount="베팅 금액")
     @app_commands.autocomplete(match_id=match_autocomplete)
+    @app_commands.choices(pick=[
+        app_commands.Choice(name="1 - 홈승", value="1"),
+        app_commands.Choice(name="X - 무승부", value="X"),
+        app_commands.Choice(name="2 - 원정승", value="2"),
+    ])
     async def bet(self, interaction: discord.Interaction, match_id: str, pick: str, amount: int):
         await interaction.response.defer()
 
@@ -341,7 +484,8 @@ class Toto(commands.Cog):
         await interaction.followup.send(embed=e, ephemeral=True)
 
     @app_commands.command(name="베팅취소", description="내 베팅을 취소하고 전액 환불받습니다. (경기 시작 전만)")
-    @app_commands.describe(match_id="경기 ID")
+    @app_commands.describe(match_id="경기 선택")
+    @app_commands.autocomplete(match_id=match_autocomplete)
     async def cancel_bet(self, interaction: discord.Interaction, match_id: str):
         await interaction.response.defer(ephemeral=True)
 
@@ -385,10 +529,9 @@ class Toto(commands.Cog):
             e.add_field(
                 name=f"{home} vs {away}",
                 value=(
-                    f"ID: `{match_id}`\n"
-                    f"시작: {_fmt_ts(kickoff_ts)}\n"
-                    f"경과: {elapsed_min}분\n"  # ✅ 추가
-                    f"배당:\n**1 - {oh} | X - {od} | 2 - {oa}**"
+                    f"시작: {_fmt_ts(kickoff_ts)} (경과 {elapsed_min}분)\n"
+                    f"배당: **1** {oh} · **X** {od} · **2** {oa}\n"
+                    f"ID: `{match_id}`"
                 ),
                 inline=False,
             )
@@ -398,72 +541,22 @@ class Toto(commands.Cog):
     # ───────────── 나만 사용 명령어 ─────────────
 
     @app_commands.command(name="토토불러오기", description="(관리자) football-data.org에서 다음 경기들을 자동 등록합니다.")
-    @app_commands.describe(season="시즌 시작 연도(예: 2025)", limit="가져올 경기 수(1~20)", competition="대회 코드(기본 PL)")
+    @app_commands.describe(competition="대회 코드(기본 PL)", limit="가져올 경기 수(1~20)")
     @app_commands.check(owner_only)
-    async def import_matches(self, interaction: discord.Interaction, season: int = 2025, limit: int = 10, competition: str = "PL"):
-        
+    async def import_matches(self, interaction: discord.Interaction, competition: str = "PL", limit: int = 10):
         await interaction.response.defer(ephemeral=True)
 
         if not self.api:
             return await interaction.followup.send("❌ API가 아직 초기화되지 않았습니다. 봇을 재시작해 주세요.", ephemeral=True)
 
-        limit = max(1, min(20, int(limit)))
+        limit       = max(1, min(20, int(limit)))
         competition = (competition or "PL").strip().upper()
 
-        # 다음 경기들(SCHEDULED/TIMED) 가져오기
-        today_utc = datetime.now(tz=timezone.utc).date().isoformat()
-        year_end = f"{season + 1}-06-30"
-        matches = await self.api.competition_matches(
-            competition_code=competition,
-            season_year=int(season),
-            status="SCHEDULED",
-            date_from=today_utc,
-            date_to=year_end,
-            limit=limit * 3,
+        added = await self._do_import(competition=competition, limit=limit)
+        await interaction.followup.send(
+            f"✅ 등록 완료: {added}경기 (대회 {competition})",
+            ephemeral=True,
         )
-        try:
-            timed = await self.api.competition_matches(
-                competition_code=competition,
-                season_year=int(season),
-                status="TIMED",
-                date_from=today_utc,
-                date_to=year_end,
-                limit=limit * 3,
-            )
-            by_id = {m["id"]: m for m in matches}
-            for t in timed:
-                by_id.setdefault(t["id"], t)
-            matches = list(by_id.values())
-            matches.sort(key=lambda m: m.get("utcDate") or "")
-        except Exception:
-            pass
-
-        # limit만큼 등록
-        added = 0
-        for m in matches:
-            if added >= limit:
-                break
-            mid = str(m.get("id"))
-            home = (m.get("homeTeam") or {}).get("name") or "HOME"
-            away = (m.get("awayTeam") or {}).get("name") or "AWAY"
-            utc_iso = m.get("utcDate")
-            if not utc_iso:
-                continue
-
-            kickoff_ts = int(datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).timestamp())
-
-            await self.db.toto_upsert_match(
-                match_id=mid,
-                home=home,
-                away=away,
-                kickoff_ts=kickoff_ts,
-                base_home=self.BASE_HOME,
-                base_draw=self.BASE_DRAW,
-                base_away=self.BASE_AWAY,
-            )
-            added += 1
-
-        await interaction.followup.send(f"✅ 자동 등록 완료: {added}경기 (대회 {competition}, 시즌 {season})", ephemeral=True)
 
     @app_commands.command(name="경기삭제", description="(관리자) 오픈된 토토 경기를 환불 후 삭제합니다.")
     @app_commands.describe(match_id="경기 ID")
