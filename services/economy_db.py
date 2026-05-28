@@ -949,7 +949,7 @@ class EconomyDB:
     # ───────────── 알림 설정 ─────────────
 
     async def notify_enabled(self, user_id: int, event_key: str) -> bool:
-        """해당 이벤트 알림이 켜져 있는지 확인. 미설정 시 기본값 True."""
+        """해당 이벤트 알림이 켜져 있는지 확인. 미설정 시 기본값 False."""
         async with self._lock:
             def work():
                 con = self._connect()
@@ -958,7 +958,7 @@ class EconomyDB:
                         "SELECT enabled FROM notification_settings WHERE user_id=? AND event_key=?",
                         (int(user_id), event_key),
                     ).fetchone()
-                    return bool(row[0]) if row is not None else True
+                    return bool(row[0]) if row is not None else False
                 finally:
                     con.close()
             return await self._run(work)
@@ -983,7 +983,7 @@ class EconomyDB:
             await self._run(work)
 
     async def get_all_notify(self, user_id: int) -> dict[str, bool]:
-        """유저의 전체 알림 설정 반환. 미설정 키는 True(기본값)."""
+        """유저의 전체 알림 설정 반환. 미설정 키는 False(기본값)."""
         from services.notifier import NOTIFY_EVENTS
         async with self._lock:
             def work():
@@ -997,7 +997,7 @@ class EconomyDB:
                 finally:
                     con.close()
             saved = await self._run(work)
-        return {key: saved.get(key, True) for key in NOTIFY_EVENTS}
+        return {key: saved.get(key, False) for key in NOTIFY_EVENTS}
 
     async def delete_user(self, user_id: int) -> dict:
         """유저의 모든 economy DB 데이터 삭제. 삭제된 행 수 반환."""
