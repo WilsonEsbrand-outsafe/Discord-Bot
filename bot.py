@@ -642,13 +642,19 @@ async def reset_player_pool(interaction: discord.Interaction):
 
     from services.player_market_db import PlayerMarketDB
     pm = PlayerMarketDB()
-    deleted, spawned = await pm.reset_system_pool(int(time.time()))
+    now = int(time.time())
+    deleted, spawned = await pm.reset_system_pool(now)
+    pool_counts = await pm.count_pack_pool()
 
+    count_lines = "\n".join(
+        f"  • {name}팩: **{cnt}명**" for name, cnt in pool_counts.items()
+    )
     await interaction.followup.send(
         f"✅ **선수 풀 초기화 완료**\n"
         f"- 삭제된 선수: **{deleted:,}명**\n"
         f"- 새로 활성화된 선수: **{spawned:,}명**\n"
-        f"(유저 보유 선수 및 아마추어 더미는 유지됩니다)",
+        f"(유저 보유 선수 및 아마추어 더미는 유지됩니다)\n\n"
+        f"**팩별 선수 수**\n{count_lines}",
         ephemeral=True,
     )
 

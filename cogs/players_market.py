@@ -919,30 +919,6 @@ class PlayersMarket(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="시장초기화", description="[관리자] 유저 미보유 선수를 전부 삭제하고 새로 스폰합니다.")
-    async def reset_pool(self, interaction: discord.Interaction):
-        if interaction.user.id != OWNER_ID:
-            return await interaction.response.send_message("❌ 관리자 전용 명령어입니다.", ephemeral=True)
-
-        await interaction.response.defer(ephemeral=True)
-        now = int(time.time())
-
-        deleted, spawned = await self.pm.reset_system_pool(now)
-        pool_counts = await self.pm.count_pack_pool()
-
-        count_lines = "\n".join(
-            f"• {name}팩: **{cnt}명**" for name, cnt in pool_counts.items()
-        )
-        await interaction.followup.send(
-            embed=_embed(
-                "🔄 시장 초기화 완료",
-                f"삭제: **{deleted}명** | 신규 스폰: **{spawned}명**\n\n"
-                f"**팩별 현재 풀**\n{count_lines}",
-                interaction.user,
-            ),
-            ephemeral=True,
-        )
-
     @app_commands.command(name="랭킹", description="자산(잔액 + 보유 선수 시세) 기준 TOP 10을 표시합니다.")
     async def ranking(self, interaction: discord.Interaction):
         await interaction.response.defer()
