@@ -1164,22 +1164,29 @@ class PlayerMarketDB:
 
             return await self._run(work)
 
-    async def run_month_if_due(self, now_ts: int) -> int:
+    async def run_month_if_due(self, now_ts: int) -> Tuple[int, dict]:
         async with self._lock:
             def work():
                 con = self._connect()
                 try:
                     row = con.execute("SELECT start_ts, month_index, last_month_ts FROM pm_game_time WHERE id=1").fetchone()
                     if not row:
-                        return 0
+                        return 0, {}
                     _start_ts, month_index, last_month_ts = int(row[0]), int(row[1]), int(row[2])
 
                     if (now_ts - last_month_ts) < REAL_SECONDS_PER_MONTH:
-                        return 0
+                        return 0, {}
 
                     months_due = int((now_ts - last_month_ts) // REAL_SECONDS_PER_MONTH)
                     if months_due <= 0:
-                        return 0
+                        return 0, {}
+
+                    # 월 처리 전 초기 상태 캡처 (알림 비교용)
+                    initial_rows = con.execute(
+                        "SELECT player_id, name, ovr FROM pm_players WHERE retired=0"
+                    ).fetchall()
+                    initial_data = {str(r[0]): {"name": str(r[1]), "ovr": int(r[2])} for r in initial_rows}
+                    retired_this_run: set = set()
 
                     for _ in range(months_due):
                         month_index += 1
@@ -1217,6 +1224,7 @@ class PlayerMarketDB:
 
                             # 은퇴
                             if random.random() < retire_prob(age):
+                                retired_this_run.add(str(pid))
                                 con.execute("UPDATE pm_players SET retired=1, updated_ts=? WHERE player_id=?", (int(now_ts), str(pid)))
                                 con.execute(
                                     "UPDATE pm_market SET price=0, floor_price=0, ceil_price=0, last_update_ts=? WHERE player_id=?",
@@ -1294,7 +1302,34 @@ class PlayerMarketDB:
                         (int(month_index), int(last_month_ts)),
                     )
                     con.commit()
-                    return int(months_due)
+
+                    # ── 알림용 이벤트 수집 ──
+                    final_rows = con.execute(
+                        "SELECT player_id, ovr FROM pm_players WHERE retired=0"
+                    ).fetchall()
+                    final_ovr = {str(r[0]): int(r[1]) for r in final_rows}
+
+                    events: list = []
+                    for pid_str, init in initial_data.items():
+                        if pid_str in retired_this_run:
+                            events.append({"event": "retire", "pid": pid_str, "name": init["name"]})
+                        elif pid_str in final_ovr and final_ovr[pid_str] > init["ovr"]:
+                            events.append({
+                                "event": "growth", "pid": pid_str, "name": init["name"],
+                                "ovr_before": init["ovr"], "ovr_after": final_ovr[pid_str],
+                            })
+
+                    # 보유자 → 이벤트 매핑
+                    user_events: dict = {}
+                    for evt in events:
+                        holders = con.execute(
+                            "SELECT user_id FROM pm_holdings WHERE player_id=? AND qty > 0",
+                            (evt["pid"],),
+                        ).fetchall()
+                        for (uid,) in holders:
+                            user_events.setdefault(int(uid), []).append(evt)
+
+                    return int(months_due), user_events
                 finally:
                     con.close()
 
@@ -1465,11 +1500,11 @@ class PlayerMarketDB:
 
     async def buy_listing(
         self, *, listing_id: int, buyer_id: int, qty: int, now_ts: int, get_balance, add_balance
-    ) -> Tuple[bool, str]:
-        """이적시장 매물 구매 (수수료 5%)"""
+    ) -> Tuple[bool, str, dict | None]:
+        """이적시장 매물 구매 (수수료 5%). 성공 시 3번째 원소에 알림용 dict 반환."""
         qty = int(qty)
         if qty <= 0:
-            return False, "수량은 1 이상이어야 합니다."
+            return False, "수량은 1 이상이어야 합니다.", None
 
         async with self._lock:
             def work():
@@ -1532,7 +1567,7 @@ class PlayerMarketDB:
             result, err = await self._run(work)
 
         if err:
-            return False, err
+            return False, err, None
 
         seller_id, pid, qty_bought, total_cost, fee, seller_gets, name = result
 
@@ -1568,7 +1603,7 @@ class PlayerMarketDB:
                     finally:
                         con.close()
                 await self._run(rollback)
-            return False, f"잔액이 부족합니다. 필요: {total_cost:,} / 보유: {bal:,}"
+            return False, f"잔액이 부족합니다. 필요: {total_cost:,} / 보유: {bal:,}", None
 
         await add_balance(buyer_id, -total_cost)
         await add_balance(seller_id, seller_gets)
@@ -1576,7 +1611,7 @@ class PlayerMarketDB:
             f"✅ 이적 구매 완료: **{name}** x{qty_bought}\n"
             f"총액: **{total_cost:,}원** (플랫폼 수수료 {fee:,}원)\n"
             f"판매자 수령: **{seller_gets:,}원**"
-        )
+        ), {"seller_id": int(seller_id), "name": name, "qty": qty_bought, "price": int(price_per), "seller_gets": int(seller_gets)}
 
     async def cancel_listing(self, *, listing_id: int, seller_id: int) -> Tuple[bool, str]:
         """이적시장 매물 취소 (선수 보유 반환)"""
@@ -1861,8 +1896,8 @@ class PlayerMarketDB:
 
     async def accept_trade(
         self, *, trade_id: int, receiver_id: int, now_ts: int, get_balance, add_balance
-    ) -> Tuple[bool, str]:
-        """트레이드 수락 — 선수 교환 + 현금 처리"""
+    ) -> Tuple[bool, str, int | None]:
+        """트레이드 수락 — 선수 교환 + 현금 처리. 성공 시 3번째 원소에 proposer_id 반환"""
         # 정보 조회 (lock 밖)
         async with self._lock:
             def get_info():
@@ -1884,15 +1919,15 @@ class PlayerMarketDB:
             trade, items = await self._run(get_info)
 
         if not trade:
-            return False, "트레이드를 찾을 수 없습니다."
+            return False, "트레이드를 찾을 수 없습니다.", None
 
         proposer_id, r_id, prop_cash, recv_cash, status, expires_at = trade
         if int(r_id) != int(receiver_id):
-            return False, "본인의 트레이드만 수락할 수 있습니다."
+            return False, "본인의 트레이드만 수락할 수 있습니다.", None
         if status != "pending":
-            return False, "이미 처리된 트레이드입니다."
+            return False, "이미 처리된 트레이드입니다.", None
         if now_ts > int(expires_at):
-            return False, "만료된 트레이드입니다."
+            return False, "만료된 트레이드입니다.", None
 
         proposer_items = [(pid, qty) for side, pid, qty in items if side == "proposer"]
         receiver_items = [(pid, qty) for side, pid, qty in items if side == "receiver"]
@@ -1901,11 +1936,11 @@ class PlayerMarketDB:
         if int(prop_cash) > 0:
             bal = await get_balance(proposer_id)
             if bal < int(prop_cash):
-                return False, f"제안자의 현금이 부족합니다. (필요 {int(prop_cash):,} / 보유 {bal:,})"
+                return False, f"제안자의 현금이 부족합니다. (필요 {int(prop_cash):,} / 보유 {bal:,})", None
         if int(recv_cash) > 0:
             bal = await get_balance(receiver_id)
             if bal < int(recv_cash):
-                return False, f"현금이 부족합니다. (필요 {int(recv_cash):,} / 보유 {bal:,})"
+                return False, f"현금이 부족합니다. (필요 {int(recv_cash):,} / 보유 {bal:,})", None
 
         # 실행 (lock 안)
         async with self._lock:
@@ -1960,7 +1995,7 @@ class PlayerMarketDB:
             ok_r, err = await self._run(work)
 
         if err or not ok_r:
-            return False, err or "처리 중 오류가 발생했습니다."
+            return False, err or "처리 중 오류가 발생했습니다.", None
 
         # 현금 이동
         if int(prop_cash) > 0:
@@ -1970,10 +2005,10 @@ class PlayerMarketDB:
             await add_balance(receiver_id, -int(recv_cash))
             await add_balance(proposer_id, int(recv_cash))
 
-        return True, "✅ 트레이드 체결 완료! 선수들이 교환됐습니다."
+        return True, "✅ 트레이드 체결 완료! 선수들이 교환됐습니다.", int(proposer_id)
 
-    async def reject_trade(self, *, trade_id: int, receiver_id: int) -> Tuple[bool, str]:
-        """트레이드 거절 — 제안자 선수 반환"""
+    async def reject_trade(self, *, trade_id: int, receiver_id: int) -> Tuple[bool, str, int | None]:
+        """트레이드 거절 — 제안자 선수 반환. 성공 시 3번째 원소에 proposer_id 반환"""
         async with self._lock:
             def work():
                 con = self._connect()
@@ -1983,12 +2018,12 @@ class PlayerMarketDB:
                         (int(trade_id),),
                     ).fetchone()
                     if not trade:
-                        return False, "트레이드를 찾을 수 없습니다."
+                        return False, "트레이드를 찾을 수 없습니다.", None
                     proposer_id, r_id, status = trade
                     if int(r_id) != int(receiver_id):
-                        return False, "본인의 트레이드만 거절할 수 있습니다."
+                        return False, "본인의 트레이드만 거절할 수 있습니다.", None
                     if status != "pending":
-                        return False, "이미 처리된 트레이드입니다."
+                        return False, "이미 처리된 트레이드입니다.", None
 
                     items = con.execute(
                         "SELECT player_id, qty FROM pm_trade_items WHERE trade_id=? AND side='proposer'",
@@ -2002,7 +2037,7 @@ class PlayerMarketDB:
                         )
                     con.execute("UPDATE pm_trades SET status='rejected' WHERE trade_id=?", (int(trade_id),))
                     con.commit()
-                    return True, "트레이드가 거절됐습니다. 제안자에게 선수들이 반환됩니다."
+                    return True, "트레이드가 거절됐습니다. 제안자에게 선수들이 반환됩니다.", int(proposer_id)
                 except Exception:
                     try: con.execute("ROLLBACK;")
                     except Exception: pass
@@ -2104,25 +2139,27 @@ class PlayerMarketDB:
                     con.close()
             return await self._run(work)
 
-    async def expire_listings(self, now_ts: int) -> int:
-        """만료된 매물 처리 (선수 자동 반환)"""
+    async def expire_listings(self, now_ts: int) -> list:
+        """만료된 매물 처리 (선수 자동 반환) → 만료된 매물 정보 목록 반환"""
         async with self._lock:
             def work():
                 con = self._connect()
                 try:
                     rows = con.execute(
                         """
-                        SELECT listing_id, seller_id, player_id, qty
-                        FROM pm_listings
-                        WHERE status='active' AND expires_at <= ?
+                        SELECT l.listing_id, l.seller_id, l.player_id, l.qty,
+                               COALESCE(p.name, l.player_id) AS name
+                        FROM pm_listings l
+                        LEFT JOIN pm_players p ON l.player_id = p.player_id
+                        WHERE l.status='active' AND l.expires_at <= ?
                         """,
                         (int(now_ts),),
                     ).fetchall()
                     if not rows:
-                        return 0
+                        return []
 
                     con.execute("BEGIN IMMEDIATE;")
-                    for lid, s_id, pid, qty in rows:
+                    for lid, s_id, pid, qty, _name in rows:
                         con.execute(
                             "UPDATE pm_listings SET status='expired' WHERE listing_id=?",
                             (int(lid),),
@@ -2136,7 +2173,10 @@ class PlayerMarketDB:
                             (int(s_id), str(pid), int(qty)),
                         )
                     con.commit()
-                    return len(rows)
+                    return [
+                        {"seller_id": int(r[1]), "name": str(r[4]), "qty": int(r[3])}
+                        for r in rows
+                    ]
                 except Exception:
                     try: con.execute("ROLLBACK;")
                     except Exception: pass

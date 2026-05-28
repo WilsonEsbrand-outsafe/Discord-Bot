@@ -18,6 +18,7 @@ matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 
 
 from services.economy_db import EconomyDB
 from services.player_market_db import PlayerMarketDB, PACKS
+from services.notifier import send_notify
 
 _PRICE_LABELS = ["🔴 대박", "🟠 이득", "🟡 본전", "🟢 손해", "⚪ 폭망"]
 
@@ -246,9 +247,19 @@ class PlayersMarket(commands.Cog):
     async def expire_task(self):
         """만료된 이적시장 매물 자동 반환 (10분마다)"""
         try:
-            count = await self.pm.expire_listings(int(time.time()))
-            if count > 0:
-                print(f"[이적시장] 만료 처리: {count}건")
+            expired = await self.pm.expire_listings(int(time.time()))
+            if expired:
+                print(f"[이적시장] 만료 처리: {len(expired)}건")
+                for info in expired:
+                    dm_embed = discord.Embed(
+                        title="⏰ 이적시장 매물 만료",
+                        description=(
+                            f"**{info['name']}** x{info['qty']}장\n"
+                            f"매물이 만료되어 보유 목록으로 돌아왔습니다."
+                        ),
+                        color=0xe67e22,
+                    )
+                    await send_notify(self.bot, self.money, info["seller_id"], "매물_만료", dm_embed)
         except Exception as e:
             print(f"[이적시장] expire_task 오류: {e}")
 
@@ -713,7 +724,7 @@ class PlayersMarket(commands.Cog):
             return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.", ephemeral=True)
 
         now = int(time.time())
-        ok, msg = await self.pm.buy_listing(
+        ok, msg, notify_info = await self.pm.buy_listing(
             listing_id=lid,
             buyer_id=interaction.user.id,
             qty=수량,
@@ -724,6 +735,18 @@ class PlayersMarket(commands.Cog):
         bal = await self.money.get_balance(interaction.user.id)
         if ok:
             msg += f"\n현재 잔액: **{bal:,}원**"
+            # 판매자 DM 알림
+            if notify_info:
+                dm_embed = discord.Embed(
+                    title="🏷️ 이적시장 매물 판매됨",
+                    description=(
+                        f"**{notify_info['name']}** x{notify_info['qty']}장이 판매됐습니다.\n"
+                        f"판매가: **{notify_info['price']:,}원**/장\n"
+                        f"수령액: **{notify_info['seller_gets']:,}원** (수수료 5% 제외)"
+                    ),
+                    color=0x2ecc71,
+                )
+                await send_notify(self.bot, self.money, notify_info["seller_id"], "매물_판매", dm_embed)
         await interaction.followup.send(
             embed=_embed("✅ 이적 구매" if ok else "❌ 구매 실패", msg, interaction.user),
             ephemeral=True,

@@ -14,6 +14,7 @@ from services.odds_api import OddsAPI
 
 
 from services.economy_db import EconomyDB
+from services.notifier import send_notify
 
 def _fmt_ts(ts: int) -> str:
     # 디스코드 타임스탬프(로컬 표시)
@@ -123,16 +124,7 @@ class Toto(commands.Cog):
                     inline=True,
                 )
 
-                try:
-                    user = self.bot.get_user(int(user_id))
-                    if user is None:
-                        user = await self.bot.fetch_user(int(user_id))
-                    await user.send(embed=e)
-                except discord.Forbidden:
-                    # DM 막힌 유저는 조용히 스킵
-                    pass
-                except Exception:
-                    pass
+                await send_notify(self.bot, self.db, int(user_id), "토토_결과", e)
 
         except Exception:
             pass

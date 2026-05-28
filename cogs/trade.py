@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 
 from services.economy_db import EconomyDB
 from services.player_market_db import PlayerMarketDB
+from services.notifier import send_notify
 
 
 def _embed(title: str, desc: str, color: int = 0x2ecc71) -> discord.Embed:
@@ -33,7 +34,7 @@ class TradeView(discord.ui.View):
             return await interaction.response.send_message("이미 처리된 트레이드입니다.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
 
-        ok, msg = await self.cog.pm.accept_trade(
+        ok, msg, proposer_id = await self.cog.pm.accept_trade(
             trade_id=self.trade_id,
             receiver_id=interaction.user.id,
             now_ts=int(time.time()),
@@ -48,6 +49,14 @@ class TradeView(discord.ui.View):
                 await interaction.message.edit(view=self)
             except Exception:
                 pass
+            # 제안자 DM 알림
+            if proposer_id:
+                dm_embed = discord.Embed(
+                    title="🤝 트레이드 수락됨",
+                    description=f"**{interaction.user.display_name}**님이 트레이드를 수락했습니다.",
+                    color=0x2ecc71,
+                )
+                await send_notify(self.cog.bot, self.cog.money, proposer_id, "트레이드_결과", dm_embed)
 
         await interaction.followup.send(
             embed=_embed("✅ 트레이드 수락" if ok else "❌ 수락 실패", msg, 0x2ecc71 if ok else 0xe74c3c),
@@ -60,7 +69,7 @@ class TradeView(discord.ui.View):
             return await interaction.response.send_message("이미 처리된 트레이드입니다.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
 
-        ok, msg = await self.cog.pm.reject_trade(
+        ok, msg, proposer_id = await self.cog.pm.reject_trade(
             trade_id=self.trade_id,
             receiver_id=interaction.user.id,
         )
@@ -72,6 +81,14 @@ class TradeView(discord.ui.View):
                 await interaction.message.edit(view=self)
             except Exception:
                 pass
+            # 제안자 DM 알림
+            if proposer_id:
+                dm_embed = discord.Embed(
+                    title="🤝 트레이드 거절됨",
+                    description=f"**{interaction.user.display_name}**님이 트레이드를 거절했습니다.",
+                    color=0xe74c3c,
+                )
+                await send_notify(self.cog.bot, self.cog.money, proposer_id, "트레이드_결과", dm_embed)
 
         await interaction.followup.send(
             embed=_embed("거절됨" if ok else "❌ 거절 실패", msg, 0x95a5a6 if ok else 0xe74c3c),

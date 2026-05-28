@@ -8,6 +8,7 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import EconomyDB
+from services.notifier import send_notify
 
 def _format_time_left(seconds: int) -> str:
     if seconds < 0:
@@ -174,12 +175,15 @@ class Economy(commands.Cog):
         )
         await interaction.followup.send(embed=e)
 
-        try:
-            await to_user.send(f"💸 {interaction.user.display_name}님에게서 **{amount:,}**원을 받았습니다.")
-        except discord.Forbidden:
-            pass
-        except Exception:
-            pass
+        dm_embed = discord.Embed(
+            title="💸 송금 수신",
+            description=(
+                f"**{interaction.user.display_name}**님에게서 **{amount:,}원**을 받았습니다.\n"
+                f"현재 잔액: **{to_bal:,}원**"
+            ),
+            color=0x2ecc71,
+        )
+        await send_notify(self.bot, self.db, to_user.id, "송금_수신", dm_embed)
 
     # ✅ 훈련: /훈련 만 치면 랜덤 상황 발생
     @app_commands.command(name="훈련", description="랜덤 훈련을 진행합니다. (쿨타임 30초)")

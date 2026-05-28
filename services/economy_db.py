@@ -93,6 +93,18 @@ class EconomyDB:
             con.execute("CREATE INDEX IF NOT EXISTS idx_toto_matches_status ON toto_matches(status)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_toto_bets_match ON toto_bets(match_id)")
 
+            # ───────────── 알림 설정 ─────────────
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notification_settings (
+                    user_id   INTEGER NOT NULL,
+                    event_key TEXT    NOT NULL,
+                    enabled   INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (user_id, event_key)
+                )
+                """
+            )
+
             con.commit()
         finally:
             con.close()
@@ -909,6 +921,59 @@ class EconomyDB:
                 finally:
                     con.close()
             return await self._run(work)
+
+    # ───────────── 알림 설정 ─────────────
+
+    async def notify_enabled(self, user_id: int, event_key: str) -> bool:
+        """해당 이벤트 알림이 켜져 있는지 확인. 미설정 시 기본값 True."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    row = con.execute(
+                        "SELECT enabled FROM notification_settings WHERE user_id=? AND event_key=?",
+                        (int(user_id), event_key),
+                    ).fetchone()
+                    return bool(row[0]) if row is not None else True
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def set_notify(self, user_id: int, event_key: str, enabled: bool) -> None:
+        """알림 설정 저장."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    con.execute(
+                        """
+                        INSERT INTO notification_settings(user_id, event_key, enabled)
+                        VALUES(?, ?, ?)
+                        ON CONFLICT(user_id, event_key) DO UPDATE SET enabled=excluded.enabled
+                        """,
+                        (int(user_id), event_key, 1 if enabled else 0),
+                    )
+                    con.commit()
+                finally:
+                    con.close()
+            await self._run(work)
+
+    async def get_all_notify(self, user_id: int) -> dict[str, bool]:
+        """유저의 전체 알림 설정 반환. 미설정 키는 True(기본값)."""
+        from services.notifier import NOTIFY_EVENTS
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    rows = con.execute(
+                        "SELECT event_key, enabled FROM notification_settings WHERE user_id=?",
+                        (int(user_id),),
+                    ).fetchall()
+                    return {k: bool(v) for k, v in rows}
+                finally:
+                    con.close()
+            saved = await self._run(work)
+        return {key: saved.get(key, True) for key in NOTIFY_EVENTS}
 
     # ✅ 훈련 전용(쿨타임)
     async def play_training(self, user_id: int, delta: int, now_ts: int, cooldown_sec: int = 30) -> Tuple[bool, int, int]:

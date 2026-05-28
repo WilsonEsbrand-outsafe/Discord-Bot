@@ -233,7 +233,7 @@ async def on_ready():
     print(f"🤖 로그인 성공: {bot.user} (ID: {bot.user.id})")
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade")
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify")
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -272,13 +272,37 @@ async def on_ready():
                 await asyncio.sleep(5)
 
         async def month_loop():
+            from services.economy_db import EconomyDB
+            from services.notifier import send_notify
+            _db = EconomyDB()
             while True:
                 try:
                     now = int(time.time())
                     await pm.ensure_bootstrap(now)
-                    due = await pm.run_month_if_due(now)
+                    due, user_events = await pm.run_month_if_due(now)
                     if due > 0:
                         print(f"🗓️ [PM] 월 진행: +{due}개월")
+                    # 성장/은퇴 DM 발송
+                    for uid, evts in user_events.items():
+                        for evt in evts:
+                            if evt["event"] == "growth":
+                                event_key = "선수_성장"
+                                em = discord.Embed(
+                                    title="📈 선수 OVR 성장",
+                                    description=(
+                                        f"**{evt['name']}**의 능력치가 성장했습니다!\n"
+                                        f"OVR **{evt['ovr_before']}** → **{evt['ovr_after']}**"
+                                    ),
+                                    color=0x3498db,
+                                )
+                            else:  # retire
+                                event_key = "선수_은퇴"
+                                em = discord.Embed(
+                                    title="💀 선수 은퇴",
+                                    description=f"**{evt['name']}**이(가) 은퇴했습니다.",
+                                    color=0x95a5a6,
+                                )
+                            await send_notify(bot, _db, uid, event_key, em)
                 except Exception as e:
                     print("❌ [PM] month_loop error:", repr(e))
                 await asyncio.sleep(10)
@@ -319,7 +343,7 @@ async def sync_and_reload(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade")
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify")
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)
