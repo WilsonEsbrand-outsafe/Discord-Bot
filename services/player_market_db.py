@@ -113,13 +113,17 @@ AMATEUR_SQUAD: list[dict] = [
 
 # ───────────── 팩 5종(가격/확률) ─────────────
 PACKS = {
-    # rank_from/rank_to: 현재가 기준 내림차순 랭킹 범위 (1 = 가장 비싼 선수)
-    # 풀 사이즈 1000명 기준으로 스케일
-    "브론즈":   {"price":    30_000, "rank_from": 501, "rank_to": 1000},
-    "실버":     {"price":    60_000, "rank_from": 201, "rank_to":  700},
-    "골드":     {"price":   200_000, "rank_from": 101, "rank_to":  400},
-    "플래티넘": {"price": 1_000_000, "rank_from":  31, "rank_to":  200},
-    "아이콘":   {"price": 1_500_000, "rank_from":   1, "rank_to":  100},
+    # price     : 팩 구입 비용 (= 가우시안 분포 중심가)
+    # min_price : 팩 풀 하한 (이 가격 이상의 선수만 등장)
+    # max_price : 팩 풀 상한 (None이면 무제한)
+    # 풀 사이즈가 변해도 절대 가격 기준이라 영향 없음
+    "브론즈":    {"price":    50_000, "min_price":         0, "max_price":    400_000},
+    "실버":      {"price":   150_000, "min_price":   150_000, "max_price":  1_200_000},
+    "골드":      {"price":   500_000, "min_price":   500_000, "max_price":  4_000_000},
+    "플래티넘":  {"price": 2_000_000, "min_price": 2_000_000, "max_price": 10_000_000},
+    "다이아몬드": {"price": 5_000_000, "min_price": 5_000_000, "max_price": 18_000_000},
+    "아이콘":    {"price": 10_000_000, "min_price": 9_000_000, "max_price": 28_000_000},
+    "얼티밋":    {"price": 18_000_000, "min_price": 18_000_000, "max_price": None},
 }
 PACK_MAX_PULLS = 10
 POOL_SIZE = 1_000   # 시장에 상시 유지할 활성 선수 수
@@ -1049,29 +1053,52 @@ class PlayerMarketDB:
             def work():
                 con = self._connect()
                 try:
-                    # 아마추어 더미 제외, 현재 시장가 기준 전체 풀 조회 후 가격 내림차순 정렬
-                    rows = con.execute(
-                        """
-                        SELECT p.player_id, COALESCE(m.price, p.base_value)
-                        FROM pm_players p
-                        LEFT JOIN pm_market m ON m.player_id = p.player_id
-                        WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
-                        ORDER BY COALESCE(m.price, p.base_value) DESC
-                        """
-                    ).fetchall()
+                    # 절대 가격 범위 기반으로 풀 필터링 (풀 크기 변화에 무관)
+                    min_p = int(pack.get("min_price", 0) or 0)
+                    max_p = pack.get("max_price", None)
+
+                    if max_p is not None:
+                        rows = con.execute(
+                            """
+                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
+                            FROM pm_players p
+                            LEFT JOIN pm_market m ON m.player_id = p.player_id
+                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                              AND COALESCE(m.price, p.base_value) BETWEEN ? AND ?
+                            ORDER BY cur_price DESC
+                            """,
+                            (min_p, int(max_p)),
+                        ).fetchall()
+                    else:
+                        rows = con.execute(
+                            """
+                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
+                            FROM pm_players p
+                            LEFT JOIN pm_market m ON m.player_id = p.player_id
+                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                              AND COALESCE(m.price, p.base_value) >= ?
+                            ORDER BY cur_price DESC
+                            """,
+                            (min_p,),
+                        ).fetchall()
+
+                    # 해당 등급 선수가 없으면 전체 풀 폴백
+                    if not rows:
+                        rows = con.execute(
+                            """
+                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
+                            FROM pm_players p
+                            LEFT JOIN pm_market m ON m.player_id = p.player_id
+                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                            ORDER BY cur_price DESC
+                            """
+                        ).fetchall()
 
                     if not rows:
                         return ("EMPTY", [])
 
-                    # TOP PRICE 범위 슬라이싱 (rank_from~rank_to, 1-indexed)
-                    rank_from = int(pack.get("rank_from", 1))
-                    rank_to   = int(pack.get("rank_to", len(rows)))
-                    pool = rows[rank_from - 1 : rank_to]
-                    if not pool:
-                        pool = rows  # 풀이 비면 전체 폴백
-
                     # 팩 가격 기준 비대칭 가우시안 가중치 부여
-                    players = [(str(r[0]), int(r[1])) for r in pool]
+                    players = [(str(r[0]), int(r[1])) for r in rows]
                     weights = [_pack_weight(pp, pack_price) for _, pp in players]
 
                     results: List[Tuple[str, int]] = []

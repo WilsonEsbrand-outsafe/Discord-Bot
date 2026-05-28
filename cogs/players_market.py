@@ -323,7 +323,10 @@ class PlayersMarket(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         """팩 종류 자동완성"""
-        pack_emoji = {"브론즈": "🥉", "실버": "🥈", "골드": "🥇", "플래티넘": "💎", "아이콘": "👑"}
+        pack_emoji = {
+            "브론즈": "🥉", "실버": "🥈", "골드": "🥇",
+            "플래티넘": "💎", "다이아몬드": "🔷", "아이콘": "👑", "얼티밋": "🌟",
+        }
         return [
             app_commands.Choice(
                 name=f"{pack_emoji.get(k, '🎁')} {k}팩  |  {PACKS[k]['price']:,}원 / 장",
@@ -521,7 +524,7 @@ class PlayersMarket(commands.Cog):
 
     # ───────────────── 팩 ─────────────────
     @app_commands.command(name="선수팩", description="선수팩을 구매합니다. (종류별 확률/가격 차등)")
-    @app_commands.describe(종류="브론즈/실버/골드/플래티넘/아이콘", 장수="1~10")
+    @app_commands.describe(종류="브론즈/실버/골드/플래티넘/다이아몬드/아이콘/얼티밋", 장수="1~10")
     @app_commands.autocomplete(종류=pack_type_autocomplete)
     async def pack(self, interaction: discord.Interaction, 종류: str, 장수: int = 1):
         await interaction.response.defer()
@@ -647,14 +650,16 @@ class PlayersMarket(commands.Cog):
     async def pack_info(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        pack_emoji = {"브론즈": "🥉", "실버": "🥈", "골드": "🥇", "플래티넘": "💎", "아이콘": "👑"}
+        pack_emoji = {
+            "브론즈": "🥉", "실버": "🥈", "골드": "🥇",
+            "플래티넘": "💎", "다이아몬드": "🔷", "아이콘": "👑", "얼티밋": "🌟",
+        }
 
         embed = discord.Embed(
             title="🎁 팩 정보",
             description=(
-                "팩 가격 = 뽑기 분포의 중심\n"
-                "**팩 단가와 비슷한 선수**가 가장 많이 나오고,\n"
-                "비싼 선수일수록 확률이 급격히 낮아집니다.\n\n"
+                "팩 구입 가격 = 뽑기 분포의 중심가\n"
+                "**팩 단가와 비슷한 가격의 선수**가 가장 자주 등장합니다.\n\n"
                 "🔴 대박 `≥ 3배` · 🟠 이득 `≥ 1.3배` · 🟡 본전 `≥ 0.9배`\n"
                 "🟢 손해 `≥ 0.5배` · ⚪ 폭망 `< 0.5배`"
             ),
@@ -662,11 +667,18 @@ class PlayersMarket(commands.Cog):
         )
 
         for pack_name, pack_data in PACKS.items():
-            price = pack_data["price"]
-            icon = pack_emoji.get(pack_name, "🎁")
+            price    = pack_data["price"]
+            min_p    = pack_data.get("min_price", 0) or 0
+            max_p    = pack_data.get("max_price", None)
+            icon     = pack_emoji.get(pack_name, "🎁")
+            range_str = (
+                f"{min_p:,}원 ~ {max_p:,}원"
+                if max_p is not None
+                else f"{min_p:,}원 이상"
+            )
             embed.add_field(
                 name=f"{icon} {pack_name}팩  |  {price:,}원 / 장",
-                value=f"중심가 **{price:,}원** 근처 선수가 가장 많이 출현",
+                value=f"선수 시세 범위: **{range_str}**",
                 inline=False,
             )
 
