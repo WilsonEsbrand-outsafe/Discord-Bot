@@ -114,14 +114,13 @@ AMATEUR_SQUAD: list[dict] = [
 # ───────────── 팩 5종(가격/확률) ─────────────
 PACKS = {
     # price     : 팩 구입 비용 (= 가우시안 분포 중심가)
-    # min/max   : 각 구간이 딱 맞물리도록 설계 (겹침 최소화)
-    "브론즈":    {"price":    50_000, "min_price":        0, "max_price":    100_000},
-    "실버":      {"price":   150_000, "min_price":  100_000, "max_price":    300_000},
-    "골드":      {"price":   500_000, "min_price":  300_000, "max_price":  1_000_000},
-    "플래티넘":  {"price": 2_000_000, "min_price": 1_000_000, "max_price":  4_000_000},
-    "다이아몬드": {"price": 5_000_000, "min_price": 4_000_000, "max_price":  8_000_000},
-    "아이콘":    {"price": 10_000_000, "min_price": 8_000_000, "max_price": 15_000_000},
-    "얼티밋":    {"price": 18_000_000, "min_price": 15_000_000, "max_price": None},
+    "브론즈":    {"price":    50_000, "min_price":         0, "max_price":     75_000},
+    "실버":      {"price":   150_000, "min_price":   100_000, "max_price":    300_000},
+    "골드":      {"price":   500_000, "min_price":   200_000, "max_price":    800_000},
+    "플래티넘":  {"price": 1_500_000, "min_price":   800_000, "max_price":  2_500_000},
+    "다이아몬드": {"price": 5_000_000, "min_price": 2_500_000, "max_price":  7_500_000},
+    "아이콘":    {"price": 12_500_000, "min_price": 7_500_000, "max_price": 15_000_000},
+    "얼티밋":    {"price": 20_000_000, "min_price": 15_000_000, "max_price": None},
 }
 PACK_MAX_PULLS = 10
 POOL_SIZE = 1_000   # 시장에 상시 유지할 활성 선수 수
