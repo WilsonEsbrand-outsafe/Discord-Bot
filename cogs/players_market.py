@@ -573,6 +573,54 @@ class PlayersMarket(commands.Cog):
         )
         await interaction.followup.send(embed=_embed("🎁 선수팩 결과", summary, interaction.user))
 
+    # ───────────────── 팩 시뮬레이션 ─────────────────
+    @app_commands.command(name="팩시뮬", description="팩 뽑기 결과를 미리 시뮬레이션합니다. (잔액·보유 변경 없음)")
+    @app_commands.describe(종류="브론즈/실버/골드/플래티넘/다이아몬드/아이콘/얼티밋", 장수="1~10")
+    @app_commands.autocomplete(종류=pack_type_autocomplete)
+    async def pack_simulate(self, interaction: discord.Interaction, 종류: str, 장수: int = 1):
+        await interaction.response.defer(ephemeral=True)
+
+        종류 = (종류 or "").strip()
+        if 종류 not in PACKS:
+            kinds = ", ".join(PACKS.keys())
+            return await interaction.followup.send(
+                embed=_embed("❌ 팩시뮬", f"존재하지 않는 팩입니다.\n가능: {kinds}", interaction.user),
+                ephemeral=True,
+            )
+
+        ok, msg, results = await self.pm.simulate_pack(pack_type=종류, pulls=장수)
+        if not ok or not results:
+            return await interaction.followup.send(
+                embed=_embed("❌ 팩시뮬", msg, interaction.user), ephemeral=True
+            )
+
+        pack_price_per = PACKS[종류]["price"]
+        label_cnt = {k: 0 for k in _PRICE_LABELS}
+        lines = []
+        total_value = 0
+
+        for pid, pull_price in results:
+            label = _price_label(pull_price, pack_price_per)
+            label_cnt[label] += 1
+            row = await self.pm.get_player(pid)
+            if not row:
+                lines.append(f"• {label} `{pid}`")
+                continue
+            (_, name, nation, pos, age, ovr, potg, basev, retired, price, *_rest) = row
+            total_value += int(price)
+            lines.append(f"• {label} `{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{int(price):,}원**")
+
+        grade_summary = " / ".join(f"{k} {v}" for k, v in label_cnt.items() if v > 0)
+        summary = (
+            f"팩 단가: **{pack_price_per:,}원**\n"
+            f"{grade_summary}\n"
+            f"시뮬 현재가 합: **{total_value:,}원**\n\n"
+            f"결과 목록:\n" + "\n".join(lines[:10])
+        )
+        embed = _embed("🎲 팩 시뮬레이션 결과", summary, interaction.user)
+        embed.set_footer(text="※ 시뮬레이션 결과이며 실제 잔액·보유에 반영되지 않습니다.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     # ───────────────── 시세 그래프 ─────────────────
     @app_commands.command(name="시세", description="선수 가격 변동 그래프를 봅니다.")
     @app_commands.describe(player_id="선수 이름 또는 ID", hours="조회 시간(기본 24시간)")

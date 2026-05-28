@@ -1163,6 +1163,78 @@ class PlayerMarketDB:
 
         return True, f"🎁 {pack_type}팩 {pulls}장 개봉 완료! (총 {total_cost:,}원)", results
 
+    async def simulate_pack(self, *, pack_type: str, pulls: int) -> Tuple[bool, str, list | None]:
+        """팩 시뮬레이션 — 잔액·보유 변경 없이 뽑기 결과만 반환"""
+        pack_type = (pack_type or "").strip()
+        pulls = max(1, min(PACK_MAX_PULLS, int(pulls)))
+
+        if pack_type not in PACKS:
+            return False, "존재하지 않는 팩입니다.", None
+
+        pack = PACKS[pack_type]
+        pack_price = int(pack["price"])
+
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    min_p = int(pack.get("min_price", 0) or 0)
+                    max_p = pack.get("max_price", None)
+
+                    if max_p is not None:
+                        rows = con.execute(
+                            """
+                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
+                            FROM pm_players p
+                            LEFT JOIN pm_market m ON m.player_id = p.player_id
+                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                              AND COALESCE(m.price, p.base_value) BETWEEN ? AND ?
+                            ORDER BY cur_price DESC
+                            """,
+                            (min_p, int(max_p)),
+                        ).fetchall()
+                    else:
+                        rows = con.execute(
+                            """
+                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
+                            FROM pm_players p
+                            LEFT JOIN pm_market m ON m.player_id = p.player_id
+                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                              AND COALESCE(m.price, p.base_value) >= ?
+                            ORDER BY cur_price DESC
+                            """,
+                            (min_p,),
+                        ).fetchall()
+
+                    if not rows:
+                        return ("EMPTY_TIER", [])
+
+                    players = [(str(r[0]), int(r[1])) for r in rows]
+                    weights = [_pack_weight(pp, pack_price) for _, pp in players]
+
+                    results: List[Tuple[str, int]] = []
+                    for _ in range(pulls):
+                        chosen_pid, chosen_price = random.choices(players, weights=weights, k=1)[0]
+                        results.append((chosen_pid, chosen_price))
+
+                    # DB 변경 없음 — commit 하지 않음
+                    return ("OK", results)
+                finally:
+                    con.close()
+
+            status, results = await self._run(work)
+
+        if status == "EMPTY_TIER":
+            min_p = int(pack.get("min_price", 0) or 0)
+            max_p = pack.get("max_price", None)
+            return False, (
+                f"**{pack_type}팩** 등급({min_p:,}원~"
+                + (f"{int(max_p):,}원" if max_p else "∞")
+                + ")에 해당하는 선수가 현재 없습니다."
+            ), None
+
+        return True, f"🎲 {pack_type}팩 {pulls}장 시뮬레이션", results
+
     # ───────────────── 시장 틱 / 월 처리 ─────────────────
     async def run_tick_if_due(self, now_ts: int) -> bool:
         if not self._is_market_open(now_ts):
