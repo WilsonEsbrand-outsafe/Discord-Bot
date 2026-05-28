@@ -913,7 +913,12 @@ class PlayersMarket(commands.Cog):
         lines = []
         for i, (user_id, balance, player_value, total) in enumerate(rows, 1):
             user = self.bot.get_user(int(user_id))
-            name = user.display_name if user else f"유저 #{user_id}"
+            if user is None:
+                try:
+                    user = await self.bot.fetch_user(int(user_id))
+                except Exception:
+                    user = None
+            name = user.display_name if user else f"알 수 없는 유저"
             tag  = medals[i - 1] if i <= 3 else f"`{i}.`"
             lines.append(
                 f"{tag} **{name}**\n"
