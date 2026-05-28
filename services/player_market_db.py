@@ -654,7 +654,17 @@ class PlayerMarketDB:
         return f"P{now_ts}{random.randint(10_000_000, 99_999_999)}"
 
     def _spawn_player(self, month_index: int, now_ts: int, force_grade: Optional[str] = None) -> Dict:
-        age = random.randint(17, 22)
+        # ── 나이 분포: 유망주 55% / 전성기 30% / 베테랑 15%
+        r_age = random.random()
+        if r_age < 0.55:
+            age = random.randint(17, 22)   # 유망주
+            gap_start = random.randint(15, 30)
+        elif r_age < 0.85:
+            age = random.randint(23, 29)   # 전성기
+            gap_start = random.randint(3, 12)
+        else:
+            age = random.randint(30, 35)   # 베테랑
+            gap_start = random.randint(0, 5)
 
         if force_grade == "S":
             pot = random.randint(90, 95)
@@ -679,8 +689,10 @@ class PlayerMarketDB:
             else:
                 pot = random.randint(66, 71)
 
-        # OVR: POT 기준 15~30 아래에서 시작 (등급이 높을수록 더 높은 출발점)
-        gap_start = random.randint(15, 30)
+        # 베테랑은 나이 페널티로 pot도 살짝 깎임
+        if age >= 30:
+            pot = max(pot - random.randint(0, age - 28), 60)
+
         ovr = max(50, pot - gap_start)
 
         nation = pick_weighted_nation()
