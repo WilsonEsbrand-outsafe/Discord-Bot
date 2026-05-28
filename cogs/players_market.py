@@ -876,6 +876,58 @@ class PlayersMarket(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="전체방출", description="보유한 은퇴 선수를 전부 기준가의 30%에 방출합니다.")
+    async def bulk_release(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        count, total_payout, details = await self.pm.bulk_release_retired(interaction.user.id)
+
+        if count == 0:
+            return await interaction.followup.send(
+                embed=_embed("💀 전체 방출", "방출할 은퇴 선수가 없습니다.", interaction.user),
+                ephemeral=True,
+            )
+
+        await self.money.add_balance(interaction.user.id, total_payout)
+        bal = await self.money.get_balance(interaction.user.id)
+
+        detail_lines = [f"• **{d['name']}** x{d['qty']} → **{d['payout']:,}원**" for d in details]
+        desc = (
+            "\n".join(detail_lines)
+            + f"\n\n합계: **{total_payout:,}원** 수령\n현재 잔액: **{bal:,}원**"
+        )
+        await interaction.followup.send(
+            embed=_embed(f"💀 전체 방출 완료 ({count}명)", desc, interaction.user),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="랭킹", description="자산(잔액 + 보유 선수 시세) 기준 TOP 10을 표시합니다.")
+    async def ranking(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        rows = await self.pm.get_ranking(limit=10)
+        if not rows:
+            return await interaction.followup.send("❌ 랭킹 데이터가 없습니다.")
+
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, (user_id, balance, player_value, total) in enumerate(rows, 1):
+            user = self.bot.get_user(int(user_id))
+            name = user.display_name if user else f"유저 #{user_id}"
+            tag  = medals[i - 1] if i <= 3 else f"`{i}.`"
+            lines.append(
+                f"{tag} **{name}**\n"
+                f"　총자산 **{int(total):,}원**  |  잔액 {int(balance):,} / 선수 {int(player_value):,}"
+            )
+
+        embed = discord.Embed(
+            title="🏆 자산 랭킹 TOP 10",
+            description="\n\n".join(lines),
+            color=0xf1c40f,
+        )
+        embed.set_footer(text="잔액 + 보유 선수 현재가 합산 기준")
+        await interaction.followup.send(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(PlayersMarket(bot))

@@ -133,9 +133,9 @@ class Economy(commands.Cog):
         now_ts = int(time.time())
 
         try:
-            ok, new_bal, remaining = await self.db.claim_daily(interaction.user.id, reward, now_ts)
-        except Exception as e:
-            return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
+            ok, new_bal, remaining, streak, streak_bonus = await self.db.claim_daily(interaction.user.id, reward, now_ts)
+        except Exception as ex:
+            return await interaction.followup.send(f"❌ DB 오류: {type(ex).__name__}")
 
         if not ok:
             cur = await self.db.get_balance(interaction.user.id)
@@ -146,9 +146,20 @@ class Economy(commands.Cog):
             )
             return await interaction.followup.send(embed=e)
 
+        # 스트릭 표시 구성
+        _NEXT_MILESTONE = {v: v for v in (7, 14, 30)}
+        next_ms = next((m for m in (7, 14, 30) if m > streak), None)
+        streak_line = f"🔥 연속 출석 **{streak}일**"
+        if next_ms:
+            streak_line += f"  (다음 보너스까지 **{next_ms - streak}일**)"
+        bonus_line = f"\n🎁 **스트릭 보너스 +{streak_bonus:,}원** ({streak}일 달성!)" if streak_bonus else ""
+
         e = _embed(
             "✅ 출석 완료",
-            f"{interaction.user.mention}\n보상: **{reward:,}원**\n현재 잔액: **{new_bal:,}**",
+            f"{interaction.user.mention}\n"
+            f"기본 보상: **{reward:,}원**{bonus_line}\n"
+            f"현재 잔액: **{new_bal:,}**\n\n"
+            f"{streak_line}",
             interaction.user,
         )
         await interaction.followup.send(embed=e)

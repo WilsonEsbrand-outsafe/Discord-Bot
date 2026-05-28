@@ -2086,12 +2086,12 @@ class PlayerMarketDB:
             return await self._run(work)
 
     async def get_my_pending_trades(self, user_id: int) -> List:
-        """대기 중인 트레이드 목록 (제안자 or 수신자)"""
+        """대기 중인 트레이드 목록 (제안자 or 수신자) — 아이템 정보 포함"""
         async with self._lock:
             def work():
                 con = self._connect()
                 try:
-                    return con.execute(
+                    trades = con.execute(
                         """
                         SELECT trade_id, proposer_id, receiver_id, proposer_cash, receiver_cash, expires_at
                         FROM pm_trades
@@ -2100,6 +2100,84 @@ class PlayerMarketDB:
                         """,
                         (int(user_id), int(user_id)),
                     ).fetchall()
+                    result = []
+                    for t in trades:
+                        items = con.execute(
+                            """
+                            SELECT ti.side, COALESCE(p.name, ti.player_id), ti.qty
+                            FROM pm_trade_items ti
+                            LEFT JOIN pm_players p ON ti.player_id = p.player_id
+                            WHERE ti.trade_id=?
+                            ORDER BY ti.side, p.name
+                            """,
+                            (int(t[0]),),
+                        ).fetchall()
+                        result.append((*t, items))
+                    return result
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def get_ranking(self, limit: int = 10) -> list:
+        """잔액 + 보유 선수 현재가 합산 랭킹"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    return con.execute(
+                        """
+                        SELECT w.user_id,
+                               w.balance,
+                               COALESCE(SUM(h.qty * mk.price), 0) AS player_value,
+                               w.balance + COALESCE(SUM(h.qty * mk.price), 0) AS total
+                        FROM wallets w
+                        LEFT JOIN pm_holdings h  ON w.user_id  = h.user_id  AND h.qty > 0
+                        LEFT JOIN pm_market   mk ON h.player_id = mk.player_id
+                        GROUP BY w.user_id
+                        ORDER BY total DESC
+                        LIMIT ?
+                        """,
+                        (int(limit),),
+                    ).fetchall()
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def bulk_release_retired(self, user_id: int) -> Tuple[int, int, list]:
+        """보유한 은퇴 선수 전체 방출 → (방출 수, 총 수령액, 상세 목록)"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    rows = con.execute(
+                        """
+                        SELECT h.player_id, h.qty, p.base_value, p.name
+                        FROM pm_holdings h
+                        JOIN pm_players p ON h.player_id = p.player_id
+                        WHERE h.user_id=? AND p.retired=1 AND h.qty > 0
+                        """,
+                        (int(user_id),),
+                    ).fetchall()
+                    if not rows:
+                        return 0, 0, []
+
+                    total_payout = 0
+                    details = []
+                    con.execute("BEGIN IMMEDIATE;")
+                    for pid, qty, base_value, name in rows:
+                        payout = int(int(base_value) * 0.30) * int(qty)
+                        total_payout += payout
+                        details.append({"name": str(name), "qty": int(qty), "payout": payout})
+                        con.execute(
+                            "DELETE FROM pm_holdings WHERE user_id=? AND player_id=?",
+                            (int(user_id), str(pid)),
+                        )
+                    con.commit()
+                    return len(rows), total_payout, details
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
                 finally:
                     con.close()
             return await self._run(work)

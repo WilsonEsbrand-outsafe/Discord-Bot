@@ -33,11 +33,17 @@ class EconomyDB:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS daily_claims (
-                    user_id INTEGER PRIMARY KEY,
-                    last_claim_ts INTEGER NOT NULL DEFAULT 0
+                    user_id       INTEGER PRIMARY KEY,
+                    last_claim_ts INTEGER NOT NULL DEFAULT 0,
+                    streak        INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            # 기존 DB 마이그레이션 — streak 컬럼이 없으면 추가
+            try:
+                con.execute("ALTER TABLE daily_claims ADD COLUMN streak INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS penalty_kick (
@@ -191,10 +197,11 @@ class EconomyDB:
                     con.close()
             return await self._run(work)
 
-    async def claim_daily(self, user_id: int, reward: int, now_ts: int) -> Tuple[bool, int, int]:
+    async def claim_daily(self, user_id: int, reward: int, now_ts: int) -> Tuple[bool, int, int, int, int]:
         """
         매일 00:00(KST) 기준 하루 1회.
-        반환: (성공여부, 새잔액(성공시), 남은초(실패시))
+        반환: (성공여부, 새잔액(성공시), 남은초(실패시), 현재스트릭, 스트릭보너스)
+        스트릭 보너스: 7일 +50,000 / 14일 +150,000 / 30일 +500,000
         """
         KST_OFFSET = 9 * 3600
         now_kst = now_ts + KST_OFFSET
@@ -209,10 +216,11 @@ class EconomyDB:
                     con.execute("INSERT OR IGNORE INTO daily_claims(user_id, last_claim_ts) VALUES(?, 0)", (user_id,))
 
                     row = con.execute(
-                        "SELECT last_claim_ts FROM daily_claims WHERE user_id=?",
+                        "SELECT last_claim_ts, streak FROM daily_claims WHERE user_id=?",
                         (user_id,),
                     ).fetchone()
-                    last = int(row[0]) if row else 0
+                    last         = int(row[0]) if row else 0
+                    prev_streak  = int(row[1]) if row and row[1] is not None else 0
 
                     last_kst = last + KST_OFFSET
                     last_key = last_kst // 86400
@@ -222,14 +230,30 @@ class EconomyDB:
                         next_midnight_kst = (today_key + 1) * 86400
                         remaining = next_midnight_kst - now_kst
                         con.execute("ROLLBACK;")
-                        return (False, 0, int(remaining))
+                        return (False, 0, int(remaining), 0, 0)
 
-                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (reward, user_id))
-                    con.execute("UPDATE daily_claims SET last_claim_ts=? WHERE user_id=?", (now_ts, user_id))
+                    # 스트릭 계산
+                    if last == 0:
+                        new_streak = 1
+                    elif today_key - last_key == 1:   # 연속 출석
+                        new_streak = prev_streak + 1
+                    else:                              # 하루 이상 건너뜀
+                        new_streak = 1
+
+                    # 스트릭 보너스 (마일스톤 달성 시)
+                    _STREAK_BONUS = {7: 50_000, 14: 150_000, 30: 500_000}
+                    streak_bonus  = _STREAK_BONUS.get(new_streak, 0)
+                    total_reward  = reward + streak_bonus
+
+                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total_reward, user_id))
+                    con.execute(
+                        "UPDATE daily_claims SET last_claim_ts=?, streak=? WHERE user_id=?",
+                        (now_ts, new_streak, user_id),
+                    )
                     con.execute("COMMIT;")
 
                     new_bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()
-                    return (True, int(new_bal[0]) if new_bal else 0, 0)
+                    return (True, int(new_bal[0]) if new_bal else 0, 0, new_streak, streak_bonus)
 
                 except Exception:
                     try:

@@ -15,6 +15,75 @@ def _embed(title: str, desc: str, color: int = 0x2ecc71) -> discord.Embed:
     return discord.Embed(title=title, description=desc, color=color)
 
 
+class TradeListView(discord.ui.View):
+    """트레이드 목록 — 수신자 트레이드마다 수락/거절 버튼 표시 (최대 5건)"""
+
+    def __init__(self, trades: list, user_id: int, cog: "Trade"):
+        super().__init__(timeout=300)
+        self.cog = cog
+        received = [(t[0], t[1]) for t in trades if int(t[2]) == user_id][:5]
+        for row_idx, (trade_id, _proposer_id) in enumerate(received):
+            a = discord.ui.Button(
+                label=f"✅ #{trade_id} 수락",
+                style=discord.ButtonStyle.success,
+                custom_id=f"tl_accept_{trade_id}",
+                row=row_idx,
+            )
+            r = discord.ui.Button(
+                label=f"❌ #{trade_id} 거절",
+                style=discord.ButtonStyle.danger,
+                custom_id=f"tl_reject_{trade_id}",
+                row=row_idx,
+            )
+            a.callback = self._make_accept(trade_id)
+            r.callback = self._make_reject(trade_id)
+            self.add_item(a)
+            self.add_item(r)
+
+    def _make_accept(self, trade_id: int):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            ok, msg, proposer_id = await self.cog.pm.accept_trade(
+                trade_id=trade_id,
+                receiver_id=interaction.user.id,
+                now_ts=int(time.time()),
+                get_balance=self.cog.money.get_balance,
+                add_balance=self.cog.money.add_balance,
+            )
+            if ok and proposer_id:
+                em = discord.Embed(
+                    title="🤝 트레이드 수락됨",
+                    description=f"**{interaction.user.display_name}**님이 트레이드를 수락했습니다.",
+                    color=0x2ecc71,
+                )
+                await send_notify(self.cog.bot, self.cog.money, proposer_id, "트레이드_결과", em)
+            await interaction.followup.send(
+                embed=_embed("✅ 트레이드 수락" if ok else "❌ 수락 실패", msg, 0x2ecc71 if ok else 0xe74c3c),
+                ephemeral=True,
+            )
+        return cb
+
+    def _make_reject(self, trade_id: int):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            ok, msg, proposer_id = await self.cog.pm.reject_trade(
+                trade_id=trade_id,
+                receiver_id=interaction.user.id,
+            )
+            if ok and proposer_id:
+                em = discord.Embed(
+                    title="🤝 트레이드 거절됨",
+                    description=f"**{interaction.user.display_name}**님이 트레이드를 거절했습니다.",
+                    color=0xe74c3c,
+                )
+                await send_notify(self.cog.bot, self.cog.money, proposer_id, "트레이드_결과", em)
+            await interaction.followup.send(
+                embed=_embed("거절됨" if ok else "❌ 거절 실패", msg, 0x95a5a6 if ok else 0xe74c3c),
+                ephemeral=True,
+            )
+        return cb
+
+
 class TradeView(discord.ui.View):
     """트레이드 수락/거절 버튼 (24시간 타임아웃)"""
 
@@ -312,20 +381,27 @@ class Trade(commands.Cog):
 
         now = int(time.time())
         lines = []
-        for trade_id, proposer_id, receiver_id, p_cash, r_cash, expires_at in rows:
-            role = "📤 제안자" if int(proposer_id) == interaction.user.id else "📥 수신자"
-            h_left = max(0, int(expires_at) - now) // 3600
-            cash_note = ""
-            if int(p_cash) > 0:
-                cash_note += f" | 제안자 {int(p_cash):,}원 지불"
-            if int(r_cash) > 0:
-                cash_note += f" | 수신자 {int(r_cash):,}원 지불"
-            lines.append(f"`#{trade_id}` {role} | 만료 {h_left}h{cash_note}")
+        for trade_id, proposer_id, receiver_id, p_cash, r_cash, expires_at, items in rows:
+            role     = "📤 제안자" if int(proposer_id) == interaction.user.id else "📥 수신자"
+            h_left   = max(0, int(expires_at) - now) // 3600
+            prop_parts = [f"{name} x{qty}" for side, name, qty in items if side == "proposer"]
+            recv_parts = [f"{name} x{qty}" for side, name, qty in items if side == "receiver"]
+            if int(p_cash) > 0: prop_parts.append(f"{int(p_cash):,}원")
+            if int(r_cash) > 0: recv_parts.append(f"{int(r_cash):,}원")
+            lines.append(
+                f"`#{trade_id}` {role} | 만료 **{h_left}h**\n"
+                f"　📤 {', '.join(prop_parts) or '없음'} → 📥 {', '.join(recv_parts) or '없음'}"
+            )
 
-        await interaction.followup.send(
-            embed=_embed("🤝 트레이드 목록", "\n".join(lines), 0x2ecc71),
-            ephemeral=True,
-        )
+        has_received = any(int(r[2]) == interaction.user.id for r in rows)
+        footer = "\n\n📥 수신한 트레이드 — 아래 버튼으로 바로 수락/거절하세요." if has_received else ""
+        embed = _embed("🤝 트레이드 목록", "\n\n".join(lines) + footer, 0x3498db)
+
+        if has_received:
+            view = TradeListView(rows, interaction.user.id, self)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
