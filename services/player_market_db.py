@@ -131,17 +131,18 @@ POOL_SIZE = 1_000   # 시장에 상시 유지할 활성 선수 수
 def _pack_weight(player_price: int, pack_price: int) -> float:
     """팩 가격 기준 비대칭 가우시안 가중치.
     - peak  : player_price == pack_price → 1.0
-    - 싼 쪽 : sigma = pack_price × 0.35  (팩 가격 아래 선수 확률 급감)
-    - 비싼 쪽: sigma = pack_price × 0.45, ceiling = 0.30  (이득 가능성 확보)
+    - 싼 쪽 : sigma = pack_price × 0.20  (팩 단가 아래 선수 확률 급감)
+    - 비싼 쪽: sigma = pack_price × 0.30, ceiling = 0.65  (소폭 이득 가능)
+    분포 집중도: 팩 단가 ±10% 구간에 확률 집중, 경계(±50%)는 극히 낮음
     """
     p = max(1.0, float(player_price))
     P = max(1.0, float(pack_price))
     if p <= P:
-        sigma = P * 0.35  # 싼 선수는 확률 급감
+        sigma = P * 0.20
         return math.exp(-0.5 * ((P - p) / sigma) ** 2)
     else:
-        sigma = P * 0.55  # 비싼 선수 분포 넓게
-        return 0.80 * math.exp(-0.5 * ((p - P) / sigma) ** 2)
+        sigma = P * 0.30
+        return 0.65 * math.exp(-0.5 * ((p - P) / sigma) ** 2)
 
 # ───────────── 국적 풀(가중치) ─────────────
 # 숫자는 상대 비율(총합 1.0 필요 없음)
