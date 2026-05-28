@@ -756,6 +756,42 @@ class PlayerMarketDB:
 
             await self._run(work)
 
+    async def count_pack_pool(self) -> dict:
+        """각 팩 등급별 현재 풀 내 선수 수 반환 {pack_name: count}"""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    result = {}
+                    for pack_name, pack_data in PACKS.items():
+                        min_p = int(pack_data.get("min_price", 0) or 0)
+                        max_p = pack_data.get("max_price", None)
+                        if max_p is not None:
+                            row = con.execute(
+                                """
+                                SELECT COUNT(*) FROM pm_players p
+                                LEFT JOIN pm_market m ON m.player_id = p.player_id
+                                WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                                  AND COALESCE(m.price, p.base_value) BETWEEN ? AND ?
+                                """,
+                                (min_p, int(max_p)),
+                            ).fetchone()
+                        else:
+                            row = con.execute(
+                                """
+                                SELECT COUNT(*) FROM pm_players p
+                                LEFT JOIN pm_market m ON m.player_id = p.player_id
+                                WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                                  AND COALESCE(m.price, p.base_value) >= ?
+                                """,
+                                (min_p,),
+                            ).fetchone()
+                        result[pack_name] = int(row[0]) if row else 0
+                    return result
+                finally:
+                    con.close()
+            return await self._run(work)
+
     # ───────────────── 조회 ─────────────────
     async def search_players(self, q: str, limit: int = 10):
         q = (q or "").strip()
@@ -1077,20 +1113,9 @@ class PlayerMarketDB:
                             (min_p,),
                         ).fetchall()
 
-                    # 해당 등급 선수가 없으면 전체 풀 폴백
+                    # 해당 등급 선수가 없으면 → 환불 처리 (폴백 없음)
                     if not rows:
-                        rows = con.execute(
-                            """
-                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
-                            FROM pm_players p
-                            LEFT JOIN pm_market m ON m.player_id = p.player_id
-                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
-                            ORDER BY cur_price DESC
-                            """
-                        ).fetchall()
-
-                    if not rows:
-                        return ("EMPTY", [])
+                        return ("EMPTY_TIER", [])
 
                     # 팩 가격 기준 비대칭 가우시안 가중치 부여
                     players = [(str(r[0]), int(r[1])) for r in rows]
@@ -1116,8 +1141,15 @@ class PlayerMarketDB:
 
             status, results = await self._run(work)
 
-        if status == "EMPTY":
+        if status in ("EMPTY", "EMPTY_TIER"):
             await add_balance(user_id, total_cost)
+            if status == "EMPTY_TIER":
+                return False, (
+                    f"**{pack_type}팩** 등급({int(pack.get('min_price',0)):,}원~"
+                    + (f"{int(pack['max_price']):,}원" if pack.get("max_price") else "∞")
+                    + ")에 해당하는 선수가 현재 없습니다.\n"
+                    "💸 구입 비용이 전액 환불됐습니다."
+                ), None
             return False, "선수 풀이 비어 있습니다. (잠시 후 다시 시도)", None
 
         return True, f"🎁 {pack_type}팩 {pulls}장 개봉 완료! (총 {total_cost:,}원)", results

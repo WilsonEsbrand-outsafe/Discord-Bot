@@ -655,11 +655,14 @@ class PlayersMarket(commands.Cog):
             "플래티넘": "💎", "다이아몬드": "🔷", "아이콘": "👑", "얼티밋": "🌟",
         }
 
+        pool_counts = await self.pm.count_pack_pool()
+
         embed = discord.Embed(
             title="🎁 팩 정보",
             description=(
                 "팩 구입 가격 = 뽑기 분포의 중심가\n"
-                "**팩 단가와 비슷한 가격의 선수**가 가장 자주 등장합니다.\n\n"
+                "**팩 단가와 비슷한 가격의 선수**가 가장 자주 등장합니다.\n"
+                "해당 등급 선수가 0명이면 구매 불가 (전액 환불).\n\n"
                 "🔴 대박 `≥ 3배` · 🟠 이득 `≥ 1.3배` · 🟡 본전 `≥ 0.9배`\n"
                 "🟢 손해 `≥ 0.5배` · ⚪ 폭망 `< 0.5배`"
             ),
@@ -671,6 +674,8 @@ class PlayersMarket(commands.Cog):
             min_p    = pack_data.get("min_price", 0) or 0
             max_p    = pack_data.get("max_price", None)
             icon     = pack_emoji.get(pack_name, "🎁")
+            count    = pool_counts.get(pack_name, 0)
+            avail    = f"**{count}명**" if count > 0 else "**0명 ⚠️ 구매불가**"
             range_str = (
                 f"{min_p:,}원 ~ {max_p:,}원"
                 if max_p is not None
@@ -678,7 +683,7 @@ class PlayersMarket(commands.Cog):
             )
             embed.add_field(
                 name=f"{icon} {pack_name}팩  |  {price:,}원 / 장",
-                value=f"선수 시세 범위: **{range_str}**",
+                value=f"시세 범위: **{range_str}** | 풀: {avail}",
                 inline=False,
             )
 
