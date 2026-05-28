@@ -378,5 +378,35 @@ class Economy(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="유저초기화", description="(본인전용) 특정 유저의 모든 데이터를 DB에서 삭제합니다.")
+    @app_commands.describe(user_id="삭제할 유저의 Discord ID")
+    @app_commands.check(owner_only)
+    async def delete_user(self, interaction: discord.Interaction, user_id: str):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            uid = int(user_id.strip())
+        except ValueError:
+            return await interaction.followup.send("❌ 올바른 Discord ID를 입력하세요.", ephemeral=True)
+
+        from services.player_market_db import PlayerMarketDB
+        pm = PlayerMarketDB()
+
+        eco_result = await self.db.delete_user(uid)
+        pm_result  = await pm.delete_user(uid)
+        merged = {**eco_result, **pm_result}
+
+        if not merged:
+            return await interaction.followup.send(
+                f"ℹ️ ID `{uid}` 유저의 DB 데이터가 없습니다.", ephemeral=True
+            )
+
+        lines = [f"• `{table}` : {cnt}행" for table, cnt in merged.items()]
+        await interaction.followup.send(
+            f"✅ ID `{uid}` 유저 데이터 삭제 완료\n" + "\n".join(lines),
+            ephemeral=True,
+        )
+
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(Economy(bot))

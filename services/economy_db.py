@@ -999,6 +999,38 @@ class EconomyDB:
             saved = await self._run(work)
         return {key: saved.get(key, True) for key in NOTIFY_EVENTS}
 
+    async def delete_user(self, user_id: int) -> dict:
+        """유저의 모든 economy DB 데이터 삭제. 삭제된 행 수 반환."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    con.execute("BEGIN IMMEDIATE;")
+                    results = {}
+                    for table, col in [
+                        ("wallets",               "user_id"),
+                        ("daily_claims",          "user_id"),
+                        ("penalty_kick",          "user_id"),
+                        ("training",              "user_id"),
+                        ("notification_settings", "user_id"),
+                        ("toto_bets",             "user_id"),
+                    ]:
+                        try:
+                            cur = con.execute(f"DELETE FROM {table} WHERE {col}=?", (int(user_id),))
+                            if cur.rowcount:
+                                results[table] = cur.rowcount
+                        except Exception:
+                            pass
+                    con.commit()
+                    return results
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            return await self._run(work)
+
     # ✅ 훈련 전용(쿨타임)
     async def play_training(self, user_id: int, delta: int, now_ts: int, cooldown_sec: int = 30) -> Tuple[bool, int, int]:
         async with self._lock:

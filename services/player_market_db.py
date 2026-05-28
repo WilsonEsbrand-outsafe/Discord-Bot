@@ -2182,6 +2182,43 @@ class PlayerMarketDB:
                     con.close()
             return await self._run(work)
 
+    async def delete_user(self, user_id: int) -> dict:
+        """유저의 모든 player_market DB 데이터 삭제. 삭제된 행 수 반환."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    con.execute("BEGIN IMMEDIATE;")
+                    results = {}
+                    # 보유 선수
+                    cur = con.execute("DELETE FROM pm_holdings WHERE user_id=?", (int(user_id),))
+                    if cur.rowcount: results["pm_holdings"] = cur.rowcount
+                    # 이적시장 매물
+                    cur = con.execute("DELETE FROM pm_listings WHERE seller_id=?", (int(user_id),))
+                    if cur.rowcount: results["pm_listings"] = cur.rowcount
+                    # 트레이드 (제안자 또는 수신자)
+                    trade_ids = [r[0] for r in con.execute(
+                        "SELECT trade_id FROM pm_trades WHERE proposer_id=? OR receiver_id=?",
+                        (int(user_id), int(user_id)),
+                    ).fetchall()]
+                    if trade_ids:
+                        for tid in trade_ids:
+                            con.execute("DELETE FROM pm_trade_items WHERE trade_id=?", (int(tid),))
+                        con.execute(
+                            "DELETE FROM pm_trades WHERE proposer_id=? OR receiver_id=?",
+                            (int(user_id), int(user_id)),
+                        )
+                        results["pm_trades"] = len(trade_ids)
+                    con.commit()
+                    return results
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            return await self._run(work)
+
     async def expire_trades(self, now_ts: int) -> int:
         """만료된 트레이드 처리 — 제안자 선수 자동 반환"""
         async with self._lock:
