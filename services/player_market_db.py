@@ -114,13 +114,15 @@ AMATEUR_SQUAD: list[dict] = [
 # ───────────── 팩 5종(가격/확률) ─────────────
 PACKS = {
     # rank_from/rank_to: 현재가 기준 내림차순 랭킹 범위 (1 = 가장 비싼 선수)
-    "브론즈":   {"price":    30_000, "rank_from": 151, "rank_to": 300},
-    "실버":     {"price":    60_000, "rank_from":  61, "rank_to": 200},
-    "골드":     {"price":   200_000, "rank_from":  31, "rank_to": 120},
-    "플래티넘": {"price": 1_000_000, "rank_from":  11, "rank_to":  60},
-    "아이콘":   {"price": 1_500_000, "rank_from":   1, "rank_to":  30},
+    # 풀 사이즈 1000명 기준으로 스케일
+    "브론즈":   {"price":    30_000, "rank_from": 501, "rank_to": 1000},
+    "실버":     {"price":    60_000, "rank_from": 201, "rank_to":  700},
+    "골드":     {"price":   200_000, "rank_from": 101, "rank_to":  400},
+    "플래티넘": {"price": 1_000_000, "rank_from":  31, "rank_to":  200},
+    "아이콘":   {"price": 1_500_000, "rank_from":   1, "rank_to":  100},
 }
 PACK_MAX_PULLS = 10
+POOL_SIZE = 1_000   # 시장에 상시 유지할 활성 선수 수
 
 def _pack_weight(player_price: int, pack_price: int) -> float:
     """팩 가격 기준 비대칭 가우시안 가중치.
@@ -530,7 +532,7 @@ class PlayerMarketDB:
                     con.close()
             await self._run(work)
 
-        await self.ensure_active_pool(now_ts, target=300)
+        await self.ensure_active_pool(now_ts, target=POOL_SIZE)
 
     async def recalculate_price_ranges(self, now_ts: int) -> int:
         """모든 활성 선수의 floor/ceil을 현재 공식으로 재계산합니다.
@@ -593,7 +595,7 @@ class PlayerMarketDB:
             deleted = await asyncio.to_thread(work)
 
         # lock 밖에서 새 선수 스폰 (ensure_active_pool이 lock을 다시 획득함)
-        await self.ensure_active_pool(now_ts, target=300)
+        await self.ensure_active_pool(now_ts, target=POOL_SIZE)
 
         # 새로 생성된 활성 일반 선수 수 집계
         async with self._lock:
@@ -618,19 +620,22 @@ class PlayerMarketDB:
 
     # ───────────────── 가치 계산/스폰 ─────────────────
     def _compute_base_value(self, age: int, ovr: int, pot: int) -> int:
-        # ── OVR 지수 곡선 (OVR 55 기준 50k, 10 오를 때마다 ~2배)
+        # ── OVR 지수 곡선 (OVR 55 기준 22k, 10 오를 때마다 ~2.1배)
         # OVR 65→~200k / 75→~800k / 85→~3M / 90→~7M / 95→~20M
         ovr_f = max(0, ovr - 55)
         core = int(22_000 * (1.20 ** ovr_f))
 
-        # ── 잠재 프리미엄 (어릴수록, 갭 클수록 가중치 큼)
+        # ── 잠재 프리미엄
+        # 기존에는 gap * 0.030이었으나, 잠재력이 반영된 초기 가격과
+        # 이후 성장 후 가격 사이의 괴리를 줄이기 위해 계수를 2배로 높임.
+        # (예: OVR=72 POT=86 선수가 700k→900k 드리프트 발생 → 처음부터 900k 부근으로 시작)
         gap = max(0, pot - ovr)
         if age <= 21:
-            pot_mult = 1.0 + gap * 0.030
+            pot_mult = 1.0 + gap * 0.060   # 기존 0.030
         elif age <= 26:
-            pot_mult = 1.0 + gap * 0.018
+            pot_mult = 1.0 + gap * 0.036   # 기존 0.018
         else:
-            pot_mult = 1.0 + gap * 0.008
+            pot_mult = 1.0 + gap * 0.016   # 기존 0.008
 
         # ── 노화 페널티 (30세부터 매년 12% 감가)
         if age >= 30:
@@ -704,7 +709,7 @@ class PlayerMarketDB:
             "updated_ts": now_ts,
         }
 
-    async def ensure_active_pool(self, now_ts: int, target: int = 300) -> None:
+    async def ensure_active_pool(self, now_ts: int, target: int = POOL_SIZE) -> None:
         async with self._lock:
             def work():
                 con = self._connect()
@@ -1261,9 +1266,9 @@ class PlayerMarketDB:
                                 (int(floor_p), int(ceil_p), str(pid)),
                             )
 
-                        # 풀 유지(300명)
+                        # 풀 유지(POOL_SIZE명)
                         active = con.execute("SELECT COUNT(*) FROM pm_players WHERE retired=0").fetchone()[0]
-                        need = max(0, 300 - int(active))
+                        need = max(0, POOL_SIZE - int(active))
 
                         if need > 0:
                             # S 최소 1명 보장(생성 전 기준)
