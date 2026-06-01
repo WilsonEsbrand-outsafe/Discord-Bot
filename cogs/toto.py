@@ -145,7 +145,7 @@ class Toto(commands.Cog):
         far_str   = now_utc.replace(year=now_utc.year + 1).date().isoformat()
         fetch     = limit * 3
 
-        async def _fetch(season_year: int | None) -> list[dict]:
+        async def _fetch(season_year: int | None, silent_404: bool = False) -> list[dict]:
             """SCHEDULED + TIMED 병합해서 반환. 실패 시 빈 리스트."""
             out: list[dict] = []
             for status in ("SCHEDULED", "TIMED"):
@@ -163,17 +163,20 @@ class Toto(commands.Cog):
                         by_id.setdefault(r["id"], r)
                     out = list(by_id.values())
                 except Exception as e:
-                    print(f"[IMPORT] {competition} {status} 조회 실패(season={season_year}): {e}")
+                    # 오프시즌 폴백 중 404는 정상 — 조용히 무시
+                    is_404 = "404" in str(e)
+                    if not (silent_404 and is_404):
+                        print(f"[IMPORT] {competition} {status} 조회 실패(season={season_year}): {e}")
             return sorted(out, key=lambda m: m.get("utcDate") or "")
 
         # 1차: season 없이 조회 (API가 현재 시즌 자동 선택)
         matches = await _fetch(None)
 
-        # 2차: 결과가 없으면 작년·올해·내년 시즌 순서로 재시도
+        # 2차: 결과가 없으면 작년·올해 시즌만 재시도 (year+1은 미개막이라 404 필연)
         if not matches:
             year = now_utc.year
-            for season_year in [year - 1, year, year + 1]:
-                matches = await _fetch(season_year)
+            for season_year in [year - 1, year]:
+                matches = await _fetch(season_year, silent_404=True)
                 if matches:
                     print(f"[IMPORT] {competition}: season={season_year} 폴백으로 {len(matches)}경기 수신")
                     break
