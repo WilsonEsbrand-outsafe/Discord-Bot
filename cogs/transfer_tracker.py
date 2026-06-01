@@ -19,6 +19,7 @@ import aiohttp
 import feedparser
 
 from services.transfer_db import TransferDB
+from auth import OWNER_ID
 
 log = logging.getLogger(__name__)
 
@@ -377,6 +378,81 @@ class TransferTracker(commands.Cog):
             log.error("채널 전송 권한 없음: %s", channel.id)
         except Exception as exc:
             log.error("전송 실패: %s", exc)
+
+
+    # ── 테스트 커맨드 ────────────────────────
+    @app_commands.command(name="이적테스트", description="RUMOR·HWG·OFFICIAL 채널에 샘플 임베드를 각각 전송합니다. (관리자 전용)")
+    async def transfer_test(self, interaction: discord.Interaction):
+        if interaction.user.id != OWNER_ID:
+            return await interaction.response.send_message("❌ 관리자 전용 커맨드입니다.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+
+        samples = [
+            {
+                "channel_id": self.rumor_ch_id,
+                "label": "RUMOR",
+                "source": {"name": "TEAMtalk", "color": 0xFF6600, "emoji": "🟠", "is_romano": False},
+                "article": {
+                    "url": "https://www.teamtalk.com",
+                    "title": "[테스트] Man United target £80m striker from Serie A",
+                    "title_ko": "[테스트] 맨유, 세리에A 공격수 £8000만에 영입 노린다",
+                    "summary_ko": "맨체스터 유나이티드가 이번 여름 이적 시장에서 세리에A 소속 공격수 영입을 위해 접촉을 시작한 것으로 알려졌다.",
+                },
+            },
+            {
+                "channel_id": self.hwg_ch_id,
+                "label": "HWG",
+                "source": {"name": "Fabrizio Romano", "color": 0x00FF85, "emoji": "🔵", "is_romano": True},
+                "article": {
+                    "url": "https://fabrizio.substack.com",
+                    "title": "[테스트] Here We Go! Mbappé to Real Madrid, confirmed!",
+                    "title_ko": "[테스트] Here We Go! 음바페, 레알 마드리드 이적 확정!",
+                    "summary_ko": "파브리치오 로마노가 공식 확인했다. 킬리안 음바페가 레알 마드리드와 5년 계약에 합의했다.",
+                },
+            },
+            {
+                "channel_id": self.official_ch_id,
+                "label": "OFFICIAL",
+                "source": {"name": "Premier League · Official", "color": 0x3D195B, "emoji": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "is_official": True},
+                "article": {
+                    "url": "https://www.premierleague.com",
+                    "title": "[테스트] Arsenal officially announce signing of midfielder",
+                    "title_ko": "[테스트] 아스날, 미드필더 영입 공식 발표",
+                    "summary_ko": "아스날 FC가 공식 홈페이지를 통해 미드필더 영입을 공식 발표했다. 선수는 4년 계약에 서명했다.",
+                },
+            },
+        ]
+
+        sent = []
+        for s in samples:
+            ch = self._get_channel(s["channel_id"])
+            if not ch:
+                sent.append(f"❌ {s['label']} — 채널 미설정")
+                continue
+
+            article = s["article"]
+            is_hwg_post = s["source"].get("is_romano") and "here we go" in article["title"].lower()
+            color = 0x00FF85 if is_hwg_post else s["source"]["color"]
+
+            desc_parts = [f"🌐 *{article['title']}*", article["summary_ko"]]
+            embed = discord.Embed(
+                title=article["title_ko"][:256],
+                url=article["url"],
+                description="\n\n".join(desc_parts),
+                color=color,
+            )
+            if is_hwg_post:
+                embed.set_author(name="✅ HERE WE GO! — Fabrizio Romano")
+            else:
+                embed.set_footer(text=f"{s['source']['emoji']} {s['source']['name']}")
+
+            try:
+                await ch.send(embed=embed)
+                sent.append(f"✅ {s['label']} → <#{s['channel_id']}>")
+            except Exception as exc:
+                sent.append(f"❌ {s['label']} — {exc}")
+
+        await interaction.followup.send("\n".join(sent), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
