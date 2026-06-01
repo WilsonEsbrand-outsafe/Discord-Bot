@@ -240,7 +240,9 @@ async def _fetch_entries(session: aiohttp.ClientSession, url: str) -> list:
     except Exception as exc:
         log.warning("RSS 요청 실패 %s: %s", url, exc)
         return []
-    return feedparser.parse(content).entries
+    # feedparser.parse는 동기 CPU 작업 → to_thread로 이벤트 루프 블로킹 방지
+    feed = await asyncio.to_thread(feedparser.parse, content)
+    return feed.entries
 
 
 # ─────────────────────────────────────────
