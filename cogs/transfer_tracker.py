@@ -397,7 +397,10 @@ class TransferTracker(commands.Cog):
     async def transfer_fetch(self, interaction: discord.Interaction, 시간: int = 48):
         if interaction.user.id != OWNER_ID:
             return await interaction.response.send_message("❌ 관리자 전용 커맨드입니다.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:
+            return  # interaction 만료 — 다시 시도
 
         total = 0
         async with aiohttp.ClientSession(
