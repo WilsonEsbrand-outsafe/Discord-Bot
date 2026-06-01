@@ -163,10 +163,29 @@ class Toto(commands.Cog):
                         by_id.setdefault(r["id"], r)
                     out = list(by_id.values())
                 except Exception as e:
-                    # 오프시즌 폴백 중 404는 정상 — 조용히 무시
                     is_404 = "404" in str(e)
-                    if not (silent_404 and is_404):
+                    is_429 = "429" in str(e)
+                    if is_429:
+                        print(f"[IMPORT] {competition} rate limit(429) — 30초 대기 후 재시도")
+                        await asyncio.sleep(30)
+                        try:
+                            rows = await self.api.competition_matches(
+                                competition_code=competition,
+                                season_year=season_year,
+                                status=status,
+                                date_from=today_str,
+                                date_to=far_str,
+                                limit=fetch,
+                            )
+                            by_id = {m["id"]: m for m in out}
+                            for r in rows:
+                                by_id.setdefault(r["id"], r)
+                            out = list(by_id.values())
+                        except Exception as e2:
+                            print(f"[IMPORT] {competition} {status} 재시도 실패: {e2}")
+                    elif not (silent_404 and is_404):
                         print(f"[IMPORT] {competition} {status} 조회 실패(season={season_year}): {e}")
+                await asyncio.sleep(7)  # 분당 10요청 제한 — 요청 간 7초 간격
             return sorted(out, key=lambda m: m.get("utcDate") or "")
 
         # 1차: season 없이 조회 (API가 현재 시즌 자동 선택)
@@ -246,7 +265,7 @@ class Toto(commands.Cog):
                     for comp in self.AUTO_IMPORT_COMPETITIONS:
                         r = await self._do_import(competition=comp, limit=self.AUTO_IMPORT_FETCH)
                         total += r["added"]
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(20)  # 대회 간 rate limit 여유 확보
                     print(f"[AUTO-IMPORT] 완료: 총 {total}경기 등록")
 
             except asyncio.CancelledError:
