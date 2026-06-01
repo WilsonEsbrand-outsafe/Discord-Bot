@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 # 소스 목록
 # ─────────────────────────────────────────
 FEED_SOURCES = [
+    # ── 1군: 공신력 최상 ──────────────────────────────
     {
         "name": "Fabrizio Romano",
         "url": "https://fabrizio.substack.com/feed",
@@ -50,7 +51,72 @@ FEED_SOURCES = [
         "url": "https://feeds.bbci.co.uk/sport/football/rss.xml",
         "color": 0xBB1919,
         "emoji": "🟥",
-        "filter_keywords": True,   # 일반 경기 기사 제외, 이적 관련만
+        "filter_keywords": True,  # 일반 경기 기사 제외
+    },
+    # ── 2군: 이적 전문 / 루머 ─────────────────────────
+    {
+        "name": "TEAMtalk",
+        "url": "https://www.teamtalk.com/feed",
+        "color": 0xFF6600,
+        "emoji": "🟠",
+    },
+    {
+        "name": "Football Insider",
+        "url": "https://www.footballinsider247.com/feed/",
+        "color": 0x6A0DAD,
+        "emoji": "🟣",
+    },
+    {
+        "name": "CaughtOffside",
+        "url": "https://www.caughtoffside.com/feed/",
+        "color": 0x222222,
+        "emoji": "⚫",
+    },
+    {
+        "name": "90min · Transfers",
+        "url": "https://www.90min.com/posts.rss",
+        "color": 0x00C8FF,
+        "emoji": "🔵",
+        "filter_keywords": True,  # 일반 기사 섞임
+    },
+    {
+        "name": "Sport Witness",
+        "url": "https://www.sport-witness.com/feed/",
+        "color": 0xFFD700,
+        "emoji": "🟡",
+    },
+    # ── 3군: 유럽 현지 ───────────────────────────────
+    {
+        "name": "Calciomercato (EN)",
+        "url": "https://www.calciomercato.com/en/rss",
+        "color": 0x0070BB,
+        "emoji": "🇮🇹",
+    },
+    {
+        "name": "Football Italia",
+        "url": "https://www.football-italia.net/rss.xml",
+        "color": 0x008C45,
+        "emoji": "🇮🇹",
+    },
+    {
+        "name": "Marca (EN)",
+        "url": "https://www.marca.com/en/rss/football.xml",
+        "color": 0xFFCC00,
+        "emoji": "🇪🇸",
+        "filter_keywords": True,
+    },
+    {
+        "name": "AS (EN)",
+        "url": "https://en.as.com/rss/latest_news.xml",
+        "color": 0xD40000,
+        "emoji": "🇪🇸",
+        "filter_keywords": True,
+    },
+    {
+        "name": "Transfermarkt News",
+        "url": "https://www.transfermarkt.com/news/rss",
+        "color": 0x1F8B4C,
+        "emoji": "📊",
     },
 ]
 
