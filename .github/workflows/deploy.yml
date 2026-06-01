@@ -20,4 +20,7 @@ jobs:
             pip install -r requirements.txt --quiet
             # 환경변수 동기화 (.env 마지막 줄 업데이트)
             grep -q "^ODDS_API_KEY=" .env && sed -i "s|^ODDS_API_KEY=.*|ODDS_API_KEY=${{ secrets.ODDS_API_KEY }}|" .env || echo "ODDS_API_KEY=${{ secrets.ODDS_API_KEY }}" >> .env
+            grep -q "^TRANSFER_RUMOR_CHANNEL_ID=" .env && sed -i "s|^TRANSFER_RUMOR_CHANNEL_ID=.*|TRANSFER_RUMOR_CHANNEL_ID=${{ secrets.TRANSFER_RUMOR_CHANNEL_ID }}|" .env || echo "TRANSFER_RUMOR_CHANNEL_ID=${{ secrets.TRANSFER_RUMOR_CHANNEL_ID }}" >> .env
+            grep -q "^TRANSFER_HWG_CHANNEL_ID=" .env && sed -i "s|^TRANSFER_HWG_CHANNEL_ID=.*|TRANSFER_HWG_CHANNEL_ID=${{ secrets.TRANSFER_HWG_CHANNEL_ID }}|" .env || echo "TRANSFER_HWG_CHANNEL_ID=${{ secrets.TRANSFER_HWG_CHANNEL_ID }}" >> .env
+            grep -q "^TRANSFER_OFFICIAL_CHANNEL_ID=" .env && sed -i "s|^TRANSFER_OFFICIAL_CHANNEL_ID=.*|TRANSFER_OFFICIAL_CHANNEL_ID=${{ secrets.TRANSFER_OFFICIAL_CHANNEL_ID }}|" .env || echo "TRANSFER_OFFICIAL_CHANNEL_ID=${{ secrets.TRANSFER_OFFICIAL_CHANNEL_ID }}" >> .env
             sudo systemctl restart discord-bot
