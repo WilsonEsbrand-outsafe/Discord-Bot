@@ -233,7 +233,7 @@ async def on_ready():
     print(f"🤖 로그인 성공: {bot.user} (ID: {bot.user.id})")
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify")
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.transfer_tracker")
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
