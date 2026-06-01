@@ -2378,14 +2378,19 @@ class PlayerMarketDB:
                             "UPDATE pm_listings SET status='expired' WHERE listing_id=?",
                             (int(lid),),
                         )
-                        con.execute(
-                            """
-                            INSERT INTO pm_holdings(user_id, player_id, qty)
-                            VALUES(?, ?, ?)
-                            ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty
-                            """,
-                            (int(s_id), str(pid), int(qty)),
-                        )
+                        # 선수가 pm_players에 존재할 때만 보유 반환 (FK 오류 방지)
+                        exists = con.execute(
+                            "SELECT 1 FROM pm_players WHERE player_id=?", (str(pid),)
+                        ).fetchone()
+                        if exists:
+                            con.execute(
+                                """
+                                INSERT INTO pm_holdings(user_id, player_id, qty)
+                                VALUES(?, ?, ?)
+                                ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty
+                                """,
+                                (int(s_id), str(pid), int(qty)),
+                            )
                     con.commit()
                     return [
                         {"seller_id": int(r[1]), "name": str(r[4]), "qty": int(r[3])}
