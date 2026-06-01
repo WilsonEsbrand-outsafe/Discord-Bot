@@ -1,5 +1,10 @@
 # cogs/transfer_tracker.py
-# 실시간 이적 트래커 — RSS 폴링 후 자동 채널 전송
+# 실시간 이적 트래커 — RSS 폴링 후 채널별 자동 전송
+#
+# 채널 라우팅:
+#   RUMOR   ← 일반 루머/가십/링크
+#   HWG     ← Romano 피드에서 "Here We Go" 포함 기사만
+#   OFFICIAL← 클럽 공식 발표 RSS + 강한 확정 키워드 기사
 
 import os
 import re
@@ -27,6 +32,7 @@ FEED_SOURCES = [
         "url": "https://fabrizio.substack.com/feed",
         "color": 0x1DA1F2,
         "emoji": "🔵",
+        "is_romano": True,   # HWG 감지 대상
     },
     {
         "name": "The Guardian · Transfers",
@@ -51,7 +57,7 @@ FEED_SOURCES = [
         "url": "https://feeds.bbci.co.uk/sport/football/rss.xml",
         "color": 0xBB1919,
         "emoji": "🟥",
-        "filter_keywords": True,  # 일반 경기 기사 제외
+        "filter_keywords": True,
     },
     # ── 2군: 이적 전문 / 루머 ─────────────────────────
     {
@@ -77,7 +83,7 @@ FEED_SOURCES = [
         "url": "https://www.90min.com/posts.rss",
         "color": 0x00C8FF,
         "emoji": "🔵",
-        "filter_keywords": True,  # 일반 기사 섞임
+        "filter_keywords": True,
     },
     {
         "name": "Sport Witness",
@@ -118,20 +124,46 @@ FEED_SOURCES = [
         "color": 0x1F8B4C,
         "emoji": "📊",
     },
+    # ── 클럽 공식 발표 (OFFICIAL 채널 전용) ──────────
+    {
+        "name": "Premier League · Official",
+        "url": "https://www.premierleague.com/news.rss",
+        "color": 0x3D195B,
+        "emoji": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+        "is_official": True,
+    },
+    {
+        "name": "UEFA · Official",
+        "url": "https://www.uefa.com/rssfeed/index.xml",
+        "color": 0x003087,
+        "emoji": "🇪🇺",
+        "is_official": True,
+        "filter_keywords": True,  # UEFA는 경기 기사도 많으므로 필터
+    },
 ]
 
-# 이적 관련 키워드 — 하나라도 포함되어야 전송
+# ── 이적 관련 키워드 (filter_keywords 소스용) ────────
 TRANSFER_KEYWORDS = {
     "transfer", "sign", "signing", "signed", "loan", "deal", "move",
     "join", "joins", "fee", "here we go", "agreement", "medical",
     "contract", "bid", "sell", "depart", "exit", "swap", "permanent",
     "release", "bought", "official", "completed", "announce", "unveiled",
-    "done deal", "confirmed", "seal", "sealed",
+    "done deal", "confirmed", "seal", "sealed", "interest", "target",
+    "linked", "approach", "offer", "pursue", "want",
 }
 
-POLL_MINUTES = 7           # 폴링 주기
-MAX_PER_SOURCE = 10        # 소스당 한 번에 최대 전송 개수
-MAX_AGE_HOURS = 24         # 24시간 이내 기사만 처리
+# ── 공식 확정 키워드 (OFFICIAL 채널 라우팅용) ─────────
+OFFICIAL_KEYWORDS = {
+    "officially announces", "officially confirmed", "has signed",
+    "signs for", "completes move", "completes transfer", "unveiled as",
+    "medical completed", "done deal", "permanent deal", "joins on",
+    "seals move", "officially joins", "confirmed signing",
+    "agree personal terms", "agreement reached",
+}
+
+POLL_MINUTES   = 7
+MAX_PER_SOURCE = 10
+MAX_AGE_HOURS  = 24
 _HTML_TAG = re.compile(r"<[^>]+>")
 
 
@@ -148,17 +180,26 @@ def _is_transfer_news(title: str, summary: str) -> bool:
     return any(kw in combined for kw in TRANSFER_KEYWORDS)
 
 
+def _is_hwg(title: str, summary: str) -> bool:
+    """Romano의 'Here We Go' 기사인지 확인."""
+    return "here we go" in (title + " " + summary).lower()
+
+
+def _is_official_news(title: str, summary: str) -> bool:
+    """강한 확정 키워드가 포함된 공식 발표인지 확인."""
+    combined = (title + " " + summary).lower()
+    return any(kw in combined for kw in OFFICIAL_KEYWORDS)
+
+
 def _is_recent(entry) -> bool:
-    """RSS 항목이 MAX_AGE_HOURS 이내인지 확인."""
     published = getattr(entry, "published_parsed", None)
     if not published:
-        return True  # 날짜 없으면 허용
-    age = time.time() - time.mktime(published)
-    return age < MAX_AGE_HOURS * 3600
+        return True
+    return (time.time() - time.mktime(published)) < MAX_AGE_HOURS * 3600
 
 
 async def _translate(text: str, session: aiohttp.ClientSession) -> str:
-    """Google Translate 비공식 endpoint로 한국어 번역. 실패 시 원문 반환."""
+    """Google Translate 비공식 endpoint — 실패 시 원문 반환."""
     if not text:
         return ""
     try:
@@ -177,7 +218,7 @@ async def _translate(text: str, session: aiohttp.ClientSession) -> str:
 
 
 async def _fetch_entries(session: aiohttp.ClientSession, url: str) -> list:
-    """RSS 피드를 가져와 feedparser entries 반환. 실패 시 빈 리스트."""
+    """RSS 피드 → feedparser entries. 실패 시 빈 리스트."""
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
@@ -197,22 +238,41 @@ async def _fetch_entries(session: aiohttp.ClientSession, url: str) -> list:
 class TransferTracker(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = TransferDB()
-        self.channel_id = int(os.getenv("TRANSFER_CHANNEL_ID", 0))
+        self.db  = TransferDB()
+        # 채널 ID (설정 안 된 경우 0 → 해당 채널 스킵)
+        self.rumor_ch_id    = int(os.getenv("TRANSFER_RUMOR_CHANNEL_ID",    0))
+        self.hwg_ch_id      = int(os.getenv("TRANSFER_HWG_CHANNEL_ID",      0))
+        self.official_ch_id = int(os.getenv("TRANSFER_OFFICIAL_CHANNEL_ID", 0))
         self._first_run = True
         self._poll.start()
 
     def cog_unload(self):
         self._poll.cancel()
 
+    def _get_channel(self, ch_id: int) -> discord.TextChannel | None:
+        if not ch_id:
+            return None
+        ch = self.bot.get_channel(ch_id)
+        return ch if isinstance(ch, discord.TextChannel) else None
+
+    def _route(
+        self, source: dict, title: str, summary: str
+    ) -> discord.TextChannel | None:
+        """기사를 어느 채널로 보낼지 결정."""
+        # 1순위: Romano + HWG → HWG 채널
+        if source.get("is_romano") and _is_hwg(title, summary):
+            return self._get_channel(self.hwg_ch_id)
+        # 2순위: 클럽 공식 피드 OR 강한 확정 키워드 → OFFICIAL 채널
+        if source.get("is_official") or _is_official_news(title, summary):
+            return self._get_channel(self.official_ch_id)
+        # 기본: RUMOR 채널
+        return self._get_channel(self.rumor_ch_id)
+
     # ── 백그라운드 폴링 ──────────────────────
     @tasks.loop(minutes=POLL_MINUTES)
     async def _poll(self):
-        if not self.channel_id:
-            return
-
-        channel = self.bot.get_channel(self.channel_id)
-        if not channel or not isinstance(channel, discord.TextChannel):
+        # 채널 하나라도 설정돼 있으면 실행
+        if not any([self.rumor_ch_id, self.hwg_ch_id, self.official_ch_id]):
             return
 
         async with aiohttp.ClientSession(
@@ -220,7 +280,7 @@ class TransferTracker(commands.Cog):
         ) as session:
             for source in FEED_SOURCES:
                 try:
-                    await self._process_source(channel, session, source)
+                    await self._process_source(session, source)
                 except Exception as exc:
                     log.error("소스 처리 오류 [%s]: %s", source["name"], exc)
                 await asyncio.sleep(2)
@@ -235,7 +295,6 @@ class TransferTracker(commands.Cog):
     # ── 소스별 처리 ─────────────────────────
     async def _process_source(
         self,
-        channel: discord.TextChannel,
         session: aiohttp.ClientSession,
         source: dict,
     ) -> None:
@@ -247,7 +306,6 @@ class TransferTracker(commands.Cog):
             if not url:
                 continue
 
-            # 첫 기동 시 기존 기사는 seen만 등록하고 전송 안 함
             if self._first_run:
                 self.db.mark_seen(url)
                 continue
@@ -257,11 +315,9 @@ class TransferTracker(commands.Cog):
             if not _is_recent(entry):
                 continue
 
-            title = _strip_html(entry.get("title", ""))
+            title   = _strip_html(entry.get("title", ""))
             summary = _strip_html(entry.get("summary", entry.get("description", "")))[:400]
 
-            # BBC Sport은 일반 경기 기사가 섞이므로 최소 필터 유지
-            # 나머지 소스는 이미 이적 전문 피드라 필터 없이 전부 수집
             if source.get("filter_keywords") and not _is_transfer_news(title, summary):
                 continue
 
@@ -270,8 +326,13 @@ class TransferTracker(commands.Cog):
                 break
 
         for article in to_post:
-            await self._send_article(channel, session, source, article)
-            await asyncio.sleep(1.5)
+            channel = self._route(source, article["title"], article["summary"])
+            if channel:
+                await self._send_article(channel, session, source, article)
+                await asyncio.sleep(1.5)
+            else:
+                # 채널 미설정이면 seen만 등록 (다음 폴링 때 중복 방지)
+                self.db.mark_seen(article["url"])
 
     # ── 임베드 전송 ─────────────────────────
     async def _send_article(
@@ -281,35 +342,37 @@ class TransferTracker(commands.Cog):
         source: dict,
         article: dict,
     ) -> None:
-        title_ko = await _translate(article["title"], session)
+        title_ko   = await _translate(article["title"],   session)
         summary_ko = await _translate(article["summary"], session) if article["summary"] else ""
 
-        # 제목이 이미 한국어거나 번역 실패면 원문 그대로
         display_title = title_ko or article["title"]
+        is_hwg_post   = source.get("is_romano") and _is_hwg(article["title"], article["summary"])
 
         desc_parts: list[str] = []
-        # 원문 제목 (번역과 다를 때만)
         if title_ko and title_ko != article["title"]:
             desc_parts.append(f"🌐 *{article['title']}*")
-        # 한국어 요약
         if summary_ko:
             desc_parts.append(summary_ko)
-        # 원문 요약 (번역과 다를 때만, 200자 이내)
         if article["summary"] and summary_ko != article["summary"]:
             desc_parts.append(f"> *{article['summary'][:200]}*")
 
+        color = 0x00FF85 if is_hwg_post else source["color"]  # HWG는 초록 강조
         embed = discord.Embed(
             title=display_title[:256],
             url=article["url"],
             description="\n\n".join(desc_parts)[:4096],
-            color=source["color"],
+            color=color,
         )
-        embed.set_footer(text=f"{source['emoji']} {source['name']}")
+
+        if is_hwg_post:
+            embed.set_author(name="✅ HERE WE GO! — Fabrizio Romano")
+        else:
+            embed.set_footer(text=f"{source['emoji']} {source['name']}")
 
         try:
             await channel.send(embed=embed)
             self.db.mark_seen(article["url"])
-            log.info("이적 소식 전송: %s", article["title"][:60])
+            log.info("[%s] %s", channel.name, article["title"][:60])
         except discord.Forbidden:
             log.error("채널 전송 권한 없음: %s", channel.id)
         except Exception as exc:
