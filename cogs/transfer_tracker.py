@@ -242,9 +242,9 @@ class TransferTracker(commands.Cog):
         self.bot = bot
         self.db  = TransferDB()
         # 채널 ID (설정 안 된 경우 0 → 해당 채널 스킵)
-        self.rumor_ch_id    = int(os.getenv("TRANSFER_RUMOR_CHANNEL_ID",    0))
-        self.hwg_ch_id      = int(os.getenv("TRANSFER_HWG_CHANNEL_ID",      0))
-        self.official_ch_id = int(os.getenv("TRANSFER_OFFICIAL_CHANNEL_ID", 0))
+        self.rumor_ch_id    = int(os.getenv("TRANSFER_RUMOR_CHANNEL_ID")    or 0)
+        self.hwg_ch_id      = int(os.getenv("TRANSFER_HWG_CHANNEL_ID")      or 0)
+        self.official_ch_id = int(os.getenv("TRANSFER_OFFICIAL_CHANNEL_ID") or 0)
         self._first_run = True
         self._poll.start()
 
