@@ -17,6 +17,7 @@ jobs:
           script: |
             cd /home/ubuntu/discord-bot
             git pull origin main
+            pip install -r requirements.txt --quiet
             # 환경변수 동기화 (.env 마지막 줄 업데이트)
             grep -q "^ODDS_API_KEY=" .env && sed -i "s|^ODDS_API_KEY=.*|ODDS_API_KEY=${{ secrets.ODDS_API_KEY }}|" .env || echo "ODDS_API_KEY=${{ secrets.ODDS_API_KEY }}" >> .env
             sudo systemctl restart discord-bot
