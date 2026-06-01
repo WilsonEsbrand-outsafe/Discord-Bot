@@ -471,7 +471,7 @@ class TransferTracker(commands.Cog):
                         continue
 
                     channel = self._route(source, title, summary)
-                    if channel and not self.db.is_seen(url):
+                    if channel:
                         await self._send_article(channel, session, source, {"url": url, "title": title, "summary": summary})
                         total += 1
                         await asyncio.sleep(1.5)
