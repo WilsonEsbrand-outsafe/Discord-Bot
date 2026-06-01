@@ -37,14 +37,15 @@ FEED_SOURCES = [
         "is_romano": True,   # HWG 감지 대상
     },
     {
-        "name": "The Guardian · Transfers",
-        "url": "https://www.theguardian.com/football/transfers/rss",
+        "name": "The Guardian · Football",
+        "url": "https://www.theguardian.com/football/rss",
         "color": 0x005689,
         "emoji": "🔵",
+        "filter_keywords": True,
     },
     {
         "name": "Gianluca Di Marzio",
-        "url": "https://www.gianlucadimarzio.com/en/feed",
+        "url": "https://www.gianlucadimarzio.com/feed",
         "color": 0x009246,
         "emoji": "🟢",
     },
@@ -64,7 +65,7 @@ FEED_SOURCES = [
     # ── 2군: 이적 전문 / 루머 ─────────────────────────
     {
         "name": "TEAMtalk",
-        "url": "https://www.teamtalk.com/feed",
+        "url": "https://www.teamtalk.com/rss",
         "color": 0xFF6600,
         "emoji": "🟠",
     },
@@ -86,12 +87,6 @@ FEED_SOURCES = [
         "color": 0x00C8FF,
         "emoji": "🔵",
         "filter_keywords": True,
-    },
-    {
-        "name": "Sport Witness",
-        "url": "https://www.sport-witness.com/feed/",
-        "color": 0xFFD700,
-        "emoji": "🟡",
     },
     # ── 3군: 영국 타블로이드 (루머 多) ───────────────────
     {
@@ -138,12 +133,6 @@ FEED_SOURCES = [
     },
     # ── 4군: 유럽 현지 ───────────────────────────────
     {
-        "name": "Calciomercato (EN)",
-        "url": "https://www.calciomercato.com/en/rss",
-        "color": 0x0070BB,
-        "emoji": "🇮🇹",
-    },
-    {
         "name": "Football Italia",
         "url": "https://www.football-italia.net/rss.xml",
         "color": 0x008C45,
@@ -157,47 +146,11 @@ FEED_SOURCES = [
         "filter_keywords": True,
     },
     {
-        "name": "AS (EN)",
-        "url": "https://en.as.com/rss/latest_news.xml",
-        "color": 0xD40000,
-        "emoji": "🇪🇸",
-        "filter_keywords": True,
-    },
-    {
         "name": "Mundo Deportivo (EN)",
         "url": "https://www.mundodeportivo.com/rss/home.xml",
         "color": 0x004FC3,
         "emoji": "🇪🇸",
         "filter_keywords": True,
-    },
-    {
-        "name": "RMC Sport · Transferts",
-        "url": "https://www.rmcsport.fr/transferts/rss/",
-        "color": 0x0066CC,
-        "emoji": "🇫🇷",
-        "filter_keywords": True,
-    },
-    {
-        "name": "Transfermarkt News",
-        "url": "https://www.transfermarkt.com/news/rss",
-        "color": 0x1F8B4C,
-        "emoji": "📊",
-    },
-    # ── 클럽 공식 발표 (OFFICIAL 채널 전용) ──────────
-    {
-        "name": "Premier League · Official",
-        "url": "https://www.premierleague.com/news.rss",
-        "color": 0x3D195B,
-        "emoji": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
-        "is_official": True,
-    },
-    {
-        "name": "UEFA · Official",
-        "url": "https://www.uefa.com/rssfeed/index.xml",
-        "color": 0x003087,
-        "emoji": "🇪🇺",
-        "is_official": True,
-        "filter_keywords": True,  # UEFA는 경기 기사도 많으므로 필터
     },
 ]
 
