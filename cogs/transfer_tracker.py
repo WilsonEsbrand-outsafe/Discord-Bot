@@ -50,6 +50,7 @@ FEED_SOURCES = [
         "url": "https://feeds.bbci.co.uk/sport/football/rss.xml",
         "color": 0xBB1919,
         "emoji": "🟥",
+        "filter_keywords": True,   # 일반 경기 기사 제외, 이적 관련만
     },
 ]
 
@@ -63,7 +64,7 @@ TRANSFER_KEYWORDS = {
 }
 
 POLL_MINUTES = 7           # 폴링 주기
-MAX_PER_SOURCE = 3         # 소스당 한 번에 최대 전송 개수
+MAX_PER_SOURCE = 10        # 소스당 한 번에 최대 전송 개수
 MAX_AGE_HOURS = 24         # 24시간 이내 기사만 처리
 _HTML_TAG = re.compile(r"<[^>]+>")
 
@@ -193,7 +194,9 @@ class TransferTracker(commands.Cog):
             title = _strip_html(entry.get("title", ""))
             summary = _strip_html(entry.get("summary", entry.get("description", "")))[:400]
 
-            if not _is_transfer_news(title, summary):
+            # BBC Sport은 일반 경기 기사가 섞이므로 최소 필터 유지
+            # 나머지 소스는 이미 이적 전문 피드라 필터 없이 전부 수집
+            if source.get("filter_keywords") and not _is_transfer_news(title, summary):
                 continue
 
             to_post.append({"url": url, "title": title, "summary": summary})
