@@ -438,6 +438,46 @@ class TransferTracker(commands.Cog):
             log.error("전송 실패: %s", exc)
 
 
+    # ── 수동 불러오기 ────────────────────────
+    @app_commands.command(name="이적불러오기", description="최근 N시간 기사를 강제 수집해 채널에 올립니다. (관리자 전용)")
+    @app_commands.describe(시간="몇 시간 전까지 불러올지 (기본 48)")
+    async def transfer_fetch(self, interaction: discord.Interaction, 시간: int = 48):
+        if interaction.user.id != OWNER_ID:
+            return await interaction.response.send_message("❌ 관리자 전용 커맨드입니다.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+
+        total = 0
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": "Mozilla/5.0 (TransferTrackerBot/1.0)"}
+        ) as session:
+            for source in FEED_SOURCES:
+                entries = await _fetch_entries(session, source["url"])
+                for entry in entries:
+                    url = entry.get("link", "").strip()
+                    if not url:
+                        continue
+
+                    # seen 무시, 시간 필터만 적용
+                    published = getattr(entry, "published_parsed", None)
+                    if published:
+                        age = time.time() - time.mktime(published)
+                        if age > 시간 * 3600:
+                            continue
+
+                    title   = _strip_html(entry.get("title", ""))
+                    summary = _strip_html(entry.get("summary", entry.get("description", "")))[:400]
+
+                    if source.get("filter_keywords") and not _is_transfer_news(title, summary):
+                        continue
+
+                    channel = self._route(source, title, summary)
+                    if channel and not self.db.is_seen(url):
+                        await self._send_article(channel, session, source, {"url": url, "title": title, "summary": summary})
+                        total += 1
+                        await asyncio.sleep(1.5)
+
+        await interaction.followup.send(f"✅ {시간}시간 이내 기사 **{total}개** 전송 완료", ephemeral=True)
+
     # ── 테스트 커맨드 ────────────────────────
     @app_commands.command(name="이적테스트", description="RUMOR·HWG·OFFICIAL 채널에 샘플 임베드를 각각 전송합니다. (관리자 전용)")
     async def transfer_test(self, interaction: discord.Interaction):
