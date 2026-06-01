@@ -93,7 +93,50 @@ FEED_SOURCES = [
         "color": 0xFFD700,
         "emoji": "🟡",
     },
-    # ── 3군: 유럽 현지 ───────────────────────────────
+    # ── 3군: 영국 타블로이드 (루머 多) ───────────────────
+    {
+        "name": "Daily Mail · Football",
+        "url": "https://www.dailymail.co.uk/sport/football/index.rss",
+        "color": 0x004B87,
+        "emoji": "🗞️",
+        "filter_keywords": True,
+    },
+    {
+        "name": "Mirror · Football",
+        "url": "https://www.mirror.co.uk/sport/football/rss.xml",
+        "color": 0xC8102E,
+        "emoji": "🗞️",
+        "filter_keywords": True,
+    },
+    {
+        "name": "The Sun · Football",
+        "url": "https://www.thesun.co.uk/sport/football/feed/",
+        "color": 0xFF6600,
+        "emoji": "🗞️",
+        "filter_keywords": True,
+    },
+    {
+        "name": "The Independent · Football",
+        "url": "https://www.independent.co.uk/sport/football/rss",
+        "color": 0xD0021B,
+        "emoji": "🗞️",
+        "filter_keywords": True,
+    },
+    {
+        "name": "talkSPORT",
+        "url": "https://talksport.com/football/feed/",
+        "color": 0xFF4500,
+        "emoji": "📻",
+        "filter_keywords": True,
+    },
+    {
+        "name": "GiveMeSport",
+        "url": "https://www.givemesport.com/feed/",
+        "color": 0x00AAFF,
+        "emoji": "⚽",
+        "filter_keywords": True,
+    },
+    # ── 4군: 유럽 현지 ───────────────────────────────
     {
         "name": "Calciomercato (EN)",
         "url": "https://www.calciomercato.com/en/rss",
@@ -118,6 +161,20 @@ FEED_SOURCES = [
         "url": "https://en.as.com/rss/latest_news.xml",
         "color": 0xD40000,
         "emoji": "🇪🇸",
+        "filter_keywords": True,
+    },
+    {
+        "name": "Mundo Deportivo (EN)",
+        "url": "https://www.mundodeportivo.com/rss/home.xml",
+        "color": 0x004FC3,
+        "emoji": "🇪🇸",
+        "filter_keywords": True,
+    },
+    {
+        "name": "RMC Sport · Transferts",
+        "url": "https://www.rmcsport.fr/transferts/rss/",
+        "color": 0x0066CC,
+        "emoji": "🇫🇷",
         "filter_keywords": True,
     },
     {
