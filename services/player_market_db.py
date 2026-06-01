@@ -135,6 +135,40 @@ def _pack_weight(player_price: int, pack_price: int) -> float:
     sigma = P * 0.20
     return math.exp(-0.5 * ((p - P) / sigma) ** 2)
 
+
+def _draw_from_pool(
+    con, pack: dict, pack_price: int, pulls: int
+) -> tuple[str, list]:
+    """풀 쿼리·가중치·random.choices — buy_pack / simulate_pack 공유 헬퍼.
+
+    Returns:
+        ("EMPTY_TIER", []) — 해당 등급 선수 없음
+        ("OK", [(pid, cur_price, name, nation, position, ovr), ...])
+    """
+    min_p = int(pack.get("min_price", 0) or 0)
+    max_p = pack.get("max_price", None)
+    sentinel = int(max_p) if max_p is not None else 999_999_999_999
+
+    rows = con.execute(
+        """
+        SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price,
+               p.name, p.nation, p.position, p.ovr
+        FROM pm_players p
+        LEFT JOIN pm_market m ON m.player_id = p.player_id
+        WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+          AND COALESCE(m.price, p.base_value) BETWEEN ? AND ?
+        ORDER BY cur_price DESC
+        """,
+        (min_p, sentinel),
+    ).fetchall()
+
+    if not rows:
+        return ("EMPTY_TIER", [])
+
+    players = [(str(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), int(r[5])) for r in rows]
+    weights = [_pack_weight(p[1], pack_price) for p in players]
+    return ("OK", random.choices(players, weights=weights, k=pulls))
+
 # ───────────── 국적 풀(가중치) ─────────────
 # 숫자는 상대 비율(총합 1.0 필요 없음)
 NATIONS = [
@@ -1076,7 +1110,7 @@ class PlayerMarketDB:
         pulls = max(1, min(PACK_MAX_PULLS, int(pulls)))
 
         if pack_type not in PACKS:
-            return False, "존재하지 않는 팩입니다. (브론즈/실버/골드/플래티넘/아이콘)", None
+            return False, f"존재하지 않는 팩입니다. ({'/'.join(PACKS.keys())})", None
 
         pack = PACKS[pack_type]
         pack_price = int(pack["price"])
@@ -1093,56 +1127,21 @@ class PlayerMarketDB:
             def work():
                 con = self._connect()
                 try:
-                    # 절대 가격 범위 기반으로 풀 필터링 (풀 크기 변화에 무관)
-                    min_p = int(pack.get("min_price", 0) or 0)
-                    max_p = pack.get("max_price", None)
-
-                    if max_p is not None:
-                        rows = con.execute(
-                            """
-                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
-                            FROM pm_players p
-                            LEFT JOIN pm_market m ON m.player_id = p.player_id
-                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
-                              AND COALESCE(m.price, p.base_value) BETWEEN ? AND ?
-                            ORDER BY cur_price DESC
-                            """,
-                            (min_p, int(max_p)),
-                        ).fetchall()
-                    else:
-                        rows = con.execute(
-                            """
-                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
-                            FROM pm_players p
-                            LEFT JOIN pm_market m ON m.player_id = p.player_id
-                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
-                              AND COALESCE(m.price, p.base_value) >= ?
-                            ORDER BY cur_price DESC
-                            """,
-                            (min_p,),
-                        ).fetchall()
-
-                    # 해당 등급 선수가 없으면 → 환불 처리 (폴백 없음)
-                    if not rows:
+                    status, drawn = _draw_from_pool(con, pack, pack_price, pulls)
+                    if status == "EMPTY_TIER":
                         return ("EMPTY_TIER", [])
-
-                    # 팩 가격 기준 비대칭 가우시안 가중치 부여
-                    players = [(str(r[0]), int(r[1])) for r in rows]
-                    weights = [_pack_weight(pp, pack_price) for _, pp in players]
-
-                    results: List[Tuple[str, int]] = []
-                    for _ in range(pulls):
-                        chosen_pid, chosen_price = random.choices(players, weights=weights, k=1)[0]
-                        results.append((chosen_pid, chosen_price))
+                    results = []
+                    for row in drawn:
+                        pid = row[0]
+                        results.append(row)
                         con.execute(
                             """
                             INSERT INTO pm_holdings(user_id, player_id, qty)
                             VALUES(?, ?, 1)
                             ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+1
                             """,
-                            (int(user_id), str(chosen_pid)),
+                            (int(user_id), pid),
                         )
-
                     con.commit()
                     return ("OK", results)
                 finally:
@@ -1178,47 +1177,7 @@ class PlayerMarketDB:
             def work():
                 con = self._connect()
                 try:
-                    min_p = int(pack.get("min_price", 0) or 0)
-                    max_p = pack.get("max_price", None)
-
-                    if max_p is not None:
-                        rows = con.execute(
-                            """
-                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
-                            FROM pm_players p
-                            LEFT JOIN pm_market m ON m.player_id = p.player_id
-                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
-                              AND COALESCE(m.price, p.base_value) BETWEEN ? AND ?
-                            ORDER BY cur_price DESC
-                            """,
-                            (min_p, int(max_p)),
-                        ).fetchall()
-                    else:
-                        rows = con.execute(
-                            """
-                            SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price
-                            FROM pm_players p
-                            LEFT JOIN pm_market m ON m.player_id = p.player_id
-                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
-                              AND COALESCE(m.price, p.base_value) >= ?
-                            ORDER BY cur_price DESC
-                            """,
-                            (min_p,),
-                        ).fetchall()
-
-                    if not rows:
-                        return ("EMPTY_TIER", [])
-
-                    players = [(str(r[0]), int(r[1])) for r in rows]
-                    weights = [_pack_weight(pp, pack_price) for _, pp in players]
-
-                    results: List[Tuple[str, int]] = []
-                    for _ in range(pulls):
-                        chosen_pid, chosen_price = random.choices(players, weights=weights, k=1)[0]
-                        results.append((chosen_pid, chosen_price))
-
-                    # DB 변경 없음 — commit 하지 않음
-                    return ("OK", results)
+                    return _draw_from_pool(con, pack, pack_price, pulls)
                 finally:
                     con.close()
 

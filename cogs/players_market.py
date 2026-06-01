@@ -39,6 +39,29 @@ def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
     e.set_author(name=user.display_name, icon_url=user.display_avatar.url)
     return e
 
+def _format_pack_results(
+    results: list, pack_price_per: int
+) -> tuple[str, str, int]:
+    """팩 뽑기 결과를 포맷팅. /선수팩 · /팩시뮬 공통 사용.
+
+    Args:
+        results: _draw_from_pool이 반환한 (pid, cur_price, name, nation, position, ovr) 리스트
+        pack_price_per: 팩 단가
+
+    Returns:
+        (grade_summary, lines_text, total_value)
+    """
+    label_cnt = {k: 0 for k in _PRICE_LABELS}
+    lines = []
+    total_value = 0
+    for pid, cur_price, name, nation, pos, ovr in results:
+        label = _price_label(cur_price, pack_price_per)
+        label_cnt[label] += 1
+        total_value += cur_price
+        lines.append(f"• {label} `{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{cur_price:,}원**")
+    grade_summary = " / ".join(f"{k} {v}" for k, v in label_cnt.items() if v > 0)
+    return grade_summary, "\n".join(lines[:10]), total_value
+
 # ───────────────── 즉시판매 UI ─────────────────
 _SORT_LABELS = [
     ("💰 가격↓", "price", True),
@@ -547,29 +570,15 @@ class PlayersMarket(commands.Cog):
             return await interaction.followup.send(embed=_embed("❌ 선수팩", msg, interaction.user))
 
         pack_price_per = PACKS[종류]["price"]
-        label_cnt = {k: 0 for k in _PRICE_LABELS}
-        lines = []
-        total_value = 0
-
-        for pid, pull_price in results:
-            label = _price_label(pull_price, pack_price_per)
-            label_cnt[label] += 1
-            row = await self.pm.get_player(pid)
-            if not row:
-                lines.append(f"• {label} `{pid}`")
-                continue
-            (_, name, nation, pos, age, ovr, potg, basev, retired, price, *_rest) = row
-            total_value += int(price)
-            lines.append(f"• {label} `{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{int(price):,}원**")
+        grade_summary, lines_text, total_value = _format_pack_results(results, pack_price_per)
 
         bal = await self.money.get_balance(interaction.user.id)
-        grade_summary = " / ".join(f"{k} {v}" for k, v in label_cnt.items() if v > 0)
         summary = (
             f"{msg}\n"
             f"팩 단가: **{pack_price_per:,}원** / 현재 잔액: **{bal:,}원**\n"
             f"{grade_summary}\n"
             f"획득 현재가 합: **{total_value:,}원**\n\n"
-            f"획득 목록(최대 10개 표시):\n" + "\n".join(lines[:10])
+            f"획득 목록(최대 10개 표시):\n{lines_text}"
         )
         await interaction.followup.send(embed=_embed("🎁 선수팩 결과", summary, interaction.user))
 
@@ -595,27 +604,13 @@ class PlayersMarket(commands.Cog):
             )
 
         pack_price_per = PACKS[종류]["price"]
-        label_cnt = {k: 0 for k in _PRICE_LABELS}
-        lines = []
-        total_value = 0
+        grade_summary, lines_text, total_value = _format_pack_results(results, pack_price_per)
 
-        for pid, pull_price in results:
-            label = _price_label(pull_price, pack_price_per)
-            label_cnt[label] += 1
-            row = await self.pm.get_player(pid)
-            if not row:
-                lines.append(f"• {label} `{pid}`")
-                continue
-            (_, name, nation, pos, age, ovr, potg, basev, retired, price, *_rest) = row
-            total_value += int(price)
-            lines.append(f"• {label} `{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{int(price):,}원**")
-
-        grade_summary = " / ".join(f"{k} {v}" for k, v in label_cnt.items() if v > 0)
         summary = (
             f"팩 단가: **{pack_price_per:,}원**\n"
             f"{grade_summary}\n"
             f"시뮬 현재가 합: **{total_value:,}원**\n\n"
-            f"결과 목록:\n" + "\n".join(lines[:10])
+            f"결과 목록:\n{lines_text}"
         )
         embed = _embed("🎲 팩 시뮬레이션 결과", summary, interaction.user)
         embed.set_footer(text="※ 시뮬레이션 결과이며 실제 잔액·보유에 반영되지 않습니다.")
