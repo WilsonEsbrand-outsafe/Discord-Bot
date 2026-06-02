@@ -31,7 +31,7 @@ FEED_SOURCES = [
     # ── 1군: 공신력 최상 ──────────────────────────────
     {
         "name": "Fabrizio Romano",
-        "url": "https://fabrizio.substack.com/feed",
+        "url": "https://www.theguardian.com/profile/fabrizio-romano/rss",
         "color": 0x1DA1F2,
         "emoji": "🔵",
         "is_romano": True,   # HWG 감지 대상
@@ -42,10 +42,11 @@ FEED_SOURCES = [
         "color": 0x005689,
         "emoji": "🔵",
         "filter_keywords": True,
+        "general_sports": True,
     },
     {
         "name": "Gianluca Di Marzio",
-        "url": "https://www.gianlucadimarzio.com/feed",
+        "url": "https://www.gianlucadimarzio.com/rss",
         "color": 0x009246,
         "emoji": "🟢",
     },
