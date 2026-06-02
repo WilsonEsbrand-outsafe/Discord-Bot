@@ -31,10 +31,10 @@ FEED_SOURCES = [
     # ── 1군: 공신력 최상 ──────────────────────────────
     {
         "name": "Fabrizio Romano",
-        "url": "https://www.theguardian.com/profile/fabrizio-romano/rss",
+        "url": "https://www.caughtoffside.com/author/fabrizio-romano/feed/",
         "color": 0x1DA1F2,
         "emoji": "🔵",
-        "is_romano": True,   # HWG 감지 대상
+        "is_romano": True,   # HWG 감지 대상 → HWG 채널
     },
     {
         "name": "The Guardian · Football",
