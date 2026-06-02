@@ -310,7 +310,7 @@ class TransferTracker(commands.Cog):
         self, source: dict, title: str, summary: str
     ) -> discord.TextChannel | None:
         """기사를 어느 채널로 보낼지 결정."""
-        # 1순위: Romano 기사 전부 → HWG 채널 (Guardian 프로필 RSS는 확정 소식만 올림)
+        # 1순위: Romano 기사 전부 HWG (Guardian 기사 = 대부분 확정 소식)
         if source.get("is_romano"):
             return self._get_channel(self.hwg_ch_id)
         # 2순위: 클럽 공식 피드 OR 강한 확정 키워드 → OFFICIAL 채널
@@ -367,7 +367,11 @@ class TransferTracker(commands.Cog):
                 continue
 
             title   = _strip_html(entry.get("title", ""))
-            summary = _strip_html(entry.get("summary", entry.get("description", "")))[:400]
+            # content:encoded (전문) 우선, 없으면 summary 사용
+            full = ""
+            if entry.get("content"):
+                full = _strip_html(entry["content"][0].get("value", ""))
+            summary = (full or _strip_html(entry.get("summary", entry.get("description", ""))))[:800]
 
             if _is_womens_football(title):
                 continue
@@ -409,7 +413,7 @@ class TransferTracker(commands.Cog):
         if summary_ko:
             desc_parts.append(summary_ko)
         if article["summary"] and summary_ko != article["summary"]:
-            desc_parts.append(f"> *{article['summary'][:200]}*")
+            desc_parts.append(f"> *{article['summary'][:400]}*")
 
         color = 0x00FF85 if is_hwg_post else source["color"]  # HWG는 초록 강조
         embed = discord.Embed(
@@ -466,7 +470,11 @@ class TransferTracker(commands.Cog):
                             continue
 
                     title   = _strip_html(entry.get("title", ""))
-                    summary = _strip_html(entry.get("summary", entry.get("description", "")))[:400]
+                    # content:encoded (전문) 우선, 없으면 summary 사용
+            full = ""
+            if entry.get("content"):
+                full = _strip_html(entry["content"][0].get("value", ""))
+            summary = (full or _strip_html(entry.get("summary", entry.get("description", ""))))[:800]
 
                     if source.get("filter_keywords") and not _is_transfer_news(title, summary):
                         continue
