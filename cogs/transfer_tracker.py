@@ -178,6 +178,14 @@ MAX_PER_SOURCE = 10
 MAX_AGE_HOURS  = 24
 _HTML_TAG = re.compile(r"<[^>]+>")
 
+# 여자 축구 제외 키워드
+WOMEN_KEYWORDS = {
+    "women", "women's", "wsl", "nwsl", "lionesses", "ladies",
+    "female", "girls", "femenino", "femenina", "femminile", "féminines",
+    "women's super league", "women's world cup", "women's champions league",
+    "wwc", "barclays wsl",
+}
+
 
 # ─────────────────────────────────────────
 # 유틸
@@ -190,6 +198,12 @@ def _strip_html(text: str) -> str:
 def _is_transfer_news(title: str, summary: str) -> bool:
     combined = (title + " " + summary).lower()
     return any(kw in combined for kw in TRANSFER_KEYWORDS)
+
+
+def _is_womens_football(title: str) -> bool:
+    """여자 축구 기사 감지 — 제목 기준."""
+    lower = title.lower()
+    return any(kw in lower for kw in WOMEN_KEYWORDS)
 
 
 def _is_hwg(title: str, summary: str) -> bool:
@@ -332,6 +346,8 @@ class TransferTracker(commands.Cog):
             title   = _strip_html(entry.get("title", ""))
             summary = _strip_html(entry.get("summary", entry.get("description", "")))[:400]
 
+            if _is_womens_football(title):
+                continue
             if source.get("filter_keywords") and not _is_transfer_news(title, summary):
                 continue
 
