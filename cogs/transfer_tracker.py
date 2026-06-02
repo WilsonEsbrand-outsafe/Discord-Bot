@@ -405,12 +405,13 @@ class TransferTracker(commands.Cog):
             return  # interaction 만료 — 다시 시도
 
         total = 0
+        diag: list[str] = []
         async with aiohttp.ClientSession(
             headers={"User-Agent": "Mozilla/5.0 (TransferTrackerBot/1.0)"}
         ) as session:
             for source in FEED_SOURCES:
                 entries = await _fetch_entries(session, source["url"])
-                log.info("[진단] %s → %d개", source["name"], len(entries))
+                diag.append(f"{source['emoji']} {source['name']}: {len(entries)}개")
                 for entry in entries:
                     url = entry.get("link", "").strip()
                     if not url:
@@ -435,7 +436,11 @@ class TransferTracker(commands.Cog):
                         total += 1
                         await asyncio.sleep(1.5)
 
-        await interaction.followup.send(f"✅ {시간}시간 이내 기사 **{total}개** 전송 완료\n소스별 결과는 서버 로그 확인", ephemeral=True)
+        diag_text = "\n".join(diag)
+        await interaction.followup.send(
+            f"✅ {시간}시간 이내 기사 **{total}개** 전송 완료\n\n**소스별 수집량:**\n{diag_text}",
+            ephemeral=True,
+        )
 
     # ── 테스트 커맨드 ────────────────────────
     @app_commands.command(name="이적테스트", description="RUMOR·HWG·OFFICIAL 채널에 샘플 임베드를 각각 전송합니다. (관리자 전용)")
