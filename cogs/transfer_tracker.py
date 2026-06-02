@@ -310,8 +310,8 @@ class TransferTracker(commands.Cog):
         self, source: dict, title: str, summary: str
     ) -> discord.TextChannel | None:
         """기사를 어느 채널로 보낼지 결정."""
-        # 1순위: Romano + HWG → HWG 채널
-        if source.get("is_romano") and _is_hwg(title, summary):
+        # 1순위: Romano 기사 전부 → HWG 채널 (Guardian 프로필 RSS는 확정 소식만 올림)
+        if source.get("is_romano"):
             return self._get_channel(self.hwg_ch_id)
         # 2순위: 클럽 공식 피드 OR 강한 확정 키워드 → OFFICIAL 채널
         if source.get("is_official") or _is_official_news(title, summary):
@@ -471,6 +471,8 @@ class TransferTracker(commands.Cog):
                     if source.get("filter_keywords") and not _is_transfer_news(title, summary):
                         continue
 
+                    if self.db.is_seen(url):
+                        continue
                     channel = self._route(source, title, summary)
                     if channel:
                         await self._send_article(channel, session, source, {"url": url, "title": title, "summary": summary})
