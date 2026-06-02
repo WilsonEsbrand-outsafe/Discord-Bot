@@ -395,8 +395,8 @@ class TransferTracker(commands.Cog):
 
     # ── 수동 불러오기 ────────────────────────
     @app_commands.command(name="이적불러오기", description="최근 N시간 기사를 강제 수집해 채널에 올립니다. (관리자 전용)")
-    @app_commands.describe(시간="몇 시간 전까지 불러올지 (기본 48)")
-    async def transfer_fetch(self, interaction: discord.Interaction, 시간: int = 48):
+    @app_commands.describe(시간="몇 시간 전까지 불러올지 (기본 48)", 최대="최대 전송 개수 (기본 20)")
+    async def transfer_fetch(self, interaction: discord.Interaction, 시간: int = 48, 최대: int = 20):
         if interaction.user.id != OWNER_ID:
             return await interaction.response.send_message("❌ 관리자 전용 커맨드입니다.", ephemeral=True)
         try:
@@ -435,6 +435,10 @@ class TransferTracker(commands.Cog):
                         await self._send_article(channel, session, source, {"url": url, "title": title, "summary": summary})
                         total += 1
                         await asyncio.sleep(1.5)
+                        if total >= 최대:
+                            break
+                if total >= 최대:
+                    break
 
         diag_text = "\n".join(diag)
         ch_status = (
