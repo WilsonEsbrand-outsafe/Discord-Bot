@@ -437,8 +437,13 @@ class TransferTracker(commands.Cog):
                         await asyncio.sleep(1.5)
 
         diag_text = "\n".join(diag)
+        ch_status = (
+            f"RUMOR: {'✅' if self._get_channel(self.rumor_ch_id) else f'❌ ({self.rumor_ch_id})'}\n"
+            f"HWG: {'✅' if self._get_channel(self.hwg_ch_id) else f'❌ ({self.hwg_ch_id})'}\n"
+            f"OFFICIAL: {'✅' if self._get_channel(self.official_ch_id) else f'❌ ({self.official_ch_id})'}"
+        )
         await interaction.followup.send(
-            f"✅ {시간}시간 이내 기사 **{total}개** 전송 완료\n\n**소스별 수집량:**\n{diag_text}",
+            f"✅ {시간}시간 이내 기사 **{total}개** 전송 완료\n\n**채널 상태:**\n{ch_status}\n\n**소스별 수집량:**\n{diag_text}",
             ephemeral=True,
         )
 
