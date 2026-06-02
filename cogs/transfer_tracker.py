@@ -95,6 +95,7 @@ FEED_SOURCES = [
         "color": 0x004B87,
         "emoji": "🗞️",
         "filter_keywords": True,
+        "general_sports": True,
     },
     {
         "name": "Mirror · Football",
@@ -102,6 +103,7 @@ FEED_SOURCES = [
         "color": 0xC8102E,
         "emoji": "🗞️",
         "filter_keywords": True,
+        "general_sports": True,
     },
     {
         "name": "The Sun · Football",
@@ -109,6 +111,7 @@ FEED_SOURCES = [
         "color": 0xFF6600,
         "emoji": "🗞️",
         "filter_keywords": True,
+        "general_sports": True,
     },
     {
         "name": "The Independent · Football",
@@ -116,6 +119,7 @@ FEED_SOURCES = [
         "color": 0xD0021B,
         "emoji": "🗞️",
         "filter_keywords": True,
+        "general_sports": True,
     },
     {
         "name": "talkSPORT",
@@ -123,6 +127,7 @@ FEED_SOURCES = [
         "color": 0xFF4500,
         "emoji": "📻",
         "filter_keywords": True,
+        "general_sports": True,
     },
     {
         "name": "GiveMeSport",
@@ -130,6 +135,7 @@ FEED_SOURCES = [
         "color": 0x00AAFF,
         "emoji": "⚽",
         "filter_keywords": True,
+        "general_sports": True,
     },
     # ── 4군: 유럽 현지 ───────────────────────────────
     {
@@ -200,10 +206,26 @@ def _is_transfer_news(title: str, summary: str) -> bool:
     return any(kw in combined for kw in TRANSFER_KEYWORDS)
 
 
+FOOTBALL_KEYWORDS = {
+    "football", "soccer", "premier league", "la liga", "bundesliga",
+    "serie a", "ligue 1", "champions league", "europa league", "world cup",
+    "fa cup", "efl", "transfer", "signing", "manager", "goalkeeper",
+    "striker", "midfielder", "defender", "winger", "squad", "club",
+    "fc ", " fc", "united", "city", "arsenal", "chelsea", "liverpool",
+    "barcelona", "madrid", "juventus", "psg", "bayern", "dortmund",
+}
+
+
 def _is_womens_football(title: str) -> bool:
     """여자 축구 기사 감지 — 제목 기준."""
     lower = title.lower()
     return any(kw in lower for kw in WOMEN_KEYWORDS)
+
+
+def _is_football_article(title: str, summary: str) -> bool:
+    """축구 관련 기사인지 확인 — 종합 스포츠 사이트 필터링용."""
+    combined = (title + " " + summary).lower()
+    return any(kw in combined for kw in FOOTBALL_KEYWORDS)
 
 
 def _is_hwg(title: str, summary: str) -> bool:
@@ -347,6 +369,8 @@ class TransferTracker(commands.Cog):
             summary = _strip_html(entry.get("summary", entry.get("description", "")))[:400]
 
             if _is_womens_football(title):
+                continue
+            if source.get("general_sports") and not _is_football_article(title, summary):
                 continue
             if source.get("filter_keywords") and not _is_transfer_news(title, summary):
                 continue
