@@ -343,7 +343,7 @@ async def sync_and_reload(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify")
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.transfer_tracker")
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)
