@@ -193,6 +193,15 @@ WOMEN_KEYWORDS = {
     "wwc", "barclays wsl",
 }
 
+# 비축구 스포츠 제외 키워드
+NON_FOOTBALL_SPORTS = {
+    "handball", "balonmano", "basketball", "baloncesto", "nba",
+    "tennis", "tenis", "formula 1", "formula one", "f1", "motogp",
+    "cycling", "ciclismo", "golf", "rugby", "cricket", "boxing",
+    "mma", "ufc", "athletics", "swimming", "volleyball", "baseball",
+    "nfl", "nhl", "nba", "padel",
+}
+
 
 # ─────────────────────────────────────────
 # 유틸
@@ -217,10 +226,10 @@ FOOTBALL_KEYWORDS = {
 }
 
 
-def _is_womens_football(title: str) -> bool:
-    """여자 축구 기사 감지 — 제목 기준."""
+def _is_excluded(title: str) -> bool:
+    """여자 축구 및 비축구 스포츠 기사 감지 — 제목 기준."""
     lower = title.lower()
-    return any(kw in lower for kw in WOMEN_KEYWORDS)
+    return any(kw in lower for kw in WOMEN_KEYWORDS) or any(kw in lower for kw in NON_FOOTBALL_SPORTS)
 
 
 def _is_football_article(title: str, summary: str) -> bool:
@@ -374,7 +383,7 @@ class TransferTracker(commands.Cog):
                 full = _strip_html(entry["content"][0].get("value", ""))
             summary = (full or _strip_html(entry.get("summary", entry.get("description", ""))))[:800]
 
-            if _is_womens_football(title):
+            if _is_excluded(title):
                 continue
             if source.get("general_sports") and not _is_football_article(title, summary):
                 continue
@@ -477,11 +486,13 @@ class TransferTracker(commands.Cog):
                         full = _strip_html(entry["content"][0].get("value", ""))
                     summary = (full or _strip_html(entry.get("summary", entry.get("description", ""))))[:800]
 
-                    if _is_womens_football(title):
+                    if _is_excluded(title):
                         continue
                     if source.get("general_sports") and not _is_football_article(title, summary):
                         continue
                     if source.get("filter_keywords") and not _is_transfer_news(title, summary):
+                        continue
+                    if self.db.is_seen(url):
                         continue
 
                     channel = self._route(source, title, summary)
