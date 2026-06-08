@@ -336,8 +336,7 @@ class TransferTracker(commands.Cog):
                     log.error("소스 처리 오류 [%s]: %s", source["name"], exc)
                 await asyncio.sleep(2)
 
-        if self._first_run:
-            self._first_run = False
+        self._first_run = False
 
     @_poll.before_loop
     async def _before_poll(self):
@@ -357,14 +356,16 @@ class TransferTracker(commands.Cog):
             if not url:
                 continue
 
-            if self._first_run:
-                self.db.mark_seen(url)
-                continue
-
             if self.db.is_seen(url):
                 continue
             if not _is_recent(entry):
                 continue
+            # 첫 실행 시 오래된 기사(6시간 이상)는 seen 등록만 하고 건너뜀 (플러딩 방지)
+            if self._first_run:
+                published = getattr(entry, "published_parsed", None)
+                if published and (time.time() - time.mktime(published)) > 6 * 3600:
+                    self.db.mark_seen(url)
+                    continue
 
             title   = _strip_html(entry.get("title", ""))
             # content:encoded (전문) 우선, 없으면 summary 사용
@@ -476,11 +477,13 @@ class TransferTracker(commands.Cog):
                         full = _strip_html(entry["content"][0].get("value", ""))
                     summary = (full or _strip_html(entry.get("summary", entry.get("description", ""))))[:800]
 
+                    if _is_womens_football(title):
+                        continue
+                    if source.get("general_sports") and not _is_football_article(title, summary):
+                        continue
                     if source.get("filter_keywords") and not _is_transfer_news(title, summary):
                         continue
 
-                    if self.db.is_seen(url):
-                        continue
                     channel = self._route(source, title, summary)
                     if channel:
                         await self._send_article(channel, session, source, {"url": url, "title": title, "summary": summary})
