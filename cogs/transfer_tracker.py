@@ -471,10 +471,10 @@ class TransferTracker(commands.Cog):
 
                     title   = _strip_html(entry.get("title", ""))
                     # content:encoded (전문) 우선, 없으면 summary 사용
-            full = ""
-            if entry.get("content"):
-                full = _strip_html(entry["content"][0].get("value", ""))
-            summary = (full or _strip_html(entry.get("summary", entry.get("description", ""))))[:800]
+                    full = ""
+                    if entry.get("content"):
+                        full = _strip_html(entry["content"][0].get("value", ""))
+                    summary = (full or _strip_html(entry.get("summary", entry.get("description", ""))))[:800]
 
                     if source.get("filter_keywords") and not _is_transfer_news(title, summary):
                         continue
