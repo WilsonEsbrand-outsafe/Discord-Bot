@@ -316,37 +316,44 @@ class Economy(commands.Cog):
         await interaction.followup.send(embed=e)
 
     # ✅ 홀인원: 확률 극악 잭팟
-    HOLEINONE_COST    = 100_000
-    HOLEINONE_REWARD  = 10_000_000
-    HOLEINONE_CONSOLE = 5_000   # 꽝 시 위로금
-    HOLEINONE_PROB    = 0.0005  # 0.05%
+    HOLEINONE_MIN  = 100_000
+    HOLEINONE_PROB = 0.0005  # 0.05%
 
-    @app_commands.command(name="홀인원", description="100,000원으로 1,000만원에 도전! 확률은 0.05%")
-    async def hole_in_one(self, interaction: discord.Interaction):
+    @app_commands.command(name="홀인원", description="최소 100,000원으로 100배 잭팟 도전! 확률 0.05%")
+    @app_commands.describe(금액="베팅 금액 (최소 100,000원)")
+    async def hole_in_one(self, interaction: discord.Interaction, 금액: int):
         await interaction.response.defer()
 
-        cur_bal = await self.db.get_balance(interaction.user.id)
-        if cur_bal < self.HOLEINONE_COST:
+        if 금액 < self.HOLEINONE_MIN:
             return await interaction.followup.send(
-                embed=_embed("❌ 잔액 부족", f"홀인원 시도 비용: **{self.HOLEINONE_COST:,}원**\n현재 잔액: **{cur_bal:,}원**", interaction.user)
+                embed=_embed("❌ 최소 금액 미달", f"최소 베팅: **{self.HOLEINONE_MIN:,}원**\n입력 금액: **{금액:,}원**", interaction.user)
             )
+
+        cur_bal = await self.db.get_balance(interaction.user.id)
+        if cur_bal < 금액:
+            return await interaction.followup.send(
+                embed=_embed("❌ 잔액 부족", f"베팅 금액: **{금액:,}원**\n현재 잔액: **{cur_bal:,}원**", interaction.user)
+            )
+
+        reward  = 금액 * 100
+        console = 금액 // 20  # 꽝 시 5% 위로금
 
         hit = random.random() < self.HOLEINONE_PROB
         if hit:
-            delta = self.HOLEINONE_REWARD - self.HOLEINONE_COST
+            delta   = reward - 금액
             new_bal = await self.db.add_balance(interaction.user.id, delta)
             e = _embed(
                 "⛳ 홀인원!!!",
-                f"{interaction.user.mention}\n🎉 **축하합니다! 홀인원 달성!**\n\n시도 비용: **-{self.HOLEINONE_COST:,}원**\n당첨 보상: **+{self.HOLEINONE_REWARD:,}원**\n순이익: **+{delta:,}원**\n현재 잔액: **{new_bal:,}원**",
+                f"{interaction.user.mention}\n🎉 **축하합니다! 홀인원 달성!**\n\n베팅: **{금액:,}원**\n당첨 보상: **+{reward:,}원**\n순이익: **+{delta:,}원**\n현재 잔액: **{new_bal:,}원**",
                 interaction.user,
             )
             e.color = discord.Color.gold()
         else:
-            delta = -(self.HOLEINONE_COST - self.HOLEINONE_CONSOLE)
+            delta   = -(금액 - console)
             new_bal = await self.db.add_balance(interaction.user.id, delta)
             e = _embed(
                 "💨 아쉽게 빗나갔습니다",
-                f"{interaction.user.mention}\n\n시도 비용: **-{self.HOLEINONE_COST:,}원**\n위로금: **+{self.HOLEINONE_CONSOLE:,}원**\n실손실: **-{self.HOLEINONE_COST - self.HOLEINONE_CONSOLE:,}원**\n현재 잔액: **{new_bal:,}원**\n\n*당첨 확률: 0.05% (2,000번에 1번)*",
+                f"{interaction.user.mention}\n\n베팅: **{금액:,}원**\n위로금: **+{console:,}원**\n실손실: **-{금액 - console:,}원**\n현재 잔액: **{new_bal:,}원**\n\n*당첨 확률: 0.05% | 당첨 시 100배*",
                 interaction.user,
             )
             e.color = discord.Color.dark_gray()
