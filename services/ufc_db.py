@@ -73,6 +73,14 @@ class UfcDB:
             return row is not None
         return await self._run(_fn, event_id)
 
+    async def list_bets_for_user(self, user_id: int) -> list[sqlite3.Row]:
+        def _fn(user_id):
+            con = _connect()
+            rows = con.execute("SELECT * FROM ufc_bets WHERE user_id=? AND settled=0", (user_id,)).fetchall()
+            con.close()
+            return rows
+        return await self._run(_fn, user_id)
+
     async def settle(self, event_id: str, winner: str) -> list[dict]:
         def _fn(event_id, winner):
             con = _connect()
