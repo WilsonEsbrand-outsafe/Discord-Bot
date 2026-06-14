@@ -19,8 +19,6 @@ ODDS_API_URL   = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/
 SCORES_API_URL = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/scores/"
 MMA_COLOR      = 0xE8003D
 
-# 정산 결과를 발표할 채널 ID (.env에 UFC_CHANNEL_ID 설정)
-UFC_CHANNEL_ID = int(os.getenv("UFC_CHANNEL_ID", "0"))
 
 
 def _label(odds: float) -> str:
@@ -242,41 +240,13 @@ class UfcToto(commands.Cog):
 
             log.info(f"[UFC] 자동 정산: {event['home_team']} vs {event['away_team']} → 승자 {winner}")
 
-            # 당첨자 포인트 지급
             for r in results:
                 if r["won"]:
                     await self.eco.add_balance(r["user_id"], r["payout"])
 
-            # 채널 발표
-            if UFC_CHANNEL_ID:
-                await self._announce_settlement(event, winner, results)
-
     @_auto_settle_poll.before_loop
     async def _before_poll(self):
         await self.bot.wait_until_ready()
-
-    async def _announce_settlement(self, event: dict, winner: str, results: list[dict]):
-        channel = self.bot.get_channel(UFC_CHANNEL_ID)
-        if channel is None:
-            return
-
-        lines = []
-        for r in results:
-            user = self.bot.get_user(r["user_id"])
-            name = user.display_name if user else f"<@{r['user_id']}>"
-            if r["won"]:
-                lines.append(f"✅ {name} — {r['amount']:,}원 → **+{r['payout']:,}원**")
-            else:
-                lines.append(f"❌ {name} — {r['amount']:,}원 손실")
-
-        home = event.get("home_team", "?")
-        away = event.get("away_team", "?")
-        embed = discord.Embed(
-            title=f"🏆 UFC 자동 정산 — {winner} 승",
-            description=f"**{home} vs {away}**\n\n" + ("\n".join(lines) if lines else "베팅 없음"),
-            color=MMA_COLOR,
-        )
-        await channel.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
