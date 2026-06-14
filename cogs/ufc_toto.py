@@ -1,30 +1,30 @@
 # cogs/ufc_toto.py
 import os
-import asyncio
+import logging
 from datetime import datetime, timezone
 
 import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from services.ufc_db import UfcDB
 from services.economy_db import EconomyDB
 from auth import OWNER_ID
 
-ODDS_API_KEY  = os.getenv("ODDS_API_KEY", "")
-ODDS_API_URL  = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/odds/"
-MMA_COLOR     = 0xE8003D
+log = logging.getLogger(__name__)
+
+ODDS_API_KEY   = os.getenv("ODDS_API_KEY", "")
+ODDS_API_URL   = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/odds/"
+SCORES_API_URL = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/scores/"
+MMA_COLOR      = 0xE8003D
+
+# 정산 결과를 발표할 채널 ID (.env에 UFC_CHANNEL_ID 설정)
+UFC_CHANNEL_ID = int(os.getenv("UFC_CHANNEL_ID", "0"))
 
 
-def _american_to_label(odds: float) -> str:
-    """배당률을 x배 형태로 표시."""
+def _label(odds: float) -> str:
     return f"{odds:.2f}x"
-
-
-def _match_id(fight: dict) -> str:
-    """고유 경기 ID: home_team + away_team 해시."""
-    return f"{fight['home_team']}|{fight['away_team']}"
 
 
 async def _fetch_fights() -> list[dict]:
@@ -54,14 +54,46 @@ async def _fetch_fights() -> list[dict]:
         if not home_odds or not away_odds:
             continue
         fights.append({
-            "id": _match_id(event),
-            "home": home,
-            "away": away,
-            "home_odds": home_odds,
-            "away_odds": away_odds,
+            "event_id":     event["id"],
+            "match_id":     f"{home}|{away}",
+            "home":         home,
+            "away":         away,
+            "home_odds":    home_odds,
+            "away_odds":    away_odds,
             "commence_time": event["commence_time"],
         })
     return fights
+
+
+async def _fetch_scores() -> list[dict]:
+    """완료된 경기 스코어 조회 (최근 3일)."""
+    params = {
+        "apiKey":   ODDS_API_KEY,
+        "daysFrom": "3",
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(SCORES_API_URL, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status != 200:
+                return []
+            return await resp.json()
+
+
+def _determine_winner(event: dict) -> str | None:
+    """scores 배열에서 승자를 판별. 판별 불가 시 None."""
+    scores = event.get("scores")
+    if not scores:
+        return None
+    try:
+        parsed = [(s["name"], s["score"]) for s in scores]
+        # "W"/"L" 형식
+        for name, score in parsed:
+            if str(score).upper() == "W":
+                return name
+        # 숫자 형식 — 높은 쪽이 승자
+        numeric = [(name, float(score)) for name, score in parsed]
+        return max(numeric, key=lambda x: x[1])[0]
+    except Exception:
+        return None
 
 
 class UfcToto(commands.Cog):
@@ -69,9 +101,13 @@ class UfcToto(commands.Cog):
         self.bot = bot
         self.db  = UfcDB()
         self.eco = EconomyDB()
+        self._auto_settle_poll.start()
 
-    # ── 경기 목록 ─────────────────────────────
-    @app_commands.command(name="ufc목록", description="현재 베팅 가능한 UFC 경기 목록을 불러옵니다.")
+    def cog_unload(self):
+        self._auto_settle_poll.cancel()
+
+    # ── 경기 목록 ─────────────────────────────────────────────────────────
+    @app_commands.command(name="ufc토토", description="현재 베팅 가능한 UFC 경기 목록을 불러옵니다.")
     async def ufc_list(self, interaction: discord.Interaction):
         await interaction.response.defer()
         fights = await _fetch_fights()
@@ -83,22 +119,22 @@ class UfcToto(commands.Cog):
 
         for f in fights[:10]:
             dt = datetime.fromisoformat(f["commence_time"].replace("Z", "+00:00"))
-            kst_time = dt.strftime("%m/%d %H:%M KST") if False else f"<t:{int(dt.timestamp())}:f>"
+            ts = f"<t:{int(dt.timestamp())}:f>"
             status = "⏳" if dt > now else "🔴 시작됨"
             embed.add_field(
                 name=f"{status} {f['home']} vs {f['away']}",
                 value=(
-                    f"📅 {kst_time}\n"
-                    f"**{f['home']}** {_american_to_label(f['home_odds'])} | "
-                    f"**{f['away']}** {_american_to_label(f['away_odds'])}"
+                    f"📅 {ts}\n"
+                    f"**{f['home']}** {_label(f['home_odds'])} | "
+                    f"**{f['away']}** {_label(f['away_odds'])}"
                 ),
                 inline=False,
             )
 
-        embed.set_footer(text="배팅: /ufc베팅 | 배당은 실시간 변동될 수 있음")
+        embed.set_footer(text="베팅: /ufc베팅 | 배당은 실시간 변동될 수 있음")
         await interaction.followup.send(embed=embed)
 
-    # ── 베팅 ──────────────────────────────────
+    # ── 베팅 ──────────────────────────────────────────────────────────────
     @app_commands.command(name="ufc베팅", description="UFC 경기에 베팅합니다.")
     @app_commands.describe(파이터="베팅할 파이터 이름 (정확하게 입력)", 금액="베팅 금액")
     async def ufc_bet(self, interaction: discord.Interaction, 파이터: str, 금액: int):
@@ -130,16 +166,17 @@ class UfcToto(commands.Cog):
                 f"❌ **{파이터}**를 찾을 수 없습니다.\n현재 경기:\n{names}"
             )
 
-        # 이미 베팅했는지 확인
-        existing = await self.db.get_bet(target_fight["id"], interaction.user.id)
+        existing = await self.db.get_bet(target_fight["event_id"], interaction.user.id)
         if existing:
             return await interaction.followup.send(
                 f"❌ 이미 이 경기에 **{existing['fighter']}** ({existing['amount']:,}원)으로 베팅했습니다."
             )
 
-        # 잔액 차감 + 베팅 등록
         await self.eco.add_balance(interaction.user.id, -금액)
-        ok = await self.db.place_bet(target_fight["id"], interaction.user.id, 파이터, 금액, target_odds)
+        ok = await self.db.place_bet(
+            target_fight["event_id"], target_fight["match_id"],
+            interaction.user.id, 파이터, 금액, target_odds
+        )
         if not ok:
             await self.eco.add_balance(interaction.user.id, 금액)  # 롤백
             return await interaction.followup.send("❌ 베팅 등록 실패 (중복)")
@@ -149,13 +186,13 @@ class UfcToto(commands.Cog):
         embed = discord.Embed(title="✅ UFC 베팅 완료", color=MMA_COLOR)
         embed.add_field(name="경기", value=f"{target_fight['home']} vs {target_fight['away']}", inline=False)
         embed.add_field(name="내 픽", value=f"**{파이터}**", inline=True)
-        embed.add_field(name="배당", value=f"{_american_to_label(target_odds)}", inline=True)
+        embed.add_field(name="배당", value=_label(target_odds), inline=True)
         embed.add_field(name="베팅", value=f"{금액:,}원", inline=True)
         embed.add_field(name="당첨 시 수령", value=f"**{payout:,}원**", inline=True)
         embed.set_footer(text=f"상대 파이터: {opponent}")
         await interaction.followup.send(embed=embed)
 
-    # ── 내 베팅 확인 ──────────────────────────
+    # ── 내 베팅 확인 ──────────────────────────────────────────────────────
     @app_commands.command(name="ufc내베팅", description="내 UFC 베팅 현황을 확인합니다.")
     @app_commands.describe(파이터="확인할 파이터 이름")
     async def ufc_my_bet(self, interaction: discord.Interaction, 파이터: str):
@@ -163,7 +200,7 @@ class UfcToto(commands.Cog):
         fights = await _fetch_fights()
         for f in fights:
             if 파이터.lower() in (f["home"].lower(), f["away"].lower()):
-                row = await self.db.get_bet(f["id"], interaction.user.id)
+                row = await self.db.get_bet(f["event_id"], interaction.user.id)
                 if row:
                     payout = int(row["amount"] * row["odds"])
                     return await interaction.followup.send(
@@ -174,44 +211,72 @@ class UfcToto(commands.Cog):
                 return await interaction.followup.send("이 경기에 베팅 내역이 없습니다.")
         await interaction.followup.send(f"❌ **{파이터}** 경기를 찾을 수 없습니다.")
 
-    # ── 결과 입력 & 정산 (관리자 전용) ───────────
-    @app_commands.command(name="ufc결과", description="(관리자) UFC 경기 결과 입력 및 정산")
-    @app_commands.describe(승자="승리한 파이터 이름 (정확하게)")
-    async def ufc_result(self, interaction: discord.Interaction, 승자: str):
-        if interaction.user.id != OWNER_ID:
-            return await interaction.response.send_message("❌ 관리자 전용입니다.", ephemeral=True)
-        await interaction.response.defer()
+    # ── 자동 정산 백그라운드 태스크 ──────────────────────────────────────
+    @tasks.loop(minutes=10)
+    async def _auto_settle_poll(self):
+        if not ODDS_API_KEY:
+            return
+        try:
+            scores = await _fetch_scores()
+        except Exception as e:
+            log.warning(f"[UFC] 스코어 조회 실패: {e}")
+            return
 
-        fights = await _fetch_fights()
-        target = None
-        for f in fights:
-            if 승자.lower() in (f["home"].lower(), f["away"].lower()):
-                target = f
-                break
+        for event in scores:
+            if not event.get("completed"):
+                continue
 
-        if not target:
-            return await interaction.followup.send(f"❌ **{승자}** 경기를 찾을 수 없습니다.")
+            event_id = event["id"]
+            already  = await self.db.is_settled(event_id)
+            if already:
+                continue
 
-        results = await self.db.settle(target["id"], 승자)
-        if not results:
-            return await interaction.followup.send("베팅 내역이 없습니다.")
+            winner = _determine_winner(event)
+            if winner is None:
+                log.warning(f"[UFC] {event_id} 승자 판별 실패: {event.get('scores')}")
+                continue
+
+            results = await self.db.settle(event_id, winner)
+            if not results:
+                continue
+
+            log.info(f"[UFC] 자동 정산: {event['home_team']} vs {event['away_team']} → 승자 {winner}")
+
+            # 당첨자 포인트 지급
+            for r in results:
+                if r["won"]:
+                    await self.eco.add_balance(r["user_id"], r["payout"])
+
+            # 채널 발표
+            if UFC_CHANNEL_ID:
+                await self._announce_settlement(event, winner, results)
+
+    @_auto_settle_poll.before_loop
+    async def _before_poll(self):
+        await self.bot.wait_until_ready()
+
+    async def _announce_settlement(self, event: dict, winner: str, results: list[dict]):
+        channel = self.bot.get_channel(UFC_CHANNEL_ID)
+        if channel is None:
+            return
 
         lines = []
         for r in results:
             user = self.bot.get_user(r["user_id"])
             name = user.display_name if user else f"<@{r['user_id']}>"
             if r["won"]:
-                await self.eco.add_balance(r["user_id"], r["payout"])
-                lines.append(f"✅ {name} — {r['amount']:,}원 베팅 → **+{r['payout']:,}원** 수령")
+                lines.append(f"✅ {name} — {r['amount']:,}원 → **+{r['payout']:,}원**")
             else:
                 lines.append(f"❌ {name} — {r['amount']:,}원 손실")
 
+        home = event.get("home_team", "?")
+        away = event.get("away_team", "?")
         embed = discord.Embed(
-            title=f"🏆 UFC 결과 정산 — {승자} 승",
-            description="\n".join(lines),
+            title=f"🏆 UFC 자동 정산 — {winner} 승",
+            description=f"**{home} vs {away}**\n\n" + ("\n".join(lines) if lines else "베팅 없음"),
             color=MMA_COLOR,
         )
-        await interaction.followup.send(embed=embed)
+        await channel.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
