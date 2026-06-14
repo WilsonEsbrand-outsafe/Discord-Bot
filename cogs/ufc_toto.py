@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 
 from services.ufc_db import UfcDB
 from services.economy_db import EconomyDB
+from services.notifier import send_notify
 from auth import OWNER_ID
 
 log = logging.getLogger(__name__)
@@ -238,11 +239,27 @@ class UfcToto(commands.Cog):
             if not results:
                 continue
 
-            log.info(f"[UFC] 자동 정산: {event['home_team']} vs {event['away_team']} → 승자 {winner}")
+            home = event.get("home_team", "?")
+            away = event.get("away_team", "?")
+            log.info(f"[UFC] 자동 정산: {home} vs {away} → 승자 {winner}")
 
             for r in results:
                 if r["won"]:
                     await self.eco.add_balance(r["user_id"], r["payout"])
+
+                embed = discord.Embed(
+                    title="🥊 UFC 베팅 정산",
+                    description=f"**{home} vs {away}**\n승자: **{winner}**",
+                    color=MMA_COLOR,
+                )
+                if r["won"]:
+                    embed.add_field(name="결과", value=f"✅ 당첨!", inline=True)
+                    embed.add_field(name="수령액", value=f"**+{r['payout']:,}원**", inline=True)
+                else:
+                    embed.add_field(name="결과", value="❌ 낙첨", inline=True)
+                    embed.add_field(name="손실", value=f"{r['amount']:,}원", inline=True)
+                embed.add_field(name="내 픽", value=f"{r['fighter']} ({r['odds']:.2f}x)", inline=False)
+                await send_notify(self.bot, self.eco, r["user_id"], "UFC_결과", embed)
 
     @_auto_settle_poll.before_loop
     async def _before_poll(self):
