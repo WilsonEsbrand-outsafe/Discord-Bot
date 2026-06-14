@@ -315,6 +315,44 @@ class Economy(commands.Cog):
         e.add_field(name="현재 잔액", value=f"**{new_bal:,}**", inline=False)
         await interaction.followup.send(embed=e)
 
+    # ✅ 홀인원: 확률 극악 잭팟
+    HOLEINONE_COST    = 100_000
+    HOLEINONE_REWARD  = 10_000_000
+    HOLEINONE_CONSOLE = 5_000   # 꽝 시 위로금
+    HOLEINONE_PROB    = 0.0005  # 0.05%
+
+    @app_commands.command(name="홀인원", description="100,000원으로 1,000만원에 도전! 확률은 0.05%")
+    async def hole_in_one(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        cur_bal = await self.db.get_balance(interaction.user.id)
+        if cur_bal < self.HOLEINONE_COST:
+            return await interaction.followup.send(
+                embed=_embed("❌ 잔액 부족", f"홀인원 시도 비용: **{self.HOLEINONE_COST:,}원**\n현재 잔액: **{cur_bal:,}원**", interaction.user)
+            )
+
+        hit = random.random() < self.HOLEINONE_PROB
+        if hit:
+            delta = self.HOLEINONE_REWARD - self.HOLEINONE_COST
+            new_bal = await self.db.add_balance(interaction.user.id, delta)
+            e = _embed(
+                "⛳ 홀인원!!!",
+                f"{interaction.user.mention}\n🎉 **축하합니다! 홀인원 달성!**\n\n시도 비용: **-{self.HOLEINONE_COST:,}원**\n당첨 보상: **+{self.HOLEINONE_REWARD:,}원**\n순이익: **+{delta:,}원**\n현재 잔액: **{new_bal:,}원**",
+                interaction.user,
+            )
+            e.color = discord.Color.gold()
+        else:
+            delta = -(self.HOLEINONE_COST - self.HOLEINONE_CONSOLE)
+            new_bal = await self.db.add_balance(interaction.user.id, delta)
+            e = _embed(
+                "💨 아쉽게 빗나갔습니다",
+                f"{interaction.user.mention}\n\n시도 비용: **-{self.HOLEINONE_COST:,}원**\n위로금: **+{self.HOLEINONE_CONSOLE:,}원**\n실손실: **-{self.HOLEINONE_COST - self.HOLEINONE_CONSOLE:,}원**\n현재 잔액: **{new_bal:,}원**\n\n*당첨 확률: 0.05% (2,000번에 1번)*",
+                interaction.user,
+            )
+            e.color = discord.Color.dark_gray()
+
+        await interaction.followup.send(embed=e)
+
     # ───────────── 본인 전용(관리자) ─────────────
 
     @app_commands.command(name="돈지급", description="(본인전용) 유저에게 돈을 지급/회수합니다. (음수=회수)")
