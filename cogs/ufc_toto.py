@@ -1,5 +1,6 @@
 # cogs/ufc_toto.py
 import os
+import time
 import logging
 from datetime import datetime, timezone
 
@@ -20,11 +21,19 @@ SCORES_API_URL = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/
 MMA_COLOR      = 0xE8003D
 
 
+FIGHTS_CACHE_TTL = 300  # 초 — 짧은 시간 내 중복 호출로 크레딧 낭비 방지
+_fights_cache: dict = {"data": [], "ts": 0.0}
+
+
 def _label(odds: float) -> str:
     return f"{odds:.2f}x"
 
 
 async def _fetch_fights() -> list[dict]:
+    now = time.monotonic()
+    if now - _fights_cache["ts"] < FIGHTS_CACHE_TTL:
+        return _fights_cache["data"]
+
     params = {
         "apiKey": ODDS_API_KEY,
         "regions": "us",
@@ -34,7 +43,8 @@ async def _fetch_fights() -> list[dict]:
     async with aiohttp.ClientSession() as session:
         async with session.get(ODDS_API_URL, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:
-                return []
+                log.warning(f"[UFC] odds API 응답 오류: {resp.status} {await resp.text()}")
+                return _fights_cache["data"]
             data = await resp.json()
 
     fights = []
@@ -58,6 +68,9 @@ async def _fetch_fights() -> list[dict]:
             "away_odds":     away_odds,
             "commence_time": event["commence_time"],
         })
+
+    _fights_cache["data"] = fights
+    _fights_cache["ts"]   = now
     return fights
 
 
@@ -287,10 +300,12 @@ class UfcToto(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     # ── 자동 정산 ─────────────────────────────────────────────────────────────
-    @tasks.loop(minutes=10)
+    @tasks.loop(minutes=30)
     async def _auto_settle_poll(self):
         if not ODDS_API_KEY:
             return
+        if not await self.db.has_unsettled_bets():
+            return  # 베팅이 없으면 API 호출 자체를 건너뛰어 크레딧 절약
         try:
             scores = await _fetch_scores()
         except Exception as e:

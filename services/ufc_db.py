@@ -73,6 +73,14 @@ class UfcDB:
             return row is not None
         return await self._run(_fn, event_id)
 
+    async def has_unsettled_bets(self) -> bool:
+        def _fn():
+            con = _connect()
+            row = con.execute("SELECT 1 FROM ufc_bets WHERE settled=0 LIMIT 1").fetchone()
+            con.close()
+            return row is not None
+        return await self._run(_fn)
+
     async def list_bets_for_user(self, user_id: int) -> list[sqlite3.Row]:
         def _fn(user_id):
             con = _connect()
