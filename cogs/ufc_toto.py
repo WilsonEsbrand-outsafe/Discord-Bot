@@ -49,14 +49,21 @@ async def _fetch_fights() -> list[dict]:
 
     fights = []
     for event in data:
-        bookmakers = event.get("bookmakers", [])
-        if not bookmakers:
-            continue
-        outcomes = bookmakers[0]["markets"][0]["outcomes"]
         home = event["home_team"]
         away = event["away_team"]
-        home_odds = next((o["price"] for o in outcomes if o["name"] == home), None)
-        away_odds = next((o["price"] for o in outcomes if o["name"] == away), None)
+        home_odds = away_odds = None
+
+        # 첫 북메이커에 라인이 없으면 다음 북메이커도 확인
+        for bm in event.get("bookmakers", []):
+            h2h = next((m for m in bm.get("markets", []) if m.get("key") == "h2h"), None)
+            if not h2h:
+                continue
+            outcomes = h2h.get("outcomes", [])
+            home_odds = home_odds or next((o["price"] for o in outcomes if o["name"] == home), None)
+            away_odds = away_odds or next((o["price"] for o in outcomes if o["name"] == away), None)
+            if home_odds and away_odds:
+                break
+
         if not home_odds or not away_odds:
             continue
         fights.append({
