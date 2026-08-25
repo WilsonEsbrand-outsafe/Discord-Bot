@@ -1,5 +1,9 @@
-discord.py==2.4.0
-python-dotenv==1.0.1
-aiohttp==3.9.5
-pytz==2024.1
-feedparser==6.0.11
+discord.py==2.6.2
+python-dotenv==1.1.1
+aiohttp==3.12.15
+pytz==2025.2
+matplotlib==3.11.1
+
+# feedparser 는 cogs/transfer_tracker.py 전용인데, 이 cog 는 bot.py 의
+# EXTENSIONS 목록에 없어서 로드되지 않는다. 다시 켤 때 아래 주석을 해제할 것.
+# feedparser==6.0.11
