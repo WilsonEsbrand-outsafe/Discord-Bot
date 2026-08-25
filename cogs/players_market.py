@@ -17,7 +17,7 @@ matplotlib.rcParams["font.family"] = "NanumGothic"
 matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
 from services.economy_db import EconomyDB
-from services.player_market_db import PlayerMarketDB, PACKS
+from services.player_market_db import PlayerMarketDB, PACKS, JACKPOT_PITY, JACKPOT_PROB, JACKPOT_RANGE
 from services.notifier import send_notify
 from auth import OWNER_ID
 
@@ -28,10 +28,10 @@ def _price_label(player_price: int, pack_price: int) -> str:
     if pack_price <= 0:
         return "⚪ 폭망"
     ratio = player_price / pack_price
-    if ratio >= 3.0: return "🔴 대박"
-    if ratio >= 1.3: return "🟠 이득"
-    if ratio >= 0.9: return "🟡 본전"
-    if ratio >= 0.5: return "🟢 손해"
+    if ratio >= 2.5:  return "🔴 대박"   # 잭팟 하한과 동일
+    if ratio >= 1.15: return "🟠 이득"
+    if ratio >= 0.80: return "🟡 본전"
+    if ratio >= 0.50: return "🟢 손해"
     return "⚪ 폭망"
 
 def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
@@ -39,14 +39,36 @@ def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
     e.set_author(name=user.display_name, icon_url=user.display_avatar.url)
     return e
 
+# 최고 등급에 맞춘 embed 색 — 개봉 연출에서 분위기를 잡아준다
+_LABEL_COLOR = {
+    "🔴 대박": 0xe74c3c, "🟠 이득": 0xe67e22, "🟡 본전": 0xf1c40f,
+    "🟢 손해": 0x2ecc71, "⚪ 폭망": 0x95a5a6,
+}
+
+
+def _card_line(row, pack_price_per: int, is_jackpot: bool = False) -> tuple[str, str]:
+    """뽑은 선수 1명을 (라벨, 표시줄)로 만든다."""
+    pid, cur_price, name, nation, pos, ovr = row
+    label = _price_label(cur_price, pack_price_per)
+    mark = "💥 **JACKPOT** " if is_jackpot else ""
+    return label, f"• {mark}{label} `{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{cur_price:,}원**"
+
+
+def _normalize_results(results: list) -> list:
+    """buy_pack은 [(row, is_jackpot)], 팩시뮬은 [row]. 둘 다 받아준다."""
+    out = []
+    for item in results:
+        if len(item) == 2 and isinstance(item[0], (list, tuple)):
+            out.append((item[0], bool(item[1])))
+        else:
+            out.append((item, False))
+    return out
+
+
 def _format_pack_results(
     results: list, pack_price_per: int
 ) -> tuple[str, str, int]:
     """팩 뽑기 결과를 포맷팅. /선수팩 · /팩시뮬 공통 사용.
-
-    Args:
-        results: _draw_from_pool이 반환한 (pid, cur_price, name, nation, position, ovr) 리스트
-        pack_price_per: 팩 단가
 
     Returns:
         (grade_summary, lines_text, total_value)
@@ -54,11 +76,11 @@ def _format_pack_results(
     label_cnt = {k: 0 for k in _PRICE_LABELS}
     lines = []
     total_value = 0
-    for pid, cur_price, name, nation, pos, ovr in results:
-        label = _price_label(cur_price, pack_price_per)
+    for row, is_jackpot in _normalize_results(results):
+        label, line = _card_line(row, pack_price_per, is_jackpot)
         label_cnt[label] += 1
-        total_value += cur_price
-        lines.append(f"• {label} `{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{cur_price:,}원**")
+        total_value += row[1]
+        lines.append(line)
     grade_summary = " / ".join(f"{k} {v}" for k, v in label_cnt.items() if v > 0)
     return grade_summary, "\n".join(lines[:10]), total_value
 
@@ -570,17 +592,58 @@ class PlayersMarket(commands.Cog):
             return await interaction.followup.send(embed=_embed("❌ 선수팩", msg, interaction.user))
 
         pack_price_per = PACKS[종류]["price"]
-        grade_summary, lines_text, total_value = _format_pack_results(results, pack_price_per)
+        await self._reveal_pack(interaction, 종류, results, pack_price_per)
 
-        bal = await self.money.get_balance(interaction.user.id)
-        summary = (
-            f"{msg}\n"
-            f"팩 단가: **{pack_price_per:,}원** / 현재 잔액: **{bal:,}원**\n"
-            f"{grade_summary}\n"
-            f"획득 현재가 합: **{total_value:,}원**\n\n"
-            f"획득 목록(최대 10개 표시):\n{lines_text}"
+    async def _reveal_pack(self, interaction, pack_type: str, results: list, unit_price: int):
+        """카드를 한 장씩 뒤집어 보여준다. 좋은 카드일수록 뒤에 나온다."""
+        cards = _normalize_results(results)
+        # 잭팟과 고가 카드를 뒤로 — 마지막에 터지도록
+        cards.sort(key=lambda c: (c[1], c[0][1]))
+
+        emoji = {"브론즈": "🥉", "실버": "🥈", "골드": "🥇",
+                 "플래티넘": "💠", "다이아몬드": "💎", "아이콘": "🌟", "얼티밋": "👑"}.get(pack_type, "🎁")
+        slots = ["> ❔ ???"] * len(cards)
+        best  = "⚪ 폭망"
+
+        def frame(desc: str, color: int) -> discord.Embed:
+            e = discord.Embed(title=f"{emoji} {pack_type}팩 개봉", description=desc, color=color)
+            e.set_author(name=interaction.user.display_name,
+                         icon_url=interaction.user.display_avatar.url)
+            return e
+
+        msg = await interaction.followup.send(
+            embed=frame("\n".join(slots), 0x2b2d31), wait=True
         )
-        await interaction.followup.send(embed=_embed("🎁 선수팩 결과", summary, interaction.user))
+
+        for idx, (row, is_jackpot) in enumerate(cards):
+            await asyncio.sleep(0.9)
+            label, line = _card_line(row, unit_price, is_jackpot)
+            slots[idx] = "> " + line[2:]
+            if _PRICE_LABELS.index(label) < _PRICE_LABELS.index(best):
+                best = label
+            try:
+                await msg.edit(embed=frame("\n".join(slots), _LABEL_COLOR[best]))
+            except discord.HTTPException:
+                break   # 레이트리밋 등 — 연출만 포기하고 결과는 아래에서 낸다
+
+        grade_summary, lines_text, total_value = _format_pack_results(results, unit_price)
+        bal  = await self.money.get_balance(interaction.user.id)
+        pity = await self.pm.get_pack_pity(interaction.user.id, pack_type)
+        left = max(0, JACKPOT_PITY - pity)
+
+        summary = (
+            f"팩 단가 **{unit_price:,}원** x{len(cards)}장 · 잔액 **{bal:,}원**\n"
+            f"{grade_summary}\n"
+            f"획득 현재가 합: **{total_value:,}원** "
+            f"({total_value / max(1, unit_price * len(cards)):.2f}배)\n\n"
+            f"{lines_text}"
+        )
+        e = frame(summary, _LABEL_COLOR[best])
+        e.set_footer(text=f"💥 잭팟까지 최대 {left}장 남음 (천장 {JACKPOT_PITY}장)")
+        try:
+            await msg.edit(embed=e)
+        except discord.HTTPException:
+            await interaction.followup.send(embed=e)
 
     # ───────────────── 팩 시뮬레이션 ─────────────────
     @app_commands.command(name="팩시뮬", description="팩 뽑기 결과를 미리 시뮬레이션합니다. (잔액·보유 변경 없음)")
@@ -699,14 +762,17 @@ class PlayersMarket(commands.Cog):
         }
 
         pool_counts = await self.pm.count_pack_pool()
+        pity = {k: await self.pm.get_pack_pity(interaction.user.id, k) for k in PACKS}
 
         embed = discord.Embed(
             title="🎁 팩 정보",
             description=(
-                "팩 구입 가격 = 뽑기 분포의 중심가\n"
                 "**팩 단가와 비슷한 가격의 선수**가 가장 자주 등장합니다.\n"
-                "해당 등급 선수가 0명이면 구매 불가 (전액 환불).\n\n"
-                "🔴 대박 `≥ 3배` · 🟠 이득 `≥ 1.3배` · 🟡 본전 `≥ 0.9배`\n"
+                "해당 등급 선수가 0명이면 구매 불가 (비용 미차감).\n\n"
+                f"💥 **잭팟** — 뽑기 1장당 **{JACKPOT_PROB*100:.1f}%** 확률로 "
+                f"팩 단가의 **{JACKPOT_RANGE[0]:.1f}~{JACKPOT_RANGE[1]:.1f}배** 선수가 나옵니다.\n"
+                f"🎯 **천장** — 같은 팩을 **{JACKPOT_PITY}장** 뽑는 동안 잭팟이 없으면 다음 장은 확정입니다.\n\n"
+                "🔴 대박 `≥ 2.5배` · 🟠 이득 `≥ 1.15배` · 🟡 본전 `≥ 0.8배`\n"
                 "🟢 손해 `≥ 0.5배` · ⚪ 폭망 `< 0.5배`"
             ),
             color=0x2ecc71,
@@ -726,7 +792,8 @@ class PlayersMarket(commands.Cog):
             )
             embed.add_field(
                 name=f"{icon} {pack_name}팩  |  {price:,}원 / 장",
-                value=f"시세 범위: **{range_str}** | 풀: {avail}",
+                value=(f"시세 범위: **{range_str}** | 풀: {avail}"
+                       f" | 천장까지 **{max(0, JACKPOT_PITY - pity.get(pack_name, 0))}장**"),
                 inline=False,
             )
 

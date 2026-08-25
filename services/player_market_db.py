@@ -112,16 +112,31 @@ AMATEUR_SQUAD: list[dict] = [
 ]
 
 # ───────────── 팩 5종(가격/확률) ─────────────
+# 구간은 팩 단가의 0.35배 ~ 1.8배. 예전엔 브론즈 상한이 단가의 1.5배(75,000)라
+# 구조적으로 "대박"이 나올 수 없었다. 큰 한 방은 아래 잭팟이 담당한다.
 PACKS = {
     # price     : 팩 구입 비용 (= 가우시안 분포 중심가)
-    "브론즈":    {"price":    50_000, "min_price":         0, "max_price":     75_000},
-    "실버":      {"price":   150_000, "min_price":   100_000, "max_price":    300_000},
-    "골드":      {"price":   500_000, "min_price":   200_000, "max_price":    800_000},
-    "플래티넘":  {"price": 1_500_000, "min_price":   800_000, "max_price":  2_500_000},
-    "다이아몬드": {"price": 5_000_000, "min_price": 2_500_000, "max_price":  7_500_000},
-    "아이콘":    {"price": 12_500_000, "min_price": 7_500_000, "max_price": 15_000_000},
-    "얼티밋":    {"price": 20_000_000, "min_price": 15_000_000, "max_price": None},
+    "브론즈":    {"price":     50_000, "min_price":     17_000, "max_price":     90_000},
+    "실버":      {"price":    150_000, "min_price":     52_000, "max_price":    270_000},
+    "골드":      {"price":    500_000, "min_price":    175_000, "max_price":    900_000},
+    "플래티넘":  {"price":  1_500_000, "min_price":    525_000, "max_price":  2_700_000},
+    # 다이아 이상은 기존 가격(500만/1250만/2000만)이 선수 풀의 상한(약 2000만)을
+    # 넘어서서, 잭팟 대상이 아예 없고 EV도 0.85x까지 떨어졌다. 풀에 맞춰 내렸다.
+    "다이아몬드": {"price":  3_500_000, "min_price":  1_200_000, "max_price":  6_300_000},
+    "아이콘":    {"price":  5_500_000, "min_price":  1_900_000, "max_price":  9_900_000},
+    "얼티밋":    {"price":  7_500_000, "min_price":  2_600_000, "max_price":       None},
 }
+
+# ── 잭팟(대박) ─────────────────────────────────────────────
+# 가우시안 꼬리를 두껍게 하는 방식은 대박을 만들기 전에 EV부터 1을 넘겨
+# 팩이 돈 찍는 기계가 된다. 그래서 확률을 직접 제어하는 별도 추첨을 둔다.
+JACKPOT_PROB  = 0.015         # 뽑기 1장당 잭팟 확률 (천장 포함 실효 ~3.5%)
+JACKPOT_RANGE = (2.5, 5.5)    # 잭팟 대상: 팩 단가의 2.5~5.5배
+JACKPOT_PITY  = 40            # 이 횟수 안에는 반드시 한 번 (팩 종류별로 누적)
+
+# 일반 추첨의 분포 중심을 팩 단가보다 낮게 둬서 하우스 엣지를 만든다.
+# 이 값이 팩 전체 EV를 좌우하는 유일한 손잡이다 — 1.00이면 팩이 본전치기가 된다.
+PACK_VALUE_CENTER = 0.90
 PACK_MAX_PULLS = 10
 POOL_SIZE = 1_000   # 시장에 상시 유지할 활성 선수 수
 
@@ -165,19 +180,25 @@ def _take_cash(con, user_id: int, amount: int) -> bool:
     return cur.rowcount > 0
 
 
+def _pick(players: list, weights: list):
+    # 가중치가 전부 0으로 언더플로하면 random.choices가 ValueError를 낸다.
+    if sum(weights) <= 0.0:
+        weights = [1.0] * len(players)
+    return random.choices(players, weights=weights, k=1)[0]
+
+
 def _draw_from_pool(
-    con, pack: dict, pack_price: int, pulls: int
-) -> tuple[str, list]:
-    """풀 쿼리·가중치·random.choices — buy_pack / simulate_pack 공유 헬퍼.
+    con, pack: dict, pack_price: int, pulls: int, pity: int = 0
+) -> tuple[str, list, int]:
+    """풀 쿼리·가중치·추첨 — buy_pack / simulate_pack 공유 헬퍼.
+
+    Args:
+        pity: 이 팩에서 마지막 잭팟 이후 누적 뽑기 수.
 
     Returns:
-        ("EMPTY_TIER", []) — 해당 등급 선수 없음
-        ("OK", [(pid, cur_price, name, nation, position, ovr), ...])
+        ("EMPTY_TIER", [], pity) — 해당 등급 선수 없음
+        ("OK", [(player_row, is_jackpot), ...], new_pity)
     """
-    min_p = int(pack.get("min_price", 0) or 0)
-    max_p = pack.get("max_price", None)
-    sentinel = int(max_p) if max_p is not None else 999_999_999_999
-
     rows = con.execute(
         """
         SELECT p.player_id, COALESCE(m.price, p.base_value) AS cur_price,
@@ -185,22 +206,39 @@ def _draw_from_pool(
         FROM pm_players p
         LEFT JOIN pm_market m ON m.player_id = p.player_id
         WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
-          AND COALESCE(m.price, p.base_value) BETWEEN ? AND ?
         ORDER BY cur_price DESC
-        """,
-        (min_p, sentinel),
+        """
     ).fetchall()
+    everyone = [(str(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), int(r[5])) for r in rows]
 
-    if not rows:
-        return ("EMPTY_TIER", [])
+    min_p = int(pack.get("min_price", 0) or 0)
+    max_p = pack.get("max_price", None)
+    normal = [p for p in everyone
+              if p[1] >= min_p and (max_p is None or p[1] <= int(max_p))]
+    if not normal:
+        return ("EMPTY_TIER", [], pity)
 
-    players = [(str(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), int(r[5])) for r in rows]
-    weights = [_pack_weight(p[1], pack_price) for p in players]
-    # 팩 가격에서 아주 멀리 떨어진 선수만 남으면 가우시안이 0으로 언더플로해
-    # random.choices가 ValueError를 낸다. 그 경우 균등 추첨으로 폴백.
-    if sum(weights) <= 0.0:
-        weights = [1.0] * len(players)
-    return ("OK", random.choices(players, weights=weights, k=pulls))
+    # 잭팟 대상: 팩 단가의 2.0~4.5배. 그 구간이 비면 단가 2배 이상 전체로 넓힌다.
+    jack_lo = int(pack_price * JACKPOT_RANGE[0])
+    jack_hi = int(pack_price * JACKPOT_RANGE[1])
+    jackpot_pool = ([p for p in everyone if jack_lo <= p[1] <= jack_hi]
+                    or [p for p in everyone if p[1] >= jack_lo])
+
+    center = max(1, int(pack_price * PACK_VALUE_CENTER))
+    normal_w = [_pack_weight(p[1], center) for p in normal]
+    # 잭팟 안에서는 싼 쪽(2배 근처)이 더 자주 나오게 한다.
+    jackpot_w = [1.0 / max(1, p[1]) for p in jackpot_pool]
+
+    picks = []
+    for _ in range(pulls):
+        pity += 1
+        hit = bool(jackpot_pool) and (pity >= JACKPOT_PITY or random.random() < JACKPOT_PROB)
+        if hit:
+            picks.append((_pick(jackpot_pool, jackpot_w), True))
+            pity = 0
+        else:
+            picks.append((_pick(normal, normal_w), False))
+    return ("OK", picks, pity)
 
 # ───────────── 국적 풀(가중치) ─────────────
 # 숫자는 상대 비율(총합 1.0 필요 없음)
@@ -501,6 +539,15 @@ class PlayerMarketDB:
                 """
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_trade_items_tid ON pm_trade_items(trade_id)")
+
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS pm_pack_pity(
+                    user_id   INTEGER NOT NULL,
+                    pack_type TEXT    NOT NULL,
+                    pity      INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(user_id, pack_type)
+                )
+            """)
 
             # ── 아마추어 선수 시드 (INSERT OR IGNORE → 멱등)
             for _p in AMATEUR_SQUAD:
@@ -1168,11 +1215,19 @@ class PlayerMarketDB:
                     if not _take_cash(con, user_id, total_cost):
                         con.execute("ROLLBACK;")
                         return ("NO_FUNDS", [])
-                    status, drawn = _draw_from_pool(con, pack, pack_price, pulls)
+                    prow = con.execute(
+                        "SELECT pity FROM pm_pack_pity WHERE user_id=? AND pack_type=?",
+                        (int(user_id), pack_type),
+                    ).fetchone()
+                    pity = int(prow[0]) if prow else 0
+
+                    status, drawn, new_pity = _draw_from_pool(
+                        con, pack, pack_price, pulls, pity
+                    )
                     if status == "EMPTY_TIER":
                         con.execute("ROLLBACK;")
                         return ("EMPTY_TIER", [])
-                    for row in drawn:
+                    for row, _is_jackpot in drawn:
                         con.execute(
                             """
                             INSERT INTO pm_holdings(user_id, player_id, qty)
@@ -1181,6 +1236,13 @@ class PlayerMarketDB:
                             """,
                             (int(user_id), row[0]),
                         )
+                    con.execute(
+                        """
+                        INSERT INTO pm_pack_pity(user_id, pack_type, pity) VALUES(?, ?, ?)
+                        ON CONFLICT(user_id, pack_type) DO UPDATE SET pity=excluded.pity
+                        """,
+                        (int(user_id), pack_type, int(new_pity)),
+                    )
                     con.commit()
                     return ("OK", list(drawn))
                 except Exception:
@@ -1206,6 +1268,21 @@ class PlayerMarketDB:
 
         return True, f"🎁 {pack_type}팩 {pulls}장 개봉 완료! (총 {total_cost:,}원)", results
 
+    async def get_pack_pity(self, user_id: int, pack_type: str) -> int:
+        """해당 팩에서 마지막 잭팟 이후 누적 뽑기 수."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    row = con.execute(
+                        "SELECT pity FROM pm_pack_pity WHERE user_id=? AND pack_type=?",
+                        (int(user_id), str(pack_type)),
+                    ).fetchone()
+                    return int(row[0]) if row else 0
+                finally:
+                    con.close()
+            return await self._run(work)
+
     async def simulate_pack(self, *, pack_type: str, pulls: int) -> Tuple[bool, str, list | None]:
         """팩 시뮬레이션 — 잔액·보유 변경 없이 뽑기 결과만 반환"""
         pack_type = (pack_type or "").strip()
@@ -1221,7 +1298,8 @@ class PlayerMarketDB:
             def work():
                 con = self._connect()
                 try:
-                    return _draw_from_pool(con, pack, pack_price, pulls)
+                    status, picks, _pity = _draw_from_pool(con, pack, pack_price, pulls)
+                    return status, picks
                 finally:
                     con.close()
 

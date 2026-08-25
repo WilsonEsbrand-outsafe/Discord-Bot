@@ -192,6 +192,49 @@ def test_tick_moves_prices_regardless_of_phase():
     assert run(pm.run_tick_if_due(NOW_OPEN + 800)) is True
 
 
+def test_pack_pity_guarantees_jackpot():
+    """천장 안에 반드시 잭팟이 한 번 나온다."""
+    from services.player_market_db import JACKPOT_PITY, _draw_from_pool
+    eco, pm = run(_setup())
+    con = pm._connect()
+    try:
+        cfg = PACKS["브론즈"]
+        status, picks, pity = _draw_from_pool(con, cfg, cfg["price"], JACKPOT_PITY, pity=0)
+    finally:
+        con.close()
+    assert status == "OK"
+    assert any(hit for _row, hit in picks), "천장까지 뽑았는데 잭팟이 없음"
+    assert pity < JACKPOT_PITY
+
+
+def test_jackpot_players_are_above_pack_price():
+    from services.player_market_db import JACKPOT_RANGE, _draw_from_pool
+    eco, pm = run(_setup())
+    con = pm._connect()
+    try:
+        cfg = PACKS["실버"]
+        price = cfg["price"]
+        status, picks, _ = _draw_from_pool(con, cfg, price, 400, pity=0)
+    finally:
+        con.close()
+    hits = [row for row, hit in picks if hit]
+    assert hits, "400장 중 잭팟이 한 번도 없음"
+    for row in hits:
+        assert row[1] >= price * JACKPOT_RANGE[0], (row[1], price)
+
+
+def test_pity_persists_across_pack_purchases():
+    eco, pm = run(_setup())
+    cost = PACKS["브론즈"]["price"]
+    run(eco.set_balance(USER, cost * 3))
+    before = run(pm.get_pack_pity(USER, "브론즈"))
+    run(pm.buy_pack(user_id=USER, pack_type="브론즈", pulls=3, now_ts=NOW_OPEN,
+                    get_balance=eco.get_balance, add_balance=eco.add_balance))
+    after = run(pm.get_pack_pity(USER, "브론즈"))
+    # 잭팟이 안 떴으면 3 증가, 떴으면 리셋되어 3보다 작다
+    assert after in (before + 3, 0, 1, 2), (before, after)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
