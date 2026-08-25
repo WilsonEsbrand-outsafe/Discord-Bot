@@ -800,6 +800,31 @@ class PlayersMarket(commands.Cog):
         embed.set_footer(text="최대 10장까지 한 번에 구매 가능 · 수수료 없음")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    # ───────────────── 선수 뉴스 ─────────────────
+    @app_commands.command(name="선수뉴스", description="최근 선수 시세를 흔든 뉴스를 봅니다.")
+    @app_commands.describe(개수="1~25 (기본 10)")
+    async def player_news(self, interaction: discord.Interaction, 개수: int = 10):
+        await interaction.response.defer()
+
+        rows = await self.pm.recent_news(개수)
+        if not rows:
+            return await interaction.followup.send(
+                embed=_embed("📰 선수 뉴스", "아직 발생한 뉴스가 없습니다.", interaction.user)
+            )
+
+        lines = []
+        for ts, headline, pct, before, after, pid, _name in rows:
+            arrow = "📈" if pct > 0 else "📉"
+            lines.append(
+                f"{arrow} **{headline}**\n"
+                f"　<t:{int(ts)}:R> · `{pid}` · {int(before):,}원 → **{int(after):,}원** "
+                f"({pct*100:+.1f}%)"
+            )
+
+        e = _embed("📰 선수 뉴스", "\n\n".join(lines), interaction.user)
+        e.set_footer(text="뉴스는 선수의 기준가를 직접 움직입니다. 시세는 새 기준가를 따라갑니다.")
+        await interaction.followup.send(embed=e)
+
     # ───────────────── 이적시장 ─────────────────
 
     @app_commands.command(name="이적시장", description="유저들이 올린 이적시장 매물을 조회합니다.")

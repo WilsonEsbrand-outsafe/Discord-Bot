@@ -262,11 +262,26 @@ async def on_ready():
         pm = PlayerMarketDB()
 
         async def tick_loop():
+            from services.economy_db import EconomyDB
+            from services.notifier import send_notify
+            _db = EconomyDB()
             while True:
                 try:
                     now = int(time.time())
                     await pm.ensure_bootstrap(now)
-                    await pm.run_tick_if_due(now)
+                    for evt in await pm.run_tick_if_due(now):
+                        pct = evt["pct"]
+                        em = discord.Embed(
+                            title=evt["headline"],
+                            description=(
+                                f"**{evt['name']}**의 시세가 움직였습니다.\n"
+                                f"{evt['price_before']:,}원 → **{evt['price_after']:,}원** "
+                                f"({pct*100:+.1f}%)"
+                            ),
+                            color=0xe74c3c if pct > 0 else 0x3498db,
+                        )
+                        for uid in evt["holders"]:
+                            await send_notify(bot, _db, uid, "선수_뉴스", em)
                 except Exception as e:
                     print("❌ [PM] tick_loop error:", repr(e))
                 await asyncio.sleep(5)

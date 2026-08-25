@@ -80,6 +80,37 @@ def retire_prob(age: int) -> float:
         return 0.040
     return 0.080
 
+# ───────────── 선수 뉴스(가격 이벤트) ─────────────
+# 틱마다 ±5% 랜덤워크만 돌면 시장이 밋밋하다. 뉴스는 기준가 자체를 움직여서
+# 이후 평균회귀가 새 가격을 따라가게 만든다. (가격만 흔들면 곧 되돌아온다)
+NEWS_PROB_PER_TICK = 0.35        # 틱당 뉴스 발생 확률 → 평균 30분에 1건
+NEWS_MAX_PER_TICK  = 2
+
+NEWS_GOOD = [
+    ("⚽ {name}, 해트트릭 폭발",            0.10, 0.30),
+    ("📰 {name} 빅클럽 이적설",             0.08, 0.24),
+    ("🇰🇷 {name}, 대표팀 발탁",              0.06, 0.18),
+    ("🏆 {name} 시즌 MVP 후보 거론",        0.12, 0.32),
+    ("✍️ {name}, 장기 재계약 임박",          0.05, 0.15),
+    ("🔥 {name} 리그 이달의 선수 선정",      0.09, 0.22),
+]
+NEWS_BAD = [
+    ("🚑 {name} 부상 이탈",                 -0.28, -0.10),
+    ("💢 {name}, 감독과 불화설",            -0.20, -0.08),
+    ("📉 {name} 최근 폼 급락",              -0.18, -0.07),
+    ("🟥 {name}, 징계 처분",                -0.22, -0.09),
+    ("⚖️ {name} 계약 분쟁 발생",             -0.16, -0.06),
+    ("🩼 {name}, 장기 재활 돌입",            -0.32, -0.14),
+]
+
+
+def roll_news(name: str) -> tuple[str, float]:
+    """무작위 헤드라인과 가격 변동률을 고른다."""
+    pool = NEWS_GOOD if random.random() < 0.5 else NEWS_BAD
+    template, lo, hi = random.choice(pool)
+    return template.format(name=name), random.uniform(lo, hi)
+
+
 # 포지션
 POSITIONS = ["GK", "DF", "MF", "FW"]
 
@@ -539,6 +570,19 @@ class PlayerMarketDB:
                 """
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_trade_items_tid ON pm_trade_items(trade_id)")
+
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS pm_news(
+                    news_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts           INTEGER NOT NULL,
+                    player_id    TEXT    NOT NULL,
+                    headline     TEXT    NOT NULL,
+                    pct          REAL    NOT NULL,
+                    price_before INTEGER NOT NULL,
+                    price_after  INTEGER NOT NULL
+                )
+            """)
+            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_news_ts ON pm_news(ts DESC)")
 
             con.execute("""
                 CREATE TABLE IF NOT EXISTS pm_pack_pity(
@@ -1317,9 +1361,11 @@ class PlayerMarketDB:
         return True, f"🎲 {pack_type}팩 {pulls}장 시뮬레이션", results
 
     # ───────────────── 시장 틱 / 월 처리 ─────────────────
-    async def run_tick_if_due(self, now_ts: int) -> bool:
+    async def run_tick_if_due(self, now_ts: int) -> list:
+        """틱을 돌리고, 이번 틱에 터진 뉴스 이벤트 목록을 반환한다.
+        (틱을 돌리지 않았으면 빈 리스트)"""
         if not self._is_market_open(now_ts):
-            return False
+            return []
         # 예전엔 (now_ts % TICK_SECONDS) > 4 로 5초 창에서만 통과시켰다.
         # 호출 루프 주기(5초 + 처리시간)가 창보다 길어 위상이 밀리면 틱이
         # 통째로 스킵돼 가격이 멈췄다. 아래 last_tick 검사만으로 충분하다.
@@ -1331,7 +1377,7 @@ class PlayerMarketDB:
                     row = con.execute("SELECT last_tick_ts FROM pm_game_time WHERE id=1").fetchone()
                     last_tick = int(row[0]) if row else 0
                     if last_tick and (now_ts - last_tick) < (TICK_SECONDS - 5):
-                        return False
+                        return []
 
                     rows = con.execute(
                         """
@@ -1378,12 +1424,88 @@ class PlayerMarketDB:
                             (str(pid), int(new_price), int(now_ts)),
                         )
 
+                    events = self._roll_tick_news(con, now_ts)
+
                     con.execute("UPDATE pm_game_time SET last_tick_ts=? WHERE id=1", (int(now_ts),))
                     con.commit()
-                    return True
+                    return events
                 finally:
                     con.close()
 
+            return await self._run(work)
+
+    def _roll_tick_news(self, con, now_ts: int) -> list:
+        """틱마다 소수의 선수에게 뉴스를 터뜨린다.
+
+        가격만 흔들면 평균회귀가 곧 되돌려 놓으므로 base_value를 함께 옮기고
+        floor/ceil도 다시 계산한다. 반환값은 보유자 알림용 이벤트 목록.
+        """
+        events: list = []
+        for _ in range(NEWS_MAX_PER_TICK):
+            if random.random() >= NEWS_PROB_PER_TICK:
+                continue
+            row = con.execute(
+                """
+                SELECT p.player_id, p.name, p.base_value, m.price
+                FROM pm_players p JOIN pm_market m ON m.player_id = p.player_id
+                WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%' AND p.base_value > 0
+                ORDER BY RANDOM() LIMIT 1
+                """
+            ).fetchone()
+            if not row:
+                return events
+
+            pid, name, base_value, price = str(row[0]), str(row[1]), int(row[2]), int(row[3])
+            headline, pct = roll_news(name)
+
+            new_base = max(10_000, int(base_value * (1.0 + pct)))
+            floor_p, ceil_p = self._compute_floor_ceil(new_base)
+            new_price = max(floor_p, min(ceil_p, int(price * (1.0 + pct))))
+
+            con.execute(
+                "UPDATE pm_players SET base_value=?, updated_ts=? WHERE player_id=?",
+                (new_base, int(now_ts), pid),
+            )
+            con.execute(
+                "UPDATE pm_market SET price=?, floor_price=?, ceil_price=?, prev_dir=?, last_update_ts=?"
+                " WHERE player_id=?",
+                (new_price, floor_p, ceil_p, 1 if pct > 0 else -1, int(now_ts), pid),
+            )
+            con.execute(
+                "INSERT INTO pm_news(ts, player_id, headline, pct, price_before, price_after)"
+                " VALUES(?, ?, ?, ?, ?, ?)",
+                (int(now_ts), pid, headline, float(pct), price, new_price),
+            )
+            con.execute(
+                "INSERT OR IGNORE INTO pm_price_history(player_id, price, tick_ts) VALUES(?, ?, ?)",
+                (pid, new_price, int(now_ts)),
+            )
+            events.append({
+                "player_id": pid, "name": name, "headline": headline,
+                "pct": pct, "price_before": price, "price_after": new_price,
+                "holders": [int(r[0]) for r in con.execute(
+                    "SELECT user_id FROM pm_holdings WHERE player_id=? AND qty>0", (pid,))],
+            })
+        return events
+
+    async def recent_news(self, limit: int = 10) -> list:
+        """최근 선수 뉴스 (최신순)."""
+        limit = max(1, min(25, int(limit)))
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    return con.execute(
+                        """
+                        SELECT n.ts, n.headline, n.pct, n.price_before, n.price_after,
+                               n.player_id, p.name
+                        FROM pm_news n JOIN pm_players p ON p.player_id = n.player_id
+                        ORDER BY n.ts DESC, n.news_id DESC LIMIT ?
+                        """,
+                        (limit,),
+                    ).fetchall()
+                finally:
+                    con.close()
             return await self._run(work)
 
     async def run_month_if_due(self, now_ts: int) -> Tuple[int, dict]:

@@ -187,9 +187,37 @@ def test_listing_buy_rejected_when_broke():
 def test_tick_moves_prices_regardless_of_phase():
     """예전엔 now_ts % 600 > 4 면 틱을 통째로 건너뛰었다."""
     eco, pm = run(_setup())
-    assert run(pm.run_tick_if_due(NOW_OPEN + 137)) is True     # 위상이 안 맞아도 실행
-    assert run(pm.run_tick_if_due(NOW_OPEN + 200)) is False    # 10분 안 지남 → 스킵
-    assert run(pm.run_tick_if_due(NOW_OPEN + 800)) is True
+    prices = lambda: {r[0]: r[7] for r in run(pm.search_players("", limit=25))}
+    before = prices()
+    run(pm.run_tick_if_due(NOW_OPEN + 137))        # 위상이 안 맞아도 실행돼야 한다
+    after = prices()
+    assert any(before[k] != after[k] for k in before), "틱이 가격을 전혀 못 움직임"
+
+    frozen = prices()
+    run(pm.run_tick_if_due(NOW_OPEN + 200))        # 10분 안 지남 → 스킵
+    assert prices() == frozen
+
+
+def test_news_moves_base_value_not_just_price():
+    """뉴스는 기준가를 옮겨야 평균회귀가 되돌리지 않는다."""
+    eco, pm = run(_setup())
+    con = pm._connect()
+    try:
+        bases = {r[0]: r[1] for r in con.execute(
+            "SELECT player_id, base_value FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'")}
+        events = []
+        for i in range(60):                        # 확률 이벤트라 여러 번 굴린다
+            events += pm._roll_tick_news(con, 1000 + i)
+        con.commit()
+        assert events, "60틱을 굴렸는데 뉴스가 한 번도 안 터짐"
+        for e in events:
+            assert e["headline"] and e["price_after"] > 0
+        moved = {r[0]: r[1] for r in con.execute(
+            "SELECT player_id, base_value FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'")}
+    finally:
+        con.close()
+    changed = [k for k in bases if bases[k] != moved[k]]
+    assert changed, "뉴스가 기준가를 못 바꿈"
 
 
 def test_pack_pity_guarantees_jackpot():
