@@ -340,10 +340,10 @@ class EconomyDB:
                         ON CONFLICT(match_id) DO UPDATE SET
                             home=excluded.home,
                             away=excluded.away,
-                            kickoff_ts=excluded.kickoff_ts,
-                            base_home=excluded.base_home,
-                            base_draw=excluded.base_draw,
-                            base_away=excluded.base_away
+                            kickoff_ts=excluded.kickoff_ts
+                        -- base_* 는 갱신하지 않음: 재등록(자동 임포트) 때마다
+                        -- The Odds API로 받아둔 실제 배당이 기본값으로 덮여쓰이던 버그.
+                        -- 실제 배당 반영은 toto_update_base_odds()가 담당한다.
                         """,
                         (match_id, home, away, int(kickoff_ts), float(base_home), float(base_draw), float(base_away)),
                     )

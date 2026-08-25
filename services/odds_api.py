@@ -28,8 +28,10 @@ SPORT_KEYS: dict[str, str] = {
 }
 
 # 팀명에서 제거할 접두·접미 클럽 약어
+# city/united/athletic/atletico/rovers/wanderers 등은 팀을 구분하는 식별어라
+# 제거하면 안 된다. (Manchester United == Manchester City 로 붕괴하던 원인)
 _STRIP_WORDS = re.compile(
-    r'\b(fc|afc|sc|ac|cf|bfc|fk|sk|as|ss|us|cd|rcd|sd|ud|ca|rc|sv|vfb|rb|bvb|ssc|calcio|futbol|football|club|city|united|rovers|wanderers|athletic|athletico|atletico)\b',
+    r'\b(fc|afc|sc|ac|cf|bfc|fk|sk|as|ss|us|cd|rcd|sd|ud|ca|rc|sv|vfb|rb|bvb|ssc|calcio|futbol|football|club)\b',
     re.IGNORECASE,
 )
 
@@ -47,7 +49,9 @@ def _normalize(name: str) -> str:
     name = "".join(c for c in name if unicodedata.category(c) != "Mn")
     name = name.lower()
     # 클럽 약어 제거
-    name = _STRIP_WORDS.sub(" ", name)
+    stripped = _STRIP_WORDS.sub(" ", name)
+    # 약어만으로 이루어진 이름은 제거 후 빈 문자열이 되어 유사도가 항상 0이 된다.
+    name = stripped if stripped.strip() else name
     # 특수문자 → 공백
     name = re.sub(r"[^\w\s]", " ", name)
     # 중복 공백 정리
@@ -154,27 +158,40 @@ class OddsAPI:
         배당이 없으면 None 반환.
         """
         home_team  = event.get("home_team", "")
+        away_team  = event.get("away_team", "")
         bookmakers = event.get("bookmakers") or []
 
         home_prices: list[float] = []
         draw_prices: list[float] = []
         away_prices: list[float] = []
 
+        def _bias(o: dict) -> float:
+            """홈 쪽으로 얼마나 치우친 아웃컴인지 (양수=홈, 음수=원정)."""
+            nm = o.get("name", "")
+            return _team_sim(nm, home_team) - _team_sim(nm, away_team)
+
         for bm in bookmakers:
             for market in (bm.get("markets") or []):
                 if market.get("key") != "h2h":
                     continue
-                for o in (market.get("outcomes") or []):
-                    name  = o.get("name", "")
-                    price = float(o.get("price") or 0)
-                    if price <= 1.01:
-                        continue
-                    if name == "Draw":
-                        draw_prices.append(price)
-                    elif _team_sim(name, home_team) >= 0.4:
-                        home_prices.append(price)
-                    else:
-                        away_prices.append(price)
+
+                outs = [o for o in (market.get("outcomes") or [])
+                        if float(o.get("price") or 0) > 1.01]
+                draw  = [o for o in outs if o.get("name") == "Draw"]
+                teams = [o for o in outs if o.get("name") != "Draw"]
+                if len(teams) != 2:
+                    continue
+
+                # 홈 임계값(>=0.4) 단독 판정은 두 팀 이름이 비슷하면 둘 다 홈으로
+                # 몰려 원정이 비고 None이 반환됐다. 마켓 안의 두 아웃컴을 서로
+                # 비교해 홈 쪽에 더 치우친 하나만 홈으로 배정한다.
+                a, b = teams
+                h, aw = (a, b) if _bias(a) >= _bias(b) else (b, a)
+
+                home_prices.append(float(h["price"]))
+                away_prices.append(float(aw["price"]))
+                if draw:
+                    draw_prices.append(float(draw[0]["price"]))
 
         if not home_prices or not away_prices:
             return None
