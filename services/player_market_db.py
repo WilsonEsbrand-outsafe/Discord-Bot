@@ -136,6 +136,35 @@ def _pack_weight(player_price: int, pack_price: int) -> float:
     return math.exp(-0.5 * ((p - P) / sigma) ** 2)
 
 
+def _take_holding(con, user_id: int, player_id: str, qty: int) -> bool:
+    """보유 수량을 원자적으로 차감한다. 수량이 모자라면 아무것도 하지 않고 False.
+
+    예전엔 보유량 확인과 차감이 서로 다른 락 구간에 있어, 판매를 연타하면
+    qty가 음수로 내려가며 같은 선수 값을 두 번 받아낼 수 있었다.
+    """
+    cur = con.execute(
+        "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=? AND qty>=?",
+        (int(qty), int(user_id), str(player_id), int(qty)),
+    )
+    return cur.rowcount > 0
+
+
+def _take_cash(con, user_id: int, amount: int) -> bool:
+    """잔액을 원자적으로 차감한다. 모자라면 아무것도 하지 않고 False.
+
+    예전엔 잔액 확인과 차감이 서로 다른 락 구간에 있어 명령을 연타하면
+    잔액이 음수로 내려갈 수 있었다. wallets 는 같은 sqlite 파일에 있으므로
+    구매 트랜잭션 안에서 함께 차감한다.
+    """
+    amount = int(amount)
+    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
+    cur = con.execute(
+        "UPDATE wallets SET balance=balance-? WHERE user_id=? AND balance>=?",
+        (amount, int(user_id), amount),
+    )
+    return cur.rowcount > 0
+
+
 def _draw_from_pool(
     con, pack: dict, pack_price: int, pulls: int
 ) -> tuple[str, list]:
@@ -167,6 +196,10 @@ def _draw_from_pool(
 
     players = [(str(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), int(r[5])) for r in rows]
     weights = [_pack_weight(p[1], pack_price) for p in players]
+    # 팩 가격에서 아주 멀리 떨어진 선수만 남으면 가우시안이 0으로 언더플로해
+    # random.choices가 ValueError를 낸다. 그 경우 균등 추첨으로 폴백.
+    if sum(weights) <= 0.0:
+        weights = [1.0] * len(players)
     return ("OK", random.choices(players, weights=weights, k=pulls))
 
 # ───────────── 국적 풀(가중치) ─────────────
@@ -759,7 +792,10 @@ class PlayerMarketDB:
                     row = con.execute("SELECT month_index FROM pm_game_time WHERE id=1").fetchone()
                     month_index = int(row[0]) if row else 0
 
-                    active = con.execute("SELECT COUNT(*) FROM pm_players WHERE retired=0").fetchone()[0]
+                    # 아마추어 더미(AMT_)는 시장에 나오지 않으므로 정원에서 제외한다.
+                    active = con.execute(
+                        "SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"
+                    ).fetchone()[0]
                     need = max(0, int(target) - int(active))
                     if need <= 0:
                         return
@@ -1005,32 +1041,38 @@ class PlayerMarketDB:
             return False, "은퇴 선수는 구매할 수 없습니다."
 
         cost = int(price) * qty
-        bal = await get_balance(user_id)
-        if bal < cost:
+
+        # 차감과 지급을 한 트랜잭션으로 묶는다. 둘로 나뉘어 있던 탓에
+        # 연타하면 잔액보다 많이 살 수 있었다.
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    con.execute("BEGIN IMMEDIATE;")
+                    if not _take_cash(con, user_id, cost):
+                        con.execute("ROLLBACK;")
+                        return False
+                    con.execute(
+                        """
+                        INSERT INTO pm_holdings(user_id, player_id, qty)
+                        VALUES(?, ?, ?)
+                        ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty
+                        """,
+                        (int(user_id), pid, int(qty)),
+                    )
+                    con.commit()
+                    return True
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            paid = await self._run(work)
+
+        if not paid:
+            bal = await get_balance(user_id)
             return False, f"잔액이 부족합니다. 필요: {cost:,} / 보유: {bal:,}"
-
-        # holdings 먼저 업데이트 → 성공 후 잔액 차감 (돈 먼저 빠지는 버그 방지)
-        try:
-            async with self._lock:
-                def work():
-                    con = self._connect()
-                    try:
-                        con.execute(
-                            """
-                            INSERT INTO pm_holdings(user_id, player_id, qty)
-                            VALUES(?, ?, ?)
-                            ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty
-                            """,
-                            (int(user_id), pid, int(qty)),
-                        )
-                        con.commit()
-                    finally:
-                        con.close()
-                await self._run(work)
-        except Exception:
-            return False, "거래 처리 중 오류가 발생했습니다. 잔액은 차감되지 않았습니다."
-
-        await add_balance(user_id, -cost)
         return True, f"✅ 구매 완료: `{pid}` **{name}** x{qty} / 총 {cost:,}원"
 
     async def sell_to_market(self, *, user_id: int, player_id: str, qty: int, now_ts: int, add_balance):
@@ -1057,18 +1099,18 @@ class PlayerMarketDB:
                     con = self._connect()
                     try:
                         con.execute("BEGIN IMMEDIATE;")
-                        con.execute(
-                            "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=?",
-                            (int(qty), int(user_id), pid),
-                        )
+                        ok = _take_holding(con, user_id, pid, qty)
                         con.execute("COMMIT;")
+                        return ok
                     except Exception:
                         try: con.execute("ROLLBACK;")
                         except Exception: pass
                         raise
                     finally:
                         con.close()
-                await self._run(work_ret)
+                sold = await self._run(work_ret)
+            if not sold:
+                return False, "보유 수량이 변경됐습니다. 다시 확인해 주세요."
             await add_balance(user_id, compensation)
             return True, (
                 f"✅ 은퇴 선수 방출: `{pid}` **{name}** x{qty}\n"
@@ -1089,19 +1131,19 @@ class PlayerMarketDB:
                 con = self._connect()
                 try:
                     con.execute("BEGIN IMMEDIATE;")
-                    con.execute(
-                        "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=?",
-                        (int(qty), int(user_id), pid),
-                    )
+                    ok = _take_holding(con, user_id, pid, qty)
                     con.execute("COMMIT;")
+                    return ok
                 except Exception:
                     try: con.execute("ROLLBACK;")
                     except Exception: pass
                     raise
                 finally:
                     con.close()
-            await self._run(work)
+            sold = await self._run(work)
 
+        if not sold:
+            return False, "보유 수량이 변경됐습니다. 다시 확인해 주세요."
         await add_balance(user_id, net)
         return True, f"✅ 판매 완료: `{pid}` **{name}** x{qty} / 총 {gross:,}원 (수수료 {fee:,}) → 실수령 {net:,}원"
 
@@ -1116,49 +1158,51 @@ class PlayerMarketDB:
         pack_price = int(pack["price"])
         total_cost = pack_price * pulls
 
-        bal = await get_balance(user_id)
-        if bal < total_cost:
-            return False, f"잔액이 부족합니다. 필요: {total_cost:,} / 보유: {bal:,}", None
-
-        # 선차감 (풀 비면 환불)
-        await add_balance(user_id, -total_cost)
-
+        # 차감·추첨·지급을 한 트랜잭션으로 묶는다. 예전엔 먼저 돈을 빼고
+        # 실패 시 환불하는 구조라, 추첨 중 예외가 나면 돈만 사라졌다.
         async with self._lock:
             def work():
                 con = self._connect()
                 try:
+                    con.execute("BEGIN IMMEDIATE;")
+                    if not _take_cash(con, user_id, total_cost):
+                        con.execute("ROLLBACK;")
+                        return ("NO_FUNDS", [])
                     status, drawn = _draw_from_pool(con, pack, pack_price, pulls)
                     if status == "EMPTY_TIER":
+                        con.execute("ROLLBACK;")
                         return ("EMPTY_TIER", [])
-                    results = []
                     for row in drawn:
-                        pid = row[0]
-                        results.append(row)
                         con.execute(
                             """
                             INSERT INTO pm_holdings(user_id, player_id, qty)
                             VALUES(?, ?, 1)
                             ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+1
                             """,
-                            (int(user_id), pid),
+                            (int(user_id), row[0]),
                         )
                     con.commit()
-                    return ("OK", results)
+                    return ("OK", list(drawn))
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
                 finally:
                     con.close()
 
             status, results = await self._run(work)
 
-        if status in ("EMPTY", "EMPTY_TIER"):
-            await add_balance(user_id, total_cost)
-            if status == "EMPTY_TIER":
-                return False, (
-                    f"**{pack_type}팩** 등급({int(pack.get('min_price',0)):,}원~"
-                    + (f"{int(pack['max_price']):,}원" if pack.get("max_price") else "∞")
-                    + ")에 해당하는 선수가 현재 없습니다.\n"
-                    "💸 구입 비용이 전액 환불됐습니다."
-                ), None
-            return False, "선수 풀이 비어 있습니다. (잠시 후 다시 시도)", None
+        if status == "NO_FUNDS":
+            bal = await get_balance(user_id)
+            return False, f"잔액이 부족합니다. 필요: {total_cost:,} / 보유: {bal:,}", None
+
+        if status == "EMPTY_TIER":
+            return False, (
+                f"**{pack_type}팩** 등급({int(pack.get('min_price',0)):,}원~"
+                + (f"{int(pack['max_price']):,}원" if pack.get("max_price") else "∞")
+                + ")에 해당하는 선수가 현재 없습니다.\n"
+                "💸 비용은 차감되지 않았습니다."
+            ), None
 
         return True, f"🎁 {pack_type}팩 {pulls}장 개봉 완료! (총 {total_cost:,}원)", results
 
@@ -1198,8 +1242,9 @@ class PlayerMarketDB:
     async def run_tick_if_due(self, now_ts: int) -> bool:
         if not self._is_market_open(now_ts):
             return False
-        if (now_ts % TICK_SECONDS) > 4:
-            return False
+        # 예전엔 (now_ts % TICK_SECONDS) > 4 로 5초 창에서만 통과시켰다.
+        # 호출 루프 주기(5초 + 처리시간)가 창보다 길어 위상이 밀리면 틱이
+        # 통째로 스킵돼 가격이 멈췄다. 아래 last_tick 검사만으로 충분하다.
 
         async with self._lock:
             def work():
@@ -1469,10 +1514,9 @@ class PlayerMarketDB:
                 con = self._connect()
                 try:
                     con.execute("BEGIN IMMEDIATE;")
-                    con.execute(
-                        "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=?",
-                        (qty, int(seller_id), pid),
-                    )
+                    if not _take_holding(con, seller_id, pid, qty):
+                        con.execute("ROLLBACK;")
+                        return None
                     cur = con.execute(
                         """
                         INSERT INTO pm_listings(seller_id, player_id, qty, price_per,
@@ -1491,6 +1535,9 @@ class PlayerMarketDB:
                 finally:
                     con.close()
             lid = await self._run(work)
+
+        if lid is None:
+            return False, "보유 수량이 변경됐습니다. 다시 확인해 주세요."
 
         return True, (
             f"✅ 이적시장 등록 완료\n"
@@ -1637,6 +1684,12 @@ class PlayerMarketDB:
                     remaining   = int(avail_qty) - qty
 
                     con.execute("BEGIN IMMEDIATE;")
+                    # 대금 차감도 같은 트랜잭션 안에서. 예전엔 락 밖에서 잔액을
+                    # 확인하고 실패하면 수작업으로 되돌렸는데, 그 보상 로직이
+                    # work()의 지역변수(avail_qty)를 참조해 NameError로 터졌다.
+                    if not _take_cash(con, buyer_id, total_cost):
+                        con.execute("ROLLBACK;")
+                        return None, "NO_FUNDS:%d" % total_cost
                     if remaining <= 0:
                         con.execute(
                             "UPDATE pm_listings SET status='sold', qty=0 WHERE listing_id=?",
@@ -1656,7 +1709,8 @@ class PlayerMarketDB:
                         (int(buyer_id), str(pid), qty),
                     )
                     con.commit()
-                    return (int(seller_id), str(pid), qty, total_cost, fee, seller_gets, name), None
+                    return (int(seller_id), str(pid), qty, total_cost, fee,
+                            seller_gets, name, int(price_per)), None
                 except Exception:
                     try: con.execute("ROLLBACK;")
                     except Exception: pass
@@ -1665,46 +1719,16 @@ class PlayerMarketDB:
                     con.close()
             result, err = await self._run(work)
 
+        if err and err.startswith("NO_FUNDS:"):
+            need = int(err.split(":")[1])
+            bal  = await get_balance(buyer_id)
+            return False, f"잔액이 부족합니다. 필요: {need:,} / 보유: {bal:,}", None
         if err:
             return False, err, None
 
-        seller_id, pid, qty_bought, total_cost, fee, seller_gets, name = result
+        # price_per 도 work() 지역변수였다. 결과 튜플로 함께 돌려받는다.
+        seller_id, pid, qty_bought, total_cost, fee, seller_gets, name, price_per = result
 
-        # 잔액 반영 (잔액 확인은 lock 밖에서 — 실패 시 holdings rollback 불가이므로 순서 중요)
-        bal = await get_balance(buyer_id)
-        if bal < total_cost:
-            # 재고를 이미 차감했으므로 롤백
-            async with self._lock:
-                def rollback():
-                    con = self._connect()
-                    try:
-                        con.execute("BEGIN IMMEDIATE;")
-                        con.execute(
-                            "UPDATE pm_holdings SET qty=qty-? WHERE user_id=? AND player_id=?",
-                            (qty_bought, int(buyer_id), pid),
-                        )
-                        # 매물 복원
-                        remaining_now = int(avail_qty) - qty_bought  # type: ignore
-                        if remaining_now <= 0:
-                            con.execute(
-                                "UPDATE pm_listings SET status='active', qty=? WHERE listing_id=?",
-                                (qty_bought, int(listing_id)),
-                            )
-                        else:
-                            con.execute(
-                                "UPDATE pm_listings SET qty=qty+? WHERE listing_id=?",
-                                (qty_bought, int(listing_id)),
-                            )
-                        con.commit()
-                    except Exception:
-                        try: con.execute("ROLLBACK;")
-                        except Exception: pass
-                    finally:
-                        con.close()
-                await self._run(rollback)
-            return False, f"잔액이 부족합니다. 필요: {total_cost:,} / 보유: {bal:,}", None
-
-        await add_balance(buyer_id, -total_cost)
         await add_balance(seller_id, seller_gets)
         return True, (
             f"✅ 이적 구매 완료: **{name}** x{qty_bought}\n"
