@@ -263,6 +263,34 @@ def test_pity_persists_across_pack_purchases():
     assert after in (before + 3, 0, 1, 2), (before, after)
 
 
+def test_tick_path_emits_news():
+    """run_tick_if_due가 실제로 뉴스를 발생시키는지 (틱 -> 뉴스 배선 확인)."""
+    eco, pm = run(_setup())
+    seen = []
+    ts = NOW_OPEN
+    for _ in range(40):                      # 40틱이면 뉴스 0건 확률은 사실상 0
+        ts += 600
+        seen += run(pm.run_tick_if_due(ts))
+    assert seen, "40틱을 돌렸는데 run_tick_if_due가 뉴스를 하나도 반환하지 않음"
+    for e in seen:
+        assert e["headline"] and e["holders"] is not None
+        assert e["price_after"] != e["price_before"] or e["pct"] == 0
+
+    # 테스트들이 임시 DB 하나를 공유하므로 다른 테스트가 남긴 행도 섞인다.
+    con = pm._connect()
+    try:
+        stored = con.execute("SELECT COUNT(*) FROM pm_news").fetchone()[0]
+    finally:
+        con.close()
+    assert stored >= len(seen), (stored, len(seen))
+
+
+def test_news_skipped_when_market_closed():
+    eco, pm = run(_setup())
+    closed = 23 * 3600                        # 08:00 KST
+    assert run(pm.run_tick_if_due(closed)) == []
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
