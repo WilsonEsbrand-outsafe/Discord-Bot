@@ -2,6 +2,7 @@
 import os
 import re
 import asyncio
+import time
 import aiohttp
 import unicodedata
 from difflib import SequenceMatcher
@@ -11,9 +12,12 @@ from typing import Optional
 BASE = "https://api.the-odds-api.com/v4"
 
 # football-data.org 대회 코드 → The Odds API sport key 매핑
+# 키 값은 The Odds API의 /v4/sports 응답과 정확히 일치해야 한다.
+# 존재하지 않는 키를 넣으면 404가 떨어지고 배당이 조용히 비어버린다.
+# 확인: .venv/Scripts/python.exe tools/odds_diag.py
 SPORT_KEYS: dict[str, str] = {
-    "PL":  "soccer_england_premier_league",
-    "ELC": "soccer_england_league1",
+    "PL":  "soccer_epl",                        # soccer_england_premier_league 는 없는 키였다
+    "ELC": "soccer_efl_champ",                  # soccer_england_league1 은 3부(League One)라 다른 대회
     "BL1": "soccer_germany_bundesliga",
     "FL1": "soccer_france_ligue_one",
     "SA":  "soccer_italy_serie_a",
@@ -23,7 +27,7 @@ SPORT_KEYS: dict[str, str] = {
     "CL":  "soccer_uefa_champs_league",
     "EC":  "soccer_uefa_european_championship",
     "WC":  "soccer_fifa_world_cup",
-    "CLI": "soccer_conmebol_libertadores",
+    "CLI": "soccer_conmebol_copa_libertadores",  # copa 가 빠져 있었다
     "BSA": "soccer_brazil_campeonato",
 }
 
@@ -79,10 +83,17 @@ def _team_sim(a: str, b: str) -> float:
     return max(jaccard, char_sim)
 
 
+# /v4/sports 는 크레딧을 소모하지 않는다. 이걸로 먼저 걸러서
+# 비시즌 대회(CL/EC/WC 등)에 유료 호출을 날리지 않는다.
+ACTIVE_CACHE_TTL = 3600
+
+
 class OddsAPI:
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
         self.api_key = os.getenv("ODDS_API_KEY", "")
+        self._active: set[str] = set()
+        self._active_ts: float = 0.0
 
     def _enabled(self) -> bool:
         return bool(self.api_key)
@@ -103,6 +114,17 @@ class OddsAPI:
         except Exception:
             return []
 
+    async def active_sport_keys(self) -> set[str]:
+        """현재 배당이 열려 있는 sport key 집합. (무료 호출, 1시간 캐시)"""
+        now = time.monotonic()
+        if self._active and (now - self._active_ts) < ACTIVE_CACHE_TTL:
+            return self._active
+        sports = await self.list_active_sports()
+        if sports:
+            self._active = {str(d.get("key", "")) for d in sports}
+            self._active_ts = now
+        return self._active
+
     async def get_events(self, competition_code: str) -> list[dict]:
         """
         대회의 예정 경기 배당 목록을 가져옵니다.
@@ -116,10 +138,18 @@ class OddsAPI:
             print(f"[ODDS] {competition_code}: sport key 없음, 스킵")
             return []
 
+        # 비시즌 대회에 유료 호출을 낭비하지 않는다.
+        active = await self.active_sport_keys()
+        if active and sport not in active:
+            print(f"[ODDS] {competition_code}({sport}): 현재 배당 없음(비시즌) — 유료 호출 스킵")
+            return []
+
         url = f"{BASE}/sports/{sport}/odds"
         params = {
             "apiKey":     self.api_key,
-            "regions":    "eu,uk,au",   # 더 넓은 범위로 조회
+            # 지역 1개당 크레딧 1. eu,uk,au 는 호출마다 3크레딧을 먹었다.
+            # 유럽 리그 위주라 eu,uk 두 곳이면 북메이커 평균으로 충분하다.
+            "regions":    "eu,uk",
             "markets":    "h2h",
             "dateFormat": "iso",
             "oddsFormat": "decimal",

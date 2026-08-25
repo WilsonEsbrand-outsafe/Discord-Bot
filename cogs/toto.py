@@ -33,9 +33,13 @@ class Toto(commands.Cog):
     CAP_PCT = 0.20
 
     # 자동 경기 등록 설정
-    AUTO_IMPORT_COMPETITIONS = ["PL", "CL", "PD", "WC"]  # 자동 등록할 대회 코드
-    AUTO_IMPORT_FETCH        = 10       # 대회당 한 번에 가져올 최대 경기 수
-    AUTO_IMPORT_INTERVAL     = 3600 * 6 # 체크 주기 (6시간)
+    # WC(월드컵)는 4년에 한 번이라 자동 등록에서 뺐다. 비시즌 대회는
+    # OddsAPI가 무료 /sports 조회로 걸러내므로 유료 호출을 먹지 않는다.
+    AUTO_IMPORT_COMPETITIONS = ["PL", "PD", "CL"]  # 자동 등록할 대회 코드
+    AUTO_IMPORT_FETCH        = 10        # 대회당 한 번에 가져올 최대 경기 수
+    # 크레딧 계산: 대회 3개 x 지역 2개 x 하루 2회 = 12크레딧/일 (약 360/월).
+    # 무료 플랜이 월 500이므로 주기를 줄이면 월 한도를 넘긴다.
+    AUTO_IMPORT_INTERVAL     = 3600 * 12 # 체크 주기 (12시간)
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
