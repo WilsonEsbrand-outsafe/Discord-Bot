@@ -23,6 +23,7 @@ TICK_SECONDS = 600  # 10분
 
 REAL_SECONDS_PER_MONTH = 2 * 3600  # 2시간 = 1개월
 MONTHS_PER_YEAR = 12
+MONTH_CATCHUP_MAX = 3   # 한 번의 호출에서 진행할 최대 개월 수 (락 점유 시간 상한)
 
 SELL_FEE_RATE = 0.05
 
@@ -1524,6 +1525,12 @@ class PlayerMarketDB:
                     months_due = int((now_ts - last_month_ts) // REAL_SECONDS_PER_MONTH)
                     if months_due <= 0:
                         return 0, {}
+
+                    # 봇이 며칠 꺼져 있었으면 months_due 가 수십이 된다. 한 번에
+                    # 다 돌리면 그동안 _lock 을 쥐고 있어 선수 관련 명령이 전부
+                    # 멈춘다. 한 번에 MONTH_CATCHUP_MAX 개월씩만 진행하고 락을
+                    # 놓는다. 호출 루프가 10초마다 도므로 나머지는 곧 따라잡는다.
+                    months_due = min(months_due, MONTH_CATCHUP_MAX)
 
                     # 월 처리 전 초기 상태 캡처 (알림 비교용)
                     initial_rows = con.execute(

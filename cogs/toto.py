@@ -37,6 +37,8 @@ class Toto(commands.Cog):
     # OddsAPI가 무료 /sports 조회로 걸러내므로 유료 호출을 먹지 않는다.
     AUTO_IMPORT_COMPETITIONS = ["PL", "PD", "CL"]  # 자동 등록할 대회 코드
     AUTO_IMPORT_FETCH        = 10        # 대회당 한 번에 가져올 최대 경기 수
+    SETTLE_MIN_ELAPSED       = 2 * 3600  # 킥오프 후 이 시간이 지나야 정산 조회
+    SETTLE_BATCH             = 10        # 한 번에 확인할 최대 경기 수
     # 크레딧 계산: 대회 3개 x 지역 2개 x 하루 2회 = 12크레딧/일 (약 360/월).
     # 무료 플랜이 월 500이므로 주기를 줄이면 월 한도를 넘긴다.
     AUTO_IMPORT_INTERVAL     = 3600 * 12 # 체크 주기 (12시간)
@@ -260,7 +262,7 @@ class Toto(commands.Cog):
         예정 경기를 자동 등록합니다. upsert로 중복을 처리하므로
         이미 등록된 경기는 건드리지 않습니다.
         """
-        await asyncio.sleep(15)  # 정산 루프 뒤에 살짝 늦게 시작
+        await asyncio.sleep(120)  # 부팅 직후 부하가 겹치지 않게 정산 루프보다 더 뒤에서 시작
 
         while True:
             try:
@@ -285,7 +287,7 @@ class Toto(commands.Cog):
         2) 킥오프 지난 미정산 경기들을 football-data.org로 조회
         3) FINISHED면 1/X/2 판정 후 DB 정산
         """
-        await asyncio.sleep(5)  # 봇 부팅 직후 약간 대기
+        await asyncio.sleep(45)  # 부팅 직후 명령 동기화·시장 부트스트랩과 겹치지 않게
 
         while True:
             try:
@@ -298,8 +300,12 @@ class Toto(commands.Cog):
                 # 시작한 open 경기 -> closed로 전환
                 await self.db.toto_close_started(now_ts)
 
-                # 정산 후보
-                candidates = await self.db.toto_list_candidates_for_settle(now_ts, limit=30)
+                # 정산 후보. 킥오프 직후 경기는 끝났을 리가 없는데도 매분
+                # 조회해 분당 10회 한도를 통째로 태우고 있었다. 경기 시간
+                # (연장·추가시간 포함)이 지난 것만 본다.
+                candidates = await self.db.toto_list_candidates_for_settle(
+                    now_ts - self.SETTLE_MIN_ELAPSED, limit=self.SETTLE_BATCH
+                )
                 if not candidates:
                     await asyncio.sleep(60)
                     continue
@@ -346,11 +352,13 @@ class Toto(commands.Cog):
                         else:
                             print(f"⚠️ [AUTO-SETTLE] match_id={mid} skipped :: {msg}")
 
-                        # API 과호출 방지
-                        await asyncio.sleep(0.6)
-
                     except Exception as e:
+                        # 예전엔 대기 없이 continue 해서, 한도가 소진되면
+                        # 남은 후보를 연달아 때려 429를 계속 재발생시켰다.
+                        # 호출 간격 자체는 FootballAPI 의 전역 리미터가
+                        # 책임지고, 여기서는 오류 시 추가로 쉬어준다.
                         print(f"❌ [AUTO-SETTLE] match_id={mid} error:", repr(e))
+                        await asyncio.sleep(30 if "429" in str(e) else 3)
                         continue
 
                 await asyncio.sleep(60)

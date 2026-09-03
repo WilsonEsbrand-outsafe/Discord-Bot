@@ -1,6 +1,9 @@
 # bot.py
 import os
 import asyncio
+import importlib
+import socket
+import sys
 import time
 from pathlib import Path
 import re
@@ -20,6 +23,30 @@ load_dotenv(BASE_DIR / ".env")
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN이 .env에 없습니다.")
+
+# ───────────────── 중복 실행 차단 ─────────────────
+# 같은 토큰으로 봇이 두 개 뜨면 두 인스턴스가 같은 인터랙션을 받는다.
+# 먼저 응답한 쪽이 이기고, 진 쪽은 defer 에서
+# 40060 (Interaction has already been acknowledged) 으로 죽는다.
+# 더 나쁜 건 어느 쪽이 응답했는지 알 수 없다는 점이다. 옛 코드를 돌리는
+# 인스턴스가 응답하면, 고친 내용이 반영되지 않은 것처럼 보인다.
+SINGLE_INSTANCE_PORT = 47113
+_instance_guard = None
+
+
+def ensure_single_instance() -> None:
+    global _instance_guard
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
+    except OSError:
+        sock.close()
+        print("❌ 이미 실행 중인 봇이 있습니다. 기존 프로세스를 먼저 종료하세요.")
+        print("   (두 개가 동시에 뜨면 같은 명령에 둘 다 반응해 한쪽이 오류를 냅니다)")
+        raise SystemExit(1)
+    sock.listen(1)
+    _instance_guard = sock   # 프로세스가 사는 동안 소켓을 붙잡아 둔다
+
 
 intents = discord.Intents.default()
 intents.members = True
@@ -262,6 +289,7 @@ async def on_ready():
         pm = PlayerMarketDB()
 
         async def tick_loop():
+            await asyncio.sleep(20)   # 명령 동기화가 끝난 뒤에 시작
             from services.economy_db import EconomyDB
             from services.notifier import send_notify
             _db = EconomyDB()
@@ -287,6 +315,7 @@ async def on_ready():
                 await asyncio.sleep(5)
 
         async def month_loop():
+            await asyncio.sleep(75)   # 틱 루프·정산 루프와 부팅 부하를 분산
             from services.economy_db import EconomyDB
             from services.notifier import send_notify
             _db = EconomyDB()
@@ -357,6 +386,21 @@ async def sync_and_reload(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
 
+    # cogs 만 리로드하면 services.* 는 sys.modules 캐시에 남아 코드가
+    # 반영되지 않는다. cog 가 새 클래스를 집어가도록 먼저 새로고침한다.
+    # (모듈 전역 상태 — 레이트 리미터 큐 등 — 는 이때 초기화된다)
+    svc_ok, svc_fail = [], []
+    for _name in sorted(m for m in list(sys.modules) if m.startswith("services.")):
+        _mod = sys.modules.get(_name)
+        if _mod is None:
+            continue
+        try:
+            importlib.reload(_mod)
+            svc_ok.append(_name)
+        except Exception as e:
+            svc_fail.append(_name)
+            print(f"⚠️ {_name} 리로드 실패:", repr(e))
+
     # 리로드 대상 목록에 전체 추가
     EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto")
     for ext in EXTENSIONS:
@@ -373,7 +417,10 @@ async def sync_and_reload(interaction: discord.Interaction):
     # ✅ 슬래시 동기화(이 서버)
     await sync_guild(discord.Object(id=interaction.guild_id))
 
-    await interaction.followup.send("🔄 코그 리로드 + 동기화 완료", ephemeral=True)
+    _msg = "🔄 코그 리로드 + 동기화 완료" + chr(10) + f"services 새로고침: {len(svc_ok)}개"
+    if svc_fail:
+        _msg += f" (실패 {len(svc_fail)}: {', '.join(svc_fail)})"
+    await interaction.followup.send(_msg, ephemeral=True)
 
 # ───────────────── 슬래시: 올인원 임베드 ─────────────────
 @app_commands.guild_only()
@@ -839,6 +886,7 @@ async def main():
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
+    ensure_single_instance()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
