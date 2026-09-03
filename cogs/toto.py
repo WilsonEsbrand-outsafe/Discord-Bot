@@ -208,22 +208,16 @@ class Toto(commands.Cog):
 
         result["fetched"] = len(matches)
 
-        # The Odds API 배당 가져오기
-        odds_events: list[dict] = []
-        if self.odds:
-            try:
-                odds_events = await self.odds.get_events(competition)
-                result["odds_events"] = len(odds_events)
-            except Exception as e:
-                print(f"[ODDS] {competition} 배당 조회 실패: {e}")
-
+        # ── 1단계: 경기 등록 ──────────────────────────────────────────
+        # 배당 조회보다 먼저 등록해야, 어떤 경기에 배당이 필요한지 알 수 있다.
+        registered: list[tuple] = []   # (match_id, home, away, kickoff_ts)
         for m in matches:
             if result["added"] >= limit:
                 break
-            mid      = str(m.get("id"))
-            home     = (m.get("homeTeam") or {}).get("name") or "HOME"
-            away     = (m.get("awayTeam") or {}).get("name") or "AWAY"
-            utc_iso  = m.get("utcDate")
+            mid     = str(m.get("id"))
+            home    = (m.get("homeTeam") or {}).get("name") or "HOME"
+            away    = (m.get("awayTeam") or {}).get("name") or "AWAY"
+            utc_iso = m.get("utcDate")
             if not utc_iso:
                 continue
             kickoff_ts = int(datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).timestamp())
@@ -233,25 +227,55 @@ class Toto(commands.Cog):
                 base_home=self.BASE_HOME, base_draw=self.BASE_DRAW, base_away=self.BASE_AWAY,
             )
             result["added"] += 1
-
+            registered.append((mid, home, away, kickoff_ts))
             result["notes"].append(f"`{home}` vs `{away}`")
-            if odds_events and self.odds:
-                ev = OddsAPI.find_match(home, away, kickoff_ts, odds_events)
-                if ev:
-                    h2h = OddsAPI.extract_h2h(ev)
-                    if h2h:
-                        await self.db.toto_update_base_odds(mid, *h2h)
-                        result["odds_applied"] += 1
-                        result["notes"][-1] += f" → 배당 {h2h[0]}/{h2h[1]}/{h2h[2]}"
-                    else:
-                        result["notes"][-1] += f" → 이벤트 매칭됨, h2h 추출 실패 (`{ev.get('home_team')}` vs `{ev.get('away_team')}`)"
+
+        # ── 2단계: 배당이 필요한 경기가 있을 때만 유료 호출 ───────────
+        # 예전엔 이미 배당이 다 붙어 있어도 매번 The Odds API 를 호출해
+        # 재시작마다 크레딧을 태웠다. (대회당 지역 2개 = 2크레딧)
+        need_odds = await self.db.toto_missing_odds([r[0] for r in registered])
+        if not need_odds:
+            if registered:
+                print(f"[ODDS] {competition}: 등록된 {len(registered)}경기 모두 배당 보유 — 호출 스킵")
+            print(f"[IMPORT] {competition}: API {result['fetched']}개 → 등록 {result['added']}개 / 배당 0개(기보유)")
+            return result
+
+        odds_events: list[dict] = []
+        if self.odds:
+            try:
+                odds_events = await self.odds.get_events(competition)
+                result["odds_events"] = len(odds_events)
+            except Exception as e:
+                print(f"[ODDS] {competition} 배당 조회 실패: {e}")
+
+        for idx, (mid, home, away, kickoff_ts) in enumerate(registered):
+            note_i = len(result["notes"]) - len(registered) + idx
+            if mid not in need_odds:
+                result["notes"][note_i] += " → 배당 이미 반영됨"
+                continue
+            if not odds_events or not self.odds:
+                result["notes"][note_i] += " → Odds API 이벤트 없음"
+                continue
+
+            ev = OddsAPI.find_match(home, away, kickoff_ts, odds_events)
+            if ev:
+                h2h = OddsAPI.extract_h2h(ev)
+                if h2h:
+                    await self.db.toto_update_base_odds(mid, *h2h)
+                    result["odds_applied"] += 1
+                    result["notes"][note_i] += f" → 배당 {h2h[0]}/{h2h[1]}/{h2h[2]}"
                 else:
-                    # 가장 유사한 이벤트 이름 힌트
-                    hint = odds_events[0] if odds_events else None
-                    if hint:
-                        result["notes"][-1] += f" → 매칭 실패 (Odds API 예시: `{hint.get('home_team')}` vs `{hint.get('away_team')}`)"
-            elif not odds_events:
-                result["notes"][-1] += " → Odds API 이벤트 없음"
+                    result["notes"][note_i] += (
+                        f" → 이벤트 매칭됨, h2h 추출 실패 "
+                        f"(`{ev.get('home_team')}` vs `{ev.get('away_team')}`)"
+                    )
+            else:
+                hint = odds_events[0] if odds_events else None
+                if hint:
+                    result["notes"][note_i] += (
+                        f" → 매칭 실패 (Odds API 예시: "
+                        f"`{hint.get('home_team')}` vs `{hint.get('away_team')}`)"
+                    )
 
         print(f"[IMPORT] {competition}: API {result['fetched']}개 → 등록 {result['added']}개 / 배당 {result['odds_applied']}개")
         return result

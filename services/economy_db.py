@@ -73,10 +73,17 @@ class EconomyDB:
                     result TEXT DEFAULT NULL,             -- '1'/'X'/'2'
                     base_home REAL NOT NULL DEFAULT 1.4,
                     base_draw REAL NOT NULL DEFAULT 2.9,
-                    base_away REAL NOT NULL DEFAULT 2.1
+                    base_away REAL NOT NULL DEFAULT 2.1,
+                    -- The Odds API 실제 배당이 반영됐는지. 0이면 아직 기본값이다.
+                    odds_applied INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            # 기존 DB 마이그레이션 — odds_applied 컬럼이 없으면 추가
+            try:
+                con.execute("ALTER TABLE toto_matches ADD COLUMN odds_applied INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
 
             con.execute(
                 """
@@ -776,12 +783,36 @@ class EconomyDB:
                     con.execute(
                         """
                         UPDATE toto_matches
-                        SET base_home=?, base_draw=?, base_away=?
+                        SET base_home=?, base_draw=?, base_away=?, odds_applied=1
                         WHERE match_id=?
                         """,
                         (float(base_home), float(base_draw), float(base_away), match_id),
                     )
                     con.commit()
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def toto_missing_odds(self, match_ids: list) -> set:
+        """주어진 경기 중 아직 실제 배당이 안 붙은 것들의 match_id 집합.
+
+        비어 있으면 The Odds API 를 호출할 이유가 없다. 예전엔 이미 배당이
+        다 붙어 있어도 자동 등록 때마다 유료 호출을 했다.
+        """
+        ids = [str(m) for m in (match_ids or [])]
+        if not ids:
+            return set()
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    marks = ",".join("?" * len(ids))
+                    rows = con.execute(
+                        f"SELECT match_id FROM toto_matches "
+                        f"WHERE odds_applied=0 AND match_id IN ({marks})",
+                        ids,
+                    ).fetchall()
+                    return {str(r[0]) for r in rows}
                 finally:
                     con.close()
             return await self._run(work)
