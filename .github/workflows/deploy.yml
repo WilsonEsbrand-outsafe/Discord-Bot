@@ -15,12 +15,56 @@ jobs:
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           script: |
-            cd /home/ubuntu/discord-bot
+            cd /home/ubuntu/discord-bot || exit 1
+
+            # ── .env 때문에 git pull 이 막히던 문제 ────────────────────────
+            # .env 는 저장소에서 추적 해제됐지만(d9e4b60) 서버에는 예전
+            # 추적본이 남아 있고, 아래 sed 가 배포마다 그 파일을 수정한다.
+            # 그래서 pull 이 "local changes would be overwritten" 으로 매번
+            # 중단됐는데, 마지막 명령만 보는 워크플로는 성공으로 표시했다.
+            # 그 결과 서버는 b409096 에 멈춘 채 새 코드를 한 번도 받지 못했다.
+            #
+            # DISCORD_TOKEN·FOOTBALL_DATA_TOKEN 은 Secret 에 없고 서버
+            # .env 에만 있으므로, 무슨 일이 있어도 값을 보존해야 한다.
+            if [ -f .env ]; then
+              cp -f .env /tmp/discord-bot.env.bak
+              chmod 600 /tmp/discord-bot.env.bak
+            fi
+
+            # 추적 파일의 로컬 변경을 전부 되돌려 pull 을 막지 않게 한다.
+            # (.env 는 위에서 백업했고 pull 뒤에 되돌린다)
+            git checkout -- . 2>/dev/null || true
             git pull origin main
-            pip install -r requirements.txt --quiet
-            # 환경변수 동기화 (.env 마지막 줄 업데이트)
+            PULL_RC=$?
+
+            # pull 성공 여부와 무관하게 실제 .env 를 반드시 되돌린다
+            if [ -f /tmp/discord-bot.env.bak ]; then
+              cp -f /tmp/discord-bot.env.bak .env
+            fi
+
+            if [ "$PULL_RC" -ne 0 ]; then
+              echo "::error::git pull 실패 (rc=$PULL_RC) — 배포 중단"
+              exit 1
+            fi
+            echo "배포 커밋: $(git rev-parse --short HEAD)"
+
+            pip install -r requirements.txt --quiet || exit 1
+
+            # 환경변수 동기화 (Secret 에 있는 것만)
             grep -q "^ODDS_API_KEY=" .env && sed -i "s|^ODDS_API_KEY=.*|ODDS_API_KEY=${{ secrets.ODDS_API_KEY }}|" .env || echo "ODDS_API_KEY=${{ secrets.ODDS_API_KEY }}" >> .env
             grep -q "^TRANSFER_RUMOR_CHANNEL_ID=" .env && sed -i "s|^TRANSFER_RUMOR_CHANNEL_ID=.*|TRANSFER_RUMOR_CHANNEL_ID=${{ secrets.TRANSFER_RUMOR_CHANNEL_ID }}|" .env || echo "TRANSFER_RUMOR_CHANNEL_ID=${{ secrets.TRANSFER_RUMOR_CHANNEL_ID }}" >> .env
             grep -q "^TRANSFER_HWG_CHANNEL_ID=" .env && sed -i "s|^TRANSFER_HWG_CHANNEL_ID=.*|TRANSFER_HWG_CHANNEL_ID=${{ secrets.TRANSFER_HWG_CHANNEL_ID }}|" .env || echo "TRANSFER_HWG_CHANNEL_ID=${{ secrets.TRANSFER_HWG_CHANNEL_ID }}" >> .env
             grep -q "^TRANSFER_OFFICIAL_CHANNEL_ID=" .env && sed -i "s|^TRANSFER_OFFICIAL_CHANNEL_ID=.*|TRANSFER_OFFICIAL_CHANNEL_ID=${{ secrets.TRANSFER_OFFICIAL_CHANNEL_ID }}|" .env || echo "TRANSFER_OFFICIAL_CHANNEL_ID=${{ secrets.TRANSFER_OFFICIAL_CHANNEL_ID }}" >> .env
-            sudo systemctl restart discord-bot
+
+            sudo systemctl restart discord-bot || exit 1
+
+            # 기동 확인. 예전엔 재시작만 하고 끝나서, 죽어도 성공으로 보였다.
+            sleep 8
+            if systemctl is-active --quiet discord-bot; then
+              echo "서비스 정상 기동"
+              sudo journalctl -u discord-bot -n 25 --no-pager
+            else
+              echo "::error::discord-bot 기동 실패"
+              sudo journalctl -u discord-bot -n 40 --no-pager
+              exit 1
+            fi
