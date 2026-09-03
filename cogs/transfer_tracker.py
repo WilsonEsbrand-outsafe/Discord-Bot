@@ -19,7 +19,7 @@ from discord.ext import commands, tasks
 import aiohttp
 import feedparser
 
-from services.transfer_db import TransferDB
+from services.transfer_db import TransferDB, topic_signature
 from auth import OWNER_ID
 
 log = logging.getLogger(__name__)
@@ -27,7 +27,37 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────
 # 소스 목록
 # ─────────────────────────────────────────
+# ── Romano 의 X 게시물을 직접 가져오는 경로는 전부 막혀 있다 ──────────
+#   syndication.twitter.com  : 인증 없이 호출하면 429
+#   Nitter 인스턴스           : DNS 소멸
+#   RSSHub 공개 인스턴스       : twitter 라우트 404
+#   openrss.org              : 503
+#   공식 X API               : Basic 플랜 월 $200
+# 그래서 그의 트윗을 인용 보도하는 기사를 Google News RSS 로 모은다.
+# 트윗 자체보다 수십 분 늦지만 무료이고 안정적이다.
+GOOGLE_NEWS = "https://news.google.com/rss/search?q={q}&hl=en-GB&gl=GB&ceid=GB:en"
+
 FEED_SOURCES = [
+    # ── 0군: Romano 대체 경로 ─────────────────────────
+    {
+        "name": "Romano · Here We Go",
+        "url": GOOGLE_NEWS.format(q="%22here+we+go%22+%22Fabrizio+Romano%22"),
+        "color": 0x00FF85,
+        "emoji": "🟢",
+        "is_romano": True,      # → HWG 채널
+        "dedupe_topic": True,   # 여러 매체가 같은 트윗을 보도하므로 주제 중복 제거
+        "filter_keywords": True,
+        "general_sports": True, # Romano 는 축구 외 소식도 올린다(테니스 등)
+    },
+    {
+        "name": "Romano · 이적 소식",
+        "url": GOOGLE_NEWS.format(q="%22Fabrizio+Romano%22+transfer"),
+        "color": 0x1DA1F2,
+        "emoji": "🔵",
+        "dedupe_topic": True,
+        "filter_keywords": True,
+        "general_sports": True,
+    },
     # ── 1군: 공신력 최상 ──────────────────────────────
     {
         "name": "Fabrizio Romano",
@@ -395,6 +425,13 @@ class TransferTracker(commands.Cog):
                 break
 
         for article in to_post:
+            # 같은 소식을 여러 매체가 보도하면 URL 은 달라도 주제는 같다.
+            # Google News 계열 소스는 한 트윗이 4~5건으로 들어온다.
+            if source.get("dedupe_topic"):
+                if not self.db.claim_topic(topic_signature(article["title"])):
+                    self.db.mark_seen(article["url"])
+                    continue
+
             channel = self._route(source, article["title"], article["summary"])
             if channel:
                 await self._send_article(channel, session, source, article)
