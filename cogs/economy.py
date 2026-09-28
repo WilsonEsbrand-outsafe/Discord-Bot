@@ -2,12 +2,13 @@
 import os
 import time
 import random
+from fractions import Fraction
 import discord
 from discord import app_commands
 from discord.ext import commands
 from auth import owner_only
 
-from services.economy_db import EconomyDB
+from services.economy_db import EconomyDB, TRAIN_MAX_LEVEL
 from services.notifier import send_notify
 
 def _format_time_left(seconds: int) -> str:
@@ -34,8 +35,26 @@ def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
 
 
 class Economy(commands.Cog):
-    TRAIN_COOLDOWN = 30
     PENALTY_COOLDOWN = 30
+
+    # 훈련 레벨 효과: 레벨당 성공률 +1%p(최대 95%), 보상 +5%
+    TRAIN_RATE_PER_LV  = 0.01
+    TRAIN_RATE_CAP     = 0.95
+    TRAIN_MONEY_PER_LV = 0.05
+    TRAIN_CRIT_RATE    = 0.07   # 성공 중 대성공 비율 (보상 x3)
+
+    # 페널티킥 배당표: (확률, 순이익 배수, 이름, 연출, 골 여부)
+    # 순이익 = 베팅 x 배수 (1,000만원 x1.5 → +1,500만원). 기대값 약 -1.1%.
+    PK_TABLE = [
+        (0.001, "200", "🌟 전설의 파넨카",   "골키퍼가 먼저 누웠습니다. 한가운데로 툭 — 관중석이 폭발합니다!", True),
+        (0.003, "20",  "🚀 무회전 탑코너",   "공이 흔들리며 날아가 골대 구석 상단에 꽂혔습니다!", True),
+        (0.010, "5",   "🎯 골대 맞고 인",    "골대를 때린 공이 그대로 골라인을 넘었습니다!", True),
+        (0.250, "1.5", "⚽ 골",              "깔끔하게 구석을 찔렀습니다.", True),
+        (0.060, "0.5", "🧤 손 맞고 골",      "골키퍼 손끝에 걸렸지만 겨우 들어갔습니다.", True),
+        (0.040, "0",   "🥅 골대 강타",       "골대를 맞고 튕겨 나왔습니다. 심판이 재차기를 선언 — 본전입니다.", False),
+        (0.010, "-10", "💥 관중석 홈런",     "공이 관중석 전광판을 박살냈습니다… 수리비 청구서가 날아옵니다.", False),
+        (0.626, "-1",  "🧤 선방",            "골키퍼가 완벽하게 읽었습니다.", False),
+    ]
 
     # ✅ 훈련 이벤트(고정 범위 내에서 수익/손실)
     TRAIN_EVENTS = [
@@ -44,7 +63,6 @@ class Economy(commands.Cog):
             "emoji": "🏃",
             "success_rate": 0.80,
             "win": (2500, 12000),
-            "lose": (-3500, -1000),
             "success_text": "호흡이 안정적으로 잡혔습니다.",
             "fail_text": "무리해서 컨디션이 떨어졌습니다.",
         },
@@ -53,7 +71,6 @@ class Economy(commands.Cog):
             "emoji": "🧠",
             "success_rate": 0.80,
             "win": (2500, 12000),
-            "lose": (-3500, -1000),
             "success_text": "수비를 깔끔하게 벗겨냈습니다.",
             "fail_text": "볼을 빼앗겼습니다.",
         },
@@ -62,7 +79,6 @@ class Economy(commands.Cog):
             "emoji": "🥅",
             "success_rate": 2/3,
             "win": (5000, 15000),
-            "lose": (-5000, -2000),
             "success_text": "연습이지만 아주 깔끔한 골입니다.",
             "fail_text": "골키퍼가 읽었습니다.",
         },
@@ -71,7 +87,6 @@ class Economy(commands.Cog):
             "emoji": "⚾",
             "success_rate": 2/3,
             "win": (5000, 15000),
-            "lose": (-5000, -2000),
             "success_text": "정타! 타이밍이 맞았습니다.",
             "fail_text": "헛스윙… 타이밍이 늦었습니다.",
         },
@@ -80,7 +95,6 @@ class Economy(commands.Cog):
             "emoji": "🎯",
             "success_rate": 0.40,
             "win": (8000, 20000),
-            "lose": (-7500, -3000),
             "success_text": "환상적인 궤적입니다.",
             "fail_text": "벽에 걸렸습니다.",
         },
@@ -89,7 +103,6 @@ class Economy(commands.Cog):
             "emoji": "🏀",
             "success_rate": 2/3,
             "win": (5000, 15000),
-            "lose": (-5000, -2000),
             "success_text": "클린! 림에도 안걸렸습니다.",
             "fail_text": "백보드에 맞고 튕겨져 나옵니다.",
         },
@@ -98,7 +111,6 @@ class Economy(commands.Cog):
             "emoji": "🥊",
             "success_rate": 0.75,
             "win": (3000, 12000),
-            "lose": (-4000, -1500),
             "success_text": "묵직한 타격감! 폼이 완벽합니다.",
             "fail_text": "타이밍이 어긋나 손목을 삐끗했습니다.",
         },
@@ -107,7 +119,6 @@ class Economy(commands.Cog):
             "emoji": "🏐",
             "success_rate": 2/3,
             "win": (5000, 15000),
-            "lose": (-5000, -2000),
             "success_text": "인! 깔끔한 스파이크!",
             "fail_text": "아웃! 실력이 그게 뭔가요?",
         },
@@ -196,50 +207,52 @@ class Economy(commands.Cog):
         )
         await send_notify(self.bot, self.db, to_user.id, "송금_수신", dm_embed)
 
-    # ✅ 훈련: /훈련 만 치면 랜덤 상황 발생
-    @app_commands.command(name="훈련", description="랜덤 훈련을 진행합니다. (쿨타임 30초)")
+    # ✅ 훈련: 하루 횟수 제한 + 레벨이 오를수록 성공률·보상 증가
+    def _train_roll(self, level: int):
+        ev = random.choice(self.TRAIN_EVENTS)
+        rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
+        mult = 1 + self.TRAIN_MONEY_PER_LV * (level - 1)
+        if random.random() >= rate:
+            return 0, 1, {"ev": ev, "result": "실패 ❌", "line": ev["fail_text"], "rate": rate}
+        delta = int(random.randint(*ev["win"]) * mult)
+        if random.random() < self.TRAIN_CRIT_RATE:
+            return delta * 3, 5, {"ev": ev, "result": "대성공 🔥 (보상 x3)", "line": ev["success_text"], "rate": rate}
+        return delta, 3, {"ev": ev, "result": "성공 ✅", "line": ev["success_text"], "rate": rate}
+
+    @app_commands.command(name="훈련", description="랜덤 훈련으로 돈과 경험치를 얻습니다. (하루 횟수 제한, 레벨업 시 성공률·보상 증가)")
     async def training(self, interaction: discord.Interaction):
         await interaction.response.defer()
-
-        ev = random.choice(self.TRAIN_EVENTS)
-        success = (random.random() < ev["success_rate"])
-
-        if success:
-            delta = random.randint(ev["win"][0], ev["win"][1])
-            result = "성공 ✅"
-            line = ev["success_text"]
-        else:
-            delta = random.randint(ev["lose"][0], ev["lose"][1])  # 음수 범위
-            result = "실패 ❌"
-            line = ev["fail_text"]
-
-        now_ts = int(time.time())
-
         try:
-            ok, new_bal, remaining = await self.db.play_training(
-                interaction.user.id, delta, now_ts, cooldown_sec=self.TRAIN_COOLDOWN
-            )
+            r = await self.db.play_training(interaction.user.id, int(time.time()), self._train_roll)
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
 
-        if not ok:
-            cur = await self.db.get_balance(interaction.user.id)
+        lv_line = f"Lv.{r['level']}" + ("" if r["level"] >= TRAIN_MAX_LEVEL else f" ({r['xp']}/{r['need']} XP)")
+        if not r["ok"]:
             e = _embed(
-                "⏳ 훈련 쿨타임",
-                f"{interaction.user.mention}\n남은 시간: **{_format_time_left(remaining)}**\n현재 잔액: **{cur:,}**",
+                "😮‍💨 오늘 훈련 끝",
+                f"{interaction.user.mention}\n오늘 훈련 횟수를 모두 사용했습니다. (**{r['used']}/{r['limit']}**)\n"
+                f"매일 00:00(KST)에 초기화됩니다.\n\n훈련 레벨: **{lv_line}**",
                 interaction.user,
             )
             return await interaction.followup.send(embed=e)
 
-        title = f"{ev['emoji']} {ev['name']}"
-        e = _embed(title, f"{interaction.user.mention}\n{line}", interaction.user)
-        e.add_field(name="결과", value=result, inline=True)
-        e.add_field(name="변동", value=f"**{delta:+,}원**", inline=True)
-        e.add_field(name="현재 잔액", value=f"**{new_bal:,}**", inline=False)
+        info = r["info"]
+        ev = info["ev"]
+        e = _embed(f"{ev['emoji']} {ev['name']}", f"{interaction.user.mention}\n{info['line']}", interaction.user)
+        e.add_field(name="결과", value=info["result"], inline=True)
+        e.add_field(name="획득", value=f"**{r['delta']:+,}원**", inline=True)
+        e.add_field(name="성공률", value=f"{info['rate']*100:.0f}%", inline=True)
+        e.add_field(name="훈련 레벨", value=lv_line, inline=True)
+        e.add_field(name="오늘 횟수", value=f"{r['used']}/{r['limit']}", inline=True)
+        e.add_field(name="현재 잔액", value=f"**{r['new_bal']:,}**", inline=False)
+        if r["leveled"]:
+            e.add_field(name="🆙 레벨 업!", value=f"**Lv.{r['level']}** 달성 — 성공률·보상·일일 횟수가 올랐습니다.", inline=False)
+            e.color = discord.Color.gold()
         await interaction.followup.send(embed=e)
 
     # ✅ 페널티킥: 베팅형 + 보기 편한 출력
-    @app_commands.command(name="페널티킥", description="돈을 베팅해서 승부합니다. (쿨타임 0초)")
+    @app_commands.command(name="페널티킥", description="돈을 베팅해 슛! 배당 x-10 ~ x200 (순이익 기준, 쿨타임 30초)")
     @app_commands.describe(direction="슛 방향", amount="베팅 금액(1 이상)")
     @app_commands.choices(direction=[
         app_commands.Choice(name="왼쪽", value="L"),
@@ -264,27 +277,25 @@ class Economy(commands.Cog):
             e.add_field(name="현재 잔액", value=f"{cur_bal:,}", inline=True)
             return await interaction.followup.send(embed=e)
 
-        keeper = random.choice(["L", "C", "R"])
-        scored = (direction.value != keeper)
-
-        # 배당 1.5배 → 순이익 +50%
-        profit = amount // 2  # 정수 처리
-        total_return = amount + profit
+        roll, acc = random.random(), 0.0
+        for prob, mult_s, tier_name, tier_text, scored in self.PK_TABLE:
+            acc += prob
+            if roll < acc:
+                break
+        mult = Fraction(mult_s)
+        delta = int(amount * mult)  # 순이익 = 베팅 x 배수
 
         if scored:
-            delta = profit
-            title = "⚽ 페널티킥 성공"
-            outcome = "골 ✅"
-            payout_text = f"+{profit:,}원"
-            return_text = f"{total_return:,}원"
-            odds_text = "1.5배"
+            keeper = random.choice([d for d in "LCR" if d != direction.value])
+        elif mult_s == "-1":
+            keeper = direction.value
         else:
-            delta = -amount
-            title = "🧤 페널티킥 실패"
-            outcome = "선방 ❌"
-            payout_text = f"-{amount:,}원"
-            return_text = "0원"
-            odds_text = "-"
+            keeper = random.choice("LCR")
+
+        title = f"{tier_name} (x{mult_s})"
+        outcome = tier_text
+        odds_text = f"x{mult_s}"
+        payout_text = f"{delta:+,}원"
 
         now_ts = int(time.time())
 
@@ -307,12 +318,16 @@ class Economy(commands.Cog):
         gk = _dir_name(keeper)
 
         e = _embed(title, f"{interaction.user.mention}\n내 슛: **{my_shot}** / 골키퍼: **{gk}**", interaction.user)
+        e.add_field(name="결과", value=outcome, inline=False)
         e.add_field(name="베팅", value=f"{amount:,}원", inline=True)
-        e.add_field(name="결과", value=outcome, inline=True)
         e.add_field(name="배당", value=odds_text, inline=True)
-        e.add_field(name="순이익(변동)", value=payout_text, inline=True)
-        e.add_field(name="총 반환(성공 시)", value=return_text, inline=True)
+        e.add_field(name="순이익(변동)", value=f"**{payout_text}**", inline=True)
         e.add_field(name="현재 잔액", value=f"**{new_bal:,}**", inline=False)
+        e.set_footer(text=" · ".join(f"x{m} {p*100:g}%" for p, m, *_ in self.PK_TABLE))
+        if mult >= 5:
+            e.color = discord.Color.gold()
+        elif mult < -1:
+            e.color = discord.Color.dark_red()
         await interaction.followup.send(embed=e)
 
     # ✅ 홀인원: 확률 극악 잭팟

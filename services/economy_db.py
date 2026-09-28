@@ -6,6 +6,17 @@ from typing import Optional, Tuple
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
 
+# ── 훈련 밸런스 ─────────────────────────────────────────────
+TRAIN_MAX_LEVEL = 30
+
+def train_xp_need(level: int) -> int:
+    """다음 레벨까지 필요한 XP. Lv1→2 는 15, Lv29→30 은 155 (만렙까지 약 2,500 XP)."""
+    return 10 + 5 * int(level)
+
+def train_daily_limit(level: int) -> int:
+    """하루 훈련 횟수. Lv1 15회 → Lv30 25회."""
+    return 15 + int(level) // 3
+
 
 class EconomyDB:
     def __init__(self):
@@ -61,6 +72,13 @@ class EconomyDB:
                 )
                 """
             )
+            # 훈련 레벨/일일 횟수 (구버전 테이블 마이그레이션)
+            for col in ("level INTEGER NOT NULL DEFAULT 1", "xp INTEGER NOT NULL DEFAULT 0",
+                        "day_key INTEGER NOT NULL DEFAULT 0", "day_count INTEGER NOT NULL DEFAULT 0"):
+                try:
+                    con.execute(f"ALTER TABLE training ADD COLUMN {col}")
+                except Exception:
+                    pass
                         # ───────────── 토토 ─────────────
             con.execute(
                 """
@@ -1043,6 +1061,8 @@ class EconomyDB:
                         ("daily_claims",          "user_id"),
                         ("penalty_kick",          "user_id"),
                         ("training",              "user_id"),
+                        ("quiz_stats",            "user_id"),
+                        ("quiz_results",          "user_id"),
                         ("notification_settings", "user_id"),
                         ("toto_bets",             "user_id"),
                     ]:
@@ -1062,8 +1082,14 @@ class EconomyDB:
                     con.close()
             return await self._run(work)
 
-    # ✅ 훈련 전용(쿨타임)
-    async def play_training(self, user_id: int, delta: int, now_ts: int, cooldown_sec: int = 30) -> Tuple[bool, int, int]:
+    # ✅ 훈련: 하루 횟수 제한 + 레벨(성공률·보상 증가)
+    async def play_training(self, user_id: int, now_ts: int, roll) -> dict:
+        """
+        roll(level) -> (delta, xp_gain, info) 를 트랜잭션 안에서 호출해 결과를 반영한다.
+        반환 dict: ok, level, xp, need, used, limit, leveled, new_bal, delta, info
+        ok=False 면 오늘 횟수를 다 쓴 것.
+        """
+        day = (now_ts + 9 * 3600) // 86400  # KST 날짜 키
         async with self._lock:
             def work():
                 con = self._connect()
@@ -1071,28 +1097,38 @@ class EconomyDB:
                     con.execute("BEGIN IMMEDIATE;")
                     con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
                     con.execute("INSERT OR IGNORE INTO training(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
-
-                    row = con.execute(
-                        "SELECT last_play_ts FROM training WHERE user_id=?",
-                        (user_id,),
+                    level, xp, day_key, used = con.execute(
+                        "SELECT level, xp, day_key, day_count FROM training WHERE user_id=?", (user_id,)
                     ).fetchone()
-                    last = int(row[0]) if row else 0
-                    diff = now_ts - last
-
-                    if diff < cooldown_sec:
-                        remaining = cooldown_sec - diff
+                    if day_key != day:
+                        used = 0
+                    limit = train_daily_limit(level)
+                    if used >= limit:
                         con.execute("ROLLBACK;")
-                        return (False, 0, int(remaining))
+                        return {"ok": False, "level": level, "xp": xp, "need": train_xp_need(level),
+                                "used": used, "limit": limit}
 
-                    cur = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()
-                    cur_bal = int(cur[0]) if cur else 0
-                    new_bal = cur_bal + int(delta)
+                    delta, xp_gain, info = roll(level)
+                    xp += int(xp_gain)
+                    leveled = 0
+                    while level < TRAIN_MAX_LEVEL and xp >= train_xp_need(level):
+                        xp -= train_xp_need(level)
+                        level += 1
+                        leveled += 1
+                    if level >= TRAIN_MAX_LEVEL:
+                        xp = 0
+                    used += 1
 
-                    con.execute("UPDATE wallets SET balance=? WHERE user_id=?", (new_bal, user_id))
-                    con.execute("UPDATE training SET last_play_ts=? WHERE user_id=?", (now_ts, user_id))
+                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (int(delta), user_id))
+                    con.execute(
+                        "UPDATE training SET level=?, xp=?, day_key=?, day_count=?, last_play_ts=? WHERE user_id=?",
+                        (level, xp, day, used, now_ts, user_id),
+                    )
+                    new_bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
                     con.execute("COMMIT;")
-                    return (True, new_bal, 0)
-
+                    return {"ok": True, "level": level, "xp": xp, "need": train_xp_need(level),
+                            "used": used, "limit": train_daily_limit(level), "leveled": leveled,
+                            "new_bal": int(new_bal), "delta": int(delta), "info": info}
                 except Exception:
                     try:
                         con.execute("ROLLBACK;")

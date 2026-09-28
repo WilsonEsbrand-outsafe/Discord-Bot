@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 import re
-from typing import List, Optional
+from typing import Optional
 from datetime import datetime, timezone
 import discord
 from discord import app_commands
@@ -260,7 +260,7 @@ async def on_ready():
     print(f"🤖 로그인 성공: {bot.user} (ID: {bot.user.id})")
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto")
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.quiz")
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -402,7 +402,7 @@ async def sync_and_reload(interaction: discord.Interaction):
             print(f"⚠️ {_name} 리로드 실패:", repr(e))
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto")
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.quiz")
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)
@@ -512,100 +512,6 @@ async def embed_full(
             await interaction.followup.send("임베드를 만드는 중 오류가 발생했습니다.", ephemeral=True)
         except Exception:
             pass
-
-# ───────────────── 슬래시: 겨울결산 (페이지 넘김) ─────────────────
-RECAP_TXT = BASE_DIR / "transfer_recap_2026w.txt"
-
-def _chunk_for_embed(lines: List[str], limit: int = 3200) -> List[str]:
-    pages: List[str] = []
-    buf: List[str] = []
-    size = 0
-    for line in lines:
-        if not line.strip():
-            continue
-        add_len = len(line) + 1
-        if buf and size + add_len > limit:
-            pages.append("\n".join(buf))
-            buf = [line]
-            size = add_len
-        else:
-            buf.append(line)
-            size += add_len
-    if buf:
-        pages.append("\n".join(buf))
-    return pages or ["(내용이 없습니다.)"]
-
-def _load_recap_lines() -> List[str]:
-    if not RECAP_TXT.exists():
-        return []
-    text = RECAP_TXT.read_text(encoding="utf-8").splitlines()
-    return [ln.strip() for ln in text if ln.strip() and not ln.strip().startswith("#")]
-
-class RecapPager(discord.ui.View):
-    def __init__(self, pages: List[str]):
-        super().__init__(timeout=None)
-        self.pages = pages
-        self.i = 0
-        self._sync_buttons()
-
-    def _sync_buttons(self):
-        self.prev_btn.disabled = self.i <= 0
-        self.next_btn.disabled = self.i >= len(self.pages) - 1
-
-    def _embed(self) -> discord.Embed:
-        return discord.Embed(
-            title="2026년 1월 프리미어리그(EPL) 관련 겨울 이적시장 결산",
-            description=f"{self.pages[self.i]}\n\n페이지 {self.i+1}/{len(self.pages)}",
-            color=0x2ecc71,
-        )
-
-    async def _update(self, interaction: discord.Interaction):
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self._embed(), view=self)
-
-    @discord.ui.button(label="◀ 이전", style=discord.ButtonStyle.secondary)
-    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.i > 0:
-            self.i -= 1
-        await self._update(interaction)
-
-    @discord.ui.button(label="다음 ▶", style=discord.ButtonStyle.secondary)
-    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.i < len(self.pages) - 1:
-            self.i += 1
-        await self._update(interaction)
-
-async def _send_winter_recap(interaction: discord.Interaction):
-    lines = _load_recap_lines()
-    if not lines:
-        return await interaction.response.send_message(
-            "❌ transfer_recap_2026w.txt 파일이 없거나 비어 있습니다.",
-            ephemeral=True
-        )
-
-    pages = _chunk_for_embed(lines)
-    view = RecapPager(pages)
-    await interaction.response.send_message(embed=view._embed(), view=view)
-
-@app_commands.guild_only()
-@app_commands.check(owner_only)
-@bot.tree.command(name="winterrecap", description="2026년 1월 겨울 이적시장 결산")
-async def winter_recap_en(interaction: discord.Interaction):
-    await _send_winter_recap(interaction)
-
-@winter_recap_en.error
-async def winter_recap_en_error(interaction: discord.Interaction, error: Exception):
-    await owner_only_error(interaction, error)
-
-@app_commands.guild_only()
-@app_commands.check(owner_only)
-@bot.tree.command(name="겨울결산", description="2026년 1월 겨울 이적시장 결산")
-async def winter_recap_kr(interaction: discord.Interaction):
-    await _send_winter_recap(interaction)
-
-@winter_recap_kr.error
-async def winter_recap_kr_error(interaction: discord.Interaction, error: Exception):
-    await owner_only_error(interaction, error)
 
 # ───────────────── 슬래시: 공지 임베드 ─────────────────
 @app_commands.guild_only()
@@ -754,7 +660,7 @@ def _is_owner_only_command(cmd: app_commands.Command) -> bool:
             return True
     return False
 
-HIDDEN_COMMANDS: set[str] = {"명령어", "겨울결산", "winterrecap"}
+HIDDEN_COMMANDS: set[str] = {"명령어"}
 
 CATEGORY_ORDER: list[str] = [
     "📅 경기 정보",
