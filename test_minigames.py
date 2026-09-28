@@ -26,7 +26,8 @@ def test_penalty_table():
     prob_of = {name: p for p, _, _, name, *_ in t}
     assert max(t, key=lambda r: r[0])[3] == "선방"           # 1배 손실(선방)이 가장 자주 나온다
     assert abs(prob_of["선방"] - prob_of["골"]) <= 0.03       # 골과 비슷하게
-    assert 0.05 <= prob_of["골대 강타"] <= 0.06 and prob_of["골대 강타"] > prob_of["골대 맞고 인"]
+    assert 0 < prob_of["골대 강타"] - prob_of["골대 맞고 인"] <= 0.03   # 2배 손실이 2배 수익보다 살짝 높게
+    assert prob_of["노룩 킥"] > 0.01
     assert t[-1][3] == "선방"                                 # 부동소수 잔여 구간은 선방으로
     assert Economy.PK_MIN_BET == 5_000
     assert all("초" not in t + c for t, c in Economy.PK_SPAM_LINES)   # 도배 방지 멘트는 남은 시간을 말하지 않는다
