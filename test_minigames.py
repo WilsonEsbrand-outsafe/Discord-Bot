@@ -16,19 +16,20 @@ Q.DB_PATH = TMP
 
 def test_penalty_table():
     t = Economy.PK_TABLE
-    assert len(t) == 8 and len({m for _, m, *_ in t}) == 8     # 8단계, 배수 모두 다름
+    assert len(t) == 9 and len({m for _, m, *_ in t}) == 9     # 9단계, 배수 모두 다름
     assert abs(sum(p for p, *_ in t) - 1) < 1e-9
     ev = sum(p * float(Fraction(m)) for p, m, *_ in t)
     assert -0.03 < ev < 0, ev                                # 약한 하우스 엣지
     assert int(10_000_000 * Fraction("1.5")) == 15_000_000   # 1,000만원 x1.5 -> 순이익 1,500만원
-    assert int(1_000 * Fraction("-10")) == -10_000
-    assert next(m for _, m, name, *_ in t if "손 맞고" in name) == "0"   # 손 맞고 골 = 본전
-    assert t[-1][1] == "-1"                                  # 부동소수 잔여 구간은 일반 선방으로
+    mult_of = {name.split(maxsplit=1)[1]: m for _, m, name, _ in t}
+    assert mult_of["골"] == "1.5" and mult_of["손 맞고 골"] == "0"
+    assert (mult_of["골대 강타"], mult_of["선방"], mult_of["레드카드"], mult_of["관중석 홈런"]) == ("-1", "-2", "-5", "-10")
+    assert t[-1][2].endswith("선방")                          # 부동소수 잔여 구간은 선방으로
     line = Economy._pk_money_line
     assert line(Fraction("1.5"), 15_000_000) == "베팅액의 1.5배인 15,000,000원을 얻었습니다!!"
     assert line(Fraction("0"), 0) == "다행히 잃은 돈은 없습니다. 본전!"
-    assert line(Fraction("-0.5"), -500) == "베팅액의 절반인 500원을 잃었습니다…"
     assert line(Fraction("-1"), -1_000) == "베팅액 1,000원을 모두 잃었습니다…"
+    assert line(Fraction("-2"), -2_000) == "베팅액의 2배인 2,000원을 잃었습니다!!"
     assert line(Fraction("-10"), -10_000) == "베팅액의 10배인 10,000원을 잃었습니다!!"
 
 
