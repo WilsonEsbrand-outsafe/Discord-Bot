@@ -24,8 +24,9 @@ def test_penalty_table():
     assert int(1_000 * Fraction("-10")) == -10_000
     assert next(m for _, m, name, *_ in t if "손 맞고" in name) == "0"   # 손 맞고 골 = 본전
     assert t[-1][1] == "-1"                                  # 부동소수 잔여 구간은 일반 선방으로
-    for kind in ("goal", "save", "post", "doom"):
-        assert Economy._goal_diagram("L", "R", kind).count("🧤") == 1
+    labels = [Economy._pk_result_label(Fraction(m)) for _, m, *_ in t]
+    assert labels == ["200배 수익", "20배 수익", "5배 수익", "1.5배 수익", "본전", "절반 손실", "10배 손실", "전액 손실"]
+    assert Economy._shot_line("L", "L", "save") == "⬅️ 왼쪽으로 슛 · 🧤 키퍼 ⬅️ 왼쪽"
 
 
 def test_training_roll():

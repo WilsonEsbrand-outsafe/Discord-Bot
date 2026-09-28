@@ -58,7 +58,7 @@ class Economy(commands.Cog):
         (0.003, "20",   "🚀 무회전 탑코너", "공이 흔들리며 날아가 골대 구석 상단에 꽂혔습니다!", "goal"),
         (0.010, "5",    "🎯 골대 맞고 인",  "골대를 때린 공이 그대로 골라인을 넘었습니다!", "goal"),
         (0.270, "1.5",  "⚽ 골",            "깔끔하게 구석을 찔렀습니다.", "goal"),
-        (0.060, "0",    "🫳 손 맞고 골",    "골키퍼 손끝에 맞고 간신히 들어갔습니다. 아슬아슬하게 본전!", "goal"),
+        (0.060, "0",    "🫳 손 맞고 골",    "골키퍼 손끝에 맞고 간신히 들어갔습니다. 아슬아슬하게 본전!", "tip"),
         (0.040, "-0.5", "🥅 골대 강타",     "골대를 맞고 튕겨 나왔습니다… 베팅의 절반을 잃었습니다.", "post"),
         (0.010, "-10",  "💥 관중석 홈런",   "공이 관중석 전광판을 박살냈습니다… 수리비 청구서가 날아옵니다.", "doom"),
         (0.606, "-1",   "🧤 선방",          "골키퍼가 완벽하게 읽었습니다.", "save"),
@@ -305,19 +305,37 @@ class Economy(commands.Cog):
         await interaction.followup.send(embed=e)
 
     # ✅ 페널티킥: 베팅형 — 슛 연출 후 결과 공개
+    _ARROW = {"L": "⬅️", "C": "⬆️", "R": "➡️"}
+
+    @classmethod
+    def _shot_line(cls, shot: str, keeper: str, kind: str) -> str:
+        """'⬅️ 왼쪽으로 슛 · 🧤 키퍼 ➡️ 오른쪽' 같은 한 줄 요약."""
+        to = {"L": "왼쪽으로", "C": "가운데로", "R": "오른쪽으로"}[shot]
+        head = f"{cls._ARROW[shot]} {to} 슛"
+        if kind == "doom":
+            return f"{head} · 🚀 관중석으로"
+        if kind == "post":
+            return f"{head} · 🥅 골대 강타"
+        return f"{head} · 🧤 키퍼 {cls._ARROW[keeper]} {_dir_name(keeper)}"
+
     @staticmethod
-    def _goal_diagram(shot: str, keeper: str, kind: str) -> str:
-        """슛 방향과 골키퍼 위치를 3칸 골대로 그린다."""
-        ball = {"goal": "⚽", "save": "⚽", "post": "💢", "doom": "💥"}[kind]
-        def row(lane: str, mark: str) -> str:
-            return "".join(mark if d == lane else "⬜" for d in "LCR")
-        return f"슛　 {row(shot, ball)}\n키퍼 {row(keeper, '🧤')}"
+    def _pk_result_label(mult: Fraction) -> str:
+        """배수를 말로: 1.5 → '1.5배 수익', 0 → '본전', -1 → '전액 손실', -10 → '10배 손실'."""
+        if mult > 0:
+            return f"{float(mult):g}배 수익"
+        if mult == 0:
+            return "본전"
+        if mult == -1:
+            return "전액 손실"
+        if mult > -1:
+            return "절반 손실" if mult == Fraction(-1, 2) else f"{float(-mult) * 100:g}% 손실"
+        return f"{float(-mult):g}배 손실"
 
     def _pk_frame(self, user, amount: int, direction: str, step: str) -> discord.Embed:
-        return ui.card("⚽ 페널티킥", f"**{amount:,}원** 베팅 · {_dir_name(direction)} 방향\n\n{step}",
+        return ui.card("⚽ 페널티킥", f"**{amount:,}원** 베팅 · {self._ARROW[direction]} {_dir_name(direction)}\n\n{step}",
                        ui.DARK, user, "🥅 페널티킥")
 
-    @app_commands.command(name="페널티킥", description="돈을 베팅해 슛! 배당 x-10 ~ x200 (순이익 기준, 쿨타임 30초)")
+    @app_commands.command(name="페널티킥", description="돈을 베팅해 슛! 최대 200배 수익, 최악은 10배 손실 (쿨타임 30초)")
     @app_commands.describe(direction="슛 방향", amount="베팅 금액(1 이상)")
     @app_commands.choices(direction=[
         app_commands.Choice(name="왼쪽", value="L"),
@@ -347,7 +365,7 @@ class Economy(commands.Cog):
 
         if kind == "goal":
             keeper = random.choice([d for d in "LCR" if d != direction.value])
-        elif kind == "save":
+        elif kind in ("save", "tip"):   # 선방 · 손 맞고 골: 키퍼가 방향을 읽음
             keeper = direction.value
         else:
             keeper = random.choice("LCR")
@@ -370,12 +388,14 @@ class Economy(commands.Cog):
             color = ui.DOOM
         else:
             color = ui.tone(delta)
-        e = ui.card(f"{tier_name} · x{mult_s}", f"> {tier_text}\n## {ui.won(delta)}", color, user, "🥅 페널티킥")
-        e.add_field(name="🥅 슛 결과", value=self._goal_diagram(direction.value, keeper, kind), inline=False)
+        e = ui.card(
+            tier_name,
+            f"> {tier_text}\n> {self._shot_line(direction.value, keeper, kind)}\n## {ui.won(delta)}",
+            color, user, "🥅 페널티킥",
+        )
         e.add_field(name="💵 베팅", value=f"{amount:,}원", inline=True)
-        e.add_field(name="📊 배당", value=f"x{mult_s}", inline=True)
+        e.add_field(name="📊 결과", value=self._pk_result_label(mult), inline=True)
         e.add_field(name="💰 잔액", value=f"{new_bal:,}원", inline=True)
-        e.set_footer(text=" · ".join(f"x{m} {p * 100:g}%" for p, m, *_ in self.PK_TABLE))
 
         try:
             msg = await interaction.followup.send(embed=self._pk_frame(user, amount, direction.value, "🧍 호흡을 가다듬습니다…"), wait=True)
