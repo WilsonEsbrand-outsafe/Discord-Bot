@@ -51,6 +51,13 @@ class Economy(commands.Cog):
     # 손실 단계: 선방 1배(가장 흔함, 골과 비슷) → 골대 강타 2배 → 부정킥 5배 → 관중석 홈런 10배.
     # 마지막 줄(선방)이 부동소수 잔여 구간을 받는다.
     PK_MIN_BET = 5_000
+    PK_SPAM_GAP = 1.0   # 도배 방지 간격(초)
+    PK_SPAM_LINES = [   # 도배 방지에 걸렸을 때 (제목, 캐스터 멘트) — 남은 시간은 굳이 말하지 않는다
+        ("🏃 볼보이가 공을 가져오는 중!", "공이 아직 안 돌아왔어요! 볼보이가 열심히 뛰어오고 있습니다."),
+        ("✋ 주심이 잠깐 멈춰 세웁니다", "주심이 휘슬을 입에 물고 있어요. 신호가 떨어지면 차 주세요!"),
+        ("😤 키커가 숨을 고릅니다", "너무 서두르면 실축합니다! 숨 한 번 크게 쉬고 다시 가죠."),
+        ("📺 VAR 확인 중", "직전 킥을 VAR로 돌려 보고 있어요. 잠시만요!"),
+    ]
     PK_TABLE = [
         (0.001, "200", "🌟", "전설의 파넨카", "파넨카!!! 전설이 탄생합니다",
          "골키퍼가 먼저 몸을 날렸어요! 한가운데로 툭— 믿을 수 없는 배짱입니다!!"),
@@ -153,6 +160,7 @@ class Economy(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = EconomyDB()
+        self._pk_last: dict[int, float] = {}   # 유저별 마지막 페널티킥 시각 (도배 방지)
 
     # ───────────── 유저 명령어 ─────────────
 
@@ -279,15 +287,25 @@ class Economy(commands.Cog):
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
 
         if not r["ok"]:
-            if r["reason"] == "cooldown":
-                e = ui.card("⏳ 숨 고르는 중", f"다음 훈련은 <t:{now_ts + r['remaining']}:R> 가능합니다.",
+            if r["reason"] == "limit":
+                e = ui.card("😮‍💨 오늘 훈련 끝", "오늘 훈련 횟수를 모두 썼습니다.\n내일 **00:00**에 다시 훈련할 수 있습니다.",
                             ui.DARK, user, "🏋️ 훈련")
-            else:
-                midnight = ((now_ts + 9 * 3600) // 86400 + 1) * 86400 - 9 * 3600
-                e = ui.card("😮‍💨 오늘 훈련 끝", f"오늘 훈련 횟수를 모두 썼습니다.\n다시 훈련할 수 있는 시간: <t:{midnight}:R>",
-                            ui.DARK, user, "🏋️ 훈련")
+                self._train_level_field(e, r)
+                return await interaction.followup.send(embed=e)
+
+            # Discord 상대 시간(<t:..:R>)은 0초가 지나면 '1초 전'으로 계속 흘러가므로,
+            # 쿨타임이 끝나는 순간 메시지를 '준비 완료'로 바꿔 멈춘다.
+            e = ui.card("⏳ 숨 고르는 중", f"다음 훈련까지 <t:{now_ts + r['remaining']}:R>", ui.DARK, user, "🏋️ 훈련")
             self._train_level_field(e, r)
-            return await interaction.followup.send(embed=e)
+            msg = await interaction.followup.send(embed=e, wait=True)
+            await asyncio.sleep(r["remaining"])
+            ready = e.copy()
+            ready.title, ready.description, ready.color = "✅ 훈련 준비 완료", "숨을 다 골랐습니다. 지금 `/훈련` 할 수 있어요!", ui.WIN
+            try:
+                await msg.edit(embed=ready)
+            except discord.HTTPException:
+                pass
+            return
 
         info, ev = r["info"], r["info"]["ev"]
         kind = info["kind"]
@@ -332,8 +350,15 @@ class Economy(commands.Cog):
     @app_commands.command(name="페널티킥", description="돈을 걸고 슛! 최대 200배 수익, 최악은 10배 손실 (최소 5,000원)")
     @app_commands.describe(amount="베팅 금액 (최소 5,000원)")
     async def penalty_kick(self, interaction: discord.Interaction, amount: app_commands.Range[int, PK_MIN_BET]):
-        await interaction.response.defer()
         user = interaction.user
+        # 도배 방지: 직전 킥에서 1초가 안 지났으면 본인에게만 중계 멘트를 보여주고 끝낸다.
+        now = time.monotonic()
+        if now - self._pk_last.get(user.id, 0.0) < self.PK_SPAM_GAP:
+            title, caster = random.choice(self.PK_SPAM_LINES)
+            return await interaction.response.send_message(embed=self._pk_card(user, title, caster, ui.DARK), ephemeral=True)
+        self._pk_last[user.id] = now
+
+        await interaction.response.defer()
         amount = int(amount)
 
         cur_bal = await self.db.get_balance(user.id)

@@ -29,6 +29,7 @@ def test_penalty_table():
     assert 0.05 <= prob_of["골대 강타"] <= 0.06 and prob_of["골대 강타"] > prob_of["골대 맞고 인"]
     assert t[-1][3] == "선방"                                 # 부동소수 잔여 구간은 선방으로
     assert Economy.PK_MIN_BET == 5_000
+    assert all("초" not in t + c for t, c in Economy.PK_SPAM_LINES)   # 도배 방지 멘트는 남은 시간을 말하지 않는다
     label = Economy._pk_label
     assert [label(Fraction(m)) for m in ("200", "1", "0", "-1", "-10")] == ["200배 수익", "1배 수익", "본전", "1배 손실", "10배 손실"]
 
