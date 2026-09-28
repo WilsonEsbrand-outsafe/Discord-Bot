@@ -22,8 +22,11 @@ def test_penalty_table():
     assert -0.03 < ev < 0, ev                                # 약한 하우스 엣지
     mult_of = {name.split(maxsplit=1)[1]: m for _, m, name, _ in t}
     assert (mult_of["골"], mult_of["골대 맞고 인"], mult_of["노룩 킥"], mult_of["손 맞고 골"]) == ("1", "2", "5", "0")
-    assert (mult_of["골대 강타"], mult_of["선방"], mult_of["부정킥"], mult_of["관중석 홈런"]) == ("-1", "-2", "-5", "-10")
-    assert max(t, key=lambda r: r[0])[2].endswith(" 골")      # 1배 수익(골)이 가장 자주 나온다
+    assert (mult_of["선방"], mult_of["골대 강타"], mult_of["부정킥"], mult_of["관중석 홈런"]) == ("-1", "-2", "-5", "-10")
+    prob_of = {name.split(maxsplit=1)[1]: p for p, _, name, _ in t}
+    assert max(t, key=lambda r: r[0])[2].endswith("선방")    # 1배 손실(선방)이 가장 자주 나온다
+    assert abs(prob_of["선방"] - prob_of["골"]) <= 0.03       # 골과 비슷하게
+    assert 0.05 <= prob_of["골대 강타"] <= 0.06 and prob_of["골대 강타"] > prob_of["골대 맞고 인"]
     assert t[-1][2].endswith("선방")                          # 부동소수 잔여 구간은 선방으로
     line = Economy._pk_money_line
     assert line(Fraction("1"), 1_000) == "베팅액과 같은 1,000원을 얻었습니다!!"
