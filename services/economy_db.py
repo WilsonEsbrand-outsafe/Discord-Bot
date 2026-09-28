@@ -1083,11 +1083,12 @@ class EconomyDB:
             return await self._run(work)
 
     # ✅ 훈련: 하루 횟수 제한 + 레벨(성공률·보상 증가)
-    async def play_training(self, user_id: int, now_ts: int, roll) -> dict:
+    async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30) -> dict:
         """
         roll(level) -> (delta, xp_gain, info) 를 트랜잭션 안에서 호출해 결과를 반영한다.
         반환 dict: ok, level, xp, need, used, limit, leveled, new_bal, delta, info
-        ok=False 면 오늘 횟수를 다 쓴 것.
+        ok=False 면 reason 이 "cooldown"(remaining 초) 또는 "limit"(오늘 횟수 소진).
+        경험치는 음수가 될 수 있지만 레벨 안에서 0 아래로는 내려가지 않는다(레벨 다운 없음).
         """
         day = (now_ts + 9 * 3600) // 86400  # KST 날짜 키
         async with self._lock:
@@ -1097,19 +1098,23 @@ class EconomyDB:
                     con.execute("BEGIN IMMEDIATE;")
                     con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
                     con.execute("INSERT OR IGNORE INTO training(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
-                    level, xp, day_key, used = con.execute(
-                        "SELECT level, xp, day_key, day_count FROM training WHERE user_id=?", (user_id,)
+                    level, xp, day_key, used, last = con.execute(
+                        "SELECT level, xp, day_key, day_count, last_play_ts FROM training WHERE user_id=?", (user_id,)
                     ).fetchone()
                     if day_key != day:
                         used = 0
                     limit = train_daily_limit(level)
+                    base = {"ok": False, "level": level, "xp": xp, "need": train_xp_need(level),
+                            "used": used, "limit": limit}
                     if used >= limit:
                         con.execute("ROLLBACK;")
-                        return {"ok": False, "level": level, "xp": xp, "need": train_xp_need(level),
-                                "used": used, "limit": limit}
+                        return {**base, "reason": "limit"}
+                    if now_ts - last < cooldown_sec:
+                        con.execute("ROLLBACK;")
+                        return {**base, "reason": "cooldown", "remaining": cooldown_sec - (now_ts - last)}
 
                     delta, xp_gain, info = roll(level)
-                    xp += int(xp_gain)
+                    xp = max(0, xp + int(xp_gain))
                     leveled = 0
                     while level < TRAIN_MAX_LEVEL and xp >= train_xp_need(level):
                         xp -= train_xp_need(level)

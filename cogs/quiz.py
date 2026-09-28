@@ -11,6 +11,9 @@ from discord import app_commands
 from discord.ext import commands
 
 from services import quiz as Q
+from services import ui
+
+_STARS = {"easy": "⭐", "normal": "⭐⭐", "hard": "⭐⭐⭐"}
 
 
 def _fmt_left_to_midnight(now_ts: int) -> str:
@@ -81,16 +84,16 @@ class GameView(discord.ui.View):
     # ── 화면 ──
     def embed(self) -> discord.Embed:
         title = ("🌎 오늘의 퀴즈 · " if self.daily else "") + Q.KINDS[self.q.kind]
-        e = discord.Embed(title=title, description="\n".join(self.q.lines), color=0x3498DB)
+        e = ui.card(title, "\n".join(self.q.lines), ui.GOLD if self.daily else ui.INFO, self.user, "🧠 퀴즈")
         if self.hints_used:
             e.add_field(
-                name=f"💡 힌트 ({self.hints_used}/{len(self.q.hints)})",
+                name=f"💡 힌트 `{ui.bar(self.hints_used, len(self.q.hints), len(self.q.hints))}`",
                 value="\n".join(f"{i + 1}. {h}" for i, h in enumerate(self.q.hints[:self.hints_used])),
                 inline=False,
             )
         e.add_field(name="⏱️ 마감", value=discord.utils.format_dt(self.deadline, "R"), inline=True)
-        e.add_field(name="난이도", value=f"{Q.DIFF_LABEL[self.q.difficulty]} (x{Q.DIFF_MULT[self.q.difficulty]:g})", inline=True)
-        e.set_author(name=self.user.display_name, icon_url=self.user.display_avatar.url)
+        e.add_field(name="🎯 난이도", value=f"{_STARS[self.q.difficulty]} x{Q.DIFF_MULT[self.q.difficulty]:g}", inline=True)
+        e.add_field(name="🏅 최대 점수", value=f"{int(max(20, 100 - 20 * self.hints_used) * Q.DIFF_MULT[self.q.difficulty]) + 20}점+", inline=True)
         tip = "한 번만 제출할 수 있습니다" + (" · 힌트 1개당 -20점" if self.q.hints else "")
         e.set_footer(text=tip + (" · 오늘의 퀴즈는 점수·상금 x2" if self.daily else ""))
         return e
@@ -150,22 +153,23 @@ class GameView(discord.ui.View):
             print(f"[QUIZ] 결과 표시 실패: {ex!r}")
 
     def _result_embed(self, correct: bool, note: str, res: dict | None) -> discord.Embed:
-        title = ("🌎 오늘의 퀴즈 · " if self.daily else "") + ("✅ 정답!" if correct else "❌ 오답")
-        e = discord.Embed(
-            title=title,
-            description="\n".join(self.q.lines) + f"\n\n{note}\n정답: **{self.q.answer}**",
-            color=0x2ECC71 if correct else 0xE74C3C,
+        title = ("🌎 오늘의 퀴즈 · " if self.daily else "") + Q.KINDS[self.q.kind]
+        e = ui.card(
+            title,
+            f"## {'✅ 정답!' if correct else '❌ 오답'}\n정답: **{self.q.answer}**\n{note}",
+            ui.WIN if correct else ui.LOSE, self.user, "🧠 퀴즈",
         )
-        e.set_author(name=self.user.display_name, icon_url=self.user.display_avatar.url)
+        e.add_field(name="📋 문제", value="\n".join(self.q.lines)[:1024], inline=False)
         if res is None:
             e.add_field(name="⚠️", value="기록 저장 중 오류가 발생했습니다.", inline=False)
             return e
-        e.add_field(name="점수", value=f"**+{res['score']}**", inline=True)
-        if res["reward"]:
-            e.add_field(name="상금", value=f"**+{res['reward']:,}원**", inline=True)
-        elif correct:
-            e.add_field(name="상금", value="오늘 상금 한도 소진", inline=True)
-        e.add_field(name="🔥 연승", value=f"{res['streak']} (최고 {res['best']})", inline=True)
+        e.add_field(name="🏅 점수", value=f"**+{res['score']}점**", inline=True)
+        reward = f"**+{res['reward']:,}원**" if res["reward"] else ("오늘 한도 소진" if correct else "-")
+        e.add_field(name="💰 상금", value=reward, inline=True)
+        flames = "🔥" * min(res["streak"], 5)
+        e.add_field(name="연승", value=f"{flames or '—'} {res['streak']}연승\n최고 {res['best']}", inline=True)
+        if correct and res["score"] >= 200:
+            e.color = ui.GOLD
         if not self.daily:
             e.set_footer(text=f"오늘 남은 상금 횟수 {res['paid_left']}/{Q.PAID_PER_DAY} · /퀴즈랭킹 · /퀴즈프로필")
         return e
@@ -235,16 +239,16 @@ class Quiz(commands.Cog):
     async def quiz(self, interaction: discord.Interaction):
         if await self._busy(interaction):
             return
-        e = discord.Embed(
-            title="⚽ 축구 퀴즈",
-            description=(
+        e = ui.card(
+            "⚽ 축구 퀴즈",
+            (
                 "문제 유형을 선택하세요.\n\n"
                 f"🕵️ **선수 맞히기** · 🔀 **커리어 맞히기** — 이름 직접 입력, {Q.TYPED_LIMIT}초\n"
                 f"💸 **이적시장 퀴즈** · 🧠 **축구 상식** — 4지선다, {Q.CHOICE_LIMIT}초\n\n"
                 f"정답 100점(힌트 1개당 -20) × 난이도 + 빠른 정답·연승 보너스\n"
                 f"상금: 1점당 {Q.MONEY_PER_POINT}원 (하루 {Q.PAID_PER_DAY}회)"
             ),
-            color=0x3498DB,
+            ui.INFO, interaction.user, "🧠 퀴즈",
         )
         await interaction.response.send_message(embed=e, view=MenuView(self, interaction.user))
 
@@ -274,7 +278,10 @@ class Quiz(commands.Cog):
             f"{medals[i] if i < 3 else f'`{i + 1}.`'} <@{uid}> — **{score:,}점** ({won}/{played}, {won / played * 100:.0f}%)"
             for i, (uid, score, played, won) in enumerate(rows)
         ]
-        e = discord.Embed(title="🏆 축구 퀴즈 랭킹", description="\n".join(lines), color=0xF1C40F)
+        e = ui.card("🏆 축구 퀴즈 랭킹", "\n".join(lines), ui.GOLD)
+        if interaction.guild and interaction.guild.icon:
+            e.set_thumbnail(url=interaction.guild.icon.url)
+        e.set_footer(text="괄호: 정답 수/푼 문제 수, 정답률")
         await interaction.response.send_message(embed=e)
 
     @app_commands.command(name="퀴즈프로필", description="퀴즈 전적을 확인합니다.")
@@ -286,11 +293,11 @@ class Quiz(commands.Cog):
         today = Q.day_key(int(time.time()))
         daily_streak = p["daily_streak"] if p["daily_last"] >= today - 1 else 0
         rate = f"{p['won'] / p['played'] * 100:.1f}%" if p["played"] else "-"
-        e = discord.Embed(title="⚽ 퀴즈 프로필", color=0x3498DB)
-        e.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+        e = ui.card("⚽ 퀴즈 프로필", "", ui.INFO, user, "🧠 퀴즈")
+        e.set_thumbnail(url=user.display_avatar.url)
         e.add_field(name="총점", value=f"**{p['total_score']:,}**" + (f" (서버 {p['rank']}위)" if p["rank"] else ""), inline=True)
         e.add_field(name="전적", value=f"{p['played']}전 {p['won']}승", inline=True)
-        e.add_field(name="정답률", value=rate, inline=True)
+        e.add_field(name="정답률", value=rate + (f"\n`{ui.bar(p['won'], p['played'])}`" if p["played"] else ""), inline=True)
         e.add_field(name="🔥 현재 연승", value=str(p["streak"]), inline=True)
         e.add_field(name="🏅 최고 연승", value=str(p["best"]), inline=True)
         e.add_field(name="🌎 오늘의 퀴즈 연속", value=f"{daily_streak}일", inline=True)
