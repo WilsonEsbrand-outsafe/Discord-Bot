@@ -26,6 +26,12 @@ def tone(delta: int) -> int:
     return WIN if delta > 0 else (LOSE if delta < 0 else EVEN)
 
 
+def emoji_url(emoji: str) -> str:
+    """이모지를 큰 그림(Twemoji PNG)으로 — 임베드 썸네일용."""
+    code = "-".join(f"{ord(c):x}" for c in emoji if c != "️")
+    return f"https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/{code}.png"
+
+
 def card(title: str, desc: str = "", color: int = INFO, user=None, section: str = "") -> discord.Embed:
     """모든 미니게임 임베드의 뼈대: 작성자 줄에 '닉네임 · 섹션'."""
     e = discord.Embed(title=title, description=desc, color=color)
