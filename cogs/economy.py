@@ -35,14 +35,12 @@ def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
 class Economy(commands.Cog):
     TRAIN_COOLDOWN   = 30
 
-    # 훈련 레벨 효과: 레벨당 성공률 +1%p(최대 95%), 보상·손실 배율 +8% (Lv.1 x1.00 → Lv.30 x3.32)
-    TRAIN_RATE_PER_LV  = 0.01
-    TRAIN_RATE_CAP     = 0.95
-    TRAIN_MONEY_PER_LV = 0.08
-    TRAIN_CRIT_RATE    = 0.07   # 성공 중 대성공 비율 (보상 x3)
+    # 훈련 레벨 효과: 보상·손실 배율 = 레벨 (Lv.1 1배 … Lv.10 10배),
+    # 성공률은 레벨당 +1%p 오르지만 화면에는 표시하지 않는다.
+    TRAIN_RATE_PER_LV = 0.01
+    TRAIN_RATE_CAP    = 0.95
     TRAIN_TIERS = [             # (시작 레벨, 등급) — 표시용
-        (1, "🌱 유스"), (6, "🥉 2군"), (11, "🥈 1군"), (16, "🥇 주전"),
-        (21, "⭐ 에이스"), (26, "🌟 월드클래스"), (30, "👑 레전드"),
+        (1, "🌱 유스"), (3, "🥉 2군"), (5, "🥈 1군"), (7, "🥇 주전"), (9, "⭐ 에이스"), (10, "👑 레전드"),
     ]
 
     # 페널티킥 배당표: (확률, 순이익 배수, 이모지, 이름, 중계 헤드라인, 캐스터 멘트)
@@ -241,42 +239,43 @@ class Economy(commands.Cog):
         )
         await send_notify(self.bot, self.db, to_user.id, "송금_수신", dm_embed)
 
-    # ✅ 훈련: 쿨타임 30초 + 하루 횟수 제한 + 레벨이 오를수록 성공률·보상 증가
-    @classmethod
-    def train_money_mult(cls, level: int) -> float:
-        return 1 + cls.TRAIN_MONEY_PER_LV * (level - 1)
+    # ✅ 훈련: 쿨타임 30초 + 하루 30회 + 레벨(Lv.N = 보상 N배)
+    @staticmethod
+    def train_money_mult(level: int) -> int:
+        """보상·손실 배율 = 레벨 (Lv.1 1배 … Lv.10 10배)."""
+        return min(int(level), TRAIN_MAX_LEVEL)
 
     @classmethod
     def train_tier(cls, level: int) -> str:
         return [name for start, name in cls.TRAIN_TIERS if level >= start][-1]
 
     def _train_roll(self, level: int):
-        """(돈 변동, 경험치 변동, 표시 정보). 성공 +3 XP · 대성공 +5 XP · 실패 -1 XP."""
+        """(돈 변동, 경험치 변동, 표시 정보). 성공 +3 XP · 실패 -1 XP. 성공률은 레벨마다 조금씩 오르지만 화면엔 안 보인다."""
         ev = random.choice(self.TRAIN_EVENTS)
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
         mult = self.train_money_mult(level)
-        info = {"ev": ev, "rate": rate, "mult": mult}
         if random.random() >= rate:
-            return int(random.randint(*ev["lose"]) * mult), -1, {**info, "kind": "fail", "line": ev["fail_text"]}
-        delta = int(random.randint(*ev["win"]) * mult)
-        if random.random() < self.TRAIN_CRIT_RATE:
-            return delta * 3, 5, {**info, "kind": "crit", "line": ev["success_text"]}
-        return delta, 3, {**info, "kind": "ok", "line": ev["success_text"]}
+            return random.randint(*ev["lose"]) * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"]}
+        return random.randint(*ev["win"]) * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"]}
 
-    def _train_level_field(self, e: discord.Embed, r: dict, xp_gain: int | None = None):
+    def _train_status(self, r: dict, xp_gain: int | None = None) -> str:
+        """`레벨` / `경험치` / `오늘` 세 줄."""
         lv = r["level"]
-        e.add_field(name="🎚️ 레벨", value=f"**Lv.{lv}** {self.train_tier(lv)}", inline=True)
-        e.add_field(name="💰 보상 배율", value=f"x{self.train_money_mult(lv):.2f}", inline=True)
-        e.add_field(name="📅 오늘", value=f"{r['used']}/{r['limit']}회", inline=True)
         if lv >= TRAIN_MAX_LEVEL:
-            xp_line = f"`{ui.bar(1, 1)}` **MAX**"
+            xp = f"`{ui.bar(1, 1)}` **MAX**"
         else:
-            xp_line = f"`{ui.bar(r['xp'], r['need'])}` {r['xp']}/{r['need']} XP"
-        if xp_gain is not None:
-            xp_line += f"  ({xp_gain:+d})"
-        e.add_field(name="✨ 경험치", value=xp_line, inline=False)
+            xp = f"`{ui.bar(r['xp'], r['need'])}` {r['xp']}/{r['need']}"
+            if xp_gain is not None:
+                xp += f" ({xp_gain:+d})"
+        return (f"`레벨` **Lv.{lv}** {self.train_tier(lv)} · 보상 **{self.train_money_mult(lv)}배**\n"
+                f"`경험` {xp}\n"
+                f"`오늘` {r['used']}/{r['limit']}회")
 
-    @app_commands.command(name="훈련", description="랜덤 훈련으로 돈과 경험치를 얻습니다. (쿨타임 30초 · 하루 횟수 제한 · 레벨이 오르면 보상 증가)")
+    @staticmethod
+    def _train_card(user, title: str, caster: str, color: int) -> discord.Embed:
+        return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 훈련장 리포트")
+
+    @app_commands.command(name="훈련", description="랜덤 훈련으로 돈과 경험치를 얻습니다. (쿨타임 30초 · 하루 30회 · Lv.N = 보상 N배)")
     async def training(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user = interaction.user
@@ -288,19 +287,18 @@ class Economy(commands.Cog):
 
         if not r["ok"]:
             if r["reason"] == "limit":
-                e = ui.card("😮‍💨 오늘 훈련 끝", "오늘 훈련 횟수를 모두 썼습니다.\n내일 **00:00**에 다시 훈련할 수 있습니다.",
-                            ui.DARK, user, "🏋️ 훈련")
-                self._train_level_field(e, r)
+                e = self._train_card(user, "😮‍💨 오늘 훈련 끝", "오늘 훈련은 여기까지! 내일 00:00에 다시 뵙겠습니다.", ui.DARK)
+                e.description += "\n\n" + self._train_status(r)
                 return await interaction.followup.send(embed=e)
 
             # Discord 상대 시간(<t:..:R>)은 0초가 지나면 '1초 전'으로 계속 흘러가므로,
             # 쿨타임이 끝나는 순간 메시지를 '준비 완료'로 바꿔 멈춘다.
-            e = ui.card("⏳ 숨 고르는 중", f"다음 훈련까지 <t:{now_ts + r['remaining']}:R>", ui.DARK, user, "🏋️ 훈련")
-            self._train_level_field(e, r)
+            e = self._train_card(user, "⏳ 숨 고르는 중", "선수가 아직 숨이 차 있어요. 조금만 쉬었다 가죠!", ui.DARK)
+            e.description += f"\n\n`다음` <t:{now_ts + r['remaining']}:R>\n" + self._train_status(r)
             msg = await interaction.followup.send(embed=e, wait=True)
             await asyncio.sleep(r["remaining"])
-            ready = e.copy()
-            ready.title, ready.description, ready.color = "✅ 훈련 준비 완료", "숨을 다 골랐습니다. 지금 `/훈련` 할 수 있어요!", ui.WIN
+            ready = self._train_card(user, "✅ 훈련 준비 완료", "숨을 다 골랐습니다! 지금 바로 `/훈련` 가능해요.", ui.WIN)
+            ready.description += "\n\n" + self._train_status(r)
             try:
                 await msg.edit(embed=ready)
             except discord.HTTPException:
@@ -308,28 +306,25 @@ class Economy(commands.Cog):
             return
 
         info, ev = r["info"], r["info"]["ev"]
-        kind = info["kind"]
-        badge = {"ok": "성공 ✅", "crit": "🔥 대성공! 보상 x3", "fail": "실패 ❌"}[kind]
-        color = {"ok": ui.WIN, "crit": ui.GOLD, "fail": ui.LOSE}[kind]
-        e = ui.card(
-            f"{ev['emoji']} {ev['name']} — {badge}",
-            f"> {info['line']}\n## {ui.won(r['delta'])}",
-            color, user, "🏋️ 훈련",
-        )
-        e.add_field(name="📈 성공률", value=f"{info['rate'] * 100:.0f}%", inline=True)
-        e.add_field(name="💵 잔액", value=f"{r['new_bal']:,}원", inline=True)
-        e.add_field(name="​", value="​", inline=True)
-        self._train_level_field(e, r, {"ok": 3, "crit": 5, "fail": -1}[kind])
         if r["leveled"]:
             old_lv = r["level"] - r["leveled"]
-            e.color = ui.GOLD
-            e.add_field(
-                name=f"🆙 레벨 업! Lv.{old_lv} → Lv.{r['level']}",
-                value=(f"보상 배율 x{self.train_money_mult(old_lv):.2f} → **x{self.train_money_mult(r['level']):.2f}**\n"
-                       f"성공률 +{self.TRAIN_RATE_PER_LV * 100 * r['leveled']:.0f}%p · 하루 {r['limit']}회"),
-                inline=False,
-            )
-        e.set_footer(text=f"다음 훈련까지 {self.TRAIN_COOLDOWN}초 · 성공 +3 / 대성공 +5 / 실패 -1 XP")
+            title, color = f"🆙 레벨 업! Lv.{old_lv} → Lv.{r['level']}", ui.GOLD
+        elif info["ok"]:
+            title, color = f"{ev['emoji']} {ev['name']} — 성공!", ui.WIN
+        else:
+            title, color = f"{ev['emoji']} {ev['name']} — 실패…", ui.LOSE
+        e = self._train_card(user, title, info["line"], color)
+        e.description += (
+            f"\n\n`정산` **{ui.won(r['delta'])}**\n"
+            f"`잔액` **{r['new_bal']:,}원**\n"
+            + self._train_status(r, 3 if info["ok"] else -1)
+        )
+        if r["leveled"]:
+            new_tier = self.train_tier(r["level"])
+            promo = f"**{new_tier} 승격!** " if new_tier != self.train_tier(old_lv) else ""
+            e.description += (f"\n\n🆙 {promo}보상 {self.train_money_mult(old_lv)}배 → "
+                              f"**{self.train_money_mult(r['level'])}배**")
+        e.set_thumbnail(url=ui.emoji_url(ev["emoji"]))
         await interaction.followup.send(embed=e)
 
     # ✅ 페널티킥: 방향 선택 없이 완전 랜덤, 쿨타임 없음 — 중계 연출 후 결과

@@ -7,15 +7,13 @@ from typing import Optional, Tuple
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
 
 # ── 훈련 밸런스 ─────────────────────────────────────────────
-TRAIN_MAX_LEVEL = 30
+TRAIN_MAX_LEVEL = 10
+TRAIN_DAILY_LIMIT = 30
+# Lv.N → Lv.N+1 에 필요한 XP. 레벨이 오를수록 늘어난다 (만렙까지 합계 2,190 XP ≈ 한 달 남짓).
+TRAIN_XP_NEED = (30, 60, 100, 150, 210, 280, 360, 450, 550)
 
 def train_xp_need(level: int) -> int:
-    """다음 레벨까지 필요한 XP. Lv1→2 는 15, Lv29→30 은 155 (만렙까지 약 2,500 XP)."""
-    return 10 + 5 * int(level)
-
-def train_daily_limit(level: int) -> int:
-    """하루 훈련 횟수. Lv1 15회 → Lv30 25회."""
-    return 15 + int(level) // 3
+    return TRAIN_XP_NEED[min(int(level), TRAIN_MAX_LEVEL - 1) - 1]
 
 
 class EconomyDB:
@@ -79,6 +77,7 @@ class EconomyDB:
                     con.execute(f"ALTER TABLE training ADD COLUMN {col}")
                 except Exception:
                     pass
+            con.execute("UPDATE training SET level=?, xp=0 WHERE level>?", (TRAIN_MAX_LEVEL, TRAIN_MAX_LEVEL))
                         # ───────────── 토토 ─────────────
             con.execute(
                 """
@@ -1103,7 +1102,7 @@ class EconomyDB:
                     ).fetchone()
                     if day_key != day:
                         used = 0
-                    limit = train_daily_limit(level)
+                    limit = TRAIN_DAILY_LIMIT
                     base = {"ok": False, "level": level, "xp": xp, "need": train_xp_need(level),
                             "used": used, "limit": limit}
                     if used >= limit:
@@ -1132,7 +1131,7 @@ class EconomyDB:
                     new_bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
                     con.execute("COMMIT;")
                     return {"ok": True, "level": level, "xp": xp, "need": train_xp_need(level),
-                            "used": used, "limit": train_daily_limit(level), "leveled": leveled,
+                            "used": used, "limit": TRAIN_DAILY_LIMIT, "leveled": leveled,
                             "new_bal": int(new_bal), "delta": int(delta), "info": info}
                 except Exception:
                     try:

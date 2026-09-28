@@ -37,21 +37,22 @@ def test_penalty_table():
 
 def test_training_roll():
     eco = Economy.__new__(Economy)
-    for lv in (1, 30):
+    lo = min(min(e["win"][0], -e["lose"][1]) for e in Economy.TRAIN_EVENTS)
+    for lv in (1, 5, 10):
         mult = Economy.train_money_mult(lv)
+        assert mult == lv and isinstance(mult, int)            # Lv.N = N배, 소수점 없음
         for _ in range(2000):
             delta, xp, info = eco._train_roll(lv)
-            assert info["rate"] <= Economy.TRAIN_RATE_CAP
-            if info["kind"] == "fail":
-                assert delta < 0 and xp == -1                 # 실패: 돈 손실 + 경험치 -1
+            assert isinstance(delta, int) and "rate" not in info    # 성공률은 화면용 정보에서 뺐다
+            if info["ok"]:
+                assert delta > 0 and xp == 3                  # 대성공 없음
             else:
-                assert delta > 0 and xp in (3, 5)
-            lo = min(min(e["win"][0], -e["lose"][1]) for e in Economy.TRAIN_EVENTS)
-            assert abs(delta) >= int(lo * mult) - 1           # 레벨 배율이 금액에 반영됨
-    assert Economy.train_money_mult(1) == 1 and round(Economy.train_money_mult(30), 2) == 3.32
-    assert Economy.train_tier(1).endswith("유스") and Economy.train_tier(30).endswith("레전드")
-    assert edb.train_daily_limit(1) == 15 and edb.train_daily_limit(30) == 25
-    assert edb.train_xp_need(1) == 15
+                assert delta < 0 and xp == -1                 # 실패: 돈 손실 + 경험치 -1
+            assert abs(delta) % mult == 0 and abs(delta) >= lo * mult
+    assert Economy.train_tier(1).endswith("유스") and Economy.train_tier(10).endswith("레전드")
+    assert edb.TRAIN_MAX_LEVEL == 10 and edb.TRAIN_DAILY_LIMIT == 30
+    needs = [edb.train_xp_need(lv) for lv in range(1, 10)]
+    assert needs == sorted(needs) and len(set(needs)) == 9     # 레벨이 오를수록 필요 경험치 증가
 
 
 async def _training_db():
@@ -61,15 +62,18 @@ async def _training_db():
     assert r["ok"] and r["xp"] == 0 and r["new_bal"] == -500   # 경험치는 0 아래로 안 내려감
     r = await db.play_training(1, now + 10, lambda lv: (1000, 0, None))
     assert not r["ok"] and r["reason"] == "cooldown" and r["remaining"] == 20
-    for i in range(1, 15):
+    for i in range(1, 30):
         r = await db.play_training(1, now + 30 * i, lambda lv: (1000, 0, None))
         assert r["ok"], i
-    r = await db.play_training(1, now + 30 * 15, lambda lv: (1000, 0, None))
-    assert not r["ok"] and r["reason"] == "limit" and r["used"] == 15
-    assert await db.get_balance(1) == 14_000 - 500
-    # 다음 날 초기화 + 경험치 몰아주기로 레벨업
+    r = await db.play_training(1, now + 30 * 30, lambda lv: (1000, 0, None))
+    assert not r["ok"] and r["reason"] == "limit" and r["used"] == 30
+    assert await db.get_balance(1) == 29_000 - 500
+    # 다음 날 초기화 + 경험치 몰아주기로 만렙(10)
     r = await db.play_training(1, now + 86400, lambda lv: (0, 10_000, None))
-    assert r["ok"] and r["level"] == edb.TRAIN_MAX_LEVEL and r["xp"] == 0 and r["used"] == 1
+    assert r["ok"] and r["level"] == edb.TRAIN_MAX_LEVEL == 10 and r["xp"] == 0 and r["used"] == 1
+    # 필요 경험치 딱 맞으면 한 레벨만 오른다
+    r = await db.play_training(2, now, lambda lv: (0, edb.train_xp_need(1), None))
+    assert r["level"] == 2 and r["xp"] == 0 and r["need"] == edb.train_xp_need(2)
 
 
 def test_questions_build():
