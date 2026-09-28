@@ -45,22 +45,33 @@ class Economy(commands.Cog):
         (21, "⭐ 에이스"), (26, "🌟 월드클래스"), (30, "👑 레전드"),
     ]
 
-    # 페널티킥 배당표: (확률, 순이익 배수, 결과 이름, 연출 문구)
-    # 순이익 = 베팅 x 배수 (1,000만원 x1.5 → +1,500만원). 기대값 약 -1.1%.
+    # 페널티킥 배당표: (확률, 순이익 배수, 이모지, 이름, 중계 헤드라인, 캐스터 멘트)
+    # 순이익 = 베팅 x 배수 (1,000만원 x1.5 → +1,500만원). 기대값 약 -1.0%.
     # 수익 단계: 골 1배 → 골대 맞고 인 2배 → 노룩 킥 5배 → 탑코너 20배 → 파넨카 200배.
     # 손실 단계: 선방 1배(가장 흔함, 골과 비슷) → 골대 강타 2배 → 부정킥 5배 → 관중석 홈런 10배.
     # 마지막 줄(선방)이 부동소수 잔여 구간을 받는다.
+    PK_MIN_BET = 5_000
     PK_TABLE = [
-        (0.001, "200",  "🌟 전설의 파넨카", "골키퍼가 먼저 몸을 날린 순간, 한가운데로 툭… 관중석이 폭발합니다!! 🤯"),
-        (0.003, "20",   "🚀 무회전 탑코너", "공이 흔들리며 날아가 골대 구석 상단에 그대로 꽂혔습니다! 🔥"),
-        (0.008, "5",    "😎 노룩 킥",       "골키퍼를 쳐다보지도 않고 반대쪽 구석에 차 넣었습니다! 여유 만만 🫡"),
-        (0.040, "2",    "🎯 골대 맞고 인",  "골대를 때린 공이 그대로 골라인을 넘었습니다! 😆"),
-        (0.384, "1",    "⚽ 골",            "깔끔하게 구석을 찔렀습니다. 👍"),
-        (0.060, "0",    "🫳 손 맞고 골",    "골키퍼 손끝에 맞고 간신히 들어갔습니다… 휴 😅"),
-        (0.060, "-2",   "🥅 골대 강타",     "골대를 맞고 튕겨 나온 공이 그대로 역습 실점으로… 최악이다 😣"),
-        (0.030, "-5",   "🚫 부정킥",        "도움닫기 중 멈칫하는 반칙 동작! 부정킥 판정으로 골 취소, 징계금이 부과됩니다 😵"),
-        (0.010, "-10",  "💥 관중석 홈런",   "공이 관중석 전광판을 박살냈습니다… 수리비 청구서가 날아옵니다 😱"),
-        (0.404, "-1",   "🧤 선방",          "골키퍼가 완벽하게 읽었습니다… 😭"),
+        (0.001, "200", "🌟", "전설의 파넨카", "파넨카!!! 전설이 탄생합니다",
+         "골키퍼가 먼저 몸을 날렸어요! 한가운데로 툭— 믿을 수 없는 배짱입니다!!"),
+        (0.003, "20",  "🚀", "무회전 탑코너", "무회전 탑코너!!",
+         "공이 흔들리면서… 구석 상단에 그대로 꽂힙니다! 골키퍼는 손도 못 댔어요!"),
+        (0.008, "5",   "😎", "노룩 킥",       "노룩 킥! 여유가 넘칩니다",
+         "골키퍼는 쳐다보지도 않았어요! 반대쪽 구석으로 여유롭게 밀어 넣습니다!"),
+        (0.040, "2",   "🎯", "골대 맞고 인",  "골대 맞고… 들어갑니다!!",
+         "골대를 때렸는데— 들어갔어요! 심장이 멎는 줄 알았습니다!"),
+        (0.384, "1",   "⚽", "골",            "골! 깔끔합니다",
+         "구석을 정확히 찔렀어요. 교과서 같은 페널티킥입니다."),
+        (0.060, "0",   "🫳", "손 맞고 골",    "손 맞고… 골! 본전입니다",
+         "골키퍼 손끝에 걸렸지만 겨우 넘어갔어요. 휴, 간신히 살았습니다."),
+        (0.060, "-2",  "🥅", "골대 강타",     "골대! 그리고 역습 실점…",
+         "골대를 맞고 튕겨 나온 공이 그대로 역습으로 이어집니다… 이건 최악이에요!"),
+        (0.030, "-5",  "🚫", "부정킥",        "부정킥 선언!",
+         "도움닫기 중 멈칫하는 동작! 주심이 부정킥을 선언합니다. 징계금이 나오겠네요."),
+        (0.010, "-10", "💥", "관중석 홈런",   "관중석으로 날아갑니다…",
+         "공이… 관중석 전광판을 박살냈어요! 수리비 청구서가 날아옵니다!"),
+        (0.404, "-1",  "🧤", "선방",          "막아냅니다!",
+         "골키퍼가 방향을 완벽하게 읽었어요! 키커는 고개를 숙입니다."),
     ]
 
     # ✅ 훈련 이벤트(고정 범위 내에서 수익/손실)
@@ -303,36 +314,36 @@ class Economy(commands.Cog):
         e.set_footer(text=f"다음 훈련까지 {self.TRAIN_COOLDOWN}초 · 성공 +3 / 대성공 +5 / 실패 -1 XP")
         await interaction.followup.send(embed=e)
 
-    # ✅ 페널티킥: 방향 선택 없이 완전 랜덤, 쿨타임 없음 — 짧은 연출 후 결과 보고
+    # ✅ 페널티킥: 방향 선택 없이 완전 랜덤, 쿨타임 없음 — 중계 연출 후 결과
     @staticmethod
-    def _pk_money_line(mult: Fraction, delta: int) -> str:
-        """1.5 → '베팅액의 1.5배인 1,500,000원을 얻었습니다!!' 처럼 결과를 말로 푼다."""
-        if mult == 1:
-            return f"베팅액과 같은 {delta:,}원을 얻었습니다!!"
+    def _pk_label(mult: Fraction) -> str:
+        """1 → '1배 수익', 0 → '본전', -2 → '2배 손실'."""
         if mult > 0:
-            return f"베팅액의 {float(mult):g}배인 {delta:,}원을 얻었습니다!!"
+            return f"{float(mult):g}배 수익"
         if mult == 0:
-            return "다행히 잃은 돈은 없습니다. 본전!"
-        if mult == -1:
-            return f"베팅액 {-delta:,}원을 모두 잃었습니다…"
-        return f"베팅액의 {float(-mult):g}배인 {-delta:,}원을 잃었습니다!!"
+            return "본전"
+        return f"{float(-mult):g}배 손실"
 
-    @app_commands.command(name="페널티킥", description="돈을 걸고 슛! 최대 200배 수익, 최악은 10배 손실")
-    @app_commands.describe(amount="베팅 금액(1 이상)")
-    async def penalty_kick(self, interaction: discord.Interaction, amount: int):
+    @staticmethod
+    def _pk_card(user, title: str, caster: str, color: int) -> discord.Embed:
+        """페널티킥 화면의 공통 틀: '닉네임 · 🎙️ 페널티킥 중계' + 캐스터 멘트."""
+        return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 페널티킥 중계")
+
+    @app_commands.command(name="페널티킥", description="돈을 걸고 슛! 최대 200배 수익, 최악은 10배 손실 (최소 5,000원)")
+    @app_commands.describe(amount="베팅 금액 (최소 5,000원)")
+    async def penalty_kick(self, interaction: discord.Interaction, amount: app_commands.Range[int, PK_MIN_BET]):
         await interaction.response.defer()
-
+        user = interaction.user
         amount = int(amount)
-        if amount <= 0:
-            return await interaction.followup.send(embed=ui.card("⚽ 페널티킥", "**베팅 금액은 1원 이상이어야 합니다.**", ui.LOSE))
 
-        cur_bal = await self.db.get_balance(interaction.user.id)
+        cur_bal = await self.db.get_balance(user.id)
         if cur_bal < amount:
-            return await interaction.followup.send(embed=ui.card(
-                "⚽ 페널티킥", f"**잔액이 부족합니다.**\n\n베팅 {amount:,}원 · 잔액 {cur_bal:,}원", ui.LOSE))
+            e = self._pk_card(user, "🙅 키커가 입장하지 못합니다", "잔액이 부족해 경기장에 들어오지 못했어요!", ui.LOSE)
+            e.description += f"\n\n`베팅` **{amount:,}원**\n`잔액` **{cur_bal:,}원**"
+            return await interaction.followup.send(embed=e)
 
         roll, acc = random.random(), 0.0
-        for prob, mult_s, tier_name, tier_text in self.PK_TABLE:
+        for prob, mult_s, emoji, name, headline, caster in self.PK_TABLE:
             acc += prob
             if roll < acc:
                 break
@@ -341,29 +352,27 @@ class Economy(commands.Cog):
 
         # 결과를 먼저 저장하고 나서 연출한다 (연출이 실패해도 돈은 정확하다).
         try:
-            _, new_bal, _ = await self.db.play_penalty_kick(interaction.user.id, delta, int(time.time()))
+            _, new_bal, _ = await self.db.play_penalty_kick(user.id, delta, int(time.time()))
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
 
         if mult >= 5:
             color = ui.GOLD
-        elif mult <= -10:
+        elif mult <= -5:
             color = ui.DOOM
         else:
             color = ui.tone(delta)
-        e = ui.card(
-            "⚽ 페널티킥 결과",
-            f"**[결과] {tier_name}**\n\n"
-            f"{tier_text}\n\n"
-            f"**{self._pk_money_line(mult, delta)}**\n\n"
-            f"**잔액 : {new_bal:,}원 ({f'{delta:+,}' if delta else '±0'})**",
-            color,
+        e = self._pk_card(user, f"{emoji} {headline}", caster, color)
+        e.description += (
+            f"\n\n`정산` **{ui.won(delta)}** · {self._pk_label(mult)}"
+            f"\n`잔액` **{new_bal:,}원**"
         )
-        e.set_thumbnail(url=ui.emoji_url(tier_name.split()[0]))
+        e.set_thumbnail(url=ui.emoji_url(emoji))
 
         try:
-            msg = await interaction.followup.send(embed=ui.card(
-                "⚽ 페널티킥", f"**{amount:,}원**을 걸고 공 앞에 섰습니다…\n\n🏃 도움닫기… 💨 **슛!**", ui.DARK), wait=True)
+            ready = self._pk_card(user, "⚽ 키커가 공을 내려놓습니다…",
+                                  f"{amount:,}원이 걸린 11m 승부! 도움닫기… 슛!", ui.DARK)
+            msg = await interaction.followup.send(embed=ready, wait=True)
             await asyncio.sleep(1.2)
             await msg.edit(embed=e)
         except discord.HTTPException:

@@ -20,21 +20,17 @@ def test_penalty_table():
     assert abs(sum(p for p, *_ in t) - 1) < 1e-9
     ev = sum(p * float(Fraction(m)) for p, m, *_ in t)
     assert -0.03 < ev < 0, ev                                # 약한 하우스 엣지
-    mult_of = {name.split(maxsplit=1)[1]: m for _, m, name, _ in t}
+    mult_of = {name: m for _, m, _, name, *_ in t}
     assert (mult_of["골"], mult_of["골대 맞고 인"], mult_of["노룩 킥"], mult_of["손 맞고 골"]) == ("1", "2", "5", "0")
     assert (mult_of["선방"], mult_of["골대 강타"], mult_of["부정킥"], mult_of["관중석 홈런"]) == ("-1", "-2", "-5", "-10")
-    prob_of = {name.split(maxsplit=1)[1]: p for p, _, name, _ in t}
-    assert max(t, key=lambda r: r[0])[2].endswith("선방")    # 1배 손실(선방)이 가장 자주 나온다
+    prob_of = {name: p for p, _, _, name, *_ in t}
+    assert max(t, key=lambda r: r[0])[3] == "선방"           # 1배 손실(선방)이 가장 자주 나온다
     assert abs(prob_of["선방"] - prob_of["골"]) <= 0.03       # 골과 비슷하게
     assert 0.05 <= prob_of["골대 강타"] <= 0.06 and prob_of["골대 강타"] > prob_of["골대 맞고 인"]
-    assert t[-1][2].endswith("선방")                          # 부동소수 잔여 구간은 선방으로
-    line = Economy._pk_money_line
-    assert line(Fraction("1"), 1_000) == "베팅액과 같은 1,000원을 얻었습니다!!"
-    assert line(Fraction("1.5"), 15_000_000) == "베팅액의 1.5배인 15,000,000원을 얻었습니다!!"
-    assert line(Fraction("0"), 0) == "다행히 잃은 돈은 없습니다. 본전!"
-    assert line(Fraction("-1"), -1_000) == "베팅액 1,000원을 모두 잃었습니다…"
-    assert line(Fraction("-2"), -2_000) == "베팅액의 2배인 2,000원을 잃었습니다!!"
-    assert line(Fraction("-10"), -10_000) == "베팅액의 10배인 10,000원을 잃었습니다!!"
+    assert t[-1][3] == "선방"                                 # 부동소수 잔여 구간은 선방으로
+    assert Economy.PK_MIN_BET == 5_000
+    label = Economy._pk_label
+    assert [label(Fraction(m)) for m in ("200", "1", "0", "-1", "-10")] == ["200배 수익", "1배 수익", "본전", "1배 손실", "10배 손실"]
 
 
 def test_training_roll():
