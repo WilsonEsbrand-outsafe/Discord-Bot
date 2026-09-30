@@ -9,7 +9,9 @@ from discord import app_commands
 from discord.ext import commands
 from auth import owner_only
 
-from services.economy_db import EconomyDB, TRAIN_MAX_LEVEL, SCOUT_MAX_LEVEL
+from services.economy_db import (
+    ATTEND_BONUS, BANKRUPT_BET_BAN, BANKRUPT_COOLDOWN, EconomyDB, SCOUT_MAX_LEVEL, TRAIN_MAX_LEVEL, TRANSFER_DAILY_LIMIT,
+)
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
 from services import ui
@@ -71,6 +73,43 @@ class RaceView(discord.ui.View):
             await self.message.edit(embed=e, view=None)
         except discord.HTTPException:
             pass
+
+
+class BankruptConfirm(discord.ui.View):
+    def __init__(self, cog: "Economy", user):
+        super().__init__(timeout=60)
+        self.cog, self.user = cog, user
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("🙅 신청한 본인만 누를 수 있어요.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="파산 신청", style=discord.ButtonStyle.danger, emoji="⚖️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        r = await self.cog.db.declare_bankruptcy(self.user.id, int(time.time()))
+        if not r["ok"]:
+            msg = ("이미 빚이 없어요." if r["reason"] == "not_negative"
+                   else f"파산은 {BANKRUPT_COOLDOWN // 86400}일에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>")
+            e = ui.card("❌ 파산 신청 불가", msg, ui.LOSE, self.user, "⚖️ 파산")
+        else:
+            e = ui.card("⚖️ 파산 처리 완료",
+                        f"`빚` **{r['debt']:,}원**\n"
+                        f"`선수 카드 정리` {r['cards']}장 → **+{r['cards_value']:,}원**\n"
+                        f"`스폰서 원금` **+{r['sponsor']:,}원**\n"
+                        f"`탕감` **{r['forgiven']:,}원**\n"
+                        f"`잔액` **{r['balance']:,}원**\n\n"
+                        f"🚫 베팅 금지 해제 <t:{r['ban_until']}:R> · `/스카우트` `/훈련` `/출석`으로 새 출발!",
+                        ui.DOOM, self.user, "⚖️ 파산")
+        await interaction.response.edit_message(embed=e, view=None)
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(
+            embed=ui.card("파산 신청 취소", "아무것도 바뀌지 않았습니다.", ui.EVEN, self.user, "⚖️ 파산"), view=None)
 
 
 class Economy(commands.Cog):
@@ -147,8 +186,8 @@ class Economy(commands.Cog):
         {
             "name": "지구력 훈련",
             "emoji": "🏃",
-            "success_rate": 0.80,
-            "win": (2500, 12000),
+            "success_rate": 0.88,
+            "win": (4000, 18000),
             "lose": (-3500, -1000),
             "success_text": "호흡이 안정적으로 잡혔습니다.",
             "fail_text": "무리해서 컨디션이 떨어졌습니다.",
@@ -156,8 +195,8 @@ class Economy(commands.Cog):
         {
             "name": "드리블 훈련",
             "emoji": "🧠",
-            "success_rate": 0.80,
-            "win": (2500, 12000),
+            "success_rate": 0.88,
+            "win": (4000, 18000),
             "lose": (-3500, -1000),
             "success_text": "수비를 깔끔하게 벗겨냈습니다.",
             "fail_text": "볼을 빼앗겼습니다.",
@@ -165,8 +204,8 @@ class Economy(commands.Cog):
         {
             "name": "페널티킥 훈련",
             "emoji": "🥅",
-            "success_rate": 2/3,
-            "win": (5000, 15000),
+            "success_rate": 0.78,
+            "win": (8000, 22000),
             "lose": (-5000, -2000),
             "success_text": "연습이지만 아주 깔끔한 골입니다.",
             "fail_text": "골키퍼가 읽었습니다.",
@@ -174,8 +213,8 @@ class Economy(commands.Cog):
         {
             "name": "야구 타격 훈련",
             "emoji": "⚾",
-            "success_rate": 2/3,
-            "win": (5000, 15000),
+            "success_rate": 0.78,
+            "win": (8000, 22000),
             "lose": (-5000, -2000),
             "success_text": "정타! 타이밍이 맞았습니다.",
             "fail_text": "헛스윙… 타이밍이 늦었습니다.",
@@ -183,8 +222,8 @@ class Economy(commands.Cog):
         {
             "name": "프리킥 훈련",
             "emoji": "🎯",
-            "success_rate": 0.40,
-            "win": (8000, 20000),
+            "success_rate": 0.55,
+            "win": (12000, 30000),
             "lose": (-7500, -3000),
             "success_text": "환상적인 궤적입니다.",
             "fail_text": "벽에 걸렸습니다.",
@@ -192,8 +231,8 @@ class Economy(commands.Cog):
         {
             "name": "자유투 훈련",
             "emoji": "🏀",
-            "success_rate": 2/3,
-            "win": (5000, 15000),
+            "success_rate": 0.78,
+            "win": (8000, 22000),
             "lose": (-5000, -2000),
             "success_text": "클린! 림에도 안걸렸습니다.",
             "fail_text": "백보드에 맞고 튕겨져 나옵니다.",
@@ -201,8 +240,8 @@ class Economy(commands.Cog):
         {
             "name": "샌드백 훈련",
             "emoji": "🥊",
-            "success_rate": 0.75,
-            "win": (3000, 12000),
+            "success_rate": 0.85,
+            "win": (5000, 18000),
             "lose": (-4000, -1500),
             "success_text": "묵직한 타격감! 폼이 완벽합니다.",
             "fail_text": "타이밍이 어긋나 손목을 삐끗했습니다.",
@@ -210,8 +249,8 @@ class Economy(commands.Cog):
         {
             "name": "스파이크 훈련",
             "emoji": "🏐",
-            "success_rate": 2/3,
-            "win": (5000, 15000),
+            "success_rate": 0.78,
+            "win": (8000, 22000),
             "lose": (-5000, -2000),
             "success_text": "인! 깔끔한 스파이크!",
             "fail_text": "아웃! 실력이 그게 뭔가요?",
@@ -231,76 +270,98 @@ class Economy(commands.Cog):
         e = _embed("💰 지갑", f"{interaction.user.mention} 잔액: **{bal:,}**", interaction.user)
         await interaction.response.send_message(embed=e, ephemeral=True)
 
-    @app_commands.command(name="출석", description="하루 1번 출석 보상을 받습니다.")
+    ATTEND_REWARD = 30_000
+
+    @staticmethod
+    def _attend_track(total: int) -> str:
+        """누적 출석 보너스 표: 받은 곳 ✅, 다음 목표 👉."""
+        nxt = next((d for d in ATTEND_BONUS if d > total), None)
+        cells = []
+        for d, bonus in ATTEND_BONUS.items():
+            mark = "✅" if total >= d else ("👉" if d == nxt else "▫️")
+            cells.append(f"{mark} {d}일 **+{bonus // 10_000:,}만**")
+        track = " · ".join(cells)
+        if nxt:
+            track += f"\n`다음 보너스` **{nxt}일** 까지 {nxt - total}일"
+        return track
+
+    @app_commands.command(name="출석", description="하루 1번 출석 보상 · 누적 출석 일수에 따라 보너스 (빠져도 초기화 없음)")
     async def daily(self, interaction: discord.Interaction):
         await interaction.response.defer()
-
-        reward = 30000
-        now_ts = int(time.time())
-
+        user, reward = interaction.user, self.ATTEND_REWARD
         try:
-            ok, new_bal, remaining, streak, streak_bonus = await self.db.claim_daily(interaction.user.id, reward, now_ts)
+            ok, new_bal, remaining, total, bonus = await self.db.claim_daily(user.id, reward, int(time.time()))
         except Exception as ex:
             return await interaction.followup.send(f"❌ DB 오류: {type(ex).__name__}")
 
         if not ok:
-            cur = await self.db.get_balance(interaction.user.id)
-            e = _embed(
-                "⏳ 출석 보상",
-                f"{interaction.user.mention}\n이미 출석 보상을 받았습니다.\n남은 시간: **{_format_time_left(remaining)}**\n현재 잔액: **{cur:,}**",
-                interaction.user,
-            )
+            e = ui.card("⏳ 오늘은 이미 출석했어요",
+                        f"`다음 출석` **{_format_time_left(remaining)}** 뒤 (00:00 초기화)\n"
+                        f"`누적 출석` **{total}일**\n\n" + self._attend_track(total),
+                        ui.EVEN, user, "📅 출석")
             return await interaction.followup.send(embed=e)
 
-        # 스트릭 표시 구성
-        _NEXT_MILESTONE = {v: v for v in (7, 14, 30)}
-        next_ms = next((m for m in (7, 14, 30) if m > streak), None)
-        streak_line = f"🔥 연속 출석 **{streak}일**"
-        if next_ms:
-            streak_line += f"  (다음 보너스까지 **{next_ms - streak}일**)"
-        bonus_line = f"\n🎁 **스트릭 보너스 +{streak_bonus:,}원** ({streak}일 달성!)" if streak_bonus else ""
-
-        e = _embed(
-            "✅ 출석 완료",
-            f"{interaction.user.mention}\n"
-            f"기본 보상: **{reward:,}원**{bonus_line}\n"
-            f"현재 잔액: **{new_bal:,}**\n\n"
-            f"{streak_line}",
-            interaction.user,
-        )
+        e = ui.card(f"🎁 누적 {total}일 달성 보너스!" if bonus else "✅ 출석 완료",
+                    f"`기본` **+{reward:,}원**" + (f"\n`보너스` **+{bonus:,}원**" if bonus else "")
+                    + f"\n`잔액` **{new_bal:,}원**\n`누적 출석` **{total}일**\n\n" + self._attend_track(total),
+                    ui.GOLD if bonus else ui.WIN, user, "📅 출석")
         await interaction.followup.send(embed=e)
 
-    @app_commands.command(name="송금", description="다른 유저에게 돈을 보냅니다.")
+    @app_commands.command(name="송금", description=f"다른 유저에게 돈을 보냅니다. (하루 최대 {TRANSFER_DAILY_LIMIT:,}원)")
     @app_commands.describe(to_user="받을 유저", amount="보낼 금액(1 이상)")
     async def transfer(self, interaction: discord.Interaction, to_user: discord.Member, amount: int):
         await interaction.response.defer()
-
-        amount = int(amount)
-        err = await self.db.transfer(interaction.user.id, to_user.id, amount)
+        user, amount, now_ts = interaction.user, int(amount), int(time.time())
+        err = await self.db.transfer(user.id, to_user.id, amount, now_ts)
         if err:
-            e = _embed("❌ 송금 실패", f"{interaction.user.mention}\n사유: **{err}**", interaction.user)
-            return await interaction.followup.send(embed=e)
+            return await interaction.followup.send(embed=ui.card("❌ 송금 실패", err, ui.LOSE, user, "💸 송금"))
 
-        my_bal = await self.db.get_balance(interaction.user.id)
+        my_bal = await self.db.get_balance(user.id)
         to_bal = await self.db.get_balance(to_user.id)
-
-        e = _embed(
-            "✅ 송금 완료",
-            f"{interaction.user.mention} → {to_user.mention}\n금액: **{amount:,}원**\n\n"
-            f"보낸 사람 잔액: **{my_bal:,}**\n받는 사람 잔액: **{to_bal:,}**",
-            interaction.user,
-        )
+        left = await self.db.transfer_remaining(user.id, now_ts)
+        e = ui.card("✅ 송금 완료",
+                    f"{user.mention} → {to_user.mention}\n\n`금액` **{amount:,}원**\n"
+                    f"`내 잔액` **{my_bal:,}원**\n`오늘 남은 한도` **{left:,}원** / {TRANSFER_DAILY_LIMIT:,}원",
+                    ui.WIN, user, "💸 송금")
         await interaction.followup.send(embed=e)
 
         dm_embed = discord.Embed(
             title="💸 송금 수신",
             description=(
-                f"**{interaction.user.display_name}**님에게서 **{amount:,}원**을 받았습니다.\n"
+                f"**{user.display_name}**님에게서 **{amount:,}원**을 받았습니다.\n"
                 f"현재 잔액: **{to_bal:,}원**"
             ),
             color=0x2ecc71,
         )
         await send_notify(self.bot, self.db, to_user.id, "송금_수신", dm_embed)
+
+    # ✅ 파산 신청: 잔액이 마이너스일 때 선수 카드·스폰서 원금으로 갚고 남은 빚 탕감 (30일에 한 번, 이후 3일 베팅 금지)
+    async def _bet_ban_card(self, user) -> discord.Embed | None:
+        """파산 후 베팅 금지 중이면 안내 카드, 아니면 None."""
+        until = await self.db.bet_ban_until(user.id, int(time.time()))
+        if not until:
+            return None
+        return ui.card("⚖️ 파산 후 베팅 금지 기간이에요",
+                       f"`해제` <t:{until}:R> · 그동안 `/스카우트` `/훈련` `/출석`으로 다시 일어서 보세요!",
+                       ui.DOOM, user, "⚖️ 파산")
+
+    @app_commands.command(name="파산신청", description="잔액이 마이너스일 때: 선수·스폰서 정리 후 남은 빚 탕감 (30일 1회 · 3일 베팅 금지)")
+    async def bankruptcy(self, interaction: discord.Interaction):
+        user = interaction.user
+        bal = await self.db.get_balance(user.id)
+        if bal >= 0:
+            return await interaction.response.send_message(embed=ui.card(
+                "🙅 파산 신청 대상이 아니에요", f"잔액이 마이너스일 때만 신청할 수 있어요.\n`잔액` **{bal:,}원**",
+                ui.EVEN, user, "⚖️ 파산"), ephemeral=True)
+        e = ui.card("⚖️ 정말 파산 신청할까요?",
+                    f"`현재 빚` **{-bal:,}원**\n\n"
+                    "1️⃣ 보유 선수 카드를 **전부** 즉시판매가(기준가 50% · 은퇴 30%)로 넘겨 빚을 갚아요 (아마추어 제외)\n"
+                    "2️⃣ 진행 중인 스폰서 계약을 모두 해지하고 원금으로 갚아요\n"
+                    "3️⃣ 그래도 남은 빚은 **0원으로 탕감**돼요\n"
+                    f"4️⃣ 이후 **{BANKRUPT_BET_BAN // 86400}일간** 페널티킥 · 야구 · 경마 · 토토 베팅 금지\n"
+                    f"5️⃣ 파산은 **{BANKRUPT_COOLDOWN // 86400}일에 한 번**만 할 수 있어요",
+                    ui.DOOM, user, "⚖️ 파산")
+        await interaction.response.send_message(embed=e, view=BankruptConfirm(self, user))
 
     # ✅ 훈련: 쿨타임 30초 + 하루 30회 + 레벨(Lv.N = 보상 N배)
     @staticmethod
@@ -318,8 +379,18 @@ class Economy(commands.Cog):
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
         mult = self.train_money_mult(level)
         if random.random() >= rate:
-            return random.randint(*ev["lose"]) * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"]}
-        return random.randint(*ev["win"]) * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"]}
+            base = random.randint(*ev["lose"])
+            return base * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "base": base, "mult": mult}
+        base = random.randint(*ev["win"])
+        return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "base": base, "mult": mult}
+
+    @staticmethod
+    def _settle_line(delta: int, info: dict) -> str:
+        """`정산` 줄 — 레벨 배율이 붙으면 원금(기본 금액)도 함께 보여준다."""
+        line = f"`정산` **{ui.won(delta)}**"
+        if info.get("mult", 1) > 1:
+            line += f" · 기본 {ui.won(info['base'])} × {info['mult']}배"
+        return line
 
     @staticmethod
     def _grind_status(r: dict, max_level: int, tier: str, mult: int, xp_gain: int | None = None) -> str:
@@ -397,7 +468,7 @@ class Economy(commands.Cog):
             title, color = f"{ev['emoji']} {ev['name']} — 실패…", ui.LOSE
         e = self._train_card(user, title, info["line"], color)
         e.description += (
-            f"\n\n`정산` **{ui.won(r['delta'])}**\n"
+            "\n\n" + self._settle_line(r["delta"], info) + "\n"
             f"`잔액` **{r['new_bal']:,}원**\n"
             + self._train_status(r, 3 if info["ok"] else -1)
         )
@@ -424,13 +495,17 @@ class Economy(commands.Cog):
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
         mult = self.scout_money_mult(level)
         if random.random() >= rate:
-            return random.randint(*ev["lose"]) * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "found": None}
+            base = random.randint(*ev["lose"])
+            return base * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "found": None,
+                                     "base": base, "mult": mult}
         found = None
         if random.random() < SCOUT_FIND_PROB[min(level, SCOUT_MAX_LEVEL) - 1]:
             found = scout_find_player(con, level)
             if found:
                 give_player(con, user_id, found["player_id"])
-        return random.randint(*ev["win"]) * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "found": found}
+        base = random.randint(*ev["win"])
+        return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "found": found,
+                                "base": base, "mult": mult}
 
     def _scout_status(self, r: dict, xp_gain: int | None = None) -> str:
         lv = r["level"]
@@ -479,7 +554,7 @@ class Economy(commands.Cog):
                 f"시세 **{found['price']:,}원**"
             )
         e.description += (
-            f"\n\n`정산` **{ui.won(r['delta'])}**\n"
+            "\n\n" + self._settle_line(r["delta"], info) + "\n"
             f"`잔액` **{r['new_bal']:,}원**\n"
             + self._scout_status(r, 3 if info["ok"] else -1)
         )
@@ -518,6 +593,8 @@ class Economy(commands.Cog):
         self._pk_last[user.id] = now
 
         await interaction.response.defer()
+        if (ban := await self._bet_ban_card(user)):
+            return await interaction.followup.send(embed=ban)
         amount = int(amount)
 
         cur_bal = await self.db.get_balance(user.id)
@@ -602,6 +679,8 @@ class Economy(commands.Cog):
         self._pk_last[key] = now
 
         await interaction.response.defer()
+        if (ban := await self._bet_ban_card(user)):
+            return await interaction.followup.send(embed=ban)
         amount = int(amount)
         cur_bal = await self.db.get_balance(user.id)
         if cur_bal < amount:
@@ -714,6 +793,8 @@ class Economy(commands.Cog):
     async def horse_race(self, interaction: discord.Interaction, amount: app_commands.Range[int, RACE_MIN_BET]):
         user, amount = interaction.user, int(amount)
         await interaction.response.defer()
+        if (ban := await self._bet_ban_card(user)):
+            return await interaction.followup.send(embed=ban)
         bal = await self.db.get_balance(user.id)
         if bal < amount:
             return await interaction.followup.send(embed=self._race_broke(user, amount, bal))

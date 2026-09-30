@@ -1159,7 +1159,7 @@ class PlayerMarketDB:
             return await self._run(work)
 
     async def list_holdings(self, user_id: int, limit: int = 20, offset: int = 0):
-        limit = max(1, min(50, int(limit)))
+        limit = max(1, min(10_000, int(limit)))
         offset = max(0, int(offset))
         async with self._lock:
             def work():
@@ -1178,6 +1178,24 @@ class PlayerMarketDB:
                         """,
                         (int(user_id), int(limit), int(offset)),
                     ).fetchall()
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    @staticmethod
+    def _lineup_ids(con, user_id: int) -> set[str]:
+        """구단 선발 명단에 올라 있는 선수 ID (구단 테이블이 없으면 빈 집합)."""
+        try:
+            return {r[0] for r in con.execute("SELECT player_id FROM club_lineup WHERE user_id=?", (int(user_id),))}
+        except sqlite3.OperationalError:
+            return set()
+
+    async def lineup_ids(self, user_id: int) -> set[str]:
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    return self._lineup_ids(con, user_id)
                 finally:
                     con.close()
             return await self._run(work)
@@ -2211,6 +2229,9 @@ class PlayerMarketDB:
                     have = int(have_row[0]) if have_row else 0
                     if have < qty:
                         return None, f"보유 수량이 부족합니다. (보유: {have}장 / 요청: {qty}장)"
+                    # 구단 선발 명단에 쓰는 카드 1장은 팔 수 없다 (여분만 판매 가능)
+                    if str(player_id) in self._lineup_ids(con, user_id) and have - qty < 1:
+                        return None, f"**{name}** 은(는) 구단 선발 명단에 있어요. `/선발`에서 빼고 판매해 주세요."
 
                     payout  = int(int(base_value) * rate) * qty
                     fee_amt = int(int(base_value) * (1.0 - rate)) * qty

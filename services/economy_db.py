@@ -24,6 +24,19 @@ GRIND_RULES = {
     "scouting": (SCOUT_MAX_LEVEL, SCOUT_DAILY_LIMIT, SCOUT_XP_NEED),
 }
 
+# 출석: 누적 출석 일수가 이 날에 닿으면 보너스 (빠져도 초기화되지 않는다)
+ATTEND_BONUS = {7: 50_000, 14: 100_000, 30: 300_000, 50: 500_000, 100: 1_000_000, 200: 2_000_000, 365: 5_000_000}
+
+TRANSFER_DAILY_LIMIT = 5_000_000   # 하루(KST) 보낼 수 있는 송금 총액
+
+# 파산: 잔액이 마이너스일 때만. 선수 카드·스폰서 원금으로 먼저 갚고 남은 빚은 탕감.
+BANKRUPT_COOLDOWN = 30 * 86400     # 30일에 한 번
+BANKRUPT_BET_BAN  = 3 * 86400      # 파산 후 3일간 베팅 게임 금지
+
+
+def _kst_day(ts: int) -> int:
+    return (int(ts) + 9 * 3600) // 86400
+
 
 def grind_xp_need(table: str, level: int) -> int:
     max_level, _, need = GRIND_RULES[table]
@@ -71,6 +84,16 @@ class EconomyDB:
                 con.execute("ALTER TABLE daily_claims ADD COLUMN streak INTEGER NOT NULL DEFAULT 0")
             except Exception:
                 pass
+            # 2.2: 연속 보너스 → 누적 출석 일수 보너스. 처음 추가될 때 지금까지의 연속 일수로 시작한다.
+            try:
+                con.execute("ALTER TABLE daily_claims ADD COLUMN total_days INTEGER NOT NULL DEFAULT 0")
+                con.execute("UPDATE daily_claims SET total_days = streak")
+            except Exception:
+                pass
+            # 하루 송금 누적액 (KST 날짜별)
+            con.execute("CREATE TABLE IF NOT EXISTS transfer_daily (user_id INTEGER PRIMARY KEY, day_key INTEGER, sent INTEGER)")
+            # 파산 기록: 마지막 파산 시각 · 횟수
+            con.execute("CREATE TABLE IF NOT EXISTS bankruptcy (user_id INTEGER PRIMARY KEY, last_ts INTEGER, times INTEGER)")
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS penalty_kick (
@@ -217,108 +240,130 @@ class EconomyDB:
                     con.close()
             return await self._run(work)
 
-    async def transfer(self, from_user: int, to_user: int, amount: int) -> Optional[str]:
+    async def _tx(self, fn):
+        """BEGIN IMMEDIATE 로 fn(con) 실행 후 커밋 (실패 시 롤백)."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    con.execute("BEGIN IMMEDIATE;")
+                    out = fn(con)
+                    con.execute("COMMIT;")
+                    return out
+                except Exception:
+                    con.execute("ROLLBACK;")
+                    raise
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    @staticmethod
+    def _sent_today(con, user_id: int, day: int) -> int:
+        row = con.execute("SELECT day_key, sent FROM transfer_daily WHERE user_id=?", (user_id,)).fetchone()
+        return int(row[1]) if row and row[0] == day else 0
+
+    async def transfer_remaining(self, user_id: int, now_ts: int) -> int:
+        """오늘 더 보낼 수 있는 송금액."""
+        return await self._tx(lambda con: TRANSFER_DAILY_LIMIT - self._sent_today(con, user_id, _kst_day(now_ts)))
+
+    async def transfer(self, from_user: int, to_user: int, amount: int, now_ts: int = 0) -> Optional[str]:
+        """송금. 실패하면 이유를 돌려준다. 하루(KST) 송금 총액은 TRANSFER_DAILY_LIMIT 까지."""
         if amount <= 0:
             return "금액은 1 이상이어야 합니다."
         if from_user == to_user:
             return "자기 자신에게는 송금할 수 없습니다."
+        day = _kst_day(now_ts)
 
-        async with self._lock:
-            def work():
-                con = self._connect()
-                try:
-                    con.execute("BEGIN IMMEDIATE;")
-                    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (from_user,))
-                    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (to_user,))
-
-                    row = con.execute("SELECT balance FROM wallets WHERE user_id=?", (from_user,)).fetchone()
-                    bal = int(row[0]) if row else 0
-                    if bal < amount:
-                        con.execute("ROLLBACK;")
-                        return "잔액이 부족합니다."
-
-                    con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (amount, from_user))
-                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, to_user))
-                    con.execute("COMMIT;")
-                    return None
-                except Exception as e:
-                    try:
-                        con.execute("ROLLBACK;")
-                    except Exception:
-                        pass
-                    return f"DB 오류: {type(e).__name__}"
-                finally:
-                    con.close()
-            return await self._run(work)
+        def fn(con):
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (from_user,))
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (to_user,))
+            sent = self._sent_today(con, from_user, day)
+            if sent + amount > TRANSFER_DAILY_LIMIT:
+                return f"오늘 송금 한도를 넘어요. (하루 {TRANSFER_DAILY_LIMIT:,}원 · 남은 한도 {TRANSFER_DAILY_LIMIT - sent:,}원)"
+            bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (from_user,)).fetchone()[0])
+            if bal < amount:
+                return "잔액이 부족합니다."
+            con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (amount, from_user))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, to_user))
+            con.execute("INSERT OR REPLACE INTO transfer_daily(user_id, day_key, sent) VALUES(?,?,?)",
+                        (from_user, day, sent + amount))
+            return None
+        try:
+            return await self._tx(fn)
+        except Exception as e:
+            return f"DB 오류: {type(e).__name__}"
 
     async def claim_daily(self, user_id: int, reward: int, now_ts: int) -> Tuple[bool, int, int, int, int]:
         """
         매일 00:00(KST) 기준 하루 1회.
-        반환: (성공여부, 새잔액(성공시), 남은초(실패시), 현재스트릭, 스트릭보너스)
-        스트릭 보너스: 7일 +50,000 / 14일 +150,000 / 30일 +500,000
+        반환: (성공여부, 새잔액(성공시), 남은초(실패시), 누적 출석 일수, 보너스)
+        보너스는 누적 출석 일수가 ATTEND_BONUS 의 날에 닿을 때 (빠져도 초기화 없음).
         """
-        KST_OFFSET = 9 * 3600
-        now_kst = now_ts + KST_OFFSET
-        today_key = now_kst // 86400  # 날짜 키(한국 기준)
+        today = _kst_day(now_ts)
 
-        async with self._lock:
-            def work():
-                con = self._connect()
-                try:
-                    con.execute("BEGIN IMMEDIATE;")
-                    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
-                    con.execute("INSERT OR IGNORE INTO daily_claims(user_id, last_claim_ts) VALUES(?, 0)", (user_id,))
+        def fn(con):
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
+            con.execute("INSERT OR IGNORE INTO daily_claims(user_id, last_claim_ts) VALUES(?, 0)", (user_id,))
+            last, total = con.execute("SELECT last_claim_ts, total_days FROM daily_claims WHERE user_id=?",
+                                      (user_id,)).fetchone()
+            if last and _kst_day(last) == today:
+                return (False, 0, (today + 1) * 86400 - (now_ts + 9 * 3600), int(total), 0)
+            total = int(total) + 1
+            bonus = ATTEND_BONUS.get(total, 0)
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (reward + bonus, user_id))
+            con.execute("UPDATE daily_claims SET last_claim_ts=?, total_days=? WHERE user_id=?", (now_ts, total, user_id))
+            bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
+            return (True, int(bal), 0, total, bonus)
+        return await self._tx(fn)
 
-                    row = con.execute(
-                        "SELECT last_claim_ts, streak FROM daily_claims WHERE user_id=?",
-                        (user_id,),
-                    ).fetchone()
-                    last         = int(row[0]) if row else 0
-                    prev_streak  = int(row[1]) if row and row[1] is not None else 0
+    # ───────────── 파산 ─────────────
+    async def bet_ban_until(self, user_id: int, now_ts: int) -> int:
+        """파산 후 베팅 금지가 풀리는 시각 (금지 중이 아니면 0)."""
+        def fn(con):
+            row = con.execute("SELECT last_ts FROM bankruptcy WHERE user_id=?", (user_id,)).fetchone()
+            until = int(row[0]) + BANKRUPT_BET_BAN if row else 0
+            return until if until > now_ts else 0
+        return await self._tx(fn)
 
-                    last_kst = last + KST_OFFSET
-                    last_key = last_kst // 86400
+    async def declare_bankruptcy(self, user_id: int, now_ts: int) -> dict:
+        """파산: 선수 카드(아마추어 제외)를 즉시판매가로 넘기고, 진행 중 스폰서 계약 원금을 돌려받아 빚을 갚는다.
+        그래도 남는 빚은 0으로 탕감. 실패 reason: not_negative / cooldown(until)."""
+        def has(con, table):
+            return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
 
-                    # 같은 날짜(한국 기준)면 실패
-                    if last_key == today_key:
-                        next_midnight_kst = (today_key + 1) * 86400
-                        remaining = next_midnight_kst - now_kst
-                        con.execute("ROLLBACK;")
-                        return (False, 0, int(remaining), 0, 0)
+        def fn(con):
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
+            bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
+            if bal >= 0:
+                return {"ok": False, "reason": "not_negative", "balance": bal}
+            row = con.execute("SELECT last_ts, times FROM bankruptcy WHERE user_id=?", (user_id,)).fetchone()
+            if row and now_ts - int(row[0]) < BANKRUPT_COOLDOWN:
+                return {"ok": False, "reason": "cooldown", "until": int(row[0]) + BANKRUPT_COOLDOWN}
 
-                    # 스트릭 계산
-                    if last == 0:
-                        new_streak = 1
-                    elif today_key - last_key == 1:   # 연속 출석
-                        new_streak = prev_streak + 1
-                    else:                              # 하루 이상 건너뜀
-                        new_streak = 1
-
-                    # 스트릭 보너스 (마일스톤 달성 시)
-                    _STREAK_BONUS = {7: 50_000, 14: 150_000, 30: 500_000}
-                    streak_bonus  = _STREAK_BONUS.get(new_streak, 0)
-                    total_reward  = reward + streak_bonus
-
-                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total_reward, user_id))
-                    con.execute(
-                        "UPDATE daily_claims SET last_claim_ts=?, streak=? WHERE user_id=?",
-                        (now_ts, new_streak, user_id),
-                    )
-                    con.execute("COMMIT;")
-
-                    new_bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()
-                    return (True, int(new_bal[0]) if new_bal else 0, 0, new_streak, streak_bonus)
-
-                except Exception:
-                    try:
-                        con.execute("ROLLBACK;")
-                    except Exception:
-                        pass
-                    raise
-                finally:
-                    con.close()
-
-            return await self._run(work)
+            cards = cards_value = 0
+            if has(con, "pm_holdings") and has(con, "pm_players"):
+                rows = con.execute(
+                    "SELECT h.qty, p.base_value, p.retired FROM pm_holdings h JOIN pm_players p ON p.player_id=h.player_id "
+                    "WHERE h.user_id=? AND h.qty>0 AND h.player_id NOT LIKE 'AMT_%'", (user_id,)).fetchall()
+                for qty, base, retired in rows:
+                    cards += int(qty)
+                    cards_value += int(int(base) * (0.3 if int(retired) else 0.5)) * int(qty)
+                con.execute("DELETE FROM pm_holdings WHERE user_id=? AND player_id NOT LIKE 'AMT_%'", (user_id,))
+            sponsor = 0
+            if has(con, "sponsor_contracts"):
+                sponsor = int(con.execute("SELECT COALESCE(SUM(amount), 0) FROM sponsor_contracts "
+                                          "WHERE user_id=? AND status='active'", (user_id,)).fetchone()[0])
+                con.execute("UPDATE sponsor_contracts SET status='cancelled', payout=amount "
+                            "WHERE user_id=? AND status='active'", (user_id,))
+            after = bal + cards_value + sponsor
+            forgiven = max(0, -after)
+            new_bal = max(0, after)
+            con.execute("UPDATE wallets SET balance=? WHERE user_id=?", (new_bal, user_id))
+            con.execute("INSERT INTO bankruptcy(user_id, last_ts, times) VALUES(?, ?, 1) "
+                        "ON CONFLICT(user_id) DO UPDATE SET last_ts=excluded.last_ts, times=times+1", (user_id, now_ts))
+            return {"ok": True, "debt": -bal, "cards": cards, "cards_value": cards_value, "sponsor": sponsor,
+                    "forgiven": forgiven, "balance": new_bal, "ban_until": now_ts + BANKRUPT_BET_BAN}
+        return await self._tx(fn)
 
     async def play_penalty_kick(
         self, user_id: int, delta: int, now_ts: int, cooldown_sec: int = 0
@@ -1097,6 +1142,8 @@ class EconomyDB:
                         ("quiz_stats",            "user_id"),
                         ("quiz_results",          "user_id"),
                         ("sponsor_contracts",     "user_id"),
+                        ("transfer_daily",        "user_id"),
+                        ("bankruptcy",            "user_id"),
                         ("notification_settings", "user_id"),
                         ("toto_bets",             "user_id"),
                     ]:

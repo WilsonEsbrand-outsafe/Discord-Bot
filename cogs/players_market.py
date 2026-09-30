@@ -1014,9 +1014,13 @@ class PlayersMarket(commands.Cog):
             return await interaction.followup.send("보유한 선수가 없습니다.")
 
         now = int(time.time())
+        # 구단 선발 명단에 쓰는 카드 1장은 빼고, 여분만 판매 목록에 올린다.
+        lineup = await self.pm.lineup_ids(interaction.user.id)
+        holdings = [tuple(h[:8]) + (int(h[8]) - 1,) + tuple(h[9:]) if h[0] in lineup else h for h in holdings]
+        holdings = [h for h in holdings if int(h[8]) > 0]
         view = QuickSellView(holdings, self.pm, self.money, interaction.user, now)
         if not view.holdings:
-            return await interaction.followup.send("즉시판매 가능한 선수가 없습니다. (아마추어·은퇴 선수 제외)")
+            return await interaction.followup.send("즉시판매 가능한 선수가 없습니다. (아마추어·은퇴·구단 선발 선수 제외)")
 
         await interaction.followup.send(embed=view.make_embed(), view=view)
 
