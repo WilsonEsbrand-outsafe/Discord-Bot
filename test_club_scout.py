@@ -231,16 +231,24 @@ async def _club22():
     assert t["manager_bonus"] == 3                                                  # 선호 4-3-3 → +3
     assert (await clubs.hire_manager(A, "tiki"))["reason"] == "same"
 
-    # 공식경기: 하루 5경기 · 승점 · 수당 · 순위
+    # 공식경기 배당: 전력이 같으면 승 = 패 배당, 무승부가 더 높다 · 강팀일수록 승 배당이 낮다 · 하우스 5%
+    even = cdb.official_odds(cdb.win_probs(60, 60))
+    assert even["W"] == even["L"] < even["D"]
+    strong = cdb.official_odds(cdb.win_probs(80, 60))
+    assert strong["W"] < even["W"] < strong["L"]
+    assert all(1.01 <= o <= cdb.OFFICIAL_ODDS_CAP for o in cdb.official_odds(cdb.win_probs(99, 1)).values())
+    assert 0.9 < sum(1 / o for o in even.values()) * cdb.OFFICIAL_MARGIN < 1.1
+
+    # 공식경기 정산: 예측 적중 → 베팅 × (배당 - 1), 빗나감 → 베팅금 손실 · 횟수 제한 없음 · 승점 · 순위
     bal0 = await eco.get_balance(A)
-    for gf, ga in ((2, 0), (1, 1), (0, 3), (4, 1), (2, 2)):
-        assert await clubs.record_official(A, gf, ga, NOW)
-    assert await clubs.record_official(A, 1, 0, NOW) is None                       # 6번째는 안 된다
-    assert await clubs.official_left(A, NOW) == 0 and await clubs.official_left(A, NOW + 86400) == cdb.OFFICIAL_DAILY
-    P = cdb.OFFICIAL_PRIZE
-    assert await eco.get_balance(A) - bal0 == 2 * P["W"] + 2 * P["D"] + P["L"]
+    net = 0
+    for gf, ga in ((2, 0), (1, 1), (0, 3), (4, 1), (2, 2), (1, 0), (3, 0)):     # 하루 5경기 제한 없음
+        r = await clubs.record_official(A, gf, ga, NOW, 10_000, "W", 2.5)
+        net += 15_000 if gf > ga else -10_000
+        assert r["delta"] == (15_000 if gf > ga else -10_000) and r["balance"] == bal0 + net
+    assert await eco.get_balance(A) - bal0 == 4 * 15_000 - 3 * 10_000
     table = await clubs.official_table(NOW)
-    assert table[0]["user_id"] == A and table[0]["points"] == 8 and table[0]["gf"] - table[0]["ga"] == 2
+    assert table[0]["user_id"] == A and table[0]["points"] == 14 and table[0]["gf"] - table[0]["ga"] == 6
     assert await clubs.official_opponents(A) == [B] or B in await clubs.official_opponents(A)
 
     # 친선경기 화면: 머플러 1회 소모 · 90분 중계 장면 · 다시 붙기 버튼
@@ -270,12 +278,21 @@ async def _club22():
         w1 = (await clubs.get_club(A))
         assert w1["wins"] + w1["draws"] + w1["losses"] == w0["wins"] + w0["draws"] + w0["losses"] + 1
 
-        # 공식경기 명령: 비슷한 전력 구단과 자동 매칭 → 중계 → 승점 · 수당 기록 (오늘 횟수 1 차감)
-        import time as _t
-        left = await clubs.official_left(A, int(_t.time()))
-        await cc.Club.official.callback(cog, inter)
-        assert edits[-1]["embed"].title.startswith("🏆") and "수당" in edits[-1]["embed"].description
-        assert await clubs.official_left(A, int(_t.time())) == left - 1
+        # 공식경기 명령: 자동 매칭 / 상대 지정 → 킥오프에 배당 → 중계 → 예측대로 정산
+        for pick, target in (("W", None), ("D", opp), ("L", opp)):
+            before = await eco.get_balance(A)
+            n = len(edits)
+            await cc.Club.official.callback(cog, inter, 10_000, pick, target)
+            kick, final = edits[n]["embed"], edits[-1]["embed"]
+            assert "배당" in kick.description and "👈" in kick.description and final.title.startswith("🏆")
+            assert "정산" in final.description and ("적중" in final.description or "빗나감" in final.description)
+            delta = await eco.get_balance(A) - before
+            assert delta == -10_000 if "빗나감" in final.description else delta > 0
+        await cc.Club.official.callback(cog, inter, 10_000, "W", user)                # 자기 자신과는 안 된다
+        assert edits[-1] == {"ephemeral": True}
+        await eco.set_balance(A, 0)
+        await cc.Club.official.callback(cog, inter, 10_000, "W", None)                # 잔액 부족
+        assert "부족" in edits[-1]["embed"].title
         await cc.Club.manager.callback(cog, inter, None)
         assert "티키타카" in edits[-1]["embed"].description
     finally:

@@ -23,6 +23,9 @@ U, D = 77, 86400
 def test_rules():
     days = sorted(sdb.TERMS)
     assert days == [1, 7, 30, 90, 365] and len(sdb.SPONSORS) == 5
+    assert sdb.OPEN_TERMS == (1, 7, 30)                             # 90·365일은 새로 못 맺는다 (정산용으로만)
+    assert [c.value for c in cs.Sponsor.open_contract._params["기간"].choices] == [1, 7, 30]
+    assert sdb.GRADES[0][2] == 50_000_000 and sdb.MAX_AMOUNT == 500_000_000
     per_day = [math.log1p(sdb.TERMS[d]) / d for d in days]
     assert per_day == sorted(per_day), per_day                    # 짧은 계약 복리 < 긴 계약
     assert sdb.SPONSORS["bank"][3:5] == (1.0, 1.0)                # 원금 보장 스폰서가 하나는 있다
@@ -49,7 +52,7 @@ async def _flow():
     await db.add_balance(U, 500_000_000)
     r = await db.open(U, "bank", 7, 1_000_000, NOW)
     assert r["ok"] and r["balance"] == 499_000_000 and r["grade"].endswith("신규")
-    assert (await db.open(U, "rocket", 1, 10**12, NOW))["reason"] == "limit"     # 신규 등급 한도 1,000만원
+    assert (await db.open(U, "rocket", 1, 10**12, NOW))["reason"] == "limit"     # 신규 등급 한도 5,000만원
     assert (await db.open(U, "rocket", 1, 10_000_000, NOW))["ok"]
     for _ in range(sdb.MAX_ACTIVE - 2):
         assert (await db.open(U, "tv", 30, 1_000_000, NOW))["ok"]
@@ -70,16 +73,23 @@ async def _flow():
     assert (await db.cancel(999, other, NOW))["reason"] == "missing"          # 남의 계약은 해지 불가
     await db.settle(NOW + D * 30, U)
 
-    # 등급: 골든뱅크 100만원 이상 30일 채우면 파트너 → 한도 1,500만원 · 수익 +5%
+    # 등급: 골든뱅크 100만원 이상 30일 채우면 파트너 → 한도 1억원 · 수익 +5%
     V = 88
-    await db.add_balance(V, 100_000_000)
+    await db.add_balance(V, 200_000_000)
     assert (await db.open(V, "bank", 30, 900_000, NOW))["ok"]                 # 100만원 미만은 신뢰도 X
     assert (await db.open(V, "bank", 30, 1_000_000, NOW))["ok"]
     res = (await db.settle(NOW + D * 30, V))[V]["done"]
     assert [c["grade_up"] for c in res] == [None, "🥈 파트너"]
     assert await db.reputation(V) == {"bank": 30}
-    assert (await db.open(V, "bank", 30, 15_000_000, NOW + D * 30))["grade_bonus"] == 0.05
-    assert (await db.open(V, "bank", 30, 15_000_001, NOW + D * 30))["reason"] == "limit"
+    assert (await db.open(V, "bank", 30, 100_000_000, NOW + D * 30))["grade_bonus"] == 0.05
+    assert (await db.open(V, "bank", 30, 100_000_001, NOW + D * 30))["reason"] == "limit"
+
+    # 없어진 90일 계약(예전에 맺은 것)은 만기 정산은 되지만 자동 재계약은 안 된다
+    L = 111
+    await db.add_balance(L, 1_000_000)
+    await db.open(L, "bank", 90, 1_000_000, NOW, auto=True)
+    c = (await db.settle(NOW + D * 90, L))[L]["done"][0]
+    assert c["payout"] == 1_450_000 and not c["renewed"] and await db.active(L) == []
 
     # 자동 재계약: 같은 조건으로 다시 맺고, 원금은 지급액에서 뗀다 · 구단 보너스는 이어진다
     W = 99
@@ -117,10 +127,10 @@ async def _flow():
         pass
     inter = SimpleNamespace(user=user, response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
                             followup=SimpleNamespace(send=rec))
-    await Sponsor.open_contract.callback(cog, inter, "rocket", 365, 2_000_000, True)
+    await Sponsor.open_contract.callback(cog, inter, "rocket", 30, 2_000_000, True)
     e = sent[-1]["embed"]
     fields = {f.name: f.value for f in e.fields}
-    assert "계약 체결" in e.title and "-2,000,000원" in fields["📈 예상 수익"] and "자동 재계약" in fields["📄 계약"]
+    assert "계약 체결" in e.title and "-360,000원" in fields["📈 예상 수익"] and "자동 재계약" in fields["📄 계약"]
     await Sponsor.overview.callback(cog, inter)
     mine, guide = sent[-1]["embeds"]
     assert "🔁" in mine.fields[0].name and len(guide.fields) == len(sdb.SPONSORS) + 1

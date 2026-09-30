@@ -10,7 +10,7 @@ from services import ui
 from services.club_db import ClubDB
 from services.notifier import send_notify
 from services.sponsor_db import (
-    CANCEL_FEE, CLUB_BONUS, GRADES, MAX_ACTIVE, MAX_AMOUNT, MIN_AMOUNT, REP_MIN_AMOUNT, SPONSORS, TERMS,
+    CANCEL_FEE, CLUB_BONUS, GRADES, MAX_ACTIVE, MAX_AMOUNT, MIN_AMOUNT, OPEN_TERMS, REP_MIN_AMOUNT, SPONSORS, TERMS,
     SponsorDB, cancel_refund, club_bonus, grade_of,
 )
 
@@ -44,7 +44,7 @@ def _perf_label(key: str, perf: float) -> str:
 
 
 def _terms() -> str:
-    return " · ".join(f"`{d}일` **+{_pct(r)}**" for d, r in TERMS.items())
+    return " · ".join(f"`{d}일` **+{_pct(TERMS[d])}**" for d in OPEN_TERMS)
 
 
 def settle_embed(result: dict, user=None) -> discord.Embed:
@@ -253,7 +253,7 @@ class Sponsor(commands.Cog):
                            자동재계약="만기 때 같은 조건으로 자동 재계약")
     @app_commands.choices(
         스폰서=[app_commands.Choice(name=f"{e} {n} ({kind})", value=k) for k, (e, n, kind, *_) in SPONSORS.items()],
-        기간=[app_commands.Choice(name=f"{d}일 (기본 수익 +{_pct(r)})", value=d) for d, r in TERMS.items()],
+        기간=[app_commands.Choice(name=f"{d}일 (기본 수익 +{_pct(TERMS[d])})", value=d) for d in OPEN_TERMS],
     )
     async def open_contract(self, interaction: discord.Interaction, 스폰서: str, 기간: int,
                             금액: app_commands.Range[int, MIN_AMOUNT, MAX_AMOUNT], 자동재계약: bool = False):

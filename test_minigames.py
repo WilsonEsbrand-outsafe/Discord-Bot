@@ -46,10 +46,15 @@ def test_batting_table():
 
 
 def test_table_games():
-    """야구 · 농구 · UFC: 같은 확률 구조, 연출만 다르다 · 실제 명령 흐름에서 정산이 표와 맞는다."""
+    """야구 · 농구 · UFC: 기대값은 비슷하지만 배율 구조가 다르다 · 실제 명령 흐름에서 정산이 표와 맞는다."""
+    tops = []
     for t in (Economy.BAT_TABLE, Economy.HOOP_TABLE, Economy.UFC_TABLE):
-        assert tuple(r[0] for r in t) == Economy.GAME_ODDS and tuple(r[1] for r in t) == Economy.GAME_MULTS
+        assert abs(sum(r[0] for r in t) - 1) < 1e-9
+        ev = sum(r[0] * float(Fraction(r[1])) for r in t)
+        assert -0.02 < ev < 0, ev                                  # 약한 하우스 엣지
         assert len({r[3] for r in t}) == len(t)                    # 결과 이름이 겹치지 않는다
+        tops.append((max(int(r[1]) for r in t), min(int(r[1]) for r in t)))
+    assert tops == [(50, -10), (30, -8), (100, -20)], tops         # 야구 기본 · 농구 잔잔 · UFC 한 방
     from types import SimpleNamespace
     import cogs.economy as ce
     eco = Economy.__new__(Economy)
@@ -83,7 +88,7 @@ def test_table_games():
 def test_league():
     """리그: 20팀 · 순위별 배수 합 0(기대값 0) · 순위표는 승점 내림차순 · 명령 정산이 순위와 맞는다."""
     mults = [Economy.league_payout(r)[0] for r in range(1, 21)]
-    assert sum(mults) == 0 and mults == sorted(mults, reverse=True) and mults[0] == 10 and mults[-1] == -3
+    assert sum(mults) == 0 and mults == sorted(mults, reverse=True) and mults[0] == 20 and mults[-1] == -6
     assert all(len(set(t)) == 20 for t in Economy.LEAGUES.values())
     rng = random.Random(3)
     for _ in range(200):
@@ -108,13 +113,16 @@ def test_league():
         inter = SimpleNamespace(user=user, response=SimpleNamespace(defer=noop), followup=SimpleNamespace(send=rec))
         real_sleep, ce.asyncio.sleep = ce.asyncio.sleep, (lambda s: real_sleep(0))
         try:
-            for _ in range(5):
+            leagues = set()
+            for _ in range(20):
                 before = await eco.db.get_balance(user.id)
-                await Economy.league.callback(eco, inter, 10_000, "라리가")
+                await Economy.league.callback(eco, inter, 10_000)
                 final = sent[-1]
                 rank = int(final.title.rsplit(" ", 1)[1].rstrip("위"))
                 assert await eco.db.get_balance(user.id) - before == 10_000 * Economy.league_payout(rank)[0]
                 assert "감독 FC** 👈" in final.description and len(sent) >= 5    # 개막 + 3장면 + 최종
+                leagues.add(final.description.split("`리그` ")[1].split(" ·")[0])
+            assert len(leagues) > 1 and leagues <= set(Economy.LEAGUES)          # 리그는 매번 랜덤
         finally:
             ce.asyncio.sleep = real_sleep
 
@@ -139,7 +147,8 @@ def test_horse_race():
         assert [frames[-1][h] for h in finish] == [Economy.RACE_TRACK - r for r in range(4)]   # 결승선: 순위대로
         cb = finish[rng.randint(1, 3)]
         frames = Economy._race_frames(finish, rng, comeback=cb)
-        for f in frames[3:5]:                                        # 4코너 · 마지막 직선은 가짜 선두가 확실히 앞선다
+        assert len(frames) == 5                                      # 턴 5번으로 압축
+        for f in frames[2:4]:                                        # 4코너 · 마지막 직선은 가짜 선두가 확실히 앞선다
             assert f[cb] > max(x for i, x in enumerate(f) if i != cb), (f, cb)
         assert frames[-1][finish[0]] == Economy.RACE_TRACK             # 그리고 결승선에서 뒤집힌다
 
@@ -170,7 +179,7 @@ def test_horse_race():
             view = views[-1]
             n = len(sent)
             await view.children[0].callback(inter)
-            assert len(sent) - n == 8 and "잔액" in sent[-1].description        # 대기 + 6장면 + 결과
+            assert len(sent) - n == 7 and "잔액" in sent[-1].description        # 대기 + 5장면 + 결과
             played = await eco.db.get_balance(user.id) - 100_000
             assert played in {10_000 * m for m in view.race["prizes"]}, played
             await view.on_timeout()                                              # 고른 뒤엔 시간 초과가 무시된다

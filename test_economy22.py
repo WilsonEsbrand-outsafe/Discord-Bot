@@ -70,7 +70,8 @@ async def _flow():
     ok, _, pay = await pm.direct_instant_sell(user_id=V, player_id=pid, qty=1, now_ts=NOW, add_balance=db.add_balance)
     assert ok and pay > 0 and await pm.get_holding(V, pid) == 1
 
-    # 파산: 마이너스일 때만 · 카드와 스폰서 원금으로 갚고 남은 빚 탕감 · 30일 1회 · 3일 베팅 금지
+    # 파산: 마이너스일 때만 · 스폰서 강제 해지 원금으로 갚고 남은 빚 30~70% 랜덤 탕감 · 선수는 그대로 · 한 시간 1회
+    import random as _r
     W = 5
     assert (await db.declare_bankruptcy(W, NOW))["reason"] == "not_negative"
     sp = SponsorDB()
@@ -78,19 +79,22 @@ async def _flow():
     assert (await sp.open(W, "bank", 30, 1_000_000, NOW))["ok"]
     con = sqlite3.connect(TMP)
     con.execute("INSERT OR REPLACE INTO pm_holdings(user_id, player_id, qty) VALUES(?,?,1)", (W, pid))
-    base = con.execute("SELECT base_value FROM pm_players WHERE player_id=?", (pid,)).fetchone()[0]
     con.commit(); con.close()
-    debt = base + 5_000_000
-    await db.add_balance(W, -debt)
-    r = await db.declare_bankruptcy(W, NOW)
-    assert r["ok"] and r["cards"] == 1 and r["cards_value"] == int(base * 0.5) and r["sponsor"] == 1_000_000
-    assert r["forgiven"] == debt - int(base * 0.5) - 1_000_000 and r["balance"] == 0
-    assert await db.get_balance(W) == 0 and await pm.get_holding(W, pid) == 0 and await sp.active(W) == []
-    assert await db.bet_ban_until(W, NOW + D) == NOW + edb.BANKRUPT_BET_BAN
-    assert await db.bet_ban_until(W, NOW + edb.BANKRUPT_BET_BAN) == 0
-    await db.add_balance(W, -10)
-    assert (await db.declare_bankruptcy(W, NOW + 10 * D))["reason"] == "cooldown"
-    assert (await db.declare_bankruptcy(W, NOW + 31 * D))["ok"]
+    await db.add_balance(W, -5_000_000)
+    r = await db.declare_bankruptcy(W, NOW, _r.Random(1))
+    left = 5_000_000 - 1_000_000
+    assert r["ok"] and r["sponsor"] == 1_000_000 and 0.3 <= r["rate"] <= 0.7
+    assert r["forgiven"] == round(left * r["rate"]) and r["balance"] == -(left - r["forgiven"]) < 0
+    assert await db.get_balance(W) == r["balance"] and await pm.get_holding(W, pid) == 1 and await sp.active(W) == []
+    assert (await db.declare_bankruptcy(W, NOW + 1800))["reason"] == "cooldown"
+    r2 = await db.declare_bankruptcy(W, NOW + 3600)
+    assert r2["ok"] and r2["balance"] > r["balance"]                          # 한 시간 뒤 다시 → 빚이 더 줄어든다
+    # 스폰서 원금이 빚보다 크면 남는 돈은 그대로 잔액으로
+    await db.set_balance(W, 3_000_000)
+    assert (await sp.open(W, "bank", 30, 3_000_000, NOW))["ok"]
+    await db.add_balance(W, -1_000_000)
+    r = await db.declare_bankruptcy(W, NOW + 7200)
+    assert r["ok"] and r["forgiven"] == 0 and r["balance"] == 2_000_000
 
 
 async def _items():
@@ -107,21 +111,31 @@ async def _items():
         assert (await db.play_training(X, T + 1000 + i * 30, lambda lv, con: (0, 0, None)))["ok"]
     assert (await db.play_training(X, T + 5000, lambda lv, con: (0, 0, None)))["reason"] == "limit"
 
-    # 직관 성공 시 아이템이 같은 트랜잭션에서 가방에 들어온다
-    import cogs.economy as ce
+    # 직관: 하루 100회 · 쿨타임 10초 · 아이템 이벤트는 같은 트랜잭션에서 가방에 들어온다 (성공·실패 무관)
+    assert edb.WATCH_DAILY_LIMIT == 100 and Economy.WATCH_COOLDOWN == 10
     old = Economy.WATCH_DROP
     Economy.WATCH_DROP = (1.0,) * 5
     try:
-        got = None
+        got, fails = {}, 0
         for i in range(edb.WATCH_DAILY_LIMIT):
-            r = await db.play_watch(X, T + 6000 + i * 60, lambda lv, con: eco._watch_roll(lv, con, X))
-            assert r["ok"]
-            got = got or r["info"]["item"]
-        assert (await db.play_watch(X, T + 9000, lambda lv, con: (0, 0, None)))["reason"] == "limit"
+            r = await db.play_watch(X, T + 6000 + i * 10, lambda lv, con: eco._watch_roll(lv, con, X), cooldown_sec=10)
+            assert r["ok"] and r["info"]["item"] and r["info"]["item_line"]
+            got[r["info"]["item"]] = got.get(r["info"]["item"], 0) + 1
+            fails += not r["info"]["ok"]
+            assert abs(r["info"]["base"]) <= 5000                               # 한 번 보상은 작다
+        assert fails > 0                                                        # 실패해도 이벤트는 터진다
+        r = await db.play_watch(X, T + 6000 + 100 * 10, lambda lv, con: (0, 0, None), cooldown_sec=10)
+        assert r["reason"] == "limit"
     finally:
         Economy.WATCH_DROP = old
     inv, _ = await db.inventory(X)
-    assert got and inv.get(got, 0) >= 1
+    assert all(inv.get(k, 0) == n for k, n in got.items())
+    await db._tx(lambda con: con.execute("DELETE FROM inventory WHERE user_id=?", (X,)))   # 아래 테스트를 위해 비운다
+
+    # 직관 리셋권 → 오늘 직관 +100회
+    await db.give_item(X, "watch_reset")
+    assert (await db.use_item(X, "watch_reset", T))["extra"] == edb.WATCH_DAILY_LIMIT
+    assert (await db.play_watch(X, T + 8000, lambda lv, con: (0, 0, None), cooldown_sec=10))["limit"] == 200
 
     # 리셋권: 오늘 횟수 추가 (훈련 잠금은 유지되지 않고 풀린 상태 그대로)
     await db.give_item(X, "train_reset")
@@ -148,6 +162,27 @@ async def _items():
     assert not await db.consume_buff(X, "muffler")
     inv, buffs = await db.inventory(X)
     assert "muffler" not in inv and "muffler" not in buffs
+
+    # 상점: 돈을 내고 가방에 · 아이템마다 하루 한도 · 잔액 부족 · 다음 날 다시
+    Z = 13
+    price = edb.SHOP_PRICES["train_reset"]
+    assert (await db.buy_item(Z, "train_reset", T))["reason"] == "balance"
+    await db.add_balance(Z, price * 3)
+    r = await db.buy_item(Z, "train_reset", T)
+    assert r["ok"] and r["balance"] == price * 2 and r["qty"] == 1
+    assert (await db.buy_item(Z, "train_reset", T + 60))["reason"] == "daily"
+    assert (await db.buy_item(Z, "train_reset", T + D))["ok"]
+    assert await db.shop_bought_today(Z, T + D) == {"train_reset": 1}
+    assert (await db.inventory(Z))[0]["train_reset"] == 2
+
+    # 쿠폰: 코드 대소문자 무시 · 계정당 한 번 · 없는 코드 · 만료
+    items, expires = edb.COUPONS["PATCH22"]
+    assert set(items) == {"scout_reset", "train_reset", "watch_reset"}
+    assert (await db.redeem_coupon(Z, "nope", T))["reason"] == "unknown"
+    r = await db.redeem_coupon(Z, " patch22 ", expires - 1)
+    assert r["ok"] and (await db.inventory(Z))[0] == {"train_reset": 3, "scout_reset": 1, "watch_reset": 1}
+    assert (await db.redeem_coupon(Z, "PATCH22", expires - 1))["reason"] == "used"
+    assert (await db.redeem_coupon(Z + 1, "PATCH22", expires))["reason"] == "expired"
 
 
 async def _item_screens():

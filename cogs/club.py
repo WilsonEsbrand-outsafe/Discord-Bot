@@ -11,8 +11,8 @@ from discord.ext import commands
 
 from services import ui
 from services.club_db import (
-    CLUB_NAME_MAX, FORMATIONS, MANAGERS, OFFICIAL_DAILY, SLOT_GROUP, ClubDB, effective_ovr, match_highlights,
-    season_key, simulate_match, win_probs,
+    CLUB_NAME_MAX, FORMATIONS, MANAGERS, OFFICIAL_MIN_BET, SLOT_GROUP, ClubDB, effective_ovr, match_highlights,
+    official_odds, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
 from services.player_market_db import PlayerMarketDB
@@ -253,9 +253,9 @@ class Club(commands.Cog):
         await interaction.followup.send(embed=ui.card("©️ 주장 임명" if ok else "❌ 주장", msg,
                                                       ui.WIN if ok else ui.LOSE, interaction.user, "🏟️ 구단"))
 
-    # ───────────── 친선경기 ─────────────
     # ───────────── 경기 (친선 · 공식 공용) ─────────────
     BROADCAST_MINUTES = (15, 30, 45, 60, 75, 90)   # 문자중계 장면 (킥오프 다음부터)
+    BROADCAST_GAP = 3.5                             # 장면 사이 간격(초) — 읽을 시간을 준다
 
     @staticmethod
     def _caster_line(home: str, away: str, hg: int, ag: int) -> str:
@@ -280,16 +280,20 @@ class Club(commands.Cog):
             return None
         return home, away
 
-    async def _play_match(self, interaction, user, home_id: int, away_id: int, home: dict, away: dict,
-                          section: str, title_tag: str, after=None, view=None) -> dict:
-        """응원 머플러 적용 → 경기 시뮬레이션 → 90분 하이라이트 문자중계. after(result) 가 돌려준 문자열을 결과 카드에 붙인다."""
+    async def _sides(self, home_id: int, away_id: int, home: dict, away: dict) -> list[dict]:
+        """경기에 나설 두 팀 — 응원 머플러를 쓰는 중이면 1회 소모하고 전력 +3."""
         sides = []
         for uid, team in ((home_id, home), (away_id, away)):
             muffler = await self.money.consume_buff(uid, "muffler")
             rating = team["rating"] + (MUFFLER_BONUS if muffler else 0)
             sides.append({"name": team["name"] + (" 🧣" if muffler else ""), "rating": rating,
                           "xi": [s for s in team["lineup"] if s.get("player_id")]})
-        h, a = sides
+        return sides
+
+    async def _play_match(self, interaction, user, h: dict, a: dict, section: str, title_tag: str,
+                          after=None, view=None, note: str = "") -> dict:
+        """경기 시뮬레이션 → 90분 하이라이트 문자중계. after(result) 가 돌려준 문자열을 결과 카드에,
+        note 는 킥오프 카드에 붙인다."""
         result = simulate_match(h, a)
         hg, ag = result["home"], result["away"]
         highlights = match_highlights(result, h, a)
@@ -309,7 +313,7 @@ class Club(commands.Cog):
 
         kickoff = ui.card(f"{title_tag} {h['name']} vs {a['name']}",
                           f"> 🎙️ *\"전력 {h['rating']} 대 {a['rating']}! 주심의 휘슬과 함께 킥오프!\"*\n\n"
-                          f"`예상 승률` {h['name']} **{pw:.0%}** · 무 **{pd:.0%}** · {a['name']} **{pl:.0%}**",
+                          f"`예상 승률` {h['name']} **{pw:.0%}** · 무 **{pd:.0%}** · {a['name']} **{pl:.0%}**" + note,
                           ui.DARK, user, section)
         color = ui.WIN if hg > ag else (ui.LOSE if hg < ag else ui.EVEN)
         final = ui.card(f"{title_tag} {h['name']} {hg} : {ag} {a['name']}",
@@ -319,12 +323,12 @@ class Club(commands.Cog):
         try:
             msg = await interaction.followup.send(embed=kickoff, wait=True)
             for minute in self.BROADCAST_MINUTES[:-1]:
-                await asyncio.sleep(1.3)
+                await asyncio.sleep(self.BROADCAST_GAP)
                 sh, sa = score(minute)
                 label = "하프타임" if minute == 45 else f"{minute}'"
                 await msg.edit(embed=ui.card(f"{title_tag} {h['name']} {sh} : {sa} {a['name']} · {label}",
                                              log_until(minute), ui.DARK, user, section))
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(self.BROADCAST_GAP)
             await msg.edit(embed=final, view=view)
         except discord.HTTPException:
             await interaction.followup.send(embed=final, view=view)
@@ -348,57 +352,82 @@ class Club(commands.Cog):
             sides = await self._load_sides(interaction, user, user.id, opp.id, f"{opp.display_name}님", "🎙️ 친선경기 중계")
             if not sides:
                 return
-            home, away = sides
+            h, a = await self._sides(user.id, opp.id, *sides)
 
             async def record(result):
                 await self.clubs.record_match(user.id, opp.id, result["home"], result["away"])
                 return ""
-            await self._play_match(interaction, user, user.id, opp.id, home, away, "🎙️ 친선경기 중계", "🤝",
+            await self._play_match(interaction, user, h, a, "🎙️ 친선경기 중계", "🤝",
                                    after=record, view=RematchView(self, user, opp))
         finally:
             self._playing.discard(user.id)
 
-    @app_commands.command(name="공식경기", description=f"공식경기: 비슷한 전력의 구단과 자동 매칭 · 승점 · 수당 (하루 {OFFICIAL_DAILY}경기)")
-    async def official(self, interaction: discord.Interaction):
-        user, now = interaction.user, int(time.time())
+    PICKS = {"W": "승", "D": "무", "L": "패"}
+
+    @app_commands.command(name="공식경기", description="돈을 걸고 공식경기! 전력으로 정한 배당 · 승/무/패 예측이 맞으면 배당 지급 (횟수 제한 없음)")
+    @app_commands.rename(amount="베팅액")
+    @app_commands.describe(amount="베팅 금액 (최소 1,000원)", 예측="내 구단 경기 결과 예측 (기본: 승)",
+                           상대="상대 구단의 주인 (비우면 비슷한 전력 구단과 자동 매칭)")
+    @app_commands.choices(예측=[app_commands.Choice(name=n, value=k) for k, n in
+                              (("W", "승 — 내 구단 승리"), ("D", "무 — 무승부"), ("L", "패 — 내 구단 패배"))])
+    async def official(self, interaction: discord.Interaction, amount: app_commands.Range[int, OFFICIAL_MIN_BET],
+                       예측: str = "W", 상대: Optional[discord.Member] = None):
+        user, now, amount = interaction.user, int(time.time()), int(amount)
+        if 상대 is not None and (상대.id == user.id or 상대.bot):
+            return await interaction.response.send_message("다른 유저의 구단을 골라 주세요.", ephemeral=True)
         if user.id in self._playing:
             return await interaction.response.send_message("⏳ 지금 경기가 진행 중이에요.", ephemeral=True)
         await interaction.response.defer()
-        sec = "🏆 공식경기 중계"
-        if await self.clubs.official_left(user.id, now) <= 0:
-            return await interaction.followup.send(embed=ui.card(
-                "🌙 오늘 공식경기 끝", f"공식경기는 하루 {OFFICIAL_DAILY}경기까지예요. 내일 00:00에 다시 열립니다!",
-                ui.DARK, user, sec))
-        me = await self.clubs.get_team(user.id)
-        if not me or not me["filled"]:
-            return await interaction.followup.send(embed=ui.card(
-                "❌ 경기 불가", _NO_CLUB if not me else "선발 명단이 비어 있습니다. `/자동편성`을 먼저 해 주세요.",
-                ui.LOSE, user, sec))
-        # 상대: 선발이 있는 다른 유저 구단 중 전력이 가장 비슷한 5팀에서 무작위
-        pool = []
-        for uid in await self.clubs.official_opponents(user.id):
-            t = await self.clubs.get_team(uid)
-            if t and t["filled"]:
-                pool.append((abs(t["rating"] - me["rating"]), uid, t))
-        if not pool:
-            return await interaction.followup.send(embed=ui.card(
-                "😶 상대 구단이 없어요", "선발 명단이 있는 다른 유저 구단이 아직 없습니다.", ui.EVEN, user, sec))
-        pool.sort(key=lambda x: x[0])
-        _, opp_id, opp = random.choice(pool[:5])
-
         self._playing.add(user.id)
         try:
-            async def record(result):
-                r = await self.clubs.record_official(user.id, result["home"], result["away"], now)
-                if r is None:
-                    return "\n\n오늘 공식경기 횟수를 모두 써서 기록되지 않았어요."
-                mark = {"W": "승리", "D": "무승부", "L": "패배"}[r["result"]]
-                return (f"\n\n`결과` **{mark}** · `수당` **+{r['prize']:,}원**\n"
-                        f"`이번 시즌` {r['points']}점 · {r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d}\n"
-                        f"`오늘 남은 공식경기` {r['left']}경기 · 순위는 `/공식순위`")
-            await self._play_match(interaction, user, user.id, opp_id, me, opp, sec, "🏆", after=record)
+            await self._official(interaction, user, now, amount, 예측, 상대)
         finally:
             self._playing.discard(user.id)
+
+    async def _official(self, interaction, user, now: int, amount: int, pick: str, opp_user):
+        sec = "🏆 공식경기 중계"
+        bal = await self.money.get_balance(user.id)
+        if bal < amount:
+            return await interaction.followup.send(embed=ui.card(
+                "🙅 베팅할 돈이 부족해요", f"`베팅` **{amount:,}원**\n`잔액` **{bal:,}원**", ui.LOSE, user, sec))
+        if opp_user is not None:
+            sides = await self._load_sides(interaction, user, user.id, opp_user.id, f"{opp_user.display_name}님", sec)
+            if not sides:
+                return
+            (me, opp), opp_id = sides, opp_user.id
+        else:
+            me = await self.clubs.get_team(user.id)
+            if not me or not me["filled"]:
+                return await interaction.followup.send(embed=ui.card(
+                    "❌ 경기 불가", _NO_CLUB if not me else "선발 명단이 비어 있습니다. `/자동편성`을 먼저 해 주세요.",
+                    ui.LOSE, user, sec))
+            # 상대: 선발이 있는 다른 유저 구단 중 전력이 가장 비슷한 5팀에서 무작위
+            pool = []
+            for uid in await self.clubs.official_opponents(user.id):
+                t = await self.clubs.get_team(uid)
+                if t and t["filled"]:
+                    pool.append((abs(t["rating"] - me["rating"]), uid, t))
+            if not pool:
+                return await interaction.followup.send(embed=ui.card(
+                    "😶 상대 구단이 없어요", "선발 명단이 있는 다른 유저 구단이 아직 없습니다.", ui.EVEN, user, sec))
+            pool.sort(key=lambda x: x[0])
+            _, opp_id, opp = random.choice(pool[:5])
+
+        h, a = await self._sides(user.id, opp_id, me, opp)
+        odds = official_odds(win_probs(h["rating"], a["rating"]))
+        board = " · ".join((f"**{self.PICKS[k]} {o:.2f}배** 👈" if k == pick else f"{self.PICKS[k]} {o:.2f}배")
+                           for k, o in odds.items())
+        note = f"\n`배당` {board}\n`베팅` **{amount:,}원** · 적중하면 **{ui.won(round(amount * (odds[pick] - 1)))}**"
+
+        async def record(result):
+            r = await self.clubs.record_official(user.id, result["home"], result["away"], now, amount, pick, odds[pick])
+            mark = {"W": "승리", "D": "무승부", "L": "패배"}[r["result"]]
+            hit = "🎯 적중!" if r["result"] == pick else "❌ 빗나감"
+            return (f"\n\n`예측` **{self.PICKS[pick]}** @ {odds[pick]:.2f}배 · `결과` **{mark}** → {hit}\n"
+                    f"`정산` **{ui.won(r['delta'])}** · `잔액` **{r['balance']:,}원**\n"
+                    f"`이번 시즌` {r['points']}점 · {r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d} · "
+                    "순위는 `/공식순위`")
+        await self._play_match(interaction, user, h, a, sec, "🏆", after=record, note=note)
 
     @app_commands.command(name="공식순위", description="이번 달 공식경기 시즌 순위")
     async def official_table(self, interaction: discord.Interaction):
@@ -412,7 +441,7 @@ class Club(commands.Cog):
         e = ui.card(f"🏆 {season // 100}년 {season % 100}월 공식경기 순위",
                     "\n".join(lines) or "아직 이번 시즌 공식경기가 없어요. `/공식경기`로 첫 경기를 치러 보세요!",
                     ui.GOLD, interaction.user, "🏆 공식경기")
-        e.set_footer(text=f"승 3점 · 무 1점 · 하루 {OFFICIAL_DAILY}경기 · 매달 1일 새 시즌")
+        e.set_footer(text="승 3점 · 무 1점 · 공식경기를 건 구단만 기록 · 매달 1일 새 시즌")
         await interaction.followup.send(embed=e)
 
     # ───────────── 감독 ─────────────

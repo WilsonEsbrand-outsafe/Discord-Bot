@@ -8,7 +8,9 @@ from services.economy_db import EconomyDB
 DAY = 86400
 
 # 기간별 기본 수익률(만기 총수익). 짧은 계약을 복리로 굴려도 긴 계약보다 못하게 — 길게 묶을수록 유리하다.
+# 2.2: 90일 · 365일 패키지는 새로 맺을 수 없다 (이미 맺은 계약의 정산용으로만 남긴다).
 TERMS = {1: 0.003, 7: 0.025, 30: 0.12, 90: 0.45, 365: 4.00}
+OPEN_TERMS = (1, 7, 30)
 
 # 스폰서: key → (이모지, 이름, 성향, 실적 배율 하한, 상한, 소개)
 # 만기 수익 = 원금 × 기본 수익률 × 실적 배율(하한~상한 균등 랜덤). 배율이 음수면 원금 손실(최대 원금 전액).
@@ -23,11 +25,11 @@ SPONSORS = {
 # 스폰서 등급: 그 스폰서와 만기까지 채운 계약 일수 합(신뢰도)으로 오른다.
 # (필요 신뢰도, 이름, 계약 한도, 수익 보너스) — 보너스는 플러스 수익에만 붙는다.
 GRADES = [
-    (0,    "🥉 신규",      10_000_000, 0.00),
-    (30,   "🥈 파트너",    15_000_000, 0.05),
-    (120,  "🥇 골드",      20_000_000, 0.10),
-    (365,  "💎 플래티넘",  30_000_000, 0.15),
-    (1000, "👑 VIP",       50_000_000, 0.25),
+    (0,    "🥉 신규",       50_000_000, 0.00),
+    (30,   "🥈 파트너",    100_000_000, 0.05),
+    (120,  "🥇 골드",      200_000_000, 0.10),
+    (365,  "💎 플래티넘",  300_000_000, 0.15),
+    (1000, "👑 VIP",       500_000_000, 0.25),
 ]
 REP_MIN_AMOUNT = 1_000_000   # 이 금액 이상 계약만 신뢰도가 쌓인다 (1만원 계약으로 등급 올리기 방지)
 
@@ -186,7 +188,7 @@ class SponsorDB(EconomyDB):
                 con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (payout, uid))
                 new_gidx, (_, new_gname, new_limit, _) = grade_of(self._rep(con, uid).get(sponsor, 0))
                 renewed = None
-                if c["auto"]:
+                if c["auto"] and c["days"] in OPEN_TERMS:   # 없어진 기간(90·365일)은 재계약하지 않는다
                     amt = min(c["amount"], payout, new_limit)
                     if amt >= MIN_AMOUNT:
                         renewed = self._insert(con, uid, sponsor, c["days"], amt, now_ts, c["club_bonus"], True)

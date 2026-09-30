@@ -663,8 +663,6 @@ class BetModal(discord.ui.Modal):
         if not raw.isdigit() or int(raw) <= 0:
             return await interaction.response.send_message("❌ 금액은 1 이상의 숫자로 입력해 주세요.", ephemeral=True)
         amount, user = int(raw), interaction.user
-        if (until := await self.cog.db.bet_ban_until(user.id, int(time.time()))):
-            return await interaction.response.send_message(f"⚖️ 파산 후 베팅 금지 기간이에요. 해제 <t:{until}:R>", ephemeral=True)
         if self.game["kind"] == "soccer":
             err, info = await self.cog.place_soccer_bet(user.id, self.game["match_id"], self.pick, amount)
             odds, title = (info or {}).get("odds"), f"⚽ {self.game['home']} vs {self.game['away']}"

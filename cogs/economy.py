@@ -3,7 +3,6 @@ import asyncio
 import os
 import time
 import random
-from typing import Optional
 from fractions import Fraction
 import discord
 from discord import app_commands
@@ -11,8 +10,8 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    ATTEND_BONUS, BANKRUPT_BET_BAN, BANKRUPT_COOLDOWN, ITEMS, MUFFLER_BONUS, EconomyDB, SCOUT_MAX_LEVEL, TRAIN_MAX_LEVEL,
-    TRANSFER_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
+    ATTEND_BONUS, BANKRUPT_FORGIVE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, EconomyDB, SCOUT_MAX_LEVEL, TRAIN_MAX_LEVEL,
+    TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
@@ -120,17 +119,16 @@ class BankruptConfirm(discord.ui.View):
         r = await self.cog.db.declare_bankruptcy(self.user.id, int(time.time()))
         if not r["ok"]:
             msg = ("이미 빚이 없어요." if r["reason"] == "not_negative"
-                   else f"파산은 {BANKRUPT_COOLDOWN // 86400}일에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>")
+                   else f"파산은 한 시간에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>")
             e = ui.card("❌ 파산 신청 불가", msg, ui.LOSE, self.user, "⚖️ 파산")
         else:
             e = ui.card("⚖️ 파산 처리 완료",
                         f"`빚` **{r['debt']:,}원**\n"
-                        f"`선수 카드 정리` {r['cards']}장 → **+{r['cards_value']:,}원**\n"
-                        f"`스폰서 원금` **+{r['sponsor']:,}원**\n"
-                        f"`탕감` **{r['forgiven']:,}원**\n"
+                        f"`스폰서 강제 해지` **+{r['sponsor']:,}원**\n"
+                        f"`탕감` **{r['forgiven']:,}원** · 남은 빚의 **{r['rate']:.0%}**\n"
                         f"`잔액` **{r['balance']:,}원**\n\n"
-                        f"🚫 베팅 금지 해제 <t:{r['ban_until']}:R> · `/스카우트` `/훈련` `/출석`으로 새 출발!",
-                        ui.DOOM, self.user, "⚖️ 파산")
+                        f"⏳ 다음 파산 신청 <t:{r['next']}:R> · `/스카우트` `/훈련` `/직관`으로 다시 일어서 보세요!",
+                        ui.DOOM if r["balance"] < 0 else ui.WIN, self.user, "⚖️ 파산")
         await interaction.response.edit_message(embed=e, view=None)
 
     @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
@@ -363,17 +361,8 @@ class Economy(commands.Cog):
         )
         await send_notify(self.bot, self.db, to_user.id, "송금_수신", dm_embed)
 
-    # ✅ 파산 신청: 잔액이 마이너스일 때 선수 카드·스폰서 원금으로 갚고 남은 빚 탕감 (30일에 한 번, 이후 3일 베팅 금지)
-    async def _bet_ban_card(self, user) -> discord.Embed | None:
-        """파산 후 베팅 금지 중이면 안내 카드, 아니면 None."""
-        until = await self.db.bet_ban_until(user.id, int(time.time()))
-        if not until:
-            return None
-        return ui.card("⚖️ 파산 후 베팅 금지 기간이에요",
-                       f"`해제` <t:{until}:R> · 그동안 `/스카우트` `/훈련` `/출석`으로 다시 일어서 보세요!",
-                       ui.DOOM, user, "⚖️ 파산")
-
-    @app_commands.command(name="파산신청", description="잔액이 마이너스일 때: 선수·스폰서 정리 후 남은 빚 탕감 (30일 1회 · 3일 베팅 금지)")
+    # ✅ 파산 신청: 잔액이 마이너스일 때 스폰서 강제 해지 → 남은 빚 30~70% 랜덤 탕감 (한 시간에 한 번 · 선수는 그대로)
+    @app_commands.command(name="파산신청", description="잔액이 마이너스일 때: 스폰서 강제 해지 후 빚 30~70% 랜덤 탕감 (한 시간에 1회)")
     async def bankruptcy(self, interaction: discord.Interaction):
         user = interaction.user
         bal = await self.db.get_balance(user.id)
@@ -381,13 +370,13 @@ class Economy(commands.Cog):
             return await interaction.response.send_message(embed=ui.card(
                 "🙅 파산 신청 대상이 아니에요", f"잔액이 마이너스일 때만 신청할 수 있어요.\n`잔액` **{bal:,}원**",
                 ui.EVEN, user, "⚖️ 파산"), ephemeral=True)
+        lo, hi = BANKRUPT_FORGIVE
         e = ui.card("⚖️ 정말 파산 신청할까요?",
                     f"`현재 빚` **{-bal:,}원**\n\n"
-                    "1️⃣ 보유 선수 카드를 **전부** 즉시판매가(기준가 50% · 은퇴 30%)로 넘겨 빚을 갚아요 (아마추어 제외)\n"
-                    "2️⃣ 진행 중인 스폰서 계약을 모두 해지하고 원금으로 갚아요\n"
-                    "3️⃣ 그래도 남은 빚은 **0원으로 탕감**돼요\n"
-                    f"4️⃣ 이후 **{BANKRUPT_BET_BAN // 86400}일간** 페널티킥 · 야구 · 경마 · 토토 베팅 금지\n"
-                    f"5️⃣ 파산은 **{BANKRUPT_COOLDOWN // 86400}일에 한 번**만 할 수 있어요",
+                    "1️⃣ 진행 중인 스폰서 계약을 **모두 강제 해지**하고 원금으로 빚을 갚아요\n"
+                    f"2️⃣ 그래도 남은 빚의 **{lo:.0%} ~ {hi:.0%}** 가 랜덤으로 탕감돼요\n"
+                    "3️⃣ 보유 선수 카드는 **그대로** 남아요\n"
+                    "4️⃣ 파산은 **한 시간에 한 번** 할 수 있어요",
                     ui.DOOM, user, "⚖️ 파산")
         await interaction.response.send_message(embed=e, view=BankruptConfirm(self, user))
 
@@ -596,27 +585,45 @@ class Economy(commands.Cog):
         e.set_thumbnail(url=ui.emoji_url("💎" if found else ev["emoji"]))
         await interaction.followup.send(embed=e)
 
-    # ✅ 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 일과. 쿨타임 60초 · 하루 5회 · 최대 Lv.5 · 아이템 획득
-    WATCH_COOLDOWN = 60
+    # ✅ 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 일과. 쿨타임 10초 · 하루 100회 · 최대 Lv.5
+    # 한 번 보상은 작고, 경기장 이벤트로 아이템을 자주 얻는다 (성공·실패와 무관).
+    WATCH_COOLDOWN = 10
     WATCH_LEVEL_NAMES = ["🎟️ 일반석 관중", "🧣 원정 팬", "📣 서포터즈", "🎫 시즌권자", "👑 레전드 서포터"]
-    WATCH_DROP = (0.30, 0.35, 0.40, 0.45, 0.50)            # 레벨별 아이템 획득 확률 (직관 성공 시)
-    WATCH_ITEM_WEIGHTS = {"muffler": 50, "train_reset": 30, "scout_reset": 20}
+    WATCH_DROP = (0.05, 0.06, 0.07, 0.08, 0.10)            # 레벨별 아이템 이벤트 확률 (매 직관)
+    WATCH_ITEM_WEIGHTS = {"muffler": 60, "train_reset": 20, "scout_reset": 20}
+    WATCH_ITEM_EVENTS = {   # 아이템별 경기장 이벤트 멘트
+        "muffler": ("선수가 관중석으로 던진 머플러를 잡았어요!", "옆자리 팬이 우승 기념 머플러를 선물해 줬어요!",
+                    "구단 굿즈샵 오픈 기념 선착순 머플러를 받았어요!"),
+        "train_reset": ("하프타임 경품 추첨에 당첨! 훈련 리셋권이에요!", "전광판 키스캠에 잡혀 경품을 받았어요!",
+                        "코치님이 사인과 함께 특별 훈련권을 건네줬어요!"),
+        "scout_reset": ("VIP석 스카우트와 명함을 교환했어요!", "경기 후 믹스트존에서 스카우트 초대장을 받았어요!",
+                        "옆자리 에이전트가 출장 티켓을 양보해 줬어요!"),
+    }
+    _W, _L = (800, 2500), (-600, -200)
     WATCH_EVENTS = [
-        {"emoji": "🔴", "name": "북런던 더비", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+        {"emoji": "🔴", "name": "북런던 더비", "success_rate": 0.75, "win": _W, "lose": _L,
          "success_text": "종료 직전 결승골! 경기장이 떠나갈 듯한 함성이에요!", "fail_text": "0-0… 90분 내내 하품만 했어요."},
-        {"emoji": "⚪", "name": "엘 클라시코", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+        {"emoji": "⚪", "name": "엘 클라시코", "success_rate": 0.75, "win": _W, "lose": _L,
          "success_text": "신예의 원더골을 두 눈으로 봤습니다!", "fail_text": "암표를 샀는데 가짜였어요…"},
-        {"emoji": "🔵", "name": "맨체스터 더비", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+        {"emoji": "🔵", "name": "맨체스터 더비", "success_rate": 0.75, "win": _W, "lose": _L,
          "success_text": "5골이 터진 난타전! 본전 이상 뽑았습니다.", "fail_text": "비가 쏟아져 우비값만 나갔어요."},
-        {"emoji": "🟡", "name": "레비어 더비", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+        {"emoji": "🟡", "name": "레비어 더비", "success_rate": 0.75, "win": _W, "lose": _L,
          "success_text": "노란 벽의 응원에 소름이 돋았어요!", "fail_text": "원정석에 잘못 앉아 쫓겨났습니다."},
-        {"emoji": "⚫", "name": "밀라노 더비", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+        {"emoji": "⚫", "name": "밀라노 더비", "success_rate": 0.75, "win": _W, "lose": _L,
          "success_text": "산시로의 불꽃 응원! 잊지 못할 밤이에요.", "fail_text": "경기 중 정전… 환불도 안 해 준답니다."},
-        {"emoji": "🇰🇷", "name": "K리그 슈퍼매치", "success_rate": 0.80, "win": (15000, 40000), "lose": (-12000, -5000),
+        {"emoji": "🇰🇷", "name": "K리그 슈퍼매치", "success_rate": 0.80, "win": _W, "lose": _L,
          "success_text": "만원 관중! 굿즈도 한가득 챙겼어요.", "fail_text": "주차장에서 2시간 갇혀 있었어요."},
-        {"emoji": "🌍", "name": "월드컵 예선", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+        {"emoji": "🌍", "name": "월드컵 예선", "success_rate": 0.75, "win": _W, "lose": _L,
          "success_text": "국가대표 극장골! 목이 다 쉬었어요.", "fail_text": "시차 적응 실패로 경기 내내 졸았어요."},
-        {"emoji": "🏆", "name": "챔피언스리그 결승", "success_rate": 0.60, "win": (25000, 60000), "lose": (-20000, -8000),
+        {"emoji": "🟢", "name": "올드펌 더비", "success_rate": 0.75, "win": _W, "lose": _L,
+         "success_text": "셀틱 파크의 함성에 귀가 먹먹해요!", "fail_text": "양 팀 팬 사이에 끼어 경기를 거의 못 봤어요."},
+        {"emoji": "🇯🇵", "name": "J리그 개막전", "success_rate": 0.80, "win": _W, "lose": _L,
+         "success_text": "응원가 떼창에 합류했어요! 현지 팬들과 친구 먹었습니다.", "fail_text": "도시락을 경기장 밖에 두고 왔어요…"},
+        {"emoji": "🇺🇸", "name": "MLS 올스타전", "success_rate": 0.80, "win": _W, "lose": _L,
+         "success_text": "하프타임 쇼까지 풀코스! 본전 뽑았어요.", "fail_text": "핫도그값이 티켓값보다 비쌌어요."},
+        {"emoji": "🏴", "name": "FA컵 결승", "success_rate": 0.70, "win": _W, "lose": _L,
+         "success_text": "웸블리에서 승부차기 끝 우승을 봤어요!", "fail_text": "웸블리 가는 지하철이 멈췄어요…"},
+        {"emoji": "🏆", "name": "챔피언스리그 결승", "success_rate": 0.60, "win": (1500, 5000), "lose": (-1200, -400),
          "success_text": "빅이어 세리머니를 눈앞에서 봤습니다!!", "fail_text": "티켓값만 날리고 연장전 전에 막차를 탔어요."},
     ]
 
@@ -629,18 +636,20 @@ class Economy(commands.Cog):
         return cls.WATCH_LEVEL_NAMES[min(int(level), WATCH_MAX_LEVEL) - 1]
 
     def _watch_roll(self, level: int, con, user_id: int):
-        """(돈 변동, 경험치 변동, 표시 정보). 성공하면 레벨별 확률로 아이템을 같은 트랜잭션에서 지급한다."""
+        """(돈 변동, 경험치 변동, 표시 정보). 레벨별 확률로 아이템 이벤트가 터지면 같은 트랜잭션에서 지급한다."""
         ev = random.choice(self.WATCH_EVENTS)
         mult = self.watch_money_mult(level)
-        if random.random() >= min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1)):
-            base = random.randint(*ev["lose"])
-            return base * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "item": None, "base": base, "mult": mult}
         item = None
         if random.random() < self.WATCH_DROP[min(level, WATCH_MAX_LEVEL) - 1]:
             item = random.choices(list(self.WATCH_ITEM_WEIGHTS), weights=list(self.WATCH_ITEM_WEIGHTS.values()))[0]
             give_item(con, user_id, item)
+        info = {"ev": ev, "item": item, "item_line": random.choice(self.WATCH_ITEM_EVENTS[item]) if item else None,
+                "mult": mult}
+        if random.random() >= min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1)):
+            base = random.randint(*ev["lose"])
+            return base * mult, -1, {**info, "ok": False, "line": ev["fail_text"], "base": base}
         base = random.randint(*ev["win"])
-        return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "item": item, "base": base, "mult": mult}
+        return base * mult, 3, {**info, "ok": True, "line": ev["success_text"], "base": base}
 
     def _watch_status(self, r: dict, xp_gain: int | None = None) -> str:
         lv = r["level"]
@@ -650,7 +659,7 @@ class Economy(commands.Cog):
     def _watch_card(user, title: str, caster: str, color: int) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 직관 일지")
 
-    @app_commands.command(name="직관", description="경기장에 직접 가서 응원! 돈과 아이템을 얻습니다 (오늘 훈련 30회 완료 후 열림 · 하루 5회)")
+    @app_commands.command(name="직관", description=f"경기장에 직접 가서 응원! 아이템 이벤트가 자주 터져요 (훈련 30회 후 열림 · 쿨타임 10초 · 하루 {WATCH_DAILY_LIMIT}회)")
     async def watch(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user, now_ts = interaction.user, int(time.time())
@@ -679,7 +688,7 @@ class Economy(commands.Cog):
             old_lv = r["level"] - r["leveled"]
             title, color = f"🆙 레벨 업! Lv.{old_lv} → Lv.{r['level']}", ui.GOLD
         elif item:
-            title, color = f"{ev['emoji']} {ev['name']} — 🎁 아이템 획득!", ui.GOLD
+            title, color = f"🎉 경기장 이벤트! — {ev['emoji']} {ev['name']}", ui.GOLD
         elif info["ok"]:
             title, color = f"{ev['emoji']} {ev['name']} — 최고의 경기!", ui.WIN
         else:
@@ -687,7 +696,7 @@ class Economy(commands.Cog):
         e = self._watch_card(user, title, info["line"], color)
         if item:
             emoji, name, desc = ITEMS[item]
-            e.description += f"\n\n🎁 **{emoji} {name}** 획득! — {desc}\n`/가방`에서 사용할 수 있어요."
+            e.description += f"\n\n🎁 *{info['item_line']}*\n**{emoji} {name}** 획득! — {desc} · `/가방`에서 사용"
         e.description += ("\n\n" + self._settle_line(r["delta"], info) + "\n"
                           f"`잔액` **{r['new_bal']:,}원**\n" + self._watch_status(r, 3 if info["ok"] else -1))
         if r["leveled"]:
@@ -704,7 +713,7 @@ class Economy(commands.Cog):
         if buffs.get("muffler"):
             e.add_field(name="✨ 사용 중", value=f"🧣 응원 머플러 — 남은 경기 **{buffs['muffler']}경기** (전력 +{MUFFLER_BONUS})",
                         inline=False)
-        e.set_footer(text="아이템은 /직관 에서 얻어요 · 아래 버튼으로 바로 사용")
+        e.set_footer(text="아이템은 /직관 · /상점 · /쿠폰 으로 얻어요 · 아래 버튼으로 바로 사용")
         return e, inv
 
     @app_commands.command(name="가방", description="보유 아이템과 사용 중인 효과를 확인하고 바로 사용합니다")
@@ -722,13 +731,29 @@ class Economy(commands.Cog):
         emoji, name, desc = ITEMS[item]
         r = await self.db.use_item(user.id, item, int(time.time()))
         if not r["ok"]:
-            return ui.card(f"🙅 {emoji} {name}이(가) 없어요", "`/직관`에서 얻을 수 있어요.", ui.LOSE, user, "🎒 아이템")
+            return ui.card(f"🙅 {emoji} {name}이(가) 없어요", "`/직관` `/상점` `/쿠폰`으로 얻을 수 있어요.",
+                           ui.LOSE, user, "🎒 아이템")
         if item == "muffler":
             msg = f"다음 **{r['uses']}경기** 동안 구단 전력 **+{MUFFLER_BONUS}** (친선경기 · 공식경기)"
         else:
-            what = "스카우트" if item == "scout_reset" else "훈련"
+            what = {"scouting": "스카우트", "training": "훈련", "spectating": "직관"}[RESET_ITEMS[item][0]]
             msg = f"오늘 {what} **+{r['extra']}회** 추가! 지금 바로 `/{what}` 하러 가세요."
         return ui.card(f"{emoji} {name} 사용!", msg, ui.GOLD, user, "🎒 아이템")
+
+    @app_commands.command(name="쿠폰", description="쿠폰 코드를 입력해 보상을 받습니다 (계정당 코드마다 한 번)")
+    @app_commands.describe(코드="쿠폰 코드")
+    async def coupon(self, interaction: discord.Interaction, 코드: str):
+        user = interaction.user
+        r = await self.db.redeem_coupon(user.id, 코드, int(time.time()))
+        if not r["ok"]:
+            msg = {"unknown": "없는 쿠폰 코드예요. 철자를 다시 확인해 주세요.", "expired": "기간이 끝난 쿠폰이에요.",
+                   "used": "이미 받은 쿠폰이에요."}[r["reason"]]
+            return await interaction.response.send_message(
+                embed=ui.card("🙅 쿠폰 사용 실패", msg, ui.LOSE, user, "🎟️ 쿠폰"), ephemeral=True)
+        lines = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** × {q}" for k, q in r["items"].items())
+        e = ui.card(f"🎁 쿠폰 `{r['code']}` 사용 완료!", lines + "\n\n`/가방`에서 바로 사용할 수 있어요.", ui.GOLD, user, "🎟️ 쿠폰")
+        e.set_thumbnail(url=ui.emoji_url("🎁"))
+        await interaction.response.send_message(embed=e)
 
     # ✅ 페널티킥: 방향 선택 없이 완전 랜덤, 쿨타임 없음 — 중계 연출 후 결과
     @staticmethod
@@ -757,8 +782,6 @@ class Economy(commands.Cog):
         self._pk_last[user.id] = now
 
         await interaction.response.defer()
-        if (ban := await self._bet_ban_card(user)):
-            return await interaction.followup.send(embed=ban)
         amount = int(amount)
 
         cur_bal = await self.db.get_balance(user.id)
@@ -804,10 +827,9 @@ class Economy(commands.Cog):
             await interaction.followup.send(embed=e)
 
     # ✅ 한 판 게임(야구 · 농구 · UFC): 페널티킥과 같은 방식 — 결과표에서 한 줄 뽑아 순이익 = 베팅 x 배수.
-    # 세 게임 모두 같은 확률 구조(기대값 약 -1.1%)에 연출만 다르다. 각 표의 마지막 줄이 부동소수 잔여 구간을 받는다.
+    # 기대값은 모두 약 -1.1% 지만 배율 구조가 다르다: 야구 50배~10배 손실(기본) · 농구 30배~8배 손실(잔잔하게)
+    # · UFC 100배~20배 손실(한 방). 각 표의 마지막 줄이 부동소수 잔여 구간을 받는다.
     BAT_MIN_BET = 1_000
-    GAME_ODDS = (0.001, 0.005, 0.020, 0.030, 0.070, 0.270, 0.080, 0.182, 0.080, 0.020, 0.003, 0.239)
-    GAME_MULTS = ("50", "10", "5", "3", "2", "1", "0", "-1", "-2", "-5", "-10", "-1")
     BAT_SPAM_LINES = [
         ("🧢 타자가 장갑을 고쳐 끼는 중", "타임! 타자가 배터박스를 잠깐 벗어났어요. 곧 다시 섭니다!"),
         ("🤚 투수가 사인을 거부합니다", "포수와 사인이 안 맞네요. 잠시만 기다려 주세요!"),
@@ -832,38 +854,39 @@ class Economy(commands.Cog):
         ("⏱️ 작전 타임", "감독이 작전 타임을 불렀어요. 잠시 후 재개합니다!"),
         ("👟 신발 끈이 풀렸어요", "신발 끈 다시 묶는 중! 금방 돌아옵니다."),
     ]
-    HOOP_TABLE = [
-        (0.001, "50",  "🌠", "하프라인 버저비터!!!", "하프라인에서 던졌는데— 들어갑니다!!! 경기장이 뒤집어졌어요!"),
-        (0.005, "10",  "🔔", "역전 버저비터!!",      "종료 부저와 함께 림을 가릅니다! 역전승!!"),
-        (0.020, "5",   "💥", "앤드원 덩크!",         "림이 흔들리는 덩크에 파울까지! 앤드원!"),
-        (0.030, "3",   "🎯", "3점슛!",               "깨끗한 3점! 그물만 출렁입니다."),
-        (0.070, "2",   "🏀", "미드레인지 점퍼",      "풀업 점퍼! 부드럽게 들어갑니다."),
-        (0.270, "1",   "✅", "레이업",               "침착하게 레이업 성공!"),
-        (0.080, "0",   "🆓", "자유투 1/2",           "파울을 얻었지만 자유투는 하나만… 본전이에요."),
-        (0.182, "-1",  "🧱", "림 맞고 아웃",         "림을 돌다가… 튕겨 나옵니다."),
-        (0.080, "-2",  "🚫", "블록슛",               "쳐냈습니다! 관중석까지 날아간 블록슛!"),
-        (0.020, "-5",  "💨", "스틸 → 속공 실점",     "공을 뺏기고 그대로 속공 덩크 허용… 흐름이 넘어갑니다."),
-        (0.003, "-10", "☠️", "에어볼 + 테크니컬",    "에어볼에 항의하다 테크니컬 파울까지… 최악의 한 수입니다!"),
-        (0.239, "-1",  "🙅", "슛 실패",              "슛이 짧았어요. 리바운드는 상대 차지."),
+    HOOP_TABLE = [   # 잔잔한 게임: 자주 조금씩 — 최대 30배 수익 · 8배 손실
+        (0.002, "30",  "🌠", "하프라인 버저비터!!!", "하프라인에서 던졌는데— 들어갑니다!!! 경기장이 뒤집어졌어요!"),
+        (0.006, "8",   "🔔", "역전 버저비터!!",      "종료 부저와 함께 림을 가릅니다! 역전승!!"),
+        (0.025, "4",   "💥", "앤드원 덩크!",         "림이 흔들리는 덩크에 파울까지! 앤드원!"),
+        (0.050, "3",   "🎯", "3점슛!",               "깨끗한 3점! 그물만 출렁입니다."),
+        (0.090, "2",   "🏀", "미드레인지 점퍼",      "풀업 점퍼! 부드럽게 들어갑니다."),
+        (0.220, "1",   "✅", "레이업",               "침착하게 레이업 성공!"),
+        (0.070, "0",   "🆓", "자유투 1/2",           "파울을 얻었지만 자유투는 하나만… 본전이에요."),
+        (0.200, "-1",  "🧱", "림 맞고 아웃",         "림을 돌다가… 튕겨 나옵니다."),
+        (0.129, "-2",  "🚫", "블록슛",               "쳐냈습니다! 관중석까지 날아간 블록슛!"),
+        (0.025, "-4",  "💨", "스틸 → 속공 실점",     "공을 뺏기고 그대로 속공 덩크 허용… 흐름이 넘어갑니다."),
+        (0.004, "-8",  "☠️", "에어볼 + 테크니컬",    "에어볼에 항의하다 테크니컬 파울까지… 최악의 한 수입니다!"),
+        (0.179, "-1",  "🙅", "슛 실패",              "슛이 짧았어요. 리바운드는 상대 차지."),
     ]
     UFC_SPAM_LINES = [
         ("🩹 컷맨이 상처를 막는 중", "코너에서 지혈 중이에요. 잠시만 기다려 주세요!"),
         ("🧑‍⚖️ 주심이 글러브를 점검합니다", "글러브 점검 중! 곧 다시 시작합니다."),
         ("🥤 라운드 사이 휴식", "1분 휴식 시간입니다. 숨 고르고 다시 가죠!"),
     ]
-    UFC_TABLE = [
-        (0.001, "50",  "👑", "플라잉 니킥 KO!!!",  "플라잉 니킥 한 방에 경기가 끝났습니다!!! 올해의 KO 확정!"),
-        (0.005, "10",  "🥊", "1라운드 KO승!!",     "시작 30초 만에 카운터 한 방! 상대가 그대로 쓰러집니다!"),
-        (0.020, "5",   "🔒", "서브미션승!",        "리어네이키드 초크! 상대가 탭을 칩니다!"),
-        (0.030, "3",   "🩸", "TKO승!",            "파운딩 세례에 주심이 경기를 멈춥니다!"),
-        (0.070, "2",   "📋", "만장일치 판정승",    "세 명의 심판 모두 당신 손을 들어줍니다!"),
-        (0.270, "1",   "✅", "스플릿 판정승",      "아슬아슬했지만… 2대 1 판정승!"),
-        (0.080, "0",   "🤝", "무승부",             "치열한 5라운드 끝에 무승부. 본전이에요."),
-        (0.182, "-1",  "📉", "스플릿 판정패",      "아쉽게도 1대 2 판정패…"),
-        (0.080, "-2",  "😵", "TKO패",              "연타를 허용하고 주심이 경기를 중단합니다…"),
-        (0.020, "-5",  "💤", "KO패",               "카운터에 정통으로… 캔버스에 누워 버렸습니다."),
-        (0.003, "-10", "☠️", "실신 KO + 부상",     "하이킥에 실신… 병원비까지 청구됩니다!"),
-        (0.239, "-1",  "❌", "만장일치 판정패",    "끝까지 버텼지만 판정은 상대 편이었습니다."),
+    UFC_TABLE = [    # 한 방 게임: 드물게 크게 — 최대 100배 수익 · 20배 손실
+        (0.0005, "100", "👑", "플라잉 니킥 KO!!!",  "플라잉 니킥 한 방에 경기가 끝났습니다!!! 올해의 KO 확정!"),
+        (0.003,  "20",  "🥊", "1라운드 KO승!!",     "시작 30초 만에 카운터 한 방! 상대가 그대로 쓰러집니다!"),
+        (0.012,  "8",   "🔒", "서브미션승!",        "리어네이키드 초크! 상대가 탭을 칩니다!"),
+        (0.030,  "4",   "🩸", "TKO승!",            "파운딩 세례에 주심이 경기를 멈춥니다!"),
+        (0.070,  "2",   "📋", "만장일치 판정승",    "세 명의 심판 모두 당신 손을 들어줍니다!"),
+        (0.240,  "1",   "✅", "스플릿 판정승",      "아슬아슬했지만… 2대 1 판정승!"),
+        (0.050,  "0",   "🤝", "무승부",             "치열한 5라운드 끝에 무승부. 본전이에요."),
+        (0.200,  "-1",  "📉", "스플릿 판정패",      "아쉽게도 1대 2 판정패…"),
+        (0.0235, "-2",  "😵", "TKO패",              "연타를 허용하고 주심이 경기를 중단합니다…"),
+        (0.020,  "-3",  "💤", "KO패",               "카운터에 정통으로… 캔버스에 누워 버렸습니다."),
+        (0.008,  "-6",  "🦴", "암바 탭 + 부상",     "팔이 꺾였습니다… 탭을 쳤지만 치료비가 나옵니다."),
+        (0.001,  "-20", "☠️", "실신 KO + 부상",     "하이킥에 실신… 병원비까지 청구됩니다!"),
+        (0.342,  "-1",  "❌", "만장일치 판정패",    "끝까지 버텼지만 판정은 상대 편이었습니다."),
     ]
 
     @staticmethod
@@ -872,7 +895,7 @@ class Economy(commands.Cog):
 
     async def _play_table(self, interaction: discord.Interaction, amount: int, *, key: str, table, section: str,
                           spam_lines, broke: tuple, windup: tuple):
-        """한 판 게임 공통: 도배 방지 → 베팅 금지·잔액 확인 → 결과 뽑기 → 저장 → 연출 한 장면 → 결과."""
+        """한 판 게임 공통: 도배 방지 → 잔액 확인 → 결과 뽑기 → 저장 → 연출 한 장면 → 결과."""
         user = interaction.user
         now = time.monotonic()
         if now - self._pk_last.get((key, user.id), 0.0) < self.PK_SPAM_GAP:
@@ -882,8 +905,6 @@ class Economy(commands.Cog):
         self._pk_last[(key, user.id)] = now
 
         await interaction.response.defer()
-        if (ban := await self._bet_ban_card(user)):
-            return await interaction.followup.send(embed=ban)
         amount = int(amount)
         cur_bal = await self.db.get_balance(user.id)
         if cur_bal < amount:
@@ -924,7 +945,7 @@ class Economy(commands.Cog):
                                broke=("🙅 타석에 설 수 없어요", "잔액이 부족해 대기 타석에서 돌아갑니다!"),
                                windup=("⚾ 투수, 와인드업…", "{amount}원이 걸린 한 타석! 던졌습니다—"))
 
-    @app_commands.command(name="농구", description="마지막 슛 한 방! 하프라인 버저비터 50배 수익, 에어볼 10배 손실 (최소 1,000원)")
+    @app_commands.command(name="농구", description="마지막 슛 한 방! 하프라인 버저비터 30배 수익, 에어볼 8배 손실 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def basketball(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
@@ -933,7 +954,7 @@ class Economy(commands.Cog):
                                broke=("🙅 코트에 들어갈 수 없어요", "잔액이 부족해 벤치로 돌아갑니다!"),
                                windup=("🏀 공을 잡았습니다…", "{amount}원이 걸린 마지막 공격! 슛—"))
 
-    @app_commands.command(name="ufc", description="옥타곤 한 판! 플라잉 니킥 KO 50배 수익, 실신 KO 10배 손실 (최소 1,000원)")
+    @app_commands.command(name="ufc", description="옥타곤 한 판! 플라잉 니킥 KO 100배 수익, 실신 KO 20배 손실 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def ufc_fight(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
@@ -963,17 +984,16 @@ class Economy(commands.Cog):
     RACE_MOODS = ("😆 최상", "🙂 좋음", "😐 보통", "😫 나쁨")
     RACE_PLACES = ("🥇", "🥈", "🥉", "4️⃣")
     # 장면별 (소제목, 캐스터 멘트) — {0}{1} = 그 장면의 1·2번째 말. 마지막 두 장면은 역전 여부에 따라 멘트가 갈린다.
-    RACE_STAGES = (0.2, 0.4, 0.6, 0.75, 0.88, 1.0)
+    RACE_STAGES = (0.25, 0.5, 0.75, 0.88, 1.0)
     RACE_CALLS = (
         ("출발!", "게이트가 열립니다! {0}, 스타트가 좋아요!"),
-        ("1코너", "1코너! {0} 선두, {1} 바짝 추격!"),
-        ("백스트레치", "백스트레치! 선두는 여전히 {0}!"),
+        ("백스트레치", "백스트레치! {0} 선두, {1} 바짝 추격!"),
         ("4코너", "4코너를 돌아 나옵니다! {0}, {1}! 치열합니다!"),
         ("마지막 직선", "마지막 직선 주로!! {0}, 이대로 들어가나요?!"),
         ("결승선", "{0}, 그대로 결승선 통과!!"),
     )
     RACE_COMEBACK_CALL = "아아— {0}!!! 바깥쪽에서 무섭게 치고 올라옵니다!! {1}를 제치고 대역전!!!"
-    RACE_COMEBACK_PROB = 0.35   # 선두를 달리던 말이 막판에 뒤집히는 경주 비율 (결과 확률과는 무관)
+    RACE_COMEBACK_PROB = 0.45   # 선두를 달리던 말이 막판에 뒤집히는 경주 비율 (결과 확률과는 무관)
     RACE_RESULTS = (   # 순위별 (이모지, 헤드라인, 캐스터 멘트)
         ("🏆", "우승!!", "결승선을 가장 먼저 통과합니다! 탁월한 안목이에요!"),
         ("🥈", "2위!", "아깝게 2위! 그래도 상금은 챙겨 갑니다."),
@@ -1042,8 +1062,6 @@ class Economy(commands.Cog):
     async def horse_race(self, interaction: discord.Interaction, amount: app_commands.Range[int, RACE_MIN_BET]):
         user, amount = interaction.user, int(amount)
         await interaction.response.defer()
-        if (ban := await self._bet_ban_card(user)):
-            return await interaction.followup.send(embed=ban)
         bal = await self.db.get_balance(user.id)
         if bal < amount:
             return await interaction.followup.send(embed=self._race_broke(user, amount, bal))
@@ -1091,7 +1109,7 @@ class Economy(commands.Cog):
                 else:
                     names = (horses[order[0]][1], horses[order[1]][1])
                 last = k >= len(frames) - 2
-                await asyncio.sleep(1.5 if last else 1.1)   # 막판은 한 박자 늦게 — 긴장감
+                await asyncio.sleep(1.8 if last else 1.3)   # 막판은 한 박자 늦게 — 긴장감
                 await interaction.edit_original_response(embed=ui.card(
                     f"{title} — {stage}",
                     f'> 🎙️ *"{call.format(*names)}"*\n\n' + self._race_lanes(horses, pos, pick),
@@ -1118,7 +1136,7 @@ class Economy(commands.Cog):
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
 
-    # ✅ 리그: 내 구단을 실제 리그(20팀)에 넣고 한 시즌을 돌려 최종 순위로 정산. 순위는 완전 랜덤(구단 전력 무관).
+    # ✅ 리그: 내 구단을 랜덤 리그(20팀)에 넣고 한 시즌을 돌려 최종 순위로 정산. 리그·순위 모두 완전 랜덤(구단 전력 무관).
     # 순위별 순이익 배수 합 = 0 이라 기대값 0.
     LEAGUE_MIN_BET = 1_000
     LEAGUES = {
@@ -1133,9 +1151,9 @@ class Economy(commands.Cog):
     }
     # (끝 순위, 순이익 배수, 라벨)
     LEAGUE_PAYOUT = [
-        (1, 10, "🏆 리그 우승"), (2, 5, "⭐ 챔피언스리그 진출"), (3, 3, "⭐ 챔피언스리그 진출"),
-        (4, 2, "⭐ 챔피언스리그 진출"), (5, 1, "🌍 유로파리그 진출"), (8, 0, "😐 중상위권"),
-        (14, -1, "😶 중위권"), (17, -2, "😰 강등권 싸움"), (20, -3, "⬇️ 강등"),
+        (1, 20, "🏆 리그 우승"), (2, 10, "⭐ 챔피언스리그 진출"), (3, 6, "⭐ 챔피언스리그 진출"),
+        (4, 4, "⭐ 챔피언스리그 진출"), (5, 2, "🌍 유로파리그 진출"), (8, 0, "😐 중상위권"),
+        (14, -2, "😶 중위권"), (17, -4, "😰 강등권 싸움"), (20, -6, "⬇️ 강등"),
     ]
     LEAGUE_ROUNDS = (("개막 5라운드", 5), ("전반기 종료", 19), ("30라운드", 30))
 
@@ -1157,23 +1175,19 @@ class Economy(commands.Cog):
             gd -= rng.randint(1, 8)
         return rows
 
-    @app_commands.command(name="리그", description="내 구단을 실제 리그에 넣고 한 시즌! 우승 10배 수익 ~ 강등 3배 손실 (최소 1,000원)")
+    @app_commands.command(name="리그", description="내 구단을 랜덤 리그에 넣고 한 시즌! 우승 20배 수익 ~ 강등 6배 손실 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
-    @app_commands.describe(amount="베팅 금액 (최소 1,000원)", 리그="뛰어들 리그 (비우면 랜덤)")
-    @app_commands.choices(리그=[app_commands.Choice(name=k, value=k) for k in LEAGUES])
-    async def league(self, interaction: discord.Interaction, amount: app_commands.Range[int, LEAGUE_MIN_BET],
-                     리그: Optional[str] = None):
+    @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
+    async def league(self, interaction: discord.Interaction, amount: app_commands.Range[int, LEAGUE_MIN_BET]):
         user, amount = interaction.user, int(amount)
         await interaction.response.defer()
-        if (ban := await self._bet_ban_card(user)):
-            return await interaction.followup.send(embed=ban)
         sec = "🎙️ 리그 중계"
         bal = await self.db.get_balance(user.id)
         if bal < amount:
             return await interaction.followup.send(embed=self._caster_card(
                 user, "🙅 리그에 참가할 수 없어요", f"참가비가 부족합니다! `베팅` {amount:,}원 · `잔액` {bal:,}원", ui.LOSE, sec))
 
-        league = 리그 or random.choice(list(self.LEAGUES))
+        league = random.choice(list(self.LEAGUES))
         mine = (await self.db.club_name(user.id)) or f"{user.display_name} FC"
         others = random.sample(self.LEAGUES[league], 19)
         rank = random.randint(1, 20)                       # 최종 순위는 완전 랜덤
@@ -1190,15 +1204,15 @@ class Economy(commands.Cog):
             name = f"**{r['name']}** 👈" if r["name"] == mine else r["name"]
             return f"`{i + 1:>2}` {name} · **{r['pts']}점** · {r['w']}승 {r['d']}무 {r['l']}패 · {r['gd']:+d}"
 
-        color = ui.GOLD if rank == 1 else (ui.DOOM if mult <= -3 else ui.tone(delta))
+        color = ui.GOLD if rank == 1 else (ui.DOOM if mult <= -6 else ui.tone(delta))
         final = ui.card(f"{label} — {mine} {rank}위", "\n".join(line(i, r) for i, r in enumerate(table)),
                         color, user, sec)
         final.description += f"\n\n`리그` {league} · `정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**"
         final.set_thumbnail(url=ui.emoji_url("🏆" if rank == 1 else "⚽"))
         try:
             msg = await interaction.followup.send(embed=self._caster_card(
-                user, f"⚽ {league} 개막!", f"{mine}, {amount:,}원을 걸고 {league}에 뛰어듭니다! 목표는 우승!", ui.DARK, sec),
-                wait=True)
+                user, f"🎲 추첨 결과… {league} 개막!", f"{mine}, {amount:,}원을 걸고 {league}에 뛰어듭니다! 목표는 우승!",
+                ui.DARK, sec), wait=True)
             for stage, _rnd in self.LEAGUE_ROUNDS:
                 await asyncio.sleep(1.3)
                 mid = max(1, min(20, rank + random.randint(-5, 5)))   # 시즌 중 순위는 오르내린다

@@ -1,4 +1,6 @@
 # services/economy_db.py
+import calendar
+import random
 import sqlite3
 import asyncio
 from pathlib import Path
@@ -18,10 +20,10 @@ SCOUT_MAX_LEVEL = 5
 SCOUT_DAILY_LIMIT = 15
 SCOUT_XP_NEED = (120, 600, 1200, 3000)   # 하루 약 30 XP 기준 4일 · 20일 · 40일 · 100일
 
-# 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 반복 콘텐츠. 하루 5회, 최대 Lv.5, 아이템을 얻는다.
+# 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 반복 콘텐츠. 하루 100회 · 보상은 작게 · 아이템 이벤트가 자주.
 WATCH_MAX_LEVEL = 5
-WATCH_DAILY_LIMIT = 5
-WATCH_XP_NEED = (30, 120, 300, 700)       # 하루 약 12 XP 기준 3일 · 10일 · 25일 · 60일
+WATCH_DAILY_LIMIT = 100
+WATCH_XP_NEED = (600, 2000, 5000, 12000)  # 하루 약 200 XP 기준 3일 · 10일 · 25일 · 60일
 
 # 레벨·경험치·일일 횟수를 쓰는 반복 콘텐츠 규칙: 테이블 → (만렙, 하루 횟수, 필요 XP 표)
 GRIND_RULES = {
@@ -35,8 +37,21 @@ ITEMS = {
     "muffler":     ("🧣", "응원 머플러",     "다음 5경기 동안 구단 전력 +3 (친선경기 · 공식경기)"),
     "scout_reset": ("🧳", "스카우트 리셋권", f"오늘 스카우트 +{SCOUT_DAILY_LIMIT}회"),
     "train_reset": ("🔄", "훈련 리셋권",     f"오늘 훈련 +{TRAIN_DAILY_LIMIT}회"),
+    "watch_reset": ("🎟️", "직관 리셋권",     f"오늘 직관 +{WATCH_DAILY_LIMIT}회"),
 }
 MUFFLER_USES, MUFFLER_BONUS = 5, 3
+RESET_ITEMS = {"scout_reset": ("scouting", SCOUT_DAILY_LIMIT), "train_reset": ("training", TRAIN_DAILY_LIMIT),
+               "watch_reset": ("spectating", WATCH_DAILY_LIMIT)}
+
+# 아이템 상점: key → 가격. 아이템마다 하루(KST) SHOP_DAILY 개까지.
+SHOP_PRICES = {"muffler": 200_000, "scout_reset": 700_000, "train_reset": 1_000_000, "watch_reset": 300_000}
+SHOP_DAILY = 1
+
+# 쿠폰: 코드(대문자) → (지급 아이템 {key: 수량}, 만료 시각)
+COUPONS = {
+    "PATCH22": ({"scout_reset": 1, "train_reset": 1, "watch_reset": 1},
+                calendar.timegm((2026, 10, 8, 15, 0, 0))),   # 2026-10-09 00:00 KST 만료
+}
 
 
 def give_item(con, user_id: int, item: str, qty: int = 1) -> None:
@@ -47,11 +62,11 @@ def give_item(con, user_id: int, item: str, qty: int = 1) -> None:
 # 출석: 누적 출석 일수가 이 날에 닿으면 보너스 (빠져도 초기화되지 않는다)
 ATTEND_BONUS = {7: 50_000, 14: 100_000, 30: 300_000, 50: 500_000, 100: 1_000_000, 200: 2_000_000, 365: 5_000_000}
 
-TRANSFER_DAILY_LIMIT = 5_000_000   # 하루(KST) 보낼 수 있는 송금 총액
+TRANSFER_DAILY_LIMIT = 100_000_000   # 하루(KST) 보낼 수 있는 송금 총액
 
-# 파산: 잔액이 마이너스일 때만. 선수 카드·스폰서 원금으로 먼저 갚고 남은 빚은 탕감.
-BANKRUPT_COOLDOWN = 30 * 86400     # 30일에 한 번
-BANKRUPT_BET_BAN  = 3 * 86400      # 파산 후 3일간 베팅 게임 금지
+# 파산: 잔액이 마이너스일 때만. 스폰서 계약을 강제 해지해 원금으로 갚고, 남은 빚의 30~70% 를 랜덤 탕감.
+BANKRUPT_COOLDOWN = 3600             # 한 시간에 한 번
+BANKRUPT_FORGIVE = (0.3, 0.7)
 
 
 def _kst_day(ts: int) -> int:
@@ -173,6 +188,10 @@ class EconomyDB:
             # 아이템: 가방(보유 수량)과 사용 중인 효과(남은 횟수)
             con.execute("CREATE TABLE IF NOT EXISTS inventory (user_id INTEGER, item TEXT, qty INTEGER, PRIMARY KEY(user_id, item))")
             con.execute("CREATE TABLE IF NOT EXISTS buffs (user_id INTEGER, item TEXT, uses INTEGER, PRIMARY KEY(user_id, item))")
+            # 상점 하루 구매 수 · 쿠폰 사용 기록
+            con.execute("CREATE TABLE IF NOT EXISTS shop_daily (user_id INTEGER, item TEXT, day_key INTEGER, cnt INTEGER, "
+                        "PRIMARY KEY(user_id, item))")
+            con.execute("CREATE TABLE IF NOT EXISTS coupon_used (user_id INTEGER, code TEXT, PRIMARY KEY(user_id, code))")
                         # ───────────── 토토 ─────────────
             con.execute(
                 """
@@ -386,52 +405,33 @@ class EconomyDB:
         return await self._tx(fn)
 
     # ───────────── 파산 ─────────────
-    async def bet_ban_until(self, user_id: int, now_ts: int) -> int:
-        """파산 후 베팅 금지가 풀리는 시각 (금지 중이 아니면 0)."""
-        def fn(con):
-            row = con.execute("SELECT last_ts FROM bankruptcy WHERE user_id=?", (user_id,)).fetchone()
-            until = int(row[0]) + BANKRUPT_BET_BAN if row else 0
-            return until if until > now_ts else 0
-        return await self._tx(fn)
-
-    async def declare_bankruptcy(self, user_id: int, now_ts: int) -> dict:
-        """파산: 선수 카드(아마추어 제외)를 즉시판매가로 넘기고, 진행 중 스폰서 계약 원금을 돌려받아 빚을 갚는다.
-        그래도 남는 빚은 0으로 탕감. 실패 reason: not_negative / cooldown(until)."""
-        def has(con, table):
-            return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
-
+    async def declare_bankruptcy(self, user_id: int, now_ts: int, rng=random) -> dict:
+        """파산: 진행 중 스폰서 계약을 강제 해지해 원금으로 빚을 갚고, 남은 빚의 30~70% 를 랜덤 탕감한다.
+        선수 카드는 건드리지 않는다. 실패 reason: not_negative / cooldown(until)."""
         def fn(con):
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
             if bal >= 0:
                 return {"ok": False, "reason": "not_negative", "balance": bal}
-            row = con.execute("SELECT last_ts, times FROM bankruptcy WHERE user_id=?", (user_id,)).fetchone()
+            row = con.execute("SELECT last_ts FROM bankruptcy WHERE user_id=?", (user_id,)).fetchone()
             if row and now_ts - int(row[0]) < BANKRUPT_COOLDOWN:
                 return {"ok": False, "reason": "cooldown", "until": int(row[0]) + BANKRUPT_COOLDOWN}
 
-            cards = cards_value = 0
-            if has(con, "pm_holdings") and has(con, "pm_players"):
-                rows = con.execute(
-                    "SELECT h.qty, p.base_value, p.retired FROM pm_holdings h JOIN pm_players p ON p.player_id=h.player_id "
-                    "WHERE h.user_id=? AND h.qty>0 AND h.player_id NOT LIKE 'AMT_%'", (user_id,)).fetchall()
-                for qty, base, retired in rows:
-                    cards += int(qty)
-                    cards_value += int(int(base) * (0.3 if int(retired) else 0.5)) * int(qty)
-                con.execute("DELETE FROM pm_holdings WHERE user_id=? AND player_id NOT LIKE 'AMT_%'", (user_id,))
             sponsor = 0
-            if has(con, "sponsor_contracts"):
+            if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sponsor_contracts'").fetchone():
                 sponsor = int(con.execute("SELECT COALESCE(SUM(amount), 0) FROM sponsor_contracts "
                                           "WHERE user_id=? AND status='active'", (user_id,)).fetchone()[0])
                 con.execute("UPDATE sponsor_contracts SET status='cancelled', payout=amount "
                             "WHERE user_id=? AND status='active'", (user_id,))
-            after = bal + cards_value + sponsor
-            forgiven = max(0, -after)
-            new_bal = max(0, after)
+            after = bal + sponsor
+            rate = rng.uniform(*BANKRUPT_FORGIVE)
+            forgiven = round(-after * rate) if after < 0 else 0
+            new_bal = after + forgiven
             con.execute("UPDATE wallets SET balance=? WHERE user_id=?", (new_bal, user_id))
             con.execute("INSERT INTO bankruptcy(user_id, last_ts, times) VALUES(?, ?, 1) "
                         "ON CONFLICT(user_id) DO UPDATE SET last_ts=excluded.last_ts, times=times+1", (user_id, now_ts))
-            return {"ok": True, "debt": -bal, "cards": cards, "cards_value": cards_value, "sponsor": sponsor,
-                    "forgiven": forgiven, "balance": new_bal, "ban_until": now_ts + BANKRUPT_BET_BAN}
+            return {"ok": True, "debt": -bal, "sponsor": sponsor, "rate": rate if after < 0 else 0.0,
+                    "forgiven": forgiven, "balance": new_bal, "next": now_ts + BANKRUPT_COOLDOWN}
         return await self._tx(fn)
 
     async def play_penalty_kick(
@@ -1208,6 +1208,8 @@ class EconomyDB:
                         ("spectating",            "user_id"),
                         ("inventory",             "user_id"),
                         ("buffs",                 "user_id"),
+                        ("shop_daily",            "user_id"),
+                        ("coupon_used",           "user_id"),
                         ("clubs",                 "user_id"),
                         ("club_lineup",           "user_id"),
                         ("club_bonus",            "user_id"),
@@ -1276,12 +1278,55 @@ class EconomyDB:
                             "ON CONFLICT(user_id, item) DO UPDATE SET uses = uses + excluded.uses", (user_id, MUFFLER_USES))
                 uses = con.execute("SELECT uses FROM buffs WHERE user_id=? AND item='muffler'", (user_id,)).fetchone()[0]
                 return {"ok": True, "uses": int(uses)}
-            table, extra = {"scout_reset": ("scouting", SCOUT_DAILY_LIMIT), "train_reset": ("training", TRAIN_DAILY_LIMIT)}[item]
+            table, extra = RESET_ITEMS[item]
             con.execute(f"INSERT OR IGNORE INTO {table}(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
             bday, bcount = con.execute(f"SELECT bonus_day, bonus_count FROM {table} WHERE user_id=?", (user_id,)).fetchone()
             total = (int(bcount) if bday == day else 0) + extra
             con.execute(f"UPDATE {table} SET bonus_day=?, bonus_count=? WHERE user_id=?", (day, total, user_id))
             return {"ok": True, "extra": total}
+        return await self._tx(fn)
+
+    async def shop_bought_today(self, user_id: int, now_ts: int) -> dict[str, int]:
+        day = _kst_day(now_ts)
+        return await self._tx(lambda con: {i: int(c) for i, c in con.execute(
+            "SELECT item, cnt FROM shop_daily WHERE user_id=? AND day_key=?", (user_id, day))})
+
+    async def buy_item(self, user_id: int, item: str, now_ts: int) -> dict:
+        """상점 구매: 돈을 내고 가방에 1개. 실패 reason: daily(오늘 한도) / balance."""
+        day, price = _kst_day(now_ts), SHOP_PRICES[item]
+
+        def fn(con):
+            row = con.execute("SELECT day_key, cnt FROM shop_daily WHERE user_id=? AND item=?", (user_id, item)).fetchone()
+            cnt = int(row[1]) if row and row[0] == day else 0
+            if cnt >= SHOP_DAILY:
+                return {"ok": False, "reason": "daily"}
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
+            bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
+            if bal < price:
+                return {"ok": False, "reason": "balance", "balance": bal}
+            con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (price, user_id))
+            con.execute("INSERT OR REPLACE INTO shop_daily(user_id, item, day_key, cnt) VALUES(?,?,?,?)",
+                        (user_id, item, day, cnt + 1))
+            give_item(con, user_id, item)
+            qty = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()[0]
+            return {"ok": True, "price": price, "balance": bal - price, "qty": int(qty)}
+        return await self._tx(fn)
+
+    async def redeem_coupon(self, user_id: int, code: str, now_ts: int) -> dict:
+        """쿠폰 사용: 계정당 한 번. 실패 reason: unknown / expired / used."""
+        code = (code or "").strip().upper()
+        if code not in COUPONS:
+            return {"ok": False, "reason": "unknown"}
+        items, expires = COUPONS[code]
+        if now_ts >= expires:
+            return {"ok": False, "reason": "expired"}
+
+        def fn(con):
+            if not con.execute("INSERT OR IGNORE INTO coupon_used(user_id, code) VALUES(?, ?)", (user_id, code)).rowcount:
+                return {"ok": False, "reason": "used"}
+            for item, qty in items.items():
+                give_item(con, user_id, item, qty)
+            return {"ok": True, "code": code, "items": items}
         return await self._tx(fn)
 
     async def consume_buff(self, user_id: int, item: str) -> bool:

@@ -180,8 +180,16 @@ def manager_bonus(manager: Optional[str], formation: str) -> int:
 
 
 # ───────────── 공식경기 ─────────────
-OFFICIAL_DAILY = 5                                              # 하루 공식경기 수
-OFFICIAL_PRIZE = {"W": 60_000, "D": 25_000, "L": 10_000}        # 경기 수당
+# 돈을 걸고 내 경기 결과(승 · 무 · 패)를 예측한다. 배당 = 전력으로 계산한 확률의 역수 × 0.95 (하우스 5%).
+OFFICIAL_MIN_BET = 1_000
+OFFICIAL_MARGIN = 0.95
+OFFICIAL_ODDS_CAP = 30.0
+
+
+def official_odds(probs: tuple[float, float, float]) -> dict[str, float]:
+    """(승, 무, 패) 확률 → {"W": 배당, "D": 배당, "L": 배당}. 1.01 ~ 30배."""
+    return {k: round(min(OFFICIAL_ODDS_CAP, max(1.01, OFFICIAL_MARGIN / max(p, 1e-9))), 2)
+            for k, p in zip("WDL", probs)}
 
 
 def season_key(ts: int) -> int:
@@ -497,38 +505,24 @@ class ClubDB:
                 (int(user_id),))]
         return await self._tx(fn)
 
-    async def official_left(self, user_id: int, now_ts: int) -> int:
-        season, day = season_key(now_ts), (int(now_ts) + 9 * 3600) // 86400
-
-        def fn(con):
-            row = con.execute("SELECT day_key, day_count FROM club_official WHERE user_id=? AND season=?",
-                              (int(user_id), season)).fetchone()
-            return OFFICIAL_DAILY - (int(row[1]) if row and row[0] == day else 0)
-        return await self._tx(fn)
-
-    async def record_official(self, user_id: int, gf: int, ga: int, now_ts: int) -> Optional[dict]:
-        """공식경기 결과 기록 + 수당 지급. 오늘 횟수를 다 썼으면 None."""
-        season, day = season_key(now_ts), (int(now_ts) + 9 * 3600) // 86400
+    async def record_official(self, user_id: int, gf: int, ga: int, now_ts: int,
+                              amount: int, pick: str, odds: float) -> dict:
+        """공식경기 결과 기록 + 베팅 정산. 예측(pick)이 맞으면 순이익 = 베팅 × (배당 - 1), 틀리면 베팅금을 잃는다."""
+        season = season_key(now_ts)
         res = "W" if gf > ga else ("D" if gf == ga else "L")
-        prize = OFFICIAL_PRIZE[res]
+        delta = round(amount * (odds - 1)) if pick == res else -amount
 
         def fn(con):
             con.execute("INSERT OR IGNORE INTO club_official(user_id, season) VALUES(?, ?)", (int(user_id), season))
-            day_key, cnt = con.execute("SELECT day_key, day_count FROM club_official WHERE user_id=? AND season=?",
-                                       (int(user_id), season)).fetchone()
-            cnt = int(cnt) if day_key == day else 0
-            if cnt >= OFFICIAL_DAILY:
-                return None
             con.execute(
-                "UPDATE club_official SET day_key=?, day_count=?, points=points+?, w=w+?, d=d+?, l=l+?, gf=gf+?, ga=ga+? "
-                "WHERE user_id=? AND season=?",
-                (day, cnt + 1, {"W": 3, "D": 1, "L": 0}[res], res == "W", res == "D", res == "L", gf, ga,
-                 int(user_id), season))
+                "UPDATE club_official SET points=points+?, w=w+?, d=d+?, l=l+?, gf=gf+?, ga=ga+? WHERE user_id=? AND season=?",
+                ({"W": 3, "D": 1, "L": 0}[res], res == "W", res == "D", res == "L", gf, ga, int(user_id), season))
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
-            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (prize, int(user_id)))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (delta, int(user_id)))
+            bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0]
             rec = con.execute("SELECT points, w, d, l, gf, ga FROM club_official WHERE user_id=? AND season=?",
                               (int(user_id), season)).fetchone()
-            return {"result": res, "prize": prize, "left": OFFICIAL_DAILY - cnt - 1,
+            return {"result": res, "delta": delta, "balance": int(bal),
                     **dict(zip(("points", "w", "d", "l", "gf", "ga"), rec))}
         return await self._tx(fn)
 
