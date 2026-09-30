@@ -124,6 +124,7 @@ def test_training_roll():
     assert edb.TRAIN_MAX_LEVEL == 10 and edb.TRAIN_DAILY_LIMIT == 30
     needs = [edb.train_xp_need(lv) for lv in range(1, 10)]
     assert needs == sorted(needs) and len(set(needs)) == 9     # 레벨이 오를수록 필요 경험치 증가
+    assert sum(needs) >= 10_000 and needs[-1] >= 3_000         # 스카우트처럼 만렙까지 몇 달
 
 
 async def _finish_scouting(db, user_id: int, ts: int):
@@ -150,9 +151,9 @@ async def _training_db():
     assert not r["ok"] and r["reason"] == "limit" and r["used"] == 30
     assert await db.get_balance(1) == 29_000 - 500
     # 다음 날 초기화: 다시 잠김 → 스카우트 후 경험치 몰아주기로 만렙(10)
-    assert (await db.play_training(1, now + 86400, lambda lv, con: (0, 10_000, None)))["reason"] == "locked"
+    assert (await db.play_training(1, now + 86400, lambda lv, con: (0, 100_000, None)))["reason"] == "locked"
     await _finish_scouting(db, 1, now + 86400)
-    r = await db.play_training(1, now + 86400, lambda lv, con: (0, 10_000, None))
+    r = await db.play_training(1, now + 86400, lambda lv, con: (0, 100_000, None))
     assert r["ok"] and r["level"] == edb.TRAIN_MAX_LEVEL == 10 and r["xp"] == 0 and r["used"] == 1
     # 필요 경험치 딱 맞으면 한 레벨만 오른다
     await _finish_scouting(db, 2, now)
