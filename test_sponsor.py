@@ -119,16 +119,25 @@ async def _flow():
                             followup=SimpleNamespace(send=rec))
     await Sponsor.open_contract.callback(cog, inter, "rocket", 365, 2_000_000, True)
     e = sent[-1]["embed"]
-    assert "계약 체결" in e.title and "-2,000,000원" in e.description and "자동 재계약" in e.description
+    fields = {f.name: f.value for f in e.fields}
+    assert "계약 체결" in e.title and "-2,000,000원" in fields["📈 예상 수익"] and "자동 재계약" in fields["📄 계약"]
     await Sponsor.overview.callback(cog, inter)
-    assert len(sent[-1]["embeds"]) == 1 and "🔁" in sent[-1]["embeds"][0].description
+    mine, guide = sent[-1]["embeds"]
+    assert "🔁" in mine.fields[0].name and len(guide.fields) == len(sdb.SPONSORS) + 1
+    menu = sent[-1]["view"]
     cid = (await db.active(U))[0]["id"]
-    await Sponsor.toggle_auto.callback(cog, inter, str(cid), False)
-    assert "OFF" in sent[-1]["embed"].title
+    menu.select._values = [str(cid)]
+    await menu._chosen(inter)                                         # 계약 선택 → 본인에게만 관리 버튼
+    assert sent[-1]["ephemeral"] and "ON" in sent[-1]["embed"].description
+    actions = sent[-1]["view"]
+    await actions.children[0].callback(inter)                        # [자동 재계약 끄기]
+    assert not (await db.active(U))[0]["auto"] and "OFF" in sent[-1]["embed"].description
     before = await db.get_balance(U)
-    await Sponsor.cancel_contract.callback(cog, inter, str(cid))
-    await sent[-1]["view"].children[0].callback(inter)                        # [해지하기]
+    await sent[-1]["view"].children[1].callback(inter)               # [중도 해지] → 확인 화면
+    await sent[-1]["view"].children[0].callback(inter)               # [해지 확정]
     assert "해지" in sent[-1]["embed"].title and await db.get_balance(U) == before + 1_900_000
+    await Sponsor.overview.callback(cog, inter)
+    assert sent[-1].get("view") is None or sent[-1]["view"] is __import__("discord").utils.MISSING   # 계약 없으면 메뉴 없음
 
 
 def test_flow():

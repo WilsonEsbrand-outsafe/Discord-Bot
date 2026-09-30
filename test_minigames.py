@@ -45,6 +45,41 @@ def test_batting_table():
     assert Economy.BAT_MIN_BET == 1_000 and t[-1][3] == "땅볼" and max(t, key=lambda r: r[0])[3] == "안타"
 
 
+def test_table_games():
+    """야구 · 농구 · UFC: 같은 확률 구조, 연출만 다르다 · 실제 명령 흐름에서 정산이 표와 맞는다."""
+    for t in (Economy.BAT_TABLE, Economy.HOOP_TABLE, Economy.UFC_TABLE):
+        assert tuple(r[0] for r in t) == Economy.GAME_ODDS and tuple(r[1] for r in t) == Economy.GAME_MULTS
+        assert len({r[3] for r in t}) == len(t)                    # 결과 이름이 겹치지 않는다
+    from types import SimpleNamespace
+    import cogs.economy as ce
+    eco = Economy.__new__(Economy)
+    eco.db, eco._pk_last = edb.EconomyDB(), {}
+    user = SimpleNamespace(id=66, display_name="선수", display_avatar=SimpleNamespace(url="https://x/a.png"))
+
+    async def flow():
+        await eco.db.add_balance(user.id, 1_000_000)
+        sent = []
+        async def rec(*a, **k):
+            sent.append(k.get("embed"))
+            return SimpleNamespace(edit=rec)
+        async def noop(*a, **k): pass
+        inter = SimpleNamespace(user=user, response=SimpleNamespace(defer=noop, send_message=rec),
+                                followup=SimpleNamespace(send=rec))
+        real_sleep, ce.asyncio.sleep = ce.asyncio.sleep, (lambda s: real_sleep(0))
+        try:
+            for cmd, table in ((Economy.basketball, Economy.HOOP_TABLE), (Economy.ufc_fight, Economy.UFC_TABLE)):
+                before = await eco.db.get_balance(user.id)
+                eco._pk_last.clear()
+                await cmd.callback(eco, inter, 10_000)
+                delta = await eco.db.get_balance(user.id) - before
+                row = next(r for r in table if sent[-1].title.endswith(r[3]))
+                assert delta == 10_000 * int(row[1]), (delta, row)
+        finally:
+            ce.asyncio.sleep = real_sleep
+
+    asyncio.run(flow())
+
+
 def test_horse_race():
     rng = random.Random(5)
     seen = set()
@@ -59,8 +94,13 @@ def test_horse_race():
         finish = rng.sample(range(4), 4)
         frames = Economy._race_frames(finish, rng)
         assert len(frames) == len(Economy.RACE_CALLS)
-        assert all(0 <= x < Economy.RACE_TRACK for f in frames for x in f)
-        assert frames[-1][finish[0]] > frames[-1][finish[3]]          # 마지막 직선에선 우승마가 꼴찌보다 앞
+        assert all(0 <= x <= Economy.RACE_TRACK for f in frames for x in f)
+        assert [frames[-1][h] for h in finish] == [Economy.RACE_TRACK - r for r in range(4)]   # 결승선: 순위대로
+        cb = finish[rng.randint(1, 3)]
+        frames = Economy._race_frames(finish, rng, comeback=cb)
+        for f in frames[3:5]:                                        # 4코너 · 마지막 직선은 가짜 선두가 확실히 앞선다
+            assert f[cb] > max(x for i, x in enumerate(f) if i != cb), (f, cb)
+        assert frames[-1][finish[0]] == Economy.RACE_TRACK             # 그리고 결승선에서 뒤집힌다
 
     # 출주표 → 버튼 선택 → 연출 → 결과까지 화면이 깨지지 않고 돈이 정확히 정산되는지
     from types import SimpleNamespace
@@ -89,7 +129,7 @@ def test_horse_race():
             view = views[-1]
             n = len(sent)
             await view.children[0].callback(inter)
-            assert len(sent) - n == 5 and "잔액" in sent[-1].description        # 대기 + 3장면 + 결과
+            assert len(sent) - n == 8 and "잔액" in sent[-1].description        # 대기 + 6장면 + 결과
             played = await eco.db.get_balance(user.id) - 100_000
             assert played in {10_000 * m for m in view.race["prizes"]}, played
             await view.on_timeout()                                              # 고른 뒤엔 시간 초과가 무시된다
@@ -222,6 +262,7 @@ async def _quiz_db():
 if __name__ == "__main__":
     test_penalty_table()
     test_batting_table()
+    test_table_games()
     test_horse_race()
     test_training_roll()
     asyncio.run(_training_db())
@@ -229,4 +270,4 @@ if __name__ == "__main__":
     test_answer_matching()
     test_score()
     asyncio.run(_quiz_db())
-    print("OK: minigames 9 checks passed")
+    print("OK: minigames 10 checks passed")

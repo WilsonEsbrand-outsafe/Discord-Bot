@@ -639,9 +639,11 @@ class Economy(commands.Cog):
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
 
-    # ✅ 야구(타석): 페널티킥과 같은 방식 — 결과표에서 한 줄 뽑아 순이익 = 베팅 x 배수. 기대값 약 -1.1%.
-    # 마지막 줄(땅볼)이 부동소수 잔여 구간을 받는다.
+    # ✅ 한 판 게임(야구 · 농구 · UFC): 페널티킥과 같은 방식 — 결과표에서 한 줄 뽑아 순이익 = 베팅 x 배수.
+    # 세 게임 모두 같은 확률 구조(기대값 약 -1.1%)에 연출만 다르다. 각 표의 마지막 줄이 부동소수 잔여 구간을 받는다.
     BAT_MIN_BET = 1_000
+    GAME_ODDS = (0.001, 0.005, 0.020, 0.030, 0.070, 0.270, 0.080, 0.182, 0.080, 0.020, 0.003, 0.239)
+    GAME_MULTS = ("50", "10", "5", "3", "2", "1", "0", "-1", "-2", "-5", "-10", "-1")
     BAT_SPAM_LINES = [
         ("🧢 타자가 장갑을 고쳐 끼는 중", "타임! 타자가 배터박스를 잠깐 벗어났어요. 곧 다시 섭니다!"),
         ("🤚 투수가 사인을 거부합니다", "포수와 사인이 안 맞네요. 잠시만 기다려 주세요!"),
@@ -661,22 +663,59 @@ class Economy(commands.Cog):
         (0.003, "-10", "☠️", "트리플 플레이", "트리플 플레이?! 한 번에 아웃 세 개… 믿을 수 없는 참사입니다!"),
         (0.239, "-1",  "🐛", "땅볼",          "유격수 앞 땅볼, 1루에서 아웃."),
     ]
+    HOOP_SPAM_LINES = [
+        ("💦 선수가 땀을 닦는 중", "코트가 미끄러워요! 볼보이가 바닥을 닦고 있습니다."),
+        ("⏱️ 작전 타임", "감독이 작전 타임을 불렀어요. 잠시 후 재개합니다!"),
+        ("👟 신발 끈이 풀렸어요", "신발 끈 다시 묶는 중! 금방 돌아옵니다."),
+    ]
+    HOOP_TABLE = [
+        (0.001, "50",  "🌠", "하프라인 버저비터!!!", "하프라인에서 던졌는데— 들어갑니다!!! 경기장이 뒤집어졌어요!"),
+        (0.005, "10",  "🔔", "역전 버저비터!!",      "종료 부저와 함께 림을 가릅니다! 역전승!!"),
+        (0.020, "5",   "💥", "앤드원 덩크!",         "림이 흔들리는 덩크에 파울까지! 앤드원!"),
+        (0.030, "3",   "🎯", "3점슛!",               "깨끗한 3점! 그물만 출렁입니다."),
+        (0.070, "2",   "🏀", "미드레인지 점퍼",      "풀업 점퍼! 부드럽게 들어갑니다."),
+        (0.270, "1",   "✅", "레이업",               "침착하게 레이업 성공!"),
+        (0.080, "0",   "🆓", "자유투 1/2",           "파울을 얻었지만 자유투는 하나만… 본전이에요."),
+        (0.182, "-1",  "🧱", "림 맞고 아웃",         "림을 돌다가… 튕겨 나옵니다."),
+        (0.080, "-2",  "🚫", "블록슛",               "쳐냈습니다! 관중석까지 날아간 블록슛!"),
+        (0.020, "-5",  "💨", "스틸 → 속공 실점",     "공을 뺏기고 그대로 속공 덩크 허용… 흐름이 넘어갑니다."),
+        (0.003, "-10", "☠️", "에어볼 + 테크니컬",    "에어볼에 항의하다 테크니컬 파울까지… 최악의 한 수입니다!"),
+        (0.239, "-1",  "🙅", "슛 실패",              "슛이 짧았어요. 리바운드는 상대 차지."),
+    ]
+    UFC_SPAM_LINES = [
+        ("🩹 컷맨이 상처를 막는 중", "코너에서 지혈 중이에요. 잠시만 기다려 주세요!"),
+        ("🧑‍⚖️ 주심이 글러브를 점검합니다", "글러브 점검 중! 곧 다시 시작합니다."),
+        ("🥤 라운드 사이 휴식", "1분 휴식 시간입니다. 숨 고르고 다시 가죠!"),
+    ]
+    UFC_TABLE = [
+        (0.001, "50",  "👑", "플라잉 니킥 KO!!!",  "플라잉 니킥 한 방에 경기가 끝났습니다!!! 올해의 KO 확정!"),
+        (0.005, "10",  "🥊", "1라운드 KO승!!",     "시작 30초 만에 카운터 한 방! 상대가 그대로 쓰러집니다!"),
+        (0.020, "5",   "🔒", "서브미션승!",        "리어네이키드 초크! 상대가 탭을 칩니다!"),
+        (0.030, "3",   "🩸", "TKO승!",            "파운딩 세례에 주심이 경기를 멈춥니다!"),
+        (0.070, "2",   "📋", "만장일치 판정승",    "세 명의 심판 모두 당신 손을 들어줍니다!"),
+        (0.270, "1",   "✅", "스플릿 판정승",      "아슬아슬했지만… 2대 1 판정승!"),
+        (0.080, "0",   "🤝", "무승부",             "치열한 5라운드 끝에 무승부. 본전이에요."),
+        (0.182, "-1",  "📉", "스플릿 판정패",      "아쉽게도 1대 2 판정패…"),
+        (0.080, "-2",  "😵", "TKO패",              "연타를 허용하고 주심이 경기를 중단합니다…"),
+        (0.020, "-5",  "💤", "KO패",               "카운터에 정통으로… 캔버스에 누워 버렸습니다."),
+        (0.003, "-10", "☠️", "실신 KO + 부상",     "하이킥에 실신… 병원비까지 청구됩니다!"),
+        (0.239, "-1",  "❌", "만장일치 판정패",    "끝까지 버텼지만 판정은 상대 편이었습니다."),
+    ]
 
     @staticmethod
-    def _bat_card(user, title: str, caster: str, color: int) -> discord.Embed:
-        return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 야구 중계")
+    def _caster_card(user, title: str, caster: str, color: int, section: str) -> discord.Embed:
+        return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, section)
 
-    @app_commands.command(name="야구", description="타석에 서서 한 방! 장외홈런 50배 수익, 트리플 플레이 10배 손실 (최소 1,000원)")
-    @app_commands.rename(amount="베팅액")
-    @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
-    async def batting(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
+    async def _play_table(self, interaction: discord.Interaction, amount: int, *, key: str, table, section: str,
+                          spam_lines, broke: tuple, windup: tuple):
+        """한 판 게임 공통: 도배 방지 → 베팅 금지·잔액 확인 → 결과 뽑기 → 저장 → 연출 한 장면 → 결과."""
         user = interaction.user
         now = time.monotonic()
-        key = ("bat", user.id)
-        if now - self._pk_last.get(key, 0.0) < self.PK_SPAM_GAP:
-            title, caster = random.choice(self.BAT_SPAM_LINES)
-            return await interaction.response.send_message(embed=self._bat_card(user, title, caster, ui.DARK), ephemeral=True)
-        self._pk_last[key] = now
+        if now - self._pk_last.get((key, user.id), 0.0) < self.PK_SPAM_GAP:
+            title, caster = random.choice(spam_lines)
+            return await interaction.response.send_message(
+                embed=self._caster_card(user, title, caster, ui.DARK, section), ephemeral=True)
+        self._pk_last[(key, user.id)] = now
 
         await interaction.response.defer()
         if (ban := await self._bet_ban_card(user)):
@@ -684,12 +723,12 @@ class Economy(commands.Cog):
         amount = int(amount)
         cur_bal = await self.db.get_balance(user.id)
         if cur_bal < amount:
-            e = self._bat_card(user, "🙅 타석에 설 수 없어요", "잔액이 부족해 대기 타석에서 돌아갑니다!", ui.LOSE)
+            e = self._caster_card(user, *broke, ui.LOSE, section)
             e.description += f"\n\n`베팅` **{amount:,}원**\n`잔액` **{cur_bal:,}원**"
             return await interaction.followup.send(embed=e)
 
         roll, acc = random.random(), 0.0
-        for prob, mult_s, emoji, headline, caster in self.BAT_TABLE:
+        for prob, mult_s, emoji, headline, caster in table:
             acc += prob
             if roll < acc:
                 break
@@ -701,16 +740,43 @@ class Economy(commands.Cog):
             return await interaction.followup.send(f"❌ DB 오류: {type(ex).__name__}")
 
         color = ui.GOLD if mult >= 5 else (ui.DOOM if mult <= -5 else ui.tone(delta))
-        e = self._bat_card(user, f"{emoji} {headline}", caster, color)
+        e = self._caster_card(user, f"{emoji} {headline}", caster, color, section)
         e.description += f"\n\n`정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**"
         e.set_thumbnail(url=ui.emoji_url(emoji))
         try:
-            pitch = self._bat_card(user, "⚾ 투수, 와인드업…", f"{amount:,}원이 걸린 한 타석! 던졌습니다—", ui.DARK)
-            msg = await interaction.followup.send(embed=pitch, wait=True)
+            intro = self._caster_card(user, windup[0], windup[1].format(amount=f"{amount:,}"), ui.DARK, section)
+            msg = await interaction.followup.send(embed=intro, wait=True)
             await asyncio.sleep(1.2)
             await msg.edit(embed=e)
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
+
+    @app_commands.command(name="야구", description="타석에 서서 한 방! 장외홈런 50배 수익, 트리플 플레이 10배 손실 (최소 1,000원)")
+    @app_commands.rename(amount="베팅액")
+    @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
+    async def batting(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
+        await self._play_table(interaction, amount, key="bat", table=self.BAT_TABLE, section="🎙️ 야구 중계",
+                               spam_lines=self.BAT_SPAM_LINES,
+                               broke=("🙅 타석에 설 수 없어요", "잔액이 부족해 대기 타석에서 돌아갑니다!"),
+                               windup=("⚾ 투수, 와인드업…", "{amount}원이 걸린 한 타석! 던졌습니다—"))
+
+    @app_commands.command(name="농구", description="마지막 슛 한 방! 하프라인 버저비터 50배 수익, 에어볼 10배 손실 (최소 1,000원)")
+    @app_commands.rename(amount="베팅액")
+    @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
+    async def basketball(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
+        await self._play_table(interaction, amount, key="hoop", table=self.HOOP_TABLE, section="🎙️ 농구 중계",
+                               spam_lines=self.HOOP_SPAM_LINES,
+                               broke=("🙅 코트에 들어갈 수 없어요", "잔액이 부족해 벤치로 돌아갑니다!"),
+                               windup=("🏀 공을 잡았습니다…", "{amount}원이 걸린 마지막 공격! 슛—"))
+
+    @app_commands.command(name="ufc", description="옥타곤 한 판! 플라잉 니킥 KO 50배 수익, 실신 KO 10배 손실 (최소 1,000원)")
+    @app_commands.rename(amount="베팅액")
+    @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
+    async def ufc_fight(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
+        await self._play_table(interaction, amount, key="ufc", table=self.UFC_TABLE, section="🎙️ UFC 중계",
+                               spam_lines=self.UFC_SPAM_LINES,
+                               broke=("🙅 옥타곤에 오를 수 없어요", "잔액이 부족해 계체량에서 탈락했습니다!"),
+                               windup=("🥊 옥타곤 입장…", "{amount}원이 걸린 한 판! 공이 울립니다—"))
 
     # ✅ 경마: 말 10마리 중 4마리 출주. 말 정보(승률·각질·컨디션)는 분위기용 — 순위는 완전 랜덤.
     # 상금표도 경주마다 랜덤: 1·2위 수익, 3·4위 손실. 수익 합 = 손실 합이라 기대값 0.
@@ -732,11 +798,18 @@ class Economy(commands.Cog):
     ]
     RACE_MOODS = ("😆 최상", "🙂 좋음", "😐 보통", "😫 나쁨")
     RACE_PLACES = ("🥇", "🥈", "🥉", "4️⃣")
-    RACE_CALLS = (   # 장면별 (소제목, 캐스터 멘트) — {0}{1} = 그 장면의 1·2번째 말
+    # 장면별 (소제목, 캐스터 멘트) — {0}{1} = 그 장면의 1·2번째 말. 마지막 두 장면은 역전 여부에 따라 멘트가 갈린다.
+    RACE_STAGES = (0.2, 0.4, 0.6, 0.75, 0.88, 1.0)
+    RACE_CALLS = (
         ("출발!", "게이트가 열립니다! {0}, 스타트가 좋아요!"),
-        ("3코너", "3코너를 돌아 나옵니다! 선두는 {0}, 바짝 따라붙는 {1}!"),
-        ("마지막 직선", "마지막 직선 주로!! {0}, {1}! 치열한 경합입니다!!"),
+        ("1코너", "1코너! {0} 선두, {1} 바짝 추격!"),
+        ("백스트레치", "백스트레치! 선두는 여전히 {0}!"),
+        ("4코너", "4코너를 돌아 나옵니다! {0}, {1}! 치열합니다!"),
+        ("마지막 직선", "마지막 직선 주로!! {0}, 이대로 들어가나요?!"),
+        ("결승선", "{0}, 그대로 결승선 통과!!"),
     )
+    RACE_COMEBACK_CALL = "아아— {0}!!! 바깥쪽에서 무섭게 치고 올라옵니다!! {1}를 제치고 대역전!!!"
+    RACE_COMEBACK_PROB = 0.35   # 선두를 달리던 말이 막판에 뒤집히는 경주 비율 (결과 확률과는 무관)
     RACE_RESULTS = (   # 순위별 (이모지, 헤드라인, 캐스터 멘트)
         ("🏆", "우승!!", "결승선을 가장 먼저 통과합니다! 탁월한 안목이에요!"),
         ("🥈", "2위!", "아깝게 2위! 그래도 상금은 챙겨 갑니다."),
@@ -753,13 +826,25 @@ class Economy(commands.Cog):
         return [top, s - top, -(s - worst), -worst]
 
     @classmethod
-    def _race_frames(cls, finish: list[int], rng=random) -> list[list[int]]:
-        """장면 3개의 말 위치(출주 번호순). 초반엔 뒤섞이고, 갈수록 최종 순위대로 벌어진다."""
+    def _race_frames(cls, finish: list[int], rng=random, comeback: int | None = None) -> list[list[int]]:
+        """장면마다 말 위치(출주 번호순). 초반엔 뒤섞이고, 갈수록 최종 순위대로 벌어진다.
+        comeback = 막판까지 선두를 달리다 뒤집히는 말 — 우승마는 뒤에서 기다렸다가 결승선 직전에 치고 나온다.
+        마지막 장면은 결승선: 우승마가 🏁 에 닿고 나머지는 순위대로 한 칸씩 뒤."""
         rank = {h: r for r, h in enumerate(finish)}
-        w = cls.RACE_TRACK
-        return [[max(0, min(w - 1, round(f * w + (1.5 - rank[i]) * f * 1.4 + rng.uniform(-2, 2) * (1 - f))))
-                 for i in range(len(finish))]
-                for f in (0.25, 0.55, 0.85)]
+        w, frames = cls.RACE_TRACK, []
+        for f in cls.RACE_STAGES[:-1]:
+            row = []
+            for i in range(len(finish)):
+                bias = (1.5 - rank[i]) * f * 1.4
+                if comeback is not None and i == comeback:
+                    bias = 3.0 * f / 0.88            # 가짜 선두: 4코너 · 마지막 직선까지 확실히 앞선다
+                elif comeback is not None and i == finish[0]:
+                    bias = -0.6 * f                  # 우승마: 뒤에서 힘을 아낀다
+                # 결승선 장면을 위해 세 칸은 남겨 둔다 (마지막에 한꺼번에 치고 들어오는 느낌)
+                row.append(max(0, min(w - 1, round(f * (w - 3) + bias + rng.uniform(-1.5, 1.5) * (1 - f)))))
+            frames.append(row)
+        frames.append([w - rank[i] for i in range(len(finish))])
+        return frames
 
     @classmethod
     def _race_lanes(cls, horses, pos: list[int], pick: int) -> str:
@@ -830,20 +915,32 @@ class Economy(commands.Cog):
         except Exception as ex:
             return await interaction.followup.send(f"❌ DB 오류: {type(ex).__name__}")
 
+        # 연출용 역전극: 결과(finish)는 이미 정해졌고, 누가 막판까지 앞서 보일지만 고른다.
+        comeback = random.choice(finish[1:]) if random.random() < self.RACE_COMEBACK_PROB else None
         try:
-            for (stage, call), pos in zip(self.RACE_CALLS, self._race_frames(finish)):
+            frames = self._race_frames(finish, comeback=comeback)
+            for k, ((stage, call), pos) in enumerate(zip(self.RACE_CALLS, frames)):
                 order = sorted(range(4), key=lambda i: (-pos[i], finish.index(i)))
-                await asyncio.sleep(1.2)
+                if k == len(frames) - 1 and comeback is not None:
+                    stage, call = "🔥 대역전!!", self.RACE_COMEBACK_CALL
+                    names = (horses[finish[0]][1], horses[comeback][1])
+                else:
+                    names = (horses[order[0]][1], horses[order[1]][1])
+                last = k >= len(frames) - 2
+                await asyncio.sleep(1.5 if last else 1.1)   # 막판은 한 박자 늦게 — 긴장감
                 await interaction.edit_original_response(embed=ui.card(
                     f"{title} — {stage}",
-                    f'> 🎙️ *"{call.format(horses[order[0]][1], horses[order[1]][1])}"*\n\n'
-                    + self._race_lanes(horses, pos, pick),
-                    ui.DARK, user, sec))
-            await asyncio.sleep(1.2)
+                    f'> 🎙️ *"{call.format(*names)}"*\n\n' + self._race_lanes(horses, pos, pick),
+                    ui.GOLD if (k == len(frames) - 1 and comeback is not None) else ui.DARK, user, sec))
+            await asyncio.sleep(1.5)
         except discord.HTTPException:
             pass
 
         emoji, headline, caster = self.RACE_RESULTS[place]
+        if comeback is not None and pick == finish[0]:
+            headline, caster = "역전 우승!!!", "끝까지 기다렸다가 결승선 앞에서 뒤집었습니다! 이게 경마죠!!"
+        elif comeback is not None and pick == comeback:
+            caster = "다 잡은 우승을 결승선 앞에서 놓쳤습니다… 너무 아쉬워요!"
         board = "\n".join(f"{self.RACE_PLACES[r]} {horses[i][0]} " + (f"**{horses[i][1]}** 👈" if i == pick else horses[i][1])
                           for r, i in enumerate(finish))
         color = ui.GOLD if place == 0 else (ui.DOOM if mult <= -5 else ui.tone(delta))
