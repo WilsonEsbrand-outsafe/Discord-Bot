@@ -1184,6 +1184,7 @@ class EconomyDB:
                         ("clubs",                 "user_id"),
                         ("club_lineup",           "user_id"),
                         ("club_bonus",            "user_id"),
+                        ("club_official",         "user_id"),
                         ("quiz_stats",            "user_id"),
                         ("quiz_results",          "user_id"),
                         ("sponsor_contracts",     "user_id"),

@@ -194,6 +194,98 @@ def test_scout_flow():
     run(_scout_flow())
 
 
+def test_match_math():
+    from services.club_db import match_highlights, win_probs
+    for d in (0, 10, 35):
+        w, dr, l = win_probs(60 + d, 60)
+        assert abs(w + dr + l - 1) < 1e-6 and w >= l
+    w10, w35 = win_probs(70, 60)[0], win_probs(95, 60)[0]
+    assert 0.45 < w10 < 0.62 and 0.8 < w35 < 0.95, (w10, w35)                 # 2.2 승률 조정
+    xi = [{"name": f"p{i}", "pos": p, "ovr": 70} for i, p in enumerate(["GK", "DF", "MF", "FW"])]
+    home, away = {"name": "A", "rating": 70, "xi": xi}, {"name": "B", "rating": 60, "xi": xi}
+    m = simulate_match(home, away, random.Random(4))
+    hl = match_highlights(m, home, away, random.Random(4))
+    assert sum(h["goal"] for h in hl) == m["home"] + m["away"] and len(hl) >= 5
+    assert [h["minute"] for h in hl] == sorted(h["minute"] for h in hl)
+
+
+async def _club22():
+    eco, pm, clubs = await _setup()
+    from types import SimpleNamespace
+    import cogs.club as cc
+    A, B = 501, 502
+    for uid, name in ((A, "알파 FC"), (B, "베타 FC")):
+        await clubs.create_club(uid, name, NOW)
+        await pm.give_amateur_squad(uid)
+        await clubs.auto_lineup(uid)
+
+    # 감독: 영입비 차감 · 전력 보너스 · 선호 포메이션 추가 보너스
+    base = (await clubs.get_team(A))["rating"]
+    assert (await clubs.hire_manager(A, "legend"))["reason"] == "balance"
+    await eco.add_balance(A, 30_000_000)
+    r = await clubs.hire_manager(A, "tiki")
+    assert r["ok"] and r["fee"] == cdb.MANAGERS["tiki"][5]
+    assert (await clubs.get_team(A))["rating"] == base + 1                        # 4-4-2 → 기본 +1
+    await clubs.set_formation(A, "4-3-3")
+    t = await clubs.get_team(A)
+    assert t["manager_bonus"] == 3                                                  # 선호 4-3-3 → +3
+    assert (await clubs.hire_manager(A, "tiki"))["reason"] == "same"
+
+    # 공식경기: 하루 5경기 · 승점 · 수당 · 순위
+    bal0 = await eco.get_balance(A)
+    for gf, ga in ((2, 0), (1, 1), (0, 3), (4, 1), (2, 2)):
+        assert await clubs.record_official(A, gf, ga, NOW)
+    assert await clubs.record_official(A, 1, 0, NOW) is None                       # 6번째는 안 된다
+    assert await clubs.official_left(A, NOW) == 0 and await clubs.official_left(A, NOW + 86400) == cdb.OFFICIAL_DAILY
+    P = cdb.OFFICIAL_PRIZE
+    assert await eco.get_balance(A) - bal0 == 2 * P["W"] + 2 * P["D"] + P["L"]
+    table = await clubs.official_table(NOW)
+    assert table[0]["user_id"] == A and table[0]["points"] == 8 and table[0]["gf"] - table[0]["ga"] == 2
+    assert await clubs.official_opponents(A) == [B] or B in await clubs.official_opponents(A)
+
+    # 친선경기 화면: 머플러 1회 소모 · 90분 중계 장면 · 다시 붙기 버튼
+    await eco.give_item(A, "muffler")
+    await eco.use_item(A, "muffler", NOW)
+    cog = cc.Club.__new__(cc.Club)
+    cog.clubs, cog.money, cog.pm, cog._playing = clubs, eco, pm, set()
+    user = SimpleNamespace(id=A, display_name="알파", display_avatar=SimpleNamespace(url="https://x/a.png"), bot=False)
+    opp = SimpleNamespace(id=B, display_name="베타", display_avatar=SimpleNamespace(url="https://x/b.png"), bot=False)
+    edits = []
+    async def rec(*a, **k):
+        edits.append(k)
+        return SimpleNamespace(edit=rec)
+    async def noop(*a, **k): pass
+    inter = SimpleNamespace(user=user, response=SimpleNamespace(defer=noop, send_message=rec),
+                            followup=SimpleNamespace(send=rec))
+    real_sleep, cc.asyncio.sleep = cc.asyncio.sleep, (lambda s: real_sleep(0))
+    try:
+        await cc.Club.friendly.callback(cog, inter, opp)
+        assert len(edits) == 1 + len(cc.Club.BROADCAST_MINUTES)                  # 킥오프 + 15'…75' + 종료
+        assert "예상 승률" in edits[0]["embed"].description and "🧣" in edits[0]["embed"].title
+        assert isinstance(edits[-1]["view"], cc.RematchView)
+        _, buffs = await eco.inventory(A)
+        assert buffs["muffler"] == 4
+        w0 = (await clubs.get_club(A))
+        await edits[-1]["view"].again.callback(inter)                            # 🔁 다시 붙기 — 대기 없이 바로
+        w1 = (await clubs.get_club(A))
+        assert w1["wins"] + w1["draws"] + w1["losses"] == w0["wins"] + w0["draws"] + w0["losses"] + 1
+
+        # 공식경기 명령: 비슷한 전력 구단과 자동 매칭 → 중계 → 승점 · 수당 기록 (오늘 횟수 1 차감)
+        import time as _t
+        left = await clubs.official_left(A, int(_t.time()))
+        await cc.Club.official.callback(cog, inter)
+        assert edits[-1]["embed"].title.startswith("🏆") and "수당" in edits[-1]["embed"].description
+        assert await clubs.official_left(A, int(_t.time())) == left - 1
+        await cc.Club.manager.callback(cog, inter, None)
+        assert "티키타카" in edits[-1]["embed"].description
+    finally:
+        cc.asyncio.sleep = real_sleep
+
+
+def test_club22():
+    run(_club22())
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
