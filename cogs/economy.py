@@ -10,7 +10,7 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    ATTEND_BONUS, BANKRUPT_FORGIVE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SHOP_PRICES, EconomyDB, SCOUT_MAX_LEVEL,
+    BANKRUPT_FORGIVE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SHOP_PRICES, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
@@ -299,19 +299,6 @@ class Economy(commands.Cog):
 
     ATTEND_REWARD = 30_000
 
-    @staticmethod
-    def _attend_track(total: int) -> str:
-        """누적 출석 보너스 표: 받은 곳 ✅, 다음 목표 👉."""
-        nxt = next((d for d in ATTEND_BONUS if d > total), None)
-        cells = []
-        for d, bonus in ATTEND_BONUS.items():
-            mark = "✅" if total >= d else ("👉" if d == nxt else "▫️")
-            cells.append(f"{mark} {d}일 **+{bonus // 10_000:,}만**")
-        track = " · ".join(cells)
-        if nxt:
-            track += f"\n`다음 보너스` **{nxt}일** 까지 {nxt - total}일"
-        return track
-
     @app_commands.command(name="출석", description="하루 1번 출석 보상 · 누적 출석 일수에 따라 보너스 (빠져도 초기화 없음)")
     async def daily(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -324,13 +311,13 @@ class Economy(commands.Cog):
         if not ok:
             e = ui.card("⏳ 오늘은 이미 출석했어요",
                         f"`다음 출석` **{_format_time_left(remaining)}** 뒤 (00:00 초기화)\n"
-                        f"`누적 출석` **{total}일**\n\n" + self._attend_track(total),
+                        f"`누적 출석` **{total}일**",
                         ui.EVEN, user, "📅 출석")
             return await interaction.followup.send(embed=e)
 
         e = ui.card(f"🎁 누적 {total}일 달성 보너스!" if bonus else "✅ 출석 완료",
                     f"`기본` **+{reward:,}원**" + (f"\n`보너스` **+{bonus:,}원**" if bonus else "")
-                    + f"\n`잔액` **{new_bal:,}원**\n`누적 출석` **{total}일**\n\n" + self._attend_track(total),
+                    + f"\n`잔액` **{new_bal:,}원**\n`누적 출석` **{total}일**",
                     ui.GOLD if bonus else ui.WIN, user, "📅 출석")
         await interaction.followup.send(embed=e)
 
