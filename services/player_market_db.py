@@ -347,7 +347,7 @@ def player_profile(player_id: str, pos: str) -> dict:
 
 
 def _draw_from_pool(con, pack: dict, pack_price: int, pulls: int) -> tuple[str, list]:
-    """풀 쿼리·가중치·추첨 — buy_pack / simulate_pack 공유 헬퍼.
+    """풀 쿼리·가중치·추첨 — buy_pack 헬퍼.
 
     Returns:
         ("EMPTY_TIER", []) — 해당 등급 선수 없음
@@ -1489,39 +1489,6 @@ class PlayerMarketDB:
             ), None
 
         return True, f"🎁 {pack_type}팩 {pulls}장 개봉 완료! (총 {total_cost:,}원)", results
-
-    async def simulate_pack(self, *, pack_type: str, pulls: int) -> Tuple[bool, str, list | None]:
-        """팩 시뮬레이션 — 잔액·보유 변경 없이 뽑기 결과만 반환"""
-        pack_type = (pack_type or "").strip()
-        pulls = max(1, min(PACK_MAX_PULLS, int(pulls)))
-
-        if pack_type not in PACKS:
-            return False, "존재하지 않는 팩입니다.", None
-
-        pack = PACKS[pack_type]
-        pack_price = int(pack["price"])
-
-        async with self._lock:
-            def work():
-                con = self._connect()
-                try:
-                    status, picks = _draw_from_pool(con, pack, pack_price, pulls)
-                    return status, picks
-                finally:
-                    con.close()
-
-            status, results = await self._run(work)
-
-        if status == "EMPTY_TIER":
-            min_p = int(pack.get("min_price", 0) or 0)
-            max_p = pack.get("max_price", None)
-            return False, (
-                f"**{pack_type}팩** 등급({min_p:,}원~"
-                + (f"{int(max_p):,}원" if max_p else "∞")
-                + ")에 해당하는 선수가 현재 없습니다."
-            ), None
-
-        return True, f"🎲 {pack_type}팩 {pulls}장 시뮬레이션", results
 
     # ───────────────── 시장 틱 / 월 처리 ─────────────────
     async def run_tick_if_due(self, now_ts: int) -> list:

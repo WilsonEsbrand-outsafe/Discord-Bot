@@ -46,6 +46,80 @@ def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
     e.set_author(name=user.display_name, icon_url=user.display_avatar.url)
     return e
 
+# ───────────────── 시세 그래프 ─────────────────
+# 국내 증권 앱처럼 상승 빨강 · 하락 파랑. 배경은 디스코드 임베드 색에 맞춘다.
+CHART_UP, CHART_DOWN = 0xF04452, 0x3182F6
+_BG, _FG, _SUB, _GRID = "#2B2D31", "#F2F3F5", "#B5BAC1", "#3A3C42"
+
+
+def _won_short(v: float) -> str:
+    """축 눈금용: 1.2억 / 350만 / 9,000."""
+    if abs(v) >= 1e8:
+        return f"{v / 1e8:.1f}억".replace(".0억", "억")
+    if abs(v) >= 1e4:
+        return f"{v / 1e4:,.0f}만"
+    return f"{v:,.0f}"
+
+
+def price_chart_png(name: str, sub: str, ts: list[int], ys: list[int], base: int, hours: int) -> bytes:
+    """가격 기록(ts=유닉스초, ys=가격)을 다크 테마 PNG 로. 스레드에서 호출한다(블로킹)."""
+    import datetime as dt
+    import matplotlib.dates as mdates
+    from matplotlib.ticker import FuncFormatter, MaxNLocator
+
+    kst = dt.timezone(dt.timedelta(hours=9))
+    xs = [dt.datetime.fromtimestamp(t, kst) for t in ts]
+    up = ys[-1] >= ys[0]
+    line = f"#{CHART_UP if up else CHART_DOWN:06X}"
+
+    fig, ax = plt.subplots(figsize=(9, 4.6), dpi=150)
+    fig.patch.set_facecolor(_BG)
+    ax.set_facecolor(_BG)
+    fig.subplots_adjust(left=0.09, right=0.87, top=0.80, bottom=0.12)
+
+    lo, hi = min(ys), max(ys)
+    pad = (hi - lo) * 0.18 or max(1, hi * 0.02)
+    ax.set_ylim(lo - pad, hi + pad)
+    ax.set_xlim(xs[0], xs[-1])
+    ax.plot(xs, ys, color=line, linewidth=2.2, solid_joinstyle="round", zorder=3)
+    ax.fill_between(xs, ys, lo - pad, color=line, alpha=0.13, linewidth=0, zorder=2)
+    if lo - pad < base < hi + pad:   # 기준가가 화면 안에 있을 때만 점선
+        ax.axhline(base, color=_SUB, linestyle=(0, (3, 4)), linewidth=1, alpha=0.55, zorder=1)
+
+    # 최고 · 최저 (마지막 점과 겹치면 생략) + 현재가 말풍선
+    last = len(ys) - 1
+    for i, off, va in ((ys.index(hi), 7, "bottom"), (ys.index(lo), -7, "top")):
+        if i != last and hi != lo:
+            ha = "left" if i < last * 0.08 else "right" if i > last * 0.92 else "center"   # 가장자리면 안쪽으로
+            ax.annotate(f"{ys[i]:,}", (xs[i], ys[i]), xytext=(0, off), textcoords="offset points",
+                        ha=ha, va=va, color=_SUB, fontsize=8)
+    ax.scatter([xs[-1]], [ys[-1]], s=46, color=line, edgecolors=_BG, linewidths=2, zorder=4, clip_on=False)
+    ax.annotate(f"{ys[-1]:,}원", (xs[-1], ys[-1]), xytext=(10, 0), textcoords="offset points",
+                va="center", color="white", fontsize=9, fontweight="bold", annotation_clip=False,
+                bbox={"boxstyle": "round,pad=0.35", "fc": line, "ec": "none"})
+
+    for s in ax.spines.values():
+        s.set_visible(False)
+    ax.grid(axis="y", color=_GRID, linewidth=0.8)
+    ax.tick_params(colors=_SUB, labelsize=8, length=0)
+    ax.yaxis.set_major_locator(MaxNLocator(5))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: _won_short(v)))
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=7, tz=kst))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M" if hours <= 24 else "%m/%d %H시", tz=kst))
+
+    d = ys[-1] - ys[0]
+    fig.text(0.03, 0.93, name, color=_FG, fontsize=15, fontweight="bold", va="center")
+    fig.text(0.03, 0.855, sub, color=_SUB, fontsize=9, va="center")
+    fig.text(0.97, 0.93, f"{ys[-1]:,}원", color=_FG, fontsize=15, fontweight="bold", ha="right", va="center")
+    fig.text(0.97, 0.855, f"{'▲' if d > 0 else '▼' if d < 0 else '―'} {abs(d):,}원 ({d / ys[0] * 100 if ys[0] else 0:+.2f}%)",
+             color=line, fontsize=10, fontweight="bold", ha="right", va="center")
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor=_BG)
+    plt.close(fig)
+    return buf.getvalue()
+
+
 # 최고 등급에 맞춘 embed 색 — 개봉 연출에서 분위기를 잡아준다
 _LABEL_COLOR = {
     "🔴 대박": 0xe74c3c, "🟠 이득": 0xe67e22, "🟡 본전": 0xf1c40f,
@@ -62,7 +136,7 @@ def _card_line(row, pack_price_per: int, is_jackpot: bool = False) -> tuple[str,
 
 
 def _normalize_results(results: list) -> list:
-    """buy_pack은 [(row, is_jackpot)], 팩시뮬은 [row]. 둘 다 받아준다."""
+    """[(row, is_jackpot)] 또는 [row] 를 [(row, is_jackpot)] 로 맞춘다."""
     out = []
     for item in results:
         if len(item) == 2 and isinstance(item[0], (list, tuple)):
@@ -75,7 +149,7 @@ def _normalize_results(results: list) -> list:
 def _format_pack_results(
     results: list, pack_price_per: int
 ) -> tuple[str, str, int]:
-    """팩 뽑기 결과를 포맷팅. /상점 · /팩시뮬 공통 사용.
+    """팩 뽑기 결과를 포맷팅 (/상점 개봉 결과).
 
     Returns:
         (grade_summary, lines_text, total_value)
@@ -470,19 +544,6 @@ class PlayersMarket(commands.Cog):
         except Exception:
             return []
 
-    async def pack_type_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        """팩 종류 자동완성"""
-        pack_emoji = PACK_EMOJI
-        return [
-            app_commands.Choice(
-                name=f"{pack_emoji.get(k, '🎁')} {k}팩  |  {PACKS[k]['price']:,}원 / 장",
-                value=k,
-            )
-            for k in PACKS
-            if not current or current in k
-        ]
 
     async def retired_holding_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -774,56 +835,18 @@ class PlayersMarket(commands.Cog):
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
 
-    # ───────────────── 팩 시뮬레이션 ─────────────────
-    @app_commands.command(name="팩시뮬", description="팩 뽑기 결과를 미리 시뮬레이션합니다. (잔액·보유 변경 없음)")
-    @app_commands.describe(종류="브론즈/실버/골드/플래티넘/다이아몬드/아이콘/얼티밋", 장수="1~10")
-    @app_commands.autocomplete(종류=pack_type_autocomplete)
-    async def pack_simulate(self, interaction: discord.Interaction, 종류: str, 장수: int = 1):
-        await interaction.response.defer()
-
-        종류 = (종류 or "").strip()
-        if 종류 not in PACKS:
-            kinds = ", ".join(PACKS.keys())
-            return await interaction.followup.send(
-                embed=_embed("❌ 팩시뮬", f"존재하지 않는 팩입니다.\n가능: {kinds}", interaction.user),
-            )
-
-        ok, msg, results = await self.pm.simulate_pack(pack_type=종류, pulls=장수)
-        if not ok or not results:
-            return await interaction.followup.send(
-                embed=_embed("❌ 팩시뮬", msg, interaction.user)
-            )
-
-        pack_price_per = PACKS[종류]["price"]
-        grade_summary, lines_text, total_value = _format_pack_results(results, pack_price_per)
-
-        summary = (
-            f"팩 단가: **{pack_price_per:,}원**\n"
-            f"{grade_summary}\n"
-            f"시뮬 현재가 합: **{total_value:,}원**\n\n"
-            f"결과 목록:\n{lines_text}"
-        )
-        embed = _embed("🎲 팩 시뮬레이션 결과", summary, interaction.user)
-        embed.set_footer(text="※ 시뮬레이션 결과이며 실제 잔액·보유에 반영되지 않습니다.")
-        await interaction.followup.send(embed=embed)
-
     # ───────────────── 시세 그래프 ─────────────────
     @app_commands.command(name="시세", description="선수 가격 변동 그래프를 봅니다.")
-    @app_commands.describe(player_id="선수 이름 또는 ID", hours="조회 시간(기본 24시간)")
+    @app_commands.describe(player_id="선수 이름 또는 ID", hours="조회 시간(기본 24시간 · 최대 168시간)")
     @app_commands.autocomplete(player_id=player_id_autocomplete)
     async def chart(self, interaction: discord.Interaction, player_id: str, hours: int = 24):
-        import datetime as dt
-        import matplotlib.dates as mdates
-        from matplotlib.ticker import FuncFormatter
-
         try:
             await interaction.response.defer()
         except (discord.NotFound, discord.HTTPException):
             return
 
         hours = max(1, min(168, int(hours)))
-        now = int(time.time())
-        since = now - hours * 3600
+        since = int(time.time()) - hours * 3600
 
         row = await self.pm.get_player(player_id)
         if not row:
@@ -833,51 +856,26 @@ class PlayersMarket(commands.Cog):
         hist = await self.pm.price_history(pid, since_ts=since, limit=400)
         if len(hist) < 2:
             return await interaction.followup.send("그래프 데이터가 아직 부족합니다. (시장 틱이 쌓여야 합니다)")
+        ts, ys = [int(t) for t, _ in hist], [int(p) for _, p in hist]
 
-        xs = [dt.datetime.fromtimestamp(t) for (t, _p) in hist]
-        ys = [int(p) for (_t, p) in hist]
+        sub = f"#{pid} · {pos} · OVR {ovr} ({potg}) · 최근 {hours}시간"
+        png = await asyncio.to_thread(price_chart_png, name, sub, ts, ys, int(basev), hours)
 
-        current_price = int(ys[-1])
-        prev_price = int(ys[-2])
-        diff = current_price - prev_price
-        pct = (diff / prev_price * 100) if prev_price else 0.0
-        sign = "+" if diff > 0 else ""
-        diff_text = f"{sign}{diff:,}원 ({sign}{pct:.2f}%)"
+        def change(a: int, b: int) -> str:
+            d = b - a
+            return f"{'▲' if d > 0 else '▼' if d < 0 else '―'} {d:+,}원 ({d / a * 100 if a else 0:+.2f}%)"
 
-        # ✅ 그래프 생성(블로킹)을 스레드로 분리
-        def _make_png() -> bytes:
-            plt.figure(figsize=(8, 4.5))
-            plt.plot(xs, ys, marker="o", markersize=3, linewidth=1.5)
-            plt.title(f"{name} (#{pid})")
-            plt.xlabel("시간")
-            plt.ylabel("가격(원)")
-
-            ax = plt.gca()
-            ax.grid(True, linestyle="--", alpha=0.35)
-
-            locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
-            ax.xaxis.set_major_locator(locator)
-            ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d\n%H:%M"))
-
-            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{int(v):,}"))
-            plt.tight_layout()
-
-            buf = io.BytesIO()
-            plt.savefig(buf, format="png", dpi=160)
-            plt.close()
-            return buf.getvalue()
-
-        png_bytes = await asyncio.to_thread(_make_png)
-
-        file = discord.File(fp=io.BytesIO(png_bytes), filename="chart.png")
-        e = _embed(
-            "📊 시세",
-            f"**{name}** (`#{pid}`)\n{nation} / {pos} / {age}세 / OVR {ovr} / POT {potg}\n"
-            f"현재가: **{current_price:,}원**\n직전가: **{prev_price:,}원**\n변동: **{diff_text}**",
-            interaction.user,
-        )
+        up = ys[-1] >= ys[0]
+        e = ui.card(f"{'📈' if up else '📉'} {name} 시세",
+                    f"`#{pid}` · {nation} · {pos} · {age}세 · OVR **{ovr}** · 잠재 {potg}"
+                    + (" · 💤 은퇴" if int(retired) else ""),
+                    CHART_UP if up else CHART_DOWN, interaction.user, "📊 시세")
+        e.add_field(name="💰 현재가", value=f"**{ys[-1]:,}원**\n직전 {change(ys[-2], ys[-1])}", inline=True)
+        e.add_field(name=f"📅 {hours}시간 변동", value=f"**{change(ys[0], ys[-1])}**", inline=True)
+        e.add_field(name="↕️ 최고 · 최저", value=f"{max(ys):,}원\n{min(ys):,}원", inline=True)
         e.set_image(url="attachment://chart.png")
-        await interaction.followup.send(embed=e, file=file)
+        e.set_footer(text=f"기준가 {int(basev):,}원 (점선) · 10분마다 변동 · 시간은 KST")
+        await interaction.followup.send(embed=e, file=discord.File(io.BytesIO(png), filename="chart.png"))
 
     # ───────────────── 팩 정보 ─────────────────
     @app_commands.command(name="팩정보", description="팩 종류별 가격과 뽑기 분포를 확인합니다.")

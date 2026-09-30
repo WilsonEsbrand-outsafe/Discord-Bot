@@ -204,6 +204,7 @@ async def _item_screens():
     await Economy.bag.callback(eco, inter)
     view = sent[-1]["view"]
     assert "× 1" in sent[-1]["embed"].description and len(view.children) == 1
+    assert "리셋권" not in sent[-1]["embed"].description                       # 없는 아이템은 안 보인다
     await view.children[0].callback(inter)                                    # [응원 머플러 사용]
     result, bag = sent[-1]["embeds"]
     assert "사용" in result.title and bag.fields and "5경기" in bag.fields[0].value
@@ -219,6 +220,10 @@ async def _item_screens():
         bought.append((pack, n))
     shop._buy_pack = fake_buy
     assert not hasattr(cpm.PlayersMarket, "pack")                              # /선수팩 삭제
+    assert not hasattr(cpm.PlayersMarket, "pack_simulate") and not hasattr(Economy, "hole_in_one")   # /팩시뮬 · /홀인원 삭제
+    for ys in ([100, 120, 90, 130], [500, 400, 450, 300], [7, 7, 7]):          # /시세 그래프: 상승 · 하락 · 평평
+        png = cpm.price_chart_png("선수", "#1 · FW", [i * 600 for i in range(len(ys))], ys, 110, 24)
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
     await cpm.PlayersMarket.shop.callback(shop, inter)
     view = sent[-1]["view"]
     assert not any(o.value.startswith("item:") and o.value[5:] in edb.RESET_ITEMS for o in view.menu.options)
