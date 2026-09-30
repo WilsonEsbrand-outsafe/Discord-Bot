@@ -29,7 +29,7 @@ def test_penalty_table():
     assert 0 < prob_of["골대 강타"] - prob_of["골대 맞고 인"] <= 0.03   # 2배 손실이 2배 수익보다 살짝 높게
     assert prob_of["노룩 킥"] > 0.01
     assert t[-1][3] == "선방"                                 # 부동소수 잔여 구간은 선방으로
-    assert Economy.PK_MIN_BET == 5_000
+    assert Economy.PK_MIN_BET == 1_000
     assert all("초" not in t + c for t, c in Economy.PK_SPAM_LINES)   # 도배 방지 멘트는 남은 시간을 말하지 않는다
     label = Economy._pk_label
     assert [label(Fraction(m)) for m in ("200", "1", "0", "-1", "-10")] == ["200배 수익", "1배 수익", "본전", "1배 손실", "10배 손실"]
@@ -42,7 +42,7 @@ def test_batting_table():
     assert -0.02 < ev < 0, ev
     m = {r[3].rstrip("!"): r[1] for r in t}
     assert (m["장외홈런"], m["끝내기 홈런"], m["볼넷"], m["뜬공"], m["땅볼"], m["삼진"], m["병살타"], m["트리플 플레이"]) ==         ("50", "10", "0", "-1", "-1", "-2", "-5", "-10")
-    assert t[-1][3] == "땅볼" and max(t, key=lambda r: r[0])[3] == "안타"
+    assert Economy.BAT_MIN_BET == 1_000 and t[-1][3] == "땅볼" and max(t, key=lambda r: r[0])[3] == "안타"
 
 
 def test_horse_race():
@@ -54,7 +54,7 @@ def test_horse_race():
         assert p[0] <= 7 and p[3] >= -7
         seen.add(tuple(p))
     assert len(seen) > 10                                           # 상금표가 경주마다 다양하다
-    assert len({h[1] for h in Economy.RACE_HORSES}) == 10 and Economy.RACE_MIN_BET == 5_000
+    assert len({h[1] for h in Economy.RACE_HORSES}) == 10 and Economy.RACE_MIN_BET == 1_000
     for _ in range(300):
         finish = rng.sample(range(4), 4)
         frames = Economy._race_frames(finish, rng)

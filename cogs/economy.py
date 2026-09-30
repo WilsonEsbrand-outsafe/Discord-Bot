@@ -111,7 +111,7 @@ class Economy(commands.Cog):
     # 수익 단계: 골 1배 → 골대 맞고 인 2배 → 노룩 킥 5배 → 탑코너 20배 → 파넨카 200배.
     # 손실 단계: 선방 1배(가장 흔함, 골과 비슷) → 골대 강타 2배 → 부정킥 5배 → 관중석 홈런 10배.
     # 마지막 줄(선방)이 부동소수 잔여 구간을 받는다.
-    PK_MIN_BET = 5_000
+    PK_MIN_BET = 1_000
     PK_SPAM_GAP = 1.0   # 도배 방지 간격(초)
     PK_SPAM_LINES = [   # 도배 방지에 걸렸을 때 (제목, 캐스터 멘트) — 남은 시간은 굳이 말하지 않는다
         ("🏃 볼보이가 공을 가져오는 중!", "공이 아직 안 돌아왔어요! 볼보이가 열심히 뛰어오고 있습니다."),
@@ -506,8 +506,8 @@ class Economy(commands.Cog):
         """페널티킥 화면의 공통 틀: '닉네임 · 🎙️ 페널티킥 중계' + 캐스터 멘트."""
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 페널티킥 중계")
 
-    @app_commands.command(name="페널티킥", description="돈을 걸고 슛! 최대 200배 수익, 최악은 10배 손실 (최소 5,000원)")
-    @app_commands.describe(amount="베팅 금액 (최소 5,000원)")
+    @app_commands.command(name="페널티킥", description="돈을 걸고 슛! 최대 200배 수익, 최악은 10배 손실 (최소 1,000원)")
+    @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def penalty_kick(self, interaction: discord.Interaction, amount: app_commands.Range[int, PK_MIN_BET]):
         user = interaction.user
         # 도배 방지: 직전 킥에서 1초가 안 지났으면 본인에게만 중계 멘트를 보여주고 끝낸다.
@@ -564,7 +564,7 @@ class Economy(commands.Cog):
 
     # ✅ 야구(타석): 페널티킥과 같은 방식 — 결과표에서 한 줄 뽑아 순이익 = 베팅 x 배수. 기대값 약 -1.1%.
     # 마지막 줄(땅볼)이 부동소수 잔여 구간을 받는다.
-    BAT_MIN_BET = 5_000
+    BAT_MIN_BET = 1_000
     BAT_SPAM_LINES = [
         ("🧢 타자가 장갑을 고쳐 끼는 중", "타임! 타자가 배터박스를 잠깐 벗어났어요. 곧 다시 섭니다!"),
         ("🤚 투수가 사인을 거부합니다", "포수와 사인이 안 맞네요. 잠시만 기다려 주세요!"),
@@ -589,9 +589,9 @@ class Economy(commands.Cog):
     def _bat_card(user, title: str, caster: str, color: int) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 야구 중계")
 
-    @app_commands.command(name="야구", description="타석에 서서 한 방! 장외홈런 50배 수익, 트리플 플레이 10배 손실 (최소 5,000원)")
+    @app_commands.command(name="야구", description="타석에 서서 한 방! 장외홈런 50배 수익, 트리플 플레이 10배 손실 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
-    @app_commands.describe(amount="베팅 금액 (최소 5,000원)")
+    @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def batting(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
         user = interaction.user
         now = time.monotonic()
@@ -636,7 +636,7 @@ class Economy(commands.Cog):
     # ✅ 경마: 말 10마리 중 4마리 출주. 말 정보(승률·각질·컨디션)는 분위기용 — 순위는 완전 랜덤.
     # 상금표도 경주마다 랜덤: 1·2위 수익, 3·4위 손실. 수익 합 = 손실 합이라 기대값 0.
     # 베팅금은 출주표를 띄울 때 먼저 빠져나간다 — 상금표만 보고 안 고르면(60초) 베팅금을 잃는다.
-    RACE_MIN_BET = 5_000
+    RACE_MIN_BET = 1_000
     RACE_TRACK = 12
     RACE_SECTION = "🎙️ 경마 중계"
     RACE_HORSES = [   # (이모지, 이름, 승률 %, 각질, 한 줄 소개) — 표시용
@@ -708,9 +708,9 @@ class Economy(commands.Cog):
                        f'> 🎙️ *"잔액이 부족해 매표소에서 돌려보냈습니다!"*\n\n`베팅` **{amount:,}원**\n`잔액` **{bal:,}원**',
                        ui.LOSE, user, self.RACE_SECTION)
 
-    @app_commands.command(name="경마", description="출주마 4마리 중 한 마리에 베팅! 1·2위는 수익, 3·4위는 손실 (최소 5,000원)")
+    @app_commands.command(name="경마", description="출주마 4마리 중 한 마리에 베팅! 1·2위는 수익, 3·4위는 손실 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
-    @app_commands.describe(amount="베팅 금액 (최소 5,000원)")
+    @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def horse_race(self, interaction: discord.Interaction, amount: app_commands.Range[int, RACE_MIN_BET]):
         user, amount = interaction.user, int(amount)
         await interaction.response.defer()
