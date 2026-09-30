@@ -12,8 +12,25 @@ TRAIN_DAILY_LIMIT = 30
 # Lv.N → Lv.N+1 에 필요한 XP. 레벨이 오를수록 늘어난다 (만렙까지 합계 2,190 XP ≈ 한 달 남짓).
 TRAIN_XP_NEED = (30, 60, 100, 150, 210, 280, 360, 450, 550)
 
+# 스카우트: 훈련의 상위 버전 — 하루 15회, 최대 Lv.5 (만렙까지 합계 540 XP ≈ 3주)
+SCOUT_MAX_LEVEL = 5
+SCOUT_DAILY_LIMIT = 15
+SCOUT_XP_NEED = (40, 90, 160, 250)
+
+# 레벨·경험치·일일 횟수를 쓰는 반복 콘텐츠 규칙: 테이블 → (만렙, 하루 횟수, 필요 XP 표)
+GRIND_RULES = {
+    "training": (TRAIN_MAX_LEVEL, TRAIN_DAILY_LIMIT, TRAIN_XP_NEED),
+    "scouting": (SCOUT_MAX_LEVEL, SCOUT_DAILY_LIMIT, SCOUT_XP_NEED),
+}
+
+
+def grind_xp_need(table: str, level: int) -> int:
+    max_level, _, need = GRIND_RULES[table]
+    return need[min(int(level), max_level - 1) - 1]
+
+
 def train_xp_need(level: int) -> int:
-    return TRAIN_XP_NEED[min(int(level), TRAIN_MAX_LEVEL - 1) - 1]
+    return grind_xp_need("training", level)
 
 
 class EconomyDB:
@@ -78,6 +95,18 @@ class EconomyDB:
                 except Exception:
                     pass
             con.execute("UPDATE training SET level=?, xp=0 WHERE level>?", (TRAIN_MAX_LEVEL, TRAIN_MAX_LEVEL))
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scouting (
+                    user_id INTEGER PRIMARY KEY,
+                    last_play_ts INTEGER NOT NULL DEFAULT 0,
+                    level INTEGER NOT NULL DEFAULT 1,
+                    xp INTEGER NOT NULL DEFAULT 0,
+                    day_key INTEGER NOT NULL DEFAULT 0,
+                    day_count INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
                         # ───────────── 토토 ─────────────
             con.execute(
                 """
@@ -1060,6 +1089,10 @@ class EconomyDB:
                         ("daily_claims",          "user_id"),
                         ("penalty_kick",          "user_id"),
                         ("training",              "user_id"),
+                        ("scouting",              "user_id"),
+                        ("clubs",                 "user_id"),
+                        ("club_lineup",           "user_id"),
+                        ("club_bonus",            "user_id"),
                         ("quiz_stats",            "user_id"),
                         ("quiz_results",          "user_id"),
                         ("notification_settings", "user_id"),
@@ -1083,12 +1116,21 @@ class EconomyDB:
 
     # ✅ 훈련: 하루 횟수 제한 + 레벨(성공률·보상 증가)
     async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30) -> dict:
+        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec)
+
+    async def play_scout(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
+        return await self._play_grind("scouting", user_id, now_ts, roll, cooldown_sec)
+
+    async def _play_grind(self, table: str, user_id: int, now_ts: int, roll, cooldown_sec: int) -> dict:
         """
-        roll(level) -> (delta, xp_gain, info) 를 트랜잭션 안에서 호출해 결과를 반영한다.
+        레벨·경험치·일일 횟수가 있는 반복 콘텐츠(훈련·스카우트) 공용.
+        roll(level, con) -> (delta, xp_gain, info) 를 트랜잭션 안에서 호출해 결과를 반영한다.
+        (con 을 넘기는 건 스카우트가 같은 트랜잭션 안에서 선수 카드를 지급하기 위해서다.)
         반환 dict: ok, level, xp, need, used, limit, leveled, new_bal, delta, info
         ok=False 면 reason 이 "cooldown"(remaining 초) 또는 "limit"(오늘 횟수 소진).
         경험치는 음수가 될 수 있지만 레벨 안에서 0 아래로는 내려가지 않는다(레벨 다운 없음).
         """
+        max_level, limit, _ = GRIND_RULES[table]
         day = (now_ts + 9 * 3600) // 86400  # KST 날짜 키
         async with self._lock:
             def work():
@@ -1096,14 +1138,13 @@ class EconomyDB:
                 try:
                     con.execute("BEGIN IMMEDIATE;")
                     con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
-                    con.execute("INSERT OR IGNORE INTO training(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
+                    con.execute(f"INSERT OR IGNORE INTO {table}(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
                     level, xp, day_key, used, last = con.execute(
-                        "SELECT level, xp, day_key, day_count, last_play_ts FROM training WHERE user_id=?", (user_id,)
+                        f"SELECT level, xp, day_key, day_count, last_play_ts FROM {table} WHERE user_id=?", (user_id,)
                     ).fetchone()
                     if day_key != day:
                         used = 0
-                    limit = TRAIN_DAILY_LIMIT
-                    base = {"ok": False, "level": level, "xp": xp, "need": train_xp_need(level),
+                    base = {"ok": False, "level": level, "xp": xp, "need": grind_xp_need(table, level),
                             "used": used, "limit": limit}
                     if used >= limit:
                         con.execute("ROLLBACK;")
@@ -1112,26 +1153,26 @@ class EconomyDB:
                         con.execute("ROLLBACK;")
                         return {**base, "reason": "cooldown", "remaining": cooldown_sec - (now_ts - last)}
 
-                    delta, xp_gain, info = roll(level)
+                    delta, xp_gain, info = roll(level, con)
                     xp = max(0, xp + int(xp_gain))
                     leveled = 0
-                    while level < TRAIN_MAX_LEVEL and xp >= train_xp_need(level):
-                        xp -= train_xp_need(level)
+                    while level < max_level and xp >= grind_xp_need(table, level):
+                        xp -= grind_xp_need(table, level)
                         level += 1
                         leveled += 1
-                    if level >= TRAIN_MAX_LEVEL:
+                    if level >= max_level:
                         xp = 0
                     used += 1
 
                     con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (int(delta), user_id))
                     con.execute(
-                        "UPDATE training SET level=?, xp=?, day_key=?, day_count=?, last_play_ts=? WHERE user_id=?",
+                        f"UPDATE {table} SET level=?, xp=?, day_key=?, day_count=?, last_play_ts=? WHERE user_id=?",
                         (level, xp, day, used, now_ts, user_id),
                     )
                     new_bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
                     con.execute("COMMIT;")
-                    return {"ok": True, "level": level, "xp": xp, "need": train_xp_need(level),
-                            "used": used, "limit": TRAIN_DAILY_LIMIT, "leveled": leveled,
+                    return {"ok": True, "level": level, "xp": xp, "need": grind_xp_need(table, level),
+                            "used": used, "limit": limit, "leveled": leveled,
                             "new_bal": int(new_bal), "delta": int(delta), "info": info}
                 except Exception:
                     try:

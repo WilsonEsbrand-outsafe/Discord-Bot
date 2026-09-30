@@ -220,21 +220,6 @@ def test_news_moves_base_value_not_just_price():
     assert changed, "뉴스가 기준가를 못 바꿈"
 
 
-def test_pack_pity_guarantees_jackpot():
-    """천장 안에 반드시 잭팟이 한 번 나온다."""
-    from services.player_market_db import JACKPOT_PITY, _draw_from_pool
-    eco, pm = run(_setup())
-    con = pm._connect()
-    try:
-        cfg = PACKS["브론즈"]
-        status, picks, pity = _draw_from_pool(con, cfg, cfg["price"], JACKPOT_PITY, pity=0)
-    finally:
-        con.close()
-    assert status == "OK"
-    assert any(hit for _row, hit in picks), "천장까지 뽑았는데 잭팟이 없음"
-    assert pity < JACKPOT_PITY
-
-
 def test_jackpot_players_are_above_pack_price():
     from services.player_market_db import JACKPOT_RANGE, _draw_from_pool
     eco, pm = run(_setup())
@@ -242,7 +227,7 @@ def test_jackpot_players_are_above_pack_price():
     try:
         cfg = PACKS["실버"]
         price = cfg["price"]
-        status, picks, _ = _draw_from_pool(con, cfg, price, 400, pity=0)
+        status, picks = _draw_from_pool(con, cfg, price, 400)
     finally:
         con.close()
     hits = [row for row, hit in picks if hit]
@@ -251,16 +236,41 @@ def test_jackpot_players_are_above_pack_price():
         assert row[1] >= price * JACKPOT_RANGE[0], (row[1], price)
 
 
-def test_pity_persists_across_pack_purchases():
+def test_top_packs_stay_near_price_and_have_jackpots():
+    """상위 팩(플래티넘~얼티밋): 일반 추첨은 구간 안, 잭팟은 단가보다 비싸다 (천장 없음)."""
+    from services.player_market_db import _draw_from_pool
     eco, pm = run(_setup())
-    cost = PACKS["브론즈"]["price"]
-    run(eco.set_balance(USER, cost * 3))
-    before = run(pm.get_pack_pity(USER, "브론즈"))
-    run(pm.buy_pack(user_id=USER, pack_type="브론즈", pulls=3, now_ts=NOW_OPEN,
-                    get_balance=eco.get_balance, add_balance=eco.add_balance))
-    after = run(pm.get_pack_pity(USER, "브론즈"))
-    # 잭팟이 안 떴으면 3 증가, 떴으면 리셋되어 3보다 작다
-    assert after in (before + 3, 0, 1, 2), (before, after)
+    con = pm._connect()
+    try:
+        for name in ("플래티넘", "다이아몬드", "아이콘", "얼티밋"):
+            cfg = PACKS[name]
+            status, picks = _draw_from_pool(con, cfg, cfg["price"], 300)
+            if status != "OK":
+                continue          # 스폰 풀에 해당 구간 선수가 없을 수 있다
+            for row, hit in picks:
+                if hit:
+                    assert row[1] > cfg["price"], (name, row[1])
+                else:
+                    assert row[1] >= cfg["min_price"], (name, row[1])
+                    assert cfg["max_price"] is None or row[1] <= cfg["max_price"], (name, row[1])
+            assert cfg["min_price"] >= cfg["price"] * 0.7, name   # 단가의 70% 미만은 안 나온다
+    finally:
+        con.close()
+
+
+def test_short_player_ids():
+    """새로 스폰되는 선수 ID 는 짧은 번호다."""
+    eco, pm = run(_setup())
+    con = pm._connect()
+    try:
+        ids = [r[0] for r in con.execute(
+            "SELECT player_id FROM pm_players WHERE player_id NOT LIKE 'AMT_%'")]
+    finally:
+        con.close()
+    assert ids and all(i.isdigit() for i in ids), ids[:5]
+    row = run(pm.get_player("#" + ids[0]))
+    assert row and row[0] == ids[0]
+    assert run(pm.get_player(row[1]))[1] == row[1]           # 이름으로도 찾는다
 
 
 def test_tick_path_emits_news():

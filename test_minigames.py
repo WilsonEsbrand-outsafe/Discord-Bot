@@ -58,21 +58,21 @@ def test_training_roll():
 async def _training_db():
     db = edb.EconomyDB()
     now = 1_800_000_000
-    r = await db.play_training(1, now, lambda lv: (-500, -1, None))
+    r = await db.play_training(1, now, lambda lv, con: (-500, -1, None))
     assert r["ok"] and r["xp"] == 0 and r["new_bal"] == -500   # 경험치는 0 아래로 안 내려감
-    r = await db.play_training(1, now + 10, lambda lv: (1000, 0, None))
+    r = await db.play_training(1, now + 10, lambda lv, con: (1000, 0, None))
     assert not r["ok"] and r["reason"] == "cooldown" and r["remaining"] == 20
     for i in range(1, 30):
-        r = await db.play_training(1, now + 30 * i, lambda lv: (1000, 0, None))
+        r = await db.play_training(1, now + 30 * i, lambda lv, con: (1000, 0, None))
         assert r["ok"], i
-    r = await db.play_training(1, now + 30 * 30, lambda lv: (1000, 0, None))
+    r = await db.play_training(1, now + 30 * 30, lambda lv, con: (1000, 0, None))
     assert not r["ok"] and r["reason"] == "limit" and r["used"] == 30
     assert await db.get_balance(1) == 29_000 - 500
     # 다음 날 초기화 + 경험치 몰아주기로 만렙(10)
-    r = await db.play_training(1, now + 86400, lambda lv: (0, 10_000, None))
+    r = await db.play_training(1, now + 86400, lambda lv, con: (0, 10_000, None))
     assert r["ok"] and r["level"] == edb.TRAIN_MAX_LEVEL == 10 and r["xp"] == 0 and r["used"] == 1
     # 필요 경험치 딱 맞으면 한 레벨만 오른다
-    r = await db.play_training(2, now, lambda lv: (0, edb.train_xp_need(1), None))
+    r = await db.play_training(2, now, lambda lv, con: (0, edb.train_xp_need(1), None))
     assert r["level"] == 2 and r["xp"] == 0 and r["need"] == edb.train_xp_need(2)
 
 

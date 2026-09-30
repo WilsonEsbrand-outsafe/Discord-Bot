@@ -9,7 +9,8 @@ from discord import app_commands
 from discord.ext import commands
 from auth import owner_only
 
-from services.economy_db import EconomyDB, TRAIN_MAX_LEVEL
+from services.economy_db import EconomyDB, TRAIN_MAX_LEVEL, SCOUT_MAX_LEVEL
+from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
 from services import ui
 
@@ -41,6 +42,28 @@ class Economy(commands.Cog):
     TRAIN_RATE_CAP    = 0.95
     TRAIN_TIERS = [             # (시작 레벨, 등급) — 표시용
         (1, "🌱 유스"), (3, "🥉 2군"), (5, "🥈 1군"), (7, "🥇 주전"), (9, "⭐ 에이스"), (10, "👑 레전드"),
+    ]
+
+    # 스카우트: 레벨 = 보상 배율(1~5배). 성공률은 훈련처럼 레벨당 +1%p (표시 안 함).
+    SCOUT_COOLDOWN = 60
+    SCOUT_LEVEL_NAMES = ["🔍 지역 스카우트", "🗺️ 국내 스카우트", "✈️ 해외 스카우트", "🌍 수석 스카우트", "👁️ 전설의 스카우트"]
+    SCOUT_EVENTS = [
+        {"emoji": "🇧🇷", "name": "브라질 유스 리그", "success_rate": 0.75, "win": (12000, 30000), "lose": (-9000, -3000),
+         "success_text": "해변 풋살장에서 번뜩이는 재능들을 잔뜩 봤습니다!", "fail_text": "경기가 폭우로 취소됐어요… 출장비만 날렸습니다."},
+        {"emoji": "🇦🇷", "name": "아르헨티나 동네 구장", "success_rate": 0.70, "win": (12000, 30000), "lose": (-9000, -3000),
+         "success_text": "좁은 공간에서 춤추듯 드리블하는 아이를 발견했습니다!", "fail_text": "현지 에이전트에게 소개비만 뜯겼습니다."},
+        {"emoji": "🇫🇷", "name": "프랑스 유스 아카데미", "success_rate": 0.75, "win": (12000, 30000), "lose": (-9000, -3000),
+         "success_text": "스피드와 피지컬이 남다른 선수들이 가득합니다.", "fail_text": "이미 빅클럽 스카우트들이 다 쓸어 갔네요."},
+        {"emoji": "🇳🇬", "name": "나이지리아 유스 토너먼트", "success_rate": 0.70, "win": (12000, 30000), "lose": (-9000, -3000),
+         "success_text": "폭발적인 운동능력의 유망주를 체크했습니다!", "fail_text": "비행기가 연착돼 결승전을 놓쳤습니다."},
+        {"emoji": "🇪🇸", "name": "스페인 3부 리그", "success_rate": 0.80, "win": (12000, 30000), "lose": (-9000, -3000),
+         "success_text": "패스 센스가 기가 막힌 미드필더를 봤습니다.", "fail_text": "보러 간 선수가 부상으로 결장했습니다."},
+        {"emoji": "🇯🇵", "name": "일본 고교 선수권", "success_rate": 0.80, "win": (12000, 30000), "lose": (-9000, -3000),
+         "success_text": "기본기가 탄탄한 선수들을 꼼꼼히 확인했습니다.", "fail_text": "스카우트 보고서를 호텔에 두고 왔습니다…"},
+        {"emoji": "🇰🇷", "name": "K리그 유스 경기", "success_rate": 0.80, "win": (12000, 30000), "lose": (-9000, -3000),
+         "success_text": "투지 넘치는 유망주를 리스트에 올렸습니다!", "fail_text": "주차만 1시간… 전반전을 통째로 놓쳤습니다."},
+        {"emoji": "🇬🇧", "name": "잉글랜드 챔피언십", "success_rate": 0.70, "win": (12000, 30000), "lose": (-9000, -3000),
+         "success_text": "거친 리그에서 살아남은 강심장을 찾았습니다.", "fail_text": "런던 물가에 경비만 잔뜩 썼습니다."},
     ]
 
     # 페널티킥 배당표: (확률, 순이익 배수, 이모지, 이름, 중계 헤드라인, 캐스터 멘트)
@@ -249,7 +272,7 @@ class Economy(commands.Cog):
     def train_tier(cls, level: int) -> str:
         return [name for start, name in cls.TRAIN_TIERS if level >= start][-1]
 
-    def _train_roll(self, level: int):
+    def _train_roll(self, level: int, con=None):
         """(돈 변동, 경험치 변동, 표시 정보). 성공 +3 XP · 실패 -1 XP. 성공률은 레벨마다 조금씩 오르지만 화면엔 안 보인다."""
         ev = random.choice(self.TRAIN_EVENTS)
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
@@ -258,18 +281,43 @@ class Economy(commands.Cog):
             return random.randint(*ev["lose"]) * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"]}
         return random.randint(*ev["win"]) * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"]}
 
-    def _train_status(self, r: dict, xp_gain: int | None = None) -> str:
-        """`레벨` / `경험치` / `오늘` 세 줄."""
+    @staticmethod
+    def _grind_status(r: dict, max_level: int, tier: str, mult: int, xp_gain: int | None = None) -> str:
+        """훈련·스카우트 공용 `레벨` / `경험` / `오늘` 세 줄."""
         lv = r["level"]
-        if lv >= TRAIN_MAX_LEVEL:
+        if lv >= max_level:
             xp = f"`{ui.bar(1, 1)}` **MAX**"
         else:
             xp = f"`{ui.bar(r['xp'], r['need'])}` {r['xp']}/{r['need']}"
             if xp_gain is not None:
                 xp += f" ({xp_gain:+d})"
-        return (f"`레벨` **Lv.{lv}** {self.train_tier(lv)} · 보상 **{self.train_money_mult(lv)}배**\n"
+        return (f"`레벨` **Lv.{lv}** {tier} · 보상 **{mult}배**\n"
                 f"`경험` {xp}\n"
                 f"`오늘` {r['used']}/{r['limit']}회")
+
+    def _train_status(self, r: dict, xp_gain: int | None = None) -> str:
+        lv = r["level"]
+        return self._grind_status(r, TRAIN_MAX_LEVEL, self.train_tier(lv), self.train_money_mult(lv), xp_gain)
+
+    async def _grind_blocked(self, interaction, r: dict, now_ts: int, card, status: str,
+                             limit_text: tuple, wait_text: tuple, ready_text: tuple):
+        """오늘 횟수 소진 / 쿨타임 화면. (제목, 캐스터 멘트) 튜플을 받는다.
+        Discord 상대 시간(<t:..:R>)은 0초가 지나면 '1초 전'으로 계속 흘러가므로,
+        쿨타임이 끝나는 순간 메시지를 '준비 완료'로 바꿔 멈춘다."""
+        if r["reason"] == "limit":
+            e = card(interaction.user, *limit_text, ui.DARK)
+            e.description += "\n\n" + status
+            return await interaction.followup.send(embed=e)
+        e = card(interaction.user, *wait_text, ui.DARK)
+        e.description += f"\n\n`다음` <t:{now_ts + r['remaining']}:R>\n" + status
+        msg = await interaction.followup.send(embed=e, wait=True)
+        await asyncio.sleep(r["remaining"])
+        ready = card(interaction.user, *ready_text, ui.WIN)
+        ready.description += "\n\n" + status
+        try:
+            await msg.edit(embed=ready)
+        except discord.HTTPException:
+            pass
 
     @staticmethod
     def _train_card(user, title: str, caster: str, color: int) -> discord.Embed:
@@ -286,24 +334,12 @@ class Economy(commands.Cog):
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
 
         if not r["ok"]:
-            if r["reason"] == "limit":
-                e = self._train_card(user, "😮‍💨 오늘 훈련 끝", "오늘 훈련은 여기까지! 내일 00:00에 다시 뵙겠습니다.", ui.DARK)
-                e.description += "\n\n" + self._train_status(r)
-                return await interaction.followup.send(embed=e)
-
-            # Discord 상대 시간(<t:..:R>)은 0초가 지나면 '1초 전'으로 계속 흘러가므로,
-            # 쿨타임이 끝나는 순간 메시지를 '준비 완료'로 바꿔 멈춘다.
-            e = self._train_card(user, "⏳ 숨 고르는 중", "선수가 아직 숨이 차 있어요. 조금만 쉬었다 가죠!", ui.DARK)
-            e.description += f"\n\n`다음` <t:{now_ts + r['remaining']}:R>\n" + self._train_status(r)
-            msg = await interaction.followup.send(embed=e, wait=True)
-            await asyncio.sleep(r["remaining"])
-            ready = self._train_card(user, "✅ 훈련 준비 완료", "숨을 다 골랐습니다! 지금 바로 `/훈련` 가능해요.", ui.WIN)
-            ready.description += "\n\n" + self._train_status(r)
-            try:
-                await msg.edit(embed=ready)
-            except discord.HTTPException:
-                pass
-            return
+            return await self._grind_blocked(
+                interaction, r, now_ts, self._train_card, self._train_status(r),
+                ("😮‍💨 오늘 훈련 끝", "오늘 훈련은 여기까지! 내일 00:00에 다시 뵙겠습니다."),
+                ("⏳ 숨 고르는 중", "선수가 아직 숨이 차 있어요. 조금만 쉬었다 가죠!"),
+                ("✅ 훈련 준비 완료", "숨을 다 골랐습니다! 지금 바로 `/훈련` 가능해요."),
+            )
 
         info, ev = r["info"], r["info"]["ev"]
         if r["leveled"]:
@@ -325,6 +361,86 @@ class Economy(commands.Cog):
             e.description += (f"\n\n🆙 {promo}보상 {self.train_money_mult(old_lv)}배 → "
                               f"**{self.train_money_mult(r['level'])}배**")
         e.set_thumbnail(url=ui.emoji_url(ev["emoji"]))
+        await interaction.followup.send(embed=e)
+
+    # ✅ 스카우트: 훈련의 상위 버전 — 쿨타임 60초 · 하루 15회 · 최대 Lv.5 · 드물게 실제 선수 발굴
+    @staticmethod
+    def scout_money_mult(level: int) -> int:
+        return min(int(level), SCOUT_MAX_LEVEL)
+
+    @classmethod
+    def scout_tier(cls, level: int) -> str:
+        return cls.SCOUT_LEVEL_NAMES[min(int(level), SCOUT_MAX_LEVEL) - 1]
+
+    def _scout_roll(self, level: int, con, user_id: int):
+        """(돈 변동, 경험치 변동, 표시 정보). 성공하면 레벨별 확률로 선수 카드를 같은 트랜잭션에서 지급한다."""
+        ev = random.choice(self.SCOUT_EVENTS)
+        rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
+        mult = self.scout_money_mult(level)
+        if random.random() >= rate:
+            return random.randint(*ev["lose"]) * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "found": None}
+        found = None
+        if random.random() < SCOUT_FIND_PROB[min(level, SCOUT_MAX_LEVEL) - 1]:
+            found = scout_find_player(con, level)
+            if found:
+                give_player(con, user_id, found["player_id"])
+        return random.randint(*ev["win"]) * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "found": found}
+
+    def _scout_status(self, r: dict, xp_gain: int | None = None) -> str:
+        lv = r["level"]
+        return self._grind_status(r, SCOUT_MAX_LEVEL, self.scout_tier(lv), self.scout_money_mult(lv), xp_gain)
+
+    @staticmethod
+    def _scout_card(user, title: str, caster: str, color: int) -> discord.Embed:
+        return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 스카우트 리포트")
+
+    @app_commands.command(name="스카우트", description="세계를 돌며 선수를 찾습니다. 돈을 벌고, 드물게 실제 선수를 영입! (쿨타임 60초 · 하루 15회 · 최대 Lv.5)")
+    async def scout(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        user = interaction.user
+        now_ts = int(time.time())
+        try:
+            r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._scout_roll(lv, con, user.id),
+                                         cooldown_sec=self.SCOUT_COOLDOWN)
+        except Exception as e:
+            return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
+
+        if not r["ok"]:
+            return await self._grind_blocked(
+                interaction, r, now_ts, self._scout_card, self._scout_status(r),
+                ("🧳 오늘 출장 끝", "오늘 스카우트 일정은 여기까지! 내일 00:00에 다시 떠나죠."),
+                ("✈️ 이동 중", "다음 경기장으로 이동하고 있어요. 조금만 기다려 주세요!"),
+                ("✅ 출장 준비 완료", "짐을 다 쌌습니다! 지금 바로 `/스카우트` 가능해요."),
+            )
+
+        info, ev, found = r["info"], r["info"]["ev"], r["info"]["found"]
+        if found:
+            title = f"💎 선수 발굴!! — {found['tier']}"
+            color = ui.GOLD if found["tier_index"] >= 3 else ui.WIN
+        elif info["ok"]:
+            title, color = f"{ev['emoji']} {ev['name']} — 스카우트 성공!", ui.WIN
+        else:
+            title, color = f"{ev['emoji']} {ev['name']} — 허탕…", ui.LOSE
+        if r["leveled"]:
+            old_lv = r["level"] - r["leveled"]
+            title, color = f"🆙 레벨 업! Lv.{old_lv} → Lv.{r['level']}" + (" · 💎 선수 발굴" if found else ""), ui.GOLD
+
+        e = self._scout_card(user, title, info["line"], color)
+        if found:
+            e.description += (
+                f"\n\n📝 **{found['tier']}** 영입 — **{found['name']}** `#{found['player_id']}`\n"
+                f"{found['nation']} · {found['pos']} · OVR **{found['ovr']}** · 잠재 {found['pot_grade']} · "
+                f"시세 **{found['price']:,}원**"
+            )
+        e.description += (
+            f"\n\n`정산` **{ui.won(r['delta'])}**\n"
+            f"`잔액` **{r['new_bal']:,}원**\n"
+            + self._scout_status(r, 3 if info["ok"] else -1)
+        )
+        if r["leveled"]:
+            e.description += (f"\n\n🆙 **{self.scout_tier(r['level'])}** 승급! 보상 {self.scout_money_mult(old_lv)}배 → "
+                              f"**{self.scout_money_mult(r['level'])}배** · 선수 발굴 확률과 희귀 선수 비중 상승")
+        e.set_thumbnail(url=ui.emoji_url("💎" if found else ev["emoji"]))
         await interaction.followup.send(embed=e)
 
     # ✅ 페널티킥: 방향 선택 없이 완전 랜덤, 쿨타임 없음 — 중계 연출 후 결과

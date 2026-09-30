@@ -143,31 +143,35 @@ AMATEUR_SQUAD: list[dict] = [
     {"player_id": "AMT_FW_05", "name": "차봐요", "position": "FW"},
 ]
 
-# ───────────── 팩 5종(가격/확률) ─────────────
-# 구간은 팩 단가의 0.35배 ~ 1.8배. 예전엔 브론즈 상한이 단가의 1.5배(75,000)라
-# 구조적으로 "대박"이 나올 수 없었다. 큰 한 방은 아래 잭팟이 담당한다.
+# ───────────── 팩 7종(가격/확률) ─────────────
+# min/max_price : 일반 추첨에 들어가는 선수 시세 구간
+# center        : 일반 추첨 분포 중심 = 팩 단가 x center (기본 PACK_VALUE_CENTER)
+# jackpot       : 잭팟 대상 = 팩 단가의 (하한배, 상한배). 상한 None 이면 그 이상 전부.
+#
+# 상위 4종(플래티넘~얼티밋)은 비싼 선수일수록 수가 급격히 줄어 추첨이 싼 쪽으로 쏠렸다
+# (EV 0.80~0.92x, 손해 50~70%). 구간 하한을 단가의 0.7~0.75배로 올리고 중심을 0.95로,
+# 잭팟 하한은 풀에 실제로 있는 가격대로 내렸다 → EV 0.95~0.96x, 손해 17~30% (2026-09 풀 기준).
 PACKS = {
-    # price     : 팩 구입 비용 (= 가우시안 분포 중심가)
     "브론즈":    {"price":     50_000, "min_price":     17_000, "max_price":     90_000},
     "실버":      {"price":    150_000, "min_price":     52_000, "max_price":    270_000},
     "골드":      {"price":    500_000, "min_price":    175_000, "max_price":    900_000},
-    "플래티넘":  {"price":  1_500_000, "min_price":    525_000, "max_price":  2_700_000},
-    # 다이아 이상은 기존 가격(500만/1250만/2000만)이 선수 풀의 상한(약 2000만)을
-    # 넘어서서, 잭팟 대상이 아예 없고 EV도 0.85x까지 떨어졌다. 풀에 맞춰 내렸다.
-    "다이아몬드": {"price":  3_500_000, "min_price":  1_200_000, "max_price":  6_300_000},
-    "아이콘":    {"price":  5_500_000, "min_price":  1_900_000, "max_price":  9_900_000},
-    "얼티밋":    {"price":  7_500_000, "min_price":  2_600_000, "max_price":       None},
+    "플래티넘":  {"price":  1_500_000, "min_price":  1_050_000, "max_price":  3_000_000, "center": 0.95},
+    "다이아몬드": {"price":  3_500_000, "min_price":  2_600_000, "max_price":  6_000_000, "center": 0.95,
+                  "jackpot": (2.0, None)},
+    "아이콘":    {"price":  5_500_000, "min_price":  3_850_000, "max_price":  9_400_000, "center": 0.95,
+                  "jackpot": (1.6, None)},
+    "얼티밋":    {"price":  7_500_000, "min_price":  5_600_000, "max_price":       None, "center": 0.95,
+                  "jackpot": (1.35, None)},
 }
 
 # ── 잭팟(대박) ─────────────────────────────────────────────
 # 가우시안 꼬리를 두껍게 하는 방식은 대박을 만들기 전에 EV부터 1을 넘겨
-# 팩이 돈 찍는 기계가 된다. 그래서 확률을 직접 제어하는 별도 추첨을 둔다.
-JACKPOT_PROB  = 0.015         # 뽑기 1장당 잭팟 확률 (천장 포함 실효 ~3.5%)
-JACKPOT_RANGE = (2.5, 5.5)    # 잭팟 대상: 팩 단가의 2.5~5.5배
-JACKPOT_PITY  = 40            # 이 횟수 안에는 반드시 한 번 (팩 종류별로 누적)
+# 팩이 돈 찍는 기계가 된다. 그래서 확률을 직접 제어하는 별도 추첨을 둔다. (천장은 없다)
+JACKPOT_PROB  = 0.015         # 뽑기 1장당 잭팟 확률
+JACKPOT_RANGE = (2.5, 5.5)    # 기본 잭팟 대상: 팩 단가의 2.5~5.5배 (팩별 jackpot 로 덮어쓴다)
 
 # 일반 추첨의 분포 중심을 팩 단가보다 낮게 둬서 하우스 엣지를 만든다.
-# 이 값이 팩 전체 EV를 좌우하는 유일한 손잡이다 — 1.00이면 팩이 본전치기가 된다.
+# 이 값이 팩 전체 EV를 좌우하는 손잡이다 — 1.00이면 팩이 본전치기가 된다.
 PACK_VALUE_CENTER = 0.90
 PACK_MAX_PULLS = 10
 POOL_SIZE = 1_000   # 시장에 상시 유지할 활성 선수 수
@@ -181,6 +185,103 @@ def _pack_weight(player_price: int, pack_price: int) -> float:
     P = max(1.0, float(pack_price))
     sigma = P * 0.20
     return math.exp(-0.5 * ((p - P) / sigma) ** 2)
+
+
+# ───────────── 스카우트 선수 발굴 ─────────────
+# 등급 = 시세 구간. 스카우트 레벨이 오를수록 발굴 확률과 희귀 등급 비중이 커진다.
+SCOUT_TIERS = [            # (등급, 시세 하한, 시세 상한)
+    ("⚪ 일반",   0,          150_000),
+    ("🟢 유망",   150_000,    500_000),
+    ("🔵 레어",   500_000,    1_500_000),
+    ("🟣 에픽",   1_500_000,  3_500_000),
+    ("🟡 레전드", 3_500_000,  None),
+]
+SCOUT_FIND_PROB = (0.03, 0.04, 0.055, 0.07, 0.09)      # Lv.1~5, 스카우트 성공 시 선수 발굴 확률
+SCOUT_TIER_WEIGHTS = (                                   # Lv.1~5, 등급별 가중치(일반→레전드)
+    (70, 22, 6, 1.7, 0.3),
+    (60, 26, 10, 3.2, 0.8),
+    (50, 28, 15, 5.5, 1.5),
+    (40, 30, 19, 8.5, 2.5),
+    (30, 30, 23, 13, 4),
+)
+
+
+def scout_find_player(con, level: int, rng=random) -> Optional[dict]:
+    """스카우트가 선수를 발굴하면 등급을 뽑고, 그 시세 구간의 현역 선수 한 명을 골라 돌려준다.
+    그 구간이 비어 있으면 한 단계씩 낮은 등급으로 내려간다. 보유 지급은 부르는 쪽이 한다."""
+    lv = max(1, min(len(SCOUT_TIER_WEIGHTS), int(level)))
+    tier = rng.choices(range(len(SCOUT_TIERS)), weights=SCOUT_TIER_WEIGHTS[lv - 1])[0]
+    for t in range(tier, -1, -1):
+        label, lo, hi = SCOUT_TIERS[t]
+        rows = con.execute(
+            """
+            SELECT p.player_id, p.name, p.nation, p.position, p.ovr, p.pot_grade, COALESCE(m.price, p.base_value)
+            FROM pm_players p LEFT JOIN pm_market m ON m.player_id = p.player_id
+            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+              AND COALESCE(m.price, p.base_value) >= ? AND (? IS NULL OR COALESCE(m.price, p.base_value) < ?)
+            """,
+            (lo, hi, hi),
+        ).fetchall()
+        if rows:
+            pid, name, nation, pos, ovr, potg, price = rng.choice(rows)
+            return {"player_id": pid, "name": name, "nation": nation, "pos": pos, "ovr": int(ovr),
+                    "pot_grade": potg, "price": int(price), "tier": label, "tier_index": t}
+    return None
+
+
+def give_player(con, user_id: int, player_id: str, qty: int = 1) -> None:
+    con.execute(
+        "INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(?, ?, ?) "
+        "ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+excluded.qty",
+        (int(user_id), str(player_id), int(qty)),
+    )
+
+
+# 선수 ID 를 참조하는 테이블 — ID 를 바꿀 때 전부 같이 바꿔야 한다.
+_PLAYER_ID_TABLES = ("pm_players", "pm_market", "pm_price_history", "pm_holdings",
+                     "pm_listings", "pm_trade_items", "pm_news", "club_lineup")
+
+
+def _next_player_id(con) -> str:
+    """새 선수 ID: 지금까지 쓴 가장 큰 번호 + 1 ('1', '2', '3' …)."""
+    row = con.execute(
+        "SELECT COALESCE(MAX(CAST(player_id AS INTEGER)), 0) FROM pm_players WHERE player_id NOT LIKE 'AMT_%'"
+    ).fetchone()
+    return str(int(row[0]) + 1)
+
+
+def _migrate_short_player_ids(con) -> int:
+    """'P1787641991315580651' 같은 긴 ID 를 짧은 번호로 한 번에 바꾼다 (2.00). 바꾼 수를 돌려준다.
+
+    열린 트랜잭션이 없을 때 불러야 한다 — foreign_keys 는 트랜잭션 밖에서만 바뀐다.
+    """
+    old = [r[0] for r in con.execute(
+        "SELECT player_id FROM pm_players WHERE player_id LIKE 'P%' AND length(player_id) > 10 ORDER BY rowid"
+    )]
+    if not old:
+        return 0
+    start = int(_next_player_id(con))
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    con.execute("PRAGMA foreign_keys=OFF")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("CREATE TEMP TABLE _pid_map(old TEXT PRIMARY KEY, new TEXT NOT NULL)")
+        con.executemany("INSERT INTO _pid_map(old, new) VALUES(?, ?)",
+                        [(o, str(start + i)) for i, o in enumerate(old)])
+        for t in _PLAYER_ID_TABLES:
+            if t in tables:
+                con.execute(
+                    f"UPDATE {t} SET player_id=(SELECT new FROM _pid_map WHERE old={t}.player_id) "
+                    f"WHERE player_id IN (SELECT old FROM _pid_map)"
+                )
+        con.execute("DROP TABLE _pid_map")
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+    finally:
+        con.execute("PRAGMA foreign_keys=ON")
+    return len(old)
 
 
 def _take_holding(con, user_id: int, player_id: str, qty: int) -> bool:
@@ -219,17 +320,12 @@ def _pick(players: list, weights: list):
     return random.choices(players, weights=weights, k=1)[0]
 
 
-def _draw_from_pool(
-    con, pack: dict, pack_price: int, pulls: int, pity: int = 0
-) -> tuple[str, list, int]:
+def _draw_from_pool(con, pack: dict, pack_price: int, pulls: int) -> tuple[str, list]:
     """풀 쿼리·가중치·추첨 — buy_pack / simulate_pack 공유 헬퍼.
 
-    Args:
-        pity: 이 팩에서 마지막 잭팟 이후 누적 뽑기 수.
-
     Returns:
-        ("EMPTY_TIER", [], pity) — 해당 등급 선수 없음
-        ("OK", [(player_row, is_jackpot), ...], new_pity)
+        ("EMPTY_TIER", []) — 해당 등급 선수 없음
+        ("OK", [(player_row, is_jackpot), ...])
     """
     rows = con.execute(
         """
@@ -248,29 +344,27 @@ def _draw_from_pool(
     normal = [p for p in everyone
               if p[1] >= min_p and (max_p is None or p[1] <= int(max_p))]
     if not normal:
-        return ("EMPTY_TIER", [], pity)
+        return ("EMPTY_TIER", [])
 
-    # 잭팟 대상: 팩 단가의 2.0~4.5배. 그 구간이 비면 단가 2배 이상 전체로 넓힌다.
-    jack_lo = int(pack_price * JACKPOT_RANGE[0])
-    jack_hi = int(pack_price * JACKPOT_RANGE[1])
-    jackpot_pool = ([p for p in everyone if jack_lo <= p[1] <= jack_hi]
-                    or [p for p in everyone if p[1] >= jack_lo])
+    # 잭팟 대상 구간이 비면(최상위 팩은 풀이 얇다) 단가보다 비싼 최상위 5명으로 대신한다.
+    j_lo, j_hi = pack.get("jackpot", JACKPOT_RANGE)
+    jack_lo = int(pack_price * j_lo)
+    jack_hi = None if j_hi is None else int(pack_price * j_hi)
+    jackpot_pool = ([p for p in everyone if p[1] >= jack_lo and (jack_hi is None or p[1] <= jack_hi)]
+                    or [p for p in everyone[:5] if p[1] > pack_price])
 
-    center = max(1, int(pack_price * PACK_VALUE_CENTER))
+    center = max(1, int(pack_price * pack.get("center", PACK_VALUE_CENTER)))
     normal_w = [_pack_weight(p[1], center) for p in normal]
-    # 잭팟 안에서는 싼 쪽(2배 근처)이 더 자주 나오게 한다.
+    # 잭팟 안에서는 싼 쪽이 더 자주 나오게 한다.
     jackpot_w = [1.0 / max(1, p[1]) for p in jackpot_pool]
 
     picks = []
     for _ in range(pulls):
-        pity += 1
-        hit = bool(jackpot_pool) and (pity >= JACKPOT_PITY or random.random() < JACKPOT_PROB)
-        if hit:
+        if jackpot_pool and random.random() < JACKPOT_PROB:
             picks.append((_pick(jackpot_pool, jackpot_w), True))
-            pity = 0
         else:
             picks.append((_pick(normal, normal_w), False))
-    return ("OK", picks, pity)
+    return ("OK", picks)
 
 # ───────────── 국적 풀(가중치) ─────────────
 # 숫자는 상대 비율(총합 1.0 필요 없음)
@@ -585,14 +679,7 @@ class PlayerMarketDB:
             """)
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_news_ts ON pm_news(ts DESC)")
 
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS pm_pack_pity(
-                    user_id   INTEGER NOT NULL,
-                    pack_type TEXT    NOT NULL,
-                    pity      INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY(user_id, pack_type)
-                )
-            """)
+            con.execute("DROP TABLE IF EXISTS pm_pack_pity")  # 천장 기능 삭제 (2.00)
 
             # ── 아마추어 선수 시드 (INSERT OR IGNORE → 멱등)
             for _p in AMATEUR_SQUAD:
@@ -621,6 +708,9 @@ class PlayerMarketDB:
                 """)
 
             con.commit()
+            migrated = _migrate_short_player_ids(con)
+            if migrated:
+                print(f"[PM] 선수 ID 단순화: {migrated}명")
         finally:
             con.close()
 
@@ -806,10 +896,9 @@ class PlayerMarketDB:
         ceil_p  = int(base_value * 1.55)
         return max(1_000, floor_p), max(floor_p + 1_000, ceil_p)
 
-    def _new_player_id(self, now_ts: int) -> str:
-        return f"P{now_ts}{random.randint(10_000_000, 99_999_999)}"
-
-    def _spawn_player(self, month_index: int, now_ts: int, force_grade: Optional[str] = None) -> Dict:
+    def _spawn_player(self, month_index: int, now_ts: int, force_grade: Optional[str] = None,
+                      pid: Optional[str] = None) -> Dict:
+        """pid 는 DB에 넣는 쪽이 _next_player_id(con) 로 발급해 넘긴다 (도구·테스트는 생략 가능)."""
         # ── 나이 분포: 유망주 55% / 전성기 30% / 베테랑 15%
         r_age = random.random()
         if r_age < 0.55:
@@ -858,7 +947,7 @@ class PlayerMarketDB:
         base_value = self._compute_base_value(age, ovr, pot)
         floor_p, ceil_p = self._compute_floor_ceil(base_value)
 
-        pid = self._new_player_id(now_ts)
+        pid = pid or f"T{random.randint(10**8, 10**9 - 1)}"
         return {
             "player_id": pid,
             "name": name,
@@ -897,7 +986,8 @@ class PlayerMarketDB:
                     force_s = (int(s_count) == 0)
 
                     for i in range(need):
-                        p = self._spawn_player(month_index, now_ts, force_grade=("S" if (force_s and i == 0) else None))
+                        p = self._spawn_player(month_index, now_ts, force_grade=("S" if (force_s and i == 0) else None),
+                                                   pid=_next_player_id(con))
                         con.execute(
                             """
                             INSERT INTO pm_players(player_id, name, nation, position, age, ovr, pot, pot_grade, base_value, retired, created_month, updated_ts)
@@ -985,6 +1075,19 @@ class PlayerMarketDB:
                             (limit,),
                         ).fetchall()
 
+                    # '#12' 이나 '12' 는 선수 번호로 정확히 찾는다 (이름·국적에 숫자가 없으므로 겹치지 않는다).
+                    key = q.lstrip("#")
+                    if key.isdigit():
+                        return con.execute(
+                            """
+                            SELECT p.player_id, p.name, p.nation, p.position, p.age, p.ovr, p.pot_grade,
+                                   m.price, p.retired
+                            FROM pm_players p
+                            JOIN pm_market m ON m.player_id=p.player_id
+                            WHERE p.player_id=?
+                            """,
+                            (key,),
+                        ).fetchall()
                     like = f"%{q}%"
                     return con.execute(
                         """
@@ -992,18 +1095,19 @@ class PlayerMarketDB:
                                m.price, p.retired
                         FROM pm_players p
                         JOIN pm_market m ON m.player_id=p.player_id
-                        WHERE p.name LIKE ? OR p.nation LIKE ? OR p.position LIKE ? OR p.player_id LIKE ?
-                        ORDER BY p.retired ASC, m.price DESC
+                        WHERE p.name LIKE ? OR p.nation LIKE ? OR p.position LIKE ?
+                        ORDER BY (p.name = ?) DESC, p.retired ASC, m.price DESC
                         LIMIT ?
                         """,
-                        (like, like, like, like, limit),
+                        (like, like, like, q, limit),
                     ).fetchall()
                 finally:
                     con.close()
             return await self._run(work)
 
     async def get_player(self, player_id: str):
-        pid = (player_id or "").strip()
+        """선수 번호('12', '#12') 또는 정확한 이름으로 찾는다. 같은 이름이 여럿이면 활동·고가 선수 우선."""
+        pid = (player_id or "").strip().lstrip("#")
         async with self._lock:
             def work():
                 con = self._connect()
@@ -1014,9 +1118,11 @@ class PlayerMarketDB:
                                m.price, m.floor_price, m.ceil_price, m.last_update_ts
                         FROM pm_players p
                         JOIN pm_market m ON m.player_id=p.player_id
-                        WHERE p.player_id=?
+                        WHERE p.player_id=? OR p.name=?
+                        ORDER BY (p.player_id=?) DESC, p.retired ASC, m.price DESC
+                        LIMIT 1
                         """,
-                        (pid,),
+                        (pid, pid, pid),
                     ).fetchone()
                 finally:
                     con.close()
@@ -1165,7 +1271,7 @@ class PlayerMarketDB:
         if not paid:
             bal = await get_balance(user_id)
             return False, f"잔액이 부족합니다. 필요: {cost:,} / 보유: {bal:,}"
-        return True, f"✅ 구매 완료: `{pid}` **{name}** x{qty} / 총 {cost:,}원"
+        return True, f"✅ 구매 완료: `#{pid}` **{name}** x{qty} / 총 {cost:,}원"
 
     async def sell_to_market(self, *, user_id: int, player_id: str, qty: int, now_ts: int, add_balance):
         pid = (player_id or "").strip()
@@ -1205,7 +1311,7 @@ class PlayerMarketDB:
                 return False, "보유 수량이 변경됐습니다. 다시 확인해 주세요."
             await add_balance(user_id, compensation)
             return True, (
-                f"✅ 은퇴 선수 방출: `{pid}` **{name}** x{qty}\n"
+                f"✅ 은퇴 선수 방출: `#{pid}` **{name}** x{qty}\n"
                 f"기준가 {int(basev):,}원 × 30% → **{compensation:,}원** 수령"
             )
 
@@ -1237,7 +1343,7 @@ class PlayerMarketDB:
         if not sold:
             return False, "보유 수량이 변경됐습니다. 다시 확인해 주세요."
         await add_balance(user_id, net)
-        return True, f"✅ 판매 완료: `{pid}` **{name}** x{qty} / 총 {gross:,}원 (수수료 {fee:,}) → 실수령 {net:,}원"
+        return True, f"✅ 판매 완료: `#{pid}` **{name}** x{qty} / 총 {gross:,}원 (수수료 {fee:,}) → 실수령 {net:,}원"
 
     async def buy_pack(self, *, user_id: int, pack_type: str, pulls: int, now_ts: int, get_balance, add_balance):
         pack_type = (pack_type or "").strip()
@@ -1260,15 +1366,7 @@ class PlayerMarketDB:
                     if not _take_cash(con, user_id, total_cost):
                         con.execute("ROLLBACK;")
                         return ("NO_FUNDS", [])
-                    prow = con.execute(
-                        "SELECT pity FROM pm_pack_pity WHERE user_id=? AND pack_type=?",
-                        (int(user_id), pack_type),
-                    ).fetchone()
-                    pity = int(prow[0]) if prow else 0
-
-                    status, drawn, new_pity = _draw_from_pool(
-                        con, pack, pack_price, pulls, pity
-                    )
+                    status, drawn = _draw_from_pool(con, pack, pack_price, pulls)
                     if status == "EMPTY_TIER":
                         con.execute("ROLLBACK;")
                         return ("EMPTY_TIER", [])
@@ -1281,13 +1379,6 @@ class PlayerMarketDB:
                             """,
                             (int(user_id), row[0]),
                         )
-                    con.execute(
-                        """
-                        INSERT INTO pm_pack_pity(user_id, pack_type, pity) VALUES(?, ?, ?)
-                        ON CONFLICT(user_id, pack_type) DO UPDATE SET pity=excluded.pity
-                        """,
-                        (int(user_id), pack_type, int(new_pity)),
-                    )
                     con.commit()
                     return ("OK", list(drawn))
                 except Exception:
@@ -1313,21 +1404,6 @@ class PlayerMarketDB:
 
         return True, f"🎁 {pack_type}팩 {pulls}장 개봉 완료! (총 {total_cost:,}원)", results
 
-    async def get_pack_pity(self, user_id: int, pack_type: str) -> int:
-        """해당 팩에서 마지막 잭팟 이후 누적 뽑기 수."""
-        async with self._lock:
-            def work():
-                con = self._connect()
-                try:
-                    row = con.execute(
-                        "SELECT pity FROM pm_pack_pity WHERE user_id=? AND pack_type=?",
-                        (int(user_id), str(pack_type)),
-                    ).fetchone()
-                    return int(row[0]) if row else 0
-                finally:
-                    con.close()
-            return await self._run(work)
-
     async def simulate_pack(self, *, pack_type: str, pulls: int) -> Tuple[bool, str, list | None]:
         """팩 시뮬레이션 — 잔액·보유 변경 없이 뽑기 결과만 반환"""
         pack_type = (pack_type or "").strip()
@@ -1343,7 +1419,7 @@ class PlayerMarketDB:
             def work():
                 con = self._connect()
                 try:
-                    status, picks, _pity = _draw_from_pool(con, pack, pack_price, pulls)
+                    status, picks = _draw_from_pool(con, pack, pack_price, pulls)
                     return status, picks
                 finally:
                     con.close()
@@ -1622,7 +1698,8 @@ class PlayerMarketDB:
                             force_s = (int(s_count) == 0)
 
                             for i in range(need):
-                                p = self._spawn_player(month_index, now_ts, force_grade=("S" if (force_s and i == 0) else None))
+                                p = self._spawn_player(month_index, now_ts, force_grade=("S" if (force_s and i == 0) else None),
+                                                   pid=_next_player_id(con))
                                 con.execute(
                                     """
                                     INSERT INTO pm_players(player_id, name, nation, position, age, ovr, pot, pot_grade, base_value, retired, created_month, updated_ts)
@@ -2141,7 +2218,7 @@ class PlayerMarketDB:
         for pid, qty in prop_qty.items():
             row = await self.get_player(pid)
             if not row:
-                return False, f"선수를 찾을 수 없습니다: `{pid}`", {}
+                return False, f"선수를 찾을 수 없습니다: `#{pid}`", {}
             name, retired = row[1], int(row[8])
             if retired == 1:
                 return False, f"은퇴 선수는 트레이드할 수 없습니다: **{name}**", {}
@@ -2154,7 +2231,7 @@ class PlayerMarketDB:
         for pid, qty in recv_qty.items():
             row = await self.get_player(pid)
             if not row:
-                return False, f"선수를 찾을 수 없습니다: `{pid}`", {}
+                return False, f"선수를 찾을 수 없습니다: `#{pid}`", {}
             name, retired = row[1], int(row[8])
             if retired == 1:
                 return False, f"은퇴 선수는 트레이드할 수 없습니다: **{name}**", {}
@@ -2179,7 +2256,7 @@ class PlayerMarketDB:
                         ).fetchone()
                         have = int(row[0]) if row else 0
                         if have < qty:
-                            return None, f"보유 수량이 변경됐습니다. 다시 시도하세요. ({pid})"
+                            return None, f"보유 수량이 변경됐습니다. 다시 시도하세요. (#{pid})"
 
                     con.execute("BEGIN IMMEDIATE;")
                     # 제안자 선수 차감 (escrow)

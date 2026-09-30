@@ -27,7 +27,7 @@ _WORK = Path(tempfile.mkdtemp())
 pmdb.DB_PATH = _WORK / "balance.sqlite3"
 
 from services.player_market_db import (  # noqa: E402
-    JACKPOT_PITY, JACKPOT_PROB, JACKPOT_RANGE, PACKS, POOL_SIZE,
+    JACKPOT_PROB, JACKPOT_RANGE, PACKS, POOL_SIZE,
     PlayerMarketDB, _draw_from_pool,
 )
 
@@ -90,8 +90,8 @@ def report(con: sqlite3.Connection) -> None:
     print("  상위 백분위: " + "  ".join(
         "%d%%=%s" % (q, money(pool[min(len(pool) - 1, int(len(pool) * q / 100))]))
         for q in (1, 5, 10, 25, 50)))
-    print("  잭팟 %.1f%% · 대상 단가의 %.1f~%.1f배 · 천장 %d장"
-          % (JACKPOT_PROB * 100, JACKPOT_RANGE[0], JACKPOT_RANGE[1], JACKPOT_PITY))
+    print("  잭팟 %.1f%% · 기본 대상 단가의 %.1f~%.1f배 (팩별 jackpot 우선)"
+          % (JACKPOT_PROB * 100, JACKPOT_RANGE[0], JACKPOT_RANGE[1]))
 
     hdr = ("  %-10s %9s %5s %9s %6s %6s   " % ("팩", "단가", "풀", "평균획득", "EV", "잭팟")
            + " ".join("%5s" % n for n, _ in LABELS))
@@ -100,11 +100,9 @@ def report(con: sqlite3.Connection) -> None:
 
     for name, cfg in PACKS.items():
         price = int(cfg["price"])
-        pity = 0
         values, jackpots = [], 0
-        # 천장이 실제로 도는 것까지 반영하려면 pity를 이어서 굴려야 한다.
         while len(values) < DRAWS:
-            status, picks, pity = _draw_from_pool(con, cfg, price, min(200, DRAWS - len(values)), pity)
+            status, picks = _draw_from_pool(con, cfg, price, min(200, DRAWS - len(values)))
             if status != "OK":
                 break
             for row, hit in picks:

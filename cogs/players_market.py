@@ -17,7 +17,7 @@ matplotlib.rcParams["font.family"] = "NanumGothic"
 matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
 from services.economy_db import EconomyDB
-from services.player_market_db import PlayerMarketDB, PACKS, JACKPOT_PITY, JACKPOT_PROB, JACKPOT_RANGE
+from services.player_market_db import PlayerMarketDB, PACKS, JACKPOT_PROB, JACKPOT_RANGE
 from services.notifier import send_notify
 from auth import OWNER_ID
 
@@ -51,7 +51,7 @@ def _card_line(row, pack_price_per: int, is_jackpot: bool = False) -> tuple[str,
     pid, cur_price, name, nation, pos, ovr = row
     label = _price_label(cur_price, pack_price_per)
     mark = "💥 **JACKPOT** " if is_jackpot else ""
-    return label, f"• {mark}{label} `{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{cur_price:,}원**"
+    return label, f"• {mark}{label} `#{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{cur_price:,}원**"
 
 
 def _normalize_results(results: list) -> list:
@@ -83,6 +83,21 @@ def _format_pack_results(
         lines.append(line)
     grade_summary = " / ".join(f"{k} {v}" for k, v in label_cnt.items() if v > 0)
     return grade_summary, "\n".join(lines[:10]), total_value
+
+class _SkipView(discord.ui.View):
+    """팩 개봉 연출 중 '⏩ 스킵' — 누르면 남은 카드를 한 번에 공개한다."""
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=60)
+        self.owner_id = owner_id
+        self.pressed = asyncio.Event()
+
+    @discord.ui.button(label="⏩ 스킵", style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("팩을 연 사람만 스킵할 수 있습니다.", ephemeral=True)
+        self.pressed.set()
+        await interaction.response.defer()
+
 
 # ───────────────── 즉시판매 UI ─────────────────
 _SORT_LABELS = [
@@ -250,7 +265,7 @@ class QuickSellView(discord.ui.View):
         if len(body) > 1900:
             body = f"✅ **{sold}명** 판매 완료\n💰 총 실수령: **{total_payout:,}원** | 잔액: **{bal:,}원**"
 
-        await interaction.followup.send(body, ephemeral=True)
+        await interaction.followup.send(body)
 
         if not self.holdings:
             self.clear_items()
@@ -266,13 +281,13 @@ class QuickSellView(discord.ui.View):
     async def _on_select(self, interaction: discord.Interaction):
         if interaction.user.id != self.user.id:
             return await interaction.response.send_message("본인만 사용할 수 있습니다.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         await self._do_sell(interaction, interaction.data["values"])
 
     async def _sell_all(self, interaction: discord.Interaction):
         if interaction.user.id != self.user.id:
             return await interaction.response.send_message("본인만 사용할 수 있습니다.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         await self._do_sell(interaction, [h[0] for h in list(self.holdings)])
 
 
@@ -438,7 +453,7 @@ class PlayersMarket(commands.Cog):
     async def market_status(self, interaction: discord.Interaction):
         # ✅ 3초 제한 회피: 먼저 defer
         try:
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer()
         except (discord.NotFound, discord.HTTPException):
             return
 
@@ -454,57 +469,60 @@ class PlayersMarket(commands.Cog):
             )
             await interaction.followup.send(
                 embed=_embed("📈 선수 시장", msg, interaction.user),
-                ephemeral=True
             )
         except Exception as e:
-            await interaction.followup.send(f"❌ 오류: {type(e).__name__}", ephemeral=True)
+            await interaction.followup.send(f"❌ 오류: {type(e).__name__}")
 
-    # ───────────────── 선수 검색/정보 ─────────────────
-    @app_commands.command(name="선수검색", description="선수를 검색합니다. (이름/국적/포지션/ID)")
-    @app_commands.describe(q="검색어(비우면 고가 TOP)")
-    async def search(self, interaction: discord.Interaction, q: str = ""):
+    # ───────────────── 선수 (검색 + 상세, 하나로 통일) ─────────────────
+    async def _player_detail_embed(self, row, viewer: discord.abc.User) -> discord.Embed:
+        (pid, name, nation, pos, age, ovr, potg, basev, retired, price, floor_p, ceil_p, last_ts) = row
+        have = await self.pm.get_holding(viewer.id, pid)
+        state = "💤 은퇴" if int(retired) == 1 else "🟢 활동"
+        desc = (
+            f"`#{pid}` · {nation} · **{pos}** · {age}세 · {state}\n\n"
+            f"`능력` OVR **{ovr}** · 잠재 **{potg}**\n"
+            f"`시세` **{int(price):,}원** (기준가 {int(basev):,}원)\n"
+            f"`범위` {int(floor_p):,} ~ {int(ceil_p):,}원\n"
+            f"`보유` {viewer.display_name}님 **{have}장**"
+        )
+        if int(retired) == 1:
+            desc += "\n\n⚠️ 은퇴 선수는 `/방출`로 기준가의 30%에 정리할 수 있습니다."
+        e = _embed(f"📌 {name}", desc, viewer)
+        e.set_footer(text=f"/시세 {name} 로 가격 그래프를 볼 수 있습니다")
+        return e
+
+    @app_commands.command(name="선수", description="선수를 검색하거나 상세 정보를 봅니다. (이름·국적·포지션·#번호 / 비우면 고가 TOP 10)")
+    @app_commands.describe(검색어="선수 이름·국적·포지션·#번호 — 자동완성에서 고르면 바로 상세 정보")
+    @app_commands.autocomplete(검색어=player_id_autocomplete)
+    async def player(self, interaction: discord.Interaction, 검색어: str = ""):
         try:
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer()
         except (discord.NotFound, discord.HTTPException):
             return
+        q = 검색어.strip()
+
+        # 번호·정확한 이름이면 바로 상세
+        if q:
+            row = await self.pm.get_player(q)
+            if row:
+                return await interaction.followup.send(embed=await self._player_detail_embed(row, interaction.user))
 
         rows = await self.pm.search_players(q, limit=10)
         if not rows:
-            return await interaction.followup.send("결과가 없습니다.")
+            return await interaction.followup.send(
+                embed=_embed("🔎 선수", f"**{q}**에 해당하는 선수가 없습니다.", interaction.user))
+        if len(rows) == 1:
+            row = await self.pm.get_player(rows[0][0])
+            return await interaction.followup.send(embed=await self._player_detail_embed(row, interaction.user))
 
         lines = []
         for pid, name, nation, pos, age, ovr, potg, price, retired in rows:
             tag = " (은퇴)" if int(retired) == 1 else ""
-            lines.append(f"`{pid}` {name}{tag} / {nation} / {pos} / {age}세 / OVR {ovr} / POT {potg} / **{int(price):,}원**")
-
-        await interaction.followup.send(embed=_embed("🔎 선수검색", "\n".join(lines), interaction.user))
-
-    @app_commands.command(name="선수", description="선수 상세 정보를 봅니다.")
-    @app_commands.describe(player_id="선수 이름 또는 ID")
-    @app_commands.autocomplete(player_id=player_id_autocomplete)
-    async def player_info(self, interaction: discord.Interaction, player_id: str):
-        await interaction.response.defer(ephemeral=True)
-        row = await self.pm.get_player(player_id)
-        if not row:
-            return await interaction.followup.send("선수를 찾을 수 없습니다.", ephemeral=True)
-
-        (pid, name, nation, pos, age, ovr, potg, basev, retired, price, floor_p, ceil_p, last_ts) = row
-        have = await self.pm.get_holding(interaction.user.id, pid)
-        tag = "은퇴" if int(retired) == 1 else "활동"
-        retire_note = "\n- ⚠️ 은퇴 선수는 기준가의 30%로 방출 가능" if int(retired) == 1 else ""
-
-        desc = (
-            f"**{name}** (`{pid}`)\n"
-            f"- 상태: **{tag}**\n"
-            f"- 국적/포지션: {nation} / {pos}\n"
-            f"- 나이/OVR/POT: {age}세 / **{ovr}** / **{potg}**\n"
-            f"- 기준가: **{int(basev):,}원**\n"
-            f"- 현재가: **{int(price):,}원**\n"
-            f"- 가격 범위: {int(floor_p):,} ~ {int(ceil_p):,}\n"
-            f"- 내 보유: **{have}장**"
-            f"{retire_note}"
-        )
-        await interaction.followup.send(embed=_embed("📌 선수 정보", desc, interaction.user), ephemeral=True)
+            lines.append(f"`#{pid}` **{name}**{tag} · {nation} · {pos} · {age}세 · OVR {ovr}/{potg} · **{int(price):,}원**")
+        title = f"🔎 '{q}' 검색 결과" if q else "💎 고가 선수 TOP 10"
+        e = _embed(title, "\n".join(lines), interaction.user)
+        e.set_footer(text="자동완성에서 선수를 고르거나 #번호를 입력하면 상세 정보가 나옵니다")
+        await interaction.followup.send(embed=e)
 
     # ───────────────── 보유 ─────────────────
     @app_commands.command(name="내선수", description="내가 보유한 선수 목록을 봅니다.")
@@ -534,7 +552,7 @@ class PlayersMarket(commands.Cog):
             lines = []
             for pid, name, nation, pos, age, ovr, potg, retired, qty, price in rows:
                 tag = " (은퇴)" if int(retired) == 1 else ""
-                lines.append(f"`{pid}` {name}{tag} x{qty} / {pos} / OVR {ovr} / POT {potg} / {int(price):,}원")
+                lines.append(f"`#{pid}` {name}{tag} x{qty} / {pos} / OVR {ovr} / POT {potg} / {int(price):,}원")
 
             header = (
                 f"총 **{total_count}명** 보유 | 전체 평가액: **{total_value:,}원**\n"
@@ -553,7 +571,7 @@ class PlayersMarket(commands.Cog):
     @app_commands.describe(player_id="등록할 선수", 가격="1장당 희망 가격(원)", 수량="등록 수량")
     @app_commands.autocomplete(player_id=holding_player_autocomplete)
     async def sell(self, interaction: discord.Interaction, player_id: str, 가격: int, 수량: int = 1):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         now = int(time.time())
         ok, msg = await self.pm.create_listing(
             seller_id=interaction.user.id,
@@ -564,7 +582,6 @@ class PlayersMarket(commands.Cog):
         )
         await interaction.followup.send(
             embed=_embed("📋 이적시장 등록" if ok else "❌ 등록 실패", msg, interaction.user),
-            ephemeral=True,
         )
 
     # ───────────────── 팩 ─────────────────
@@ -611,12 +628,23 @@ class PlayersMarket(commands.Cog):
                          icon_url=interaction.user.display_avatar.url)
             return e
 
+        # 2장 이상이면 '⏩ 스킵' 버튼으로 연출을 건너뛸 수 있다.
+        skip = _SkipView(interaction.user.id) if len(cards) >= 2 else None
+        send_kw = {"view": skip} if skip else {}
         msg = await interaction.followup.send(
-            embed=frame("\n".join(slots), 0x2b2d31), wait=True
+            embed=frame("\n".join(slots), 0x2b2d31), wait=True, **send_kw
         )
 
         for idx, (row, is_jackpot) in enumerate(cards):
-            await asyncio.sleep(0.9)
+            if skip:
+                try:
+                    await asyncio.wait_for(skip.pressed.wait(), timeout=0.9)
+                except asyncio.TimeoutError:
+                    pass
+                if skip.pressed.is_set():
+                    break
+            else:
+                await asyncio.sleep(0.9)
             label, line = _card_line(row, unit_price, is_jackpot)
             slots[idx] = "> " + line[2:]
             if _PRICE_LABELS.index(label) < _PRICE_LABELS.index(best):
@@ -626,10 +654,10 @@ class PlayersMarket(commands.Cog):
             except discord.HTTPException:
                 break   # 레이트리밋 등 — 연출만 포기하고 결과는 아래에서 낸다
 
+        # 스킵했으면 아직 안 뒤집은 카드까지 포함해 최고 등급을 다시 계산한다.
+        best = min((_card_line(row, unit_price, hit)[0] for row, hit in cards), key=_PRICE_LABELS.index)
         grade_summary, lines_text, total_value = _format_pack_results(results, unit_price)
-        bal  = await self.money.get_balance(interaction.user.id)
-        pity = await self.pm.get_pack_pity(interaction.user.id, pack_type)
-        left = max(0, JACKPOT_PITY - pity)
+        bal = await self.money.get_balance(interaction.user.id)
 
         summary = (
             f"팩 단가 **{unit_price:,}원** x{len(cards)}장 · 잔액 **{bal:,}원**\n"
@@ -639,9 +667,10 @@ class PlayersMarket(commands.Cog):
             f"{lines_text}"
         )
         e = frame(summary, _LABEL_COLOR[best])
-        e.set_footer(text=f"💥 잭팟까지 최대 {left}장 남음 (천장 {JACKPOT_PITY}장)")
+        if skip:
+            skip.stop()
         try:
-            await msg.edit(embed=e)
+            await msg.edit(embed=e, view=None)
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
 
@@ -650,20 +679,19 @@ class PlayersMarket(commands.Cog):
     @app_commands.describe(종류="브론즈/실버/골드/플래티넘/다이아몬드/아이콘/얼티밋", 장수="1~10")
     @app_commands.autocomplete(종류=pack_type_autocomplete)
     async def pack_simulate(self, interaction: discord.Interaction, 종류: str, 장수: int = 1):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         종류 = (종류 or "").strip()
         if 종류 not in PACKS:
             kinds = ", ".join(PACKS.keys())
             return await interaction.followup.send(
                 embed=_embed("❌ 팩시뮬", f"존재하지 않는 팩입니다.\n가능: {kinds}", interaction.user),
-                ephemeral=True,
             )
 
         ok, msg, results = await self.pm.simulate_pack(pack_type=종류, pulls=장수)
         if not ok or not results:
             return await interaction.followup.send(
-                embed=_embed("❌ 팩시뮬", msg, interaction.user), ephemeral=True
+                embed=_embed("❌ 팩시뮬", msg, interaction.user)
             )
 
         pack_price_per = PACKS[종류]["price"]
@@ -677,7 +705,7 @@ class PlayersMarket(commands.Cog):
         )
         embed = _embed("🎲 팩 시뮬레이션 결과", summary, interaction.user)
         embed.set_footer(text="※ 시뮬레이션 결과이며 실제 잔액·보유에 반영되지 않습니다.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed)
 
     # ───────────────── 시세 그래프 ─────────────────
     @app_commands.command(name="시세", description="선수 가격 변동 그래프를 봅니다.")
@@ -689,7 +717,7 @@ class PlayersMarket(commands.Cog):
         from matplotlib.ticker import FuncFormatter
 
         try:
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer()
         except (discord.NotFound, discord.HTTPException):
             return
 
@@ -720,7 +748,7 @@ class PlayersMarket(commands.Cog):
         def _make_png() -> bytes:
             plt.figure(figsize=(8, 4.5))
             plt.plot(xs, ys, marker="o", markersize=3, linewidth=1.5)
-            plt.title(f"{name} ({pid})")
+            plt.title(f"{name} (#{pid})")
             plt.xlabel("시간")
             plt.ylabel("가격(원)")
 
@@ -744,7 +772,7 @@ class PlayersMarket(commands.Cog):
         file = discord.File(fp=io.BytesIO(png_bytes), filename="chart.png")
         e = _embed(
             "📊 시세",
-            f"**{name}** (`{pid}`)\n{nation} / {pos} / {age}세 / OVR {ovr} / POT {potg}\n"
+            f"**{name}** (`#{pid}`)\n{nation} / {pos} / {age}세 / OVR {ovr} / POT {potg}\n"
             f"현재가: **{current_price:,}원**\n직전가: **{prev_price:,}원**\n변동: **{diff_text}**",
             interaction.user,
         )
@@ -754,51 +782,41 @@ class PlayersMarket(commands.Cog):
     # ───────────────── 팩 정보 ─────────────────
     @app_commands.command(name="팩정보", description="팩 종류별 가격과 뽑기 분포를 확인합니다.")
     async def pack_info(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         pack_emoji = {
             "브론즈": "🥉", "실버": "🥈", "골드": "🥇",
             "플래티넘": "💎", "다이아몬드": "🔷", "아이콘": "👑", "얼티밋": "🌟",
         }
-
         pool_counts = await self.pm.count_pack_pool()
-        pity = {k: await self.pm.get_pack_pity(interaction.user.id, k) for k in PACKS}
 
         embed = discord.Embed(
             title="🎁 팩 정보",
             description=(
-                "**팩 단가와 비슷한 가격의 선수**가 가장 자주 등장합니다.\n"
-                "해당 등급 선수가 0명이면 구매 불가 (비용 미차감).\n\n"
-                f"💥 **잭팟** — 뽑기 1장당 **{JACKPOT_PROB*100:.1f}%** 확률로 "
-                f"팩 단가의 **{JACKPOT_RANGE[0]:.1f}~{JACKPOT_RANGE[1]:.1f}배** 선수가 나옵니다.\n"
-                f"🎯 **천장** — 같은 팩을 **{JACKPOT_PITY}장** 뽑는 동안 잭팟이 없으면 다음 장은 확정입니다.\n\n"
+                "**팩 단가와 비슷한 가격의 선수**가 가장 자주 나옵니다.\n"
+                f"💥 뽑기 1장마다 **{JACKPOT_PROB*100:.1f}%** 확률로 잭팟 선수가 나옵니다.\n"
+                "해당 구간 선수가 0명이면 구매되지 않습니다 (비용 차감 없음).\n\n"
                 "🔴 대박 `≥ 2.5배` · 🟠 이득 `≥ 1.15배` · 🟡 본전 `≥ 0.8배`\n"
                 "🟢 손해 `≥ 0.5배` · ⚪ 폭망 `< 0.5배`"
             ),
             color=0x2ecc71,
         )
-
         for pack_name, pack_data in PACKS.items():
-            price    = pack_data["price"]
-            min_p    = pack_data.get("min_price", 0) or 0
-            max_p    = pack_data.get("max_price", None)
-            icon     = pack_emoji.get(pack_name, "🎁")
-            count    = pool_counts.get(pack_name, 0)
-            avail    = f"**{count}명**" if count > 0 else "**0명 ⚠️ 구매불가**"
-            range_str = (
-                f"{min_p:,}원 ~ {max_p:,}원"
-                if max_p is not None
-                else f"{min_p:,}원 이상"
-            )
+            price = pack_data["price"]
+            min_p = pack_data.get("min_price", 0) or 0
+            max_p = pack_data.get("max_price", None)
+            j_lo, j_hi = pack_data.get("jackpot", JACKPOT_RANGE)
+            count = pool_counts.get(pack_name, 0)
+            range_str = f"{min_p:,} ~ {max_p:,}원" if max_p is not None else f"{min_p:,}원 이상"
+            jack_str = f"단가의 {j_lo:g}배 이상" if j_hi is None else f"단가의 {j_lo:g}~{j_hi:g}배"
+            avail = f"{count}명" if count > 0 else "0명 ⚠️ 구매 불가"
             embed.add_field(
-                name=f"{icon} {pack_name}팩  |  {price:,}원 / 장",
-                value=(f"시세 범위: **{range_str}** | 풀: {avail}"
-                       f" | 천장까지 **{max(0, JACKPOT_PITY - pity.get(pack_name, 0))}장**"),
-                inline=False,
+                name=f"{pack_emoji.get(pack_name, '🎁')} {pack_name}팩 · {price:,}원",
+                value=f"`시세` {range_str}\n`잭팟` {jack_str} · `풀` {avail}",
+                inline=True,
             )
-
-        embed.set_footer(text="최대 10장까지 한 번에 구매 가능 · 수수료 없음")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        embed.set_footer(text="한 번에 최대 10장 · 2장 이상 개봉 시 ⏩ 스킵 가능")
+        await interaction.followup.send(embed=embed)
 
     # ───────────────── 선수 뉴스 ─────────────────
     @app_commands.command(name="선수뉴스", description="최근 선수 시세를 흔든 뉴스를 봅니다.")
@@ -817,7 +835,7 @@ class PlayersMarket(commands.Cog):
             arrow = "📈" if pct > 0 else "📉"
             lines.append(
                 f"{arrow} **{headline}**\n"
-                f"　<t:{int(ts)}:R> · `{pid}` · {int(before):,}원 → **{int(after):,}원** "
+                f"　<t:{int(ts)}:R> · `#{pid}` · {int(before):,}원 → **{int(after):,}원** "
                 f"({pct*100:+.1f}%)"
             )
 
@@ -870,11 +888,11 @@ class PlayersMarket(commands.Cog):
     @app_commands.describe(매물번호="매물 번호 (/이적시장 에서 확인)", 수량="구매 수량")
     @app_commands.autocomplete(매물번호=listing_autocomplete)
     async def buy_transfer(self, interaction: discord.Interaction, 매물번호: str, 수량: int = 1):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         try:
             lid = int(str(매물번호).lstrip("#"))
         except ValueError:
-            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.", ephemeral=True)
+            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.")
 
         now = int(time.time())
         ok, msg, notify_info = await self.pm.buy_listing(
@@ -902,18 +920,16 @@ class PlayersMarket(commands.Cog):
                 await send_notify(self.bot, self.money, notify_info["seller_id"], "매물_판매", dm_embed)
         await interaction.followup.send(
             embed=_embed("✅ 이적 구매" if ok else "❌ 구매 실패", msg, interaction.user),
-            ephemeral=True,
         )
 
     @app_commands.command(name="내매물", description="내가 이적시장에 등록한 활성 매물을 확인합니다.")
     async def my_listings(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         rows = await self.pm.get_my_listings(interaction.user.id)
         if not rows:
             return await interaction.followup.send(
                 embed=_embed("📋 내 매물", "등록된 매물이 없습니다.", interaction.user),
-                ephemeral=True,
             )
 
         now = int(time.time())
@@ -929,18 +945,17 @@ class PlayersMarket(commands.Cog):
 
         await interaction.followup.send(
             embed=_embed("📋 내 매물", "\n".join(lines), interaction.user),
-            ephemeral=True,
         )
 
     @app_commands.command(name="매각", description="이적시장 등록 후 12시간 뒤 즉시 판매 가능. 기준가의 70% 지급.")
     @app_commands.describe(매물번호="매각할 매물 번호 (/내매물 에서 확인)")
     @app_commands.autocomplete(매물번호=my_listing_autocomplete)
     async def instant_sell(self, interaction: discord.Interaction, 매물번호: str):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         try:
             lid = int(str(매물번호).lstrip("#"))
         except ValueError:
-            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.", ephemeral=True)
+            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.")
 
         now = int(time.time())
         ok, msg = await self.pm.instant_sell_listing(
@@ -954,18 +969,17 @@ class PlayersMarket(commands.Cog):
             msg += f"\n현재 잔액: **{bal:,}원**"
         await interaction.followup.send(
             embed=_embed("💸 매각 완료" if ok else "❌ 매각 실패", msg, interaction.user),
-            ephemeral=True,
         )
 
     @app_commands.command(name="이적취소", description="이적시장 매물을 취소하고 선수를 돌려받습니다.")
     @app_commands.describe(매물번호="취소할 매물 번호 (/내매물 에서 확인)")
     @app_commands.autocomplete(매물번호=my_listing_autocomplete)
     async def cancel_listing_cmd(self, interaction: discord.Interaction, 매물번호: str):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         try:
             lid = int(str(매물번호).lstrip("#"))
         except ValueError:
-            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.", ephemeral=True)
+            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.")
 
         ok, msg = await self.pm.cancel_listing(
             listing_id=lid,
@@ -973,32 +987,31 @@ class PlayersMarket(commands.Cog):
         )
         await interaction.followup.send(
             embed=_embed("✅ 매물 취소" if ok else "❌ 취소 실패", msg, interaction.user),
-            ephemeral=True,
         )
 
     @app_commands.command(name="즉시판매", description="보유 선수를 기준가 50%에 즉시 매각합니다. 정렬·복수선택·전체판매 지원.")
     async def quick_sell(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         holdings = await self.pm.list_holdings(interaction.user.id, limit=9999)
         if not holdings:
-            return await interaction.followup.send("보유한 선수가 없습니다.", ephemeral=True)
+            return await interaction.followup.send("보유한 선수가 없습니다.")
 
         now = int(time.time())
         view = QuickSellView(holdings, self.pm, self.money, interaction.user, now)
         if not view.holdings:
-            return await interaction.followup.send("즉시판매 가능한 선수가 없습니다. (아마추어·은퇴 선수 제외)", ephemeral=True)
+            return await interaction.followup.send("즉시판매 가능한 선수가 없습니다. (아마추어·은퇴 선수 제외)")
 
-        await interaction.followup.send(embed=view.make_embed(), view=view, ephemeral=True)
+        await interaction.followup.send(embed=view.make_embed(), view=view)
 
     @app_commands.command(name="방출", description="은퇴 선수를 기준가의 30%에 즉시 방출합니다.")
     @app_commands.describe(player_id="방출할 은퇴 선수 ID", qty="수량")
     @app_commands.autocomplete(player_id=retired_holding_autocomplete)
     async def release(self, interaction: discord.Interaction, player_id: str, qty: int = 1):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         row = await self.pm.get_player(player_id)
         if not row:
-            return await interaction.followup.send("❌ 선수를 찾을 수 없습니다.", ephemeral=True)
+            return await interaction.followup.send("❌ 선수를 찾을 수 없습니다.")
 
         # row: pid, name, nation, pos, age, ovr, potg, basev, retired, price, floor_p, ceil_p, last_ts
         retired = int(row[8])
@@ -1010,7 +1023,6 @@ class PlayersMarket(commands.Cog):
                     f"**{name}**은(는) 은퇴 선수가 아닙니다.\n활성 선수는 `/판매`로 이적시장에 등록하세요.",
                     interaction.user,
                 ),
-                ephemeral=True,
             )
 
         now = int(time.time())
@@ -1026,19 +1038,17 @@ class PlayersMarket(commands.Cog):
             msg += f"\n현재 잔액: **{bal:,}원**"
         await interaction.followup.send(
             embed=_embed("💀 선수 방출" if ok else "❌ 방출 실패", msg, interaction.user),
-            ephemeral=True,
         )
 
     @app_commands.command(name="전체방출", description="보유한 은퇴 선수를 전부 기준가의 30%에 방출합니다.")
     async def bulk_release(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         count, total_payout, details = await self.pm.bulk_release_retired(interaction.user.id)
 
         if count == 0:
             return await interaction.followup.send(
                 embed=_embed("💀 전체 방출", "방출할 은퇴 선수가 없습니다.", interaction.user),
-                ephemeral=True,
             )
 
         await self.money.add_balance(interaction.user.id, total_payout)
@@ -1051,7 +1061,6 @@ class PlayersMarket(commands.Cog):
         )
         await interaction.followup.send(
             embed=_embed(f"💀 전체 방출 완료 ({count}명)", desc, interaction.user),
-            ephemeral=True,
         )
 
     @app_commands.command(name="랭킹", description="자산(잔액 + 보유 선수 시세) 기준 TOP 10을 표시합니다.")

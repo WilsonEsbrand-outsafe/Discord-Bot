@@ -264,20 +264,20 @@ class Trade(commands.Cog):
         내현금: int = 0,
         원하는현금: int = 0,
     ):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         if 상대방.id == interaction.user.id:
-            return await interaction.followup.send("❌ 자기 자신에게는 트레이드를 제안할 수 없습니다.", ephemeral=True)
+            return await interaction.followup.send("❌ 자기 자신에게는 트레이드를 제안할 수 없습니다.")
         if 상대방.bot:
-            return await interaction.followup.send("❌ 봇에게는 트레이드를 제안할 수 없습니다.", ephemeral=True)
+            return await interaction.followup.send("❌ 봇에게는 트레이드를 제안할 수 없습니다.")
         if 내현금 < 0 or 원하는현금 < 0:
-            return await interaction.followup.send("❌ 현금 금액은 0 이상이어야 합니다.", ephemeral=True)
+            return await interaction.followup.send("❌ 현금 금액은 0 이상이어야 합니다.")
 
         prop_pids = self._parse_pids(내선수)
         recv_pids = self._parse_pids(원하는선수)
 
         if not prop_pids and not recv_pids and 내현금 == 0 and 원하는현금 == 0:
-            return await interaction.followup.send("❌ 트레이드 내용이 비어 있습니다.", ephemeral=True)
+            return await interaction.followup.send("❌ 트레이드 내용이 비어 있습니다.")
 
         ok, result, details = await self.pm.create_trade(
             proposer_id=interaction.user.id,
@@ -293,17 +293,16 @@ class Trade(commands.Cog):
         if not ok:
             return await interaction.followup.send(
                 embed=_embed("❌ 트레이드 제안 실패", result, 0xe74c3c),
-                ephemeral=True,
             )
 
         trade_id = result
 
         # 임베드 작성
-        prop_lines = [f"• {name} (`{pid}`) x{qty}" for pid, name, qty in details["proposer_items"]]
+        prop_lines = [f"• {name} (`#{pid}`) x{qty}" for pid, name, qty in details["proposer_items"]]
         if 내현금 > 0:
             prop_lines.append(f"• 현금 **{내현금:,}원**")
 
-        recv_lines = [f"• {name} (`{pid}`) x{qty}" for pid, name, qty in details["receiver_items"]]
+        recv_lines = [f"• {name} (`#{pid}`) x{qty}" for pid, name, qty in details["receiver_items"]]
         if 원하는현금 > 0:
             recv_lines.append(f"• 현금 **{원하는현금:,}원**")
 
@@ -333,7 +332,6 @@ class Trade(commands.Cog):
                     f"⚠️ 제안한 선수는 트레이드가 확정/취소될 때까지 보유 목록에서 제외됩니다.",
                     0x2ecc71,
                 ),
-                ephemeral=True,
             )
         except discord.Forbidden:
             pass
@@ -348,35 +346,32 @@ class Trade(commands.Cog):
                         f"{상대방.mention}의 DM이 닫혀 있어 채널에 전송됐습니다.\n제안 번호: **#{trade_id}**",
                         0xf39c12,
                     ),
-                    ephemeral=True,
                 )
             except Exception:
                 await interaction.followup.send(
-                    "❌ 상대방에게 트레이드 제안을 전송하지 못했습니다.", ephemeral=True
+                    "❌ 상대방에게 트레이드 제안을 전송하지 못했습니다."
                 )
 
     @app_commands.command(name="트레이드취소", description="내가 제안한 트레이드를 취소하고 선수를 돌려받습니다.")
     @app_commands.describe(제안번호="취소할 트레이드 번호")
     async def cancel(self, interaction: discord.Interaction, 제안번호: int):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         ok, msg = await self.pm.cancel_trade(
             trade_id=제안번호,
             proposer_id=interaction.user.id,
         )
         await interaction.followup.send(
             embed=_embed("✅ 트레이드 취소" if ok else "❌ 취소 실패", msg, 0x2ecc71 if ok else 0xe74c3c),
-            ephemeral=True,
         )
 
     @app_commands.command(name="트레이드목록", description="나와 관련된 대기 중인 트레이드를 확인합니다.")
     async def list_cmd(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         rows = await self.pm.get_my_pending_trades(interaction.user.id)
 
         if not rows:
             return await interaction.followup.send(
                 embed=_embed("🤝 트레이드 목록", "대기 중인 트레이드가 없습니다.", 0x2ecc71),
-                ephemeral=True,
             )
 
         now = int(time.time())
@@ -399,9 +394,9 @@ class Trade(commands.Cog):
 
         if has_received:
             view = TradeListView(rows, interaction.user.id, self)
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            await interaction.followup.send(embed=embed, view=view)
         else:
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
