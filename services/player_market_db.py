@@ -238,7 +238,9 @@ def give_player(con, user_id: int, player_id: str, qty: int = 1) -> None:
 
 
 # 선수 ID 를 참조하는 테이블 — ID 를 바꿀 때 전부 같이 바꿔야 한다.
-_PLAYER_ID_TABLES = ("pm_players", "pm_market", "pm_price_history", "pm_holdings",
+# pm_price_history 는 여기 없다: 서버에서 천만 행이 넘어 전부 바꾸면 부팅이 멈췄다(2.00).
+# 대신 옛 ID → 새 번호를 pm_id_alias 에 남기고, 시세 조회가 두 ID 를 함께 읽는다.
+_PLAYER_ID_TABLES = ("pm_players", "pm_market", "pm_holdings",
                      "pm_listings", "pm_trade_items", "pm_news", "club_lineup")
 
 
@@ -253,10 +255,13 @@ def _next_player_id(con) -> str:
 def _migrate_short_player_ids(con) -> int:
     """'P1787641991315580651' 같은 긴 ID 를 짧은 번호로 한 번에 바꾼다 (2.00). 바꾼 수를 돌려준다.
 
+    현역 선수부터 번호를 매겨 자주 보는 선수가 작은 번호를 갖게 한다.
+    시세 기록(pm_price_history)은 그대로 두고 pm_id_alias 로 연결한다.
     열린 트랜잭션이 없을 때 불러야 한다 — foreign_keys 는 트랜잭션 밖에서만 바뀐다.
     """
     old = [r[0] for r in con.execute(
-        "SELECT player_id FROM pm_players WHERE player_id LIKE 'P%' AND length(player_id) > 10 ORDER BY rowid"
+        "SELECT player_id FROM pm_players WHERE player_id LIKE 'P%' AND length(player_id) > 10 "
+        "ORDER BY retired ASC, rowid ASC"
     )]
     if not old:
         return 0
@@ -266,8 +271,9 @@ def _migrate_short_player_ids(con) -> int:
     try:
         con.execute("BEGIN IMMEDIATE")
         con.execute("CREATE TEMP TABLE _pid_map(old TEXT PRIMARY KEY, new TEXT NOT NULL)")
-        con.executemany("INSERT INTO _pid_map(old, new) VALUES(?, ?)",
-                        [(o, str(start + i)) for i, o in enumerate(old)])
+        pairs = [(o, str(start + i)) for i, o in enumerate(old)]
+        con.executemany("INSERT INTO _pid_map(old, new) VALUES(?, ?)", pairs)
+        con.executemany("INSERT OR IGNORE INTO pm_id_alias(old, new) VALUES(?, ?)", pairs)
         for t in _PLAYER_ID_TABLES:
             if t in tables:
                 con.execute(
@@ -707,9 +713,16 @@ class PlayerMarketDB:
                     ) ap
                 """)
 
+            con.execute("CREATE TABLE IF NOT EXISTS pm_id_alias (old TEXT PRIMARY KEY, new TEXT NOT NULL)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_id_alias_new ON pm_id_alias(new)")
             con.commit()
-            # ponytail: ID 단순화 마이그레이션은 서버 DB(선수 9천여 명·시세 기록 대량)에서 부팅을 막아
-            # 일시 중단했다. 빠른 방식으로 바꾼 뒤 다시 켠다.
+            try:
+                con.execute("PRAGMA busy_timeout=30000")
+                migrated = _migrate_short_player_ids(con)
+                if migrated:
+                    print(f"[PM] 선수 ID 단순화: {migrated}명")
+            except Exception as e:   # 실패해도 봇은 긴 ID 그대로 동작한다. 다음 부팅에 다시 시도.
+                print(f"[PM] 선수 ID 단순화 실패(다음 부팅에 재시도): {e!r}")
         finally:
             con.close()
 
@@ -1199,7 +1212,9 @@ class PlayerMarketDB:
             return await self._run(work)
 
     async def price_history(self, player_id: str, since_ts: int, limit: int = 400):
+        """ID 단순화(2.00) 이전 기록은 옛 ID 로 남아 있어 pm_id_alias 로 함께 읽는다."""
         limit = max(10, min(1000, int(limit)))
+        pid = (player_id or "").strip()
         async with self._lock:
             def work():
                 con = self._connect()
@@ -1208,11 +1223,12 @@ class PlayerMarketDB:
                         """
                         SELECT tick_ts, price
                         FROM pm_price_history
-                        WHERE player_id=? AND tick_ts >= ?
+                        WHERE player_id IN (?, COALESCE((SELECT old FROM pm_id_alias WHERE new=?), ''))
+                          AND tick_ts >= ?
                         ORDER BY tick_ts ASC
                         LIMIT ?
                         """,
-                        ((player_id or "").strip(), int(since_ts), int(limit)),
+                        (pid, pid, int(since_ts), int(limit)),
                     ).fetchall()
                 finally:
                     con.close()
