@@ -93,8 +93,93 @@ async def _flow():
     assert (await db.declare_bankruptcy(W, NOW + 31 * D))["ok"]
 
 
+async def _items():
+    db = edb.EconomyDB()
+    eco = Economy.__new__(Economy)
+    eco.db = db
+    X, T = 11, NOW + 40 * D
+    # 직관은 스카우트 15 → 훈련 30 을 마쳐야 열린다
+    r = await db.play_watch(X, T, lambda lv, con: (0, 0, None))
+    assert r["reason"] == "locked" and r["req_limit"] == edb.TRAIN_DAILY_LIMIT
+    for i in range(edb.SCOUT_DAILY_LIMIT):
+        assert (await db.play_scout(X, T + i * 60, lambda lv, con: (0, 0, None)))["ok"]
+    for i in range(edb.TRAIN_DAILY_LIMIT):
+        assert (await db.play_training(X, T + 1000 + i * 30, lambda lv, con: (0, 0, None)))["ok"]
+    assert (await db.play_training(X, T + 5000, lambda lv, con: (0, 0, None)))["reason"] == "limit"
+
+    # 직관 성공 시 아이템이 같은 트랜잭션에서 가방에 들어온다
+    import cogs.economy as ce
+    old = Economy.WATCH_DROP
+    Economy.WATCH_DROP = (1.0,) * 5
+    try:
+        got = None
+        for i in range(edb.WATCH_DAILY_LIMIT):
+            r = await db.play_watch(X, T + 6000 + i * 60, lambda lv, con: eco._watch_roll(lv, con, X))
+            assert r["ok"]
+            got = got or r["info"]["item"]
+        assert (await db.play_watch(X, T + 9000, lambda lv, con: (0, 0, None)))["reason"] == "limit"
+    finally:
+        Economy.WATCH_DROP = old
+    inv, _ = await db.inventory(X)
+    assert got and inv.get(got, 0) >= 1
+
+    # 리셋권: 오늘 횟수 추가 (훈련 잠금은 유지되지 않고 풀린 상태 그대로)
+    await db.give_item(X, "train_reset")
+    await db.give_item(X, "scout_reset")
+    assert (await db.use_item(X, "train_reset", T))["extra"] == edb.TRAIN_DAILY_LIMIT
+    r = await db.play_training(X, T + 9000, lambda lv, con: (0, 0, None))
+    assert r["ok"] and r["limit"] == edb.TRAIN_DAILY_LIMIT * 2
+    assert (await db.use_item(X, "scout_reset", T))["ok"]
+    assert (await db.play_scout(X, T + 9100, lambda lv, con: (0, 0, None)))["ok"]
+    while (await db.use_item(X, "scout_reset", T))["ok"]:                 # 직관에서 더 얻었을 수도 있다
+        pass
+    assert (await db.inventory(X))[0].get("scout_reset", 0) == 0
+    # 다음 날엔 추가 횟수가 사라진다
+    assert (await db.play_scout(X, T + D, lambda lv, con: (0, 0, None)))["limit"] == edb.SCOUT_DAILY_LIMIT
+
+    # 머플러: 5경기 효과, 경기마다 1회 소모
+    Y = 12
+    await db.give_item(Y, "muffler", 2)
+    X = Y
+    assert (await db.use_item(X, "muffler", T))["uses"] == edb.MUFFLER_USES
+    assert (await db.use_item(X, "muffler", T))["uses"] == edb.MUFFLER_USES * 2      # 겹쳐 쓰면 누적
+    for _ in range(edb.MUFFLER_USES * 2):
+        assert await db.consume_buff(X, "muffler")
+    assert not await db.consume_buff(X, "muffler")
+    inv, buffs = await db.inventory(X)
+    assert "muffler" not in inv and "muffler" not in buffs
+
+
+async def _item_screens():
+    from types import SimpleNamespace
+    db = edb.EconomyDB()
+    eco = Economy.__new__(Economy)
+    eco.db = db
+    user = SimpleNamespace(id=21, display_name="팬", display_avatar=SimpleNamespace(url="https://x/a.png"))
+    sent = []
+    async def rec(*a, **k):
+        sent.append(k)
+        return SimpleNamespace(edit=rec)
+    async def noop(*a, **k): pass
+    inter = SimpleNamespace(user=user, response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
+                            followup=SimpleNamespace(send=rec))
+    await Economy.watch.callback(eco, inter)                                   # 훈련 전: 잠김
+    assert "잠겨" not in sent[-1]["embed"].title and "갈 수 없어요" in sent[-1]["embed"].title
+    await db.give_item(user.id, "muffler")
+    await Economy.bag.callback(eco, inter)
+    view = sent[-1]["view"]
+    assert "× 1" in sent[-1]["embed"].description and len(view.children) == 1
+    await view.children[0].callback(inter)                                    # [응원 머플러 사용]
+    result, bag = sent[-1]["embeds"]
+    assert "사용" in result.title and bag.fields and "5경기" in bag.fields[0].value
+    await Economy.use.callback(eco, inter, "train_reset")                    # 없는 아이템
+    assert "없어요" in sent[-1]["embed"].title
+
+
 def test_flow():
     asyncio.run(_flow())
+    asyncio.run(_items())
+    asyncio.run(_item_screens())
 
 
 if __name__ == "__main__":

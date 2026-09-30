@@ -10,7 +10,8 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    ATTEND_BONUS, BANKRUPT_BET_BAN, BANKRUPT_COOLDOWN, EconomyDB, SCOUT_MAX_LEVEL, TRAIN_MAX_LEVEL, TRANSFER_DAILY_LIMIT,
+    ATTEND_BONUS, BANKRUPT_BET_BAN, BANKRUPT_COOLDOWN, ITEMS, MUFFLER_BONUS, EconomyDB, SCOUT_MAX_LEVEL, TRAIN_MAX_LEVEL,
+    TRANSFER_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
@@ -73,6 +74,32 @@ class RaceView(discord.ui.View):
             await self.message.edit(embed=e, view=None)
         except discord.HTTPException:
             pass
+
+
+class BagView(discord.ui.View):
+    """/가방 — 가진 아이템마다 [사용] 버튼 (가방 주인만)."""
+
+    def __init__(self, cog: "Economy", user, inv: dict):
+        super().__init__(timeout=180)
+        self.cog, self.user = cog, user
+        for key, (emoji, name, _) in ITEMS.items():
+            if inv.get(key, 0) > 0:
+                b = discord.ui.Button(label=f"{name} 사용 ({inv[key]})", emoji=emoji, style=discord.ButtonStyle.primary)
+                b.callback = self._use(key)
+                self.add_item(b)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("🙅 가방 주인만 사용할 수 있어요.", ephemeral=True)
+            return False
+        return True
+
+    def _use(self, key: str):
+        async def cb(interaction: discord.Interaction):
+            result = await self.cog._use_embed(self.user, key)
+            bag, inv = await self.cog._bag_embed(self.user)
+            await interaction.response.edit_message(embeds=[result, bag], view=BagView(self.cog, self.user, inv))
+        return cb
 
 
 class BankruptConfirm(discord.ui.View):
@@ -477,6 +504,8 @@ class Economy(commands.Cog):
             promo = f"**{new_tier} 승격!** " if new_tier != self.train_tier(old_lv) else ""
             e.description += (f"\n\n🆙 {promo}보상 {self.train_money_mult(old_lv)}배 → "
                               f"**{self.train_money_mult(r['level'])}배**")
+        if r["used"] >= r["limit"]:
+            e.description += "\n\n🔓 오늘 훈련 완료! 이제 `/직관`을 할 수 있어요."
         e.set_thumbnail(url=ui.emoji_url(ev["emoji"]))
         await interaction.followup.send(embed=e)
 
@@ -565,6 +594,140 @@ class Economy(commands.Cog):
             e.description += "\n\n🔓 오늘 스카우트 완료! 이제 `/훈련`을 할 수 있어요."
         e.set_thumbnail(url=ui.emoji_url("💎" if found else ev["emoji"]))
         await interaction.followup.send(embed=e)
+
+    # ✅ 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 일과. 쿨타임 60초 · 하루 5회 · 최대 Lv.5 · 아이템 획득
+    WATCH_COOLDOWN = 60
+    WATCH_LEVEL_NAMES = ["🎟️ 일반석 관중", "🧣 원정 팬", "📣 서포터즈", "🎫 시즌권자", "👑 레전드 서포터"]
+    WATCH_DROP = (0.30, 0.35, 0.40, 0.45, 0.50)            # 레벨별 아이템 획득 확률 (직관 성공 시)
+    WATCH_ITEM_WEIGHTS = {"muffler": 50, "train_reset": 30, "scout_reset": 20}
+    WATCH_EVENTS = [
+        {"emoji": "🔴", "name": "북런던 더비", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+         "success_text": "종료 직전 결승골! 경기장이 떠나갈 듯한 함성이에요!", "fail_text": "0-0… 90분 내내 하품만 했어요."},
+        {"emoji": "⚪", "name": "엘 클라시코", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+         "success_text": "신예의 원더골을 두 눈으로 봤습니다!", "fail_text": "암표를 샀는데 가짜였어요…"},
+        {"emoji": "🔵", "name": "맨체스터 더비", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+         "success_text": "5골이 터진 난타전! 본전 이상 뽑았습니다.", "fail_text": "비가 쏟아져 우비값만 나갔어요."},
+        {"emoji": "🟡", "name": "레비어 더비", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+         "success_text": "노란 벽의 응원에 소름이 돋았어요!", "fail_text": "원정석에 잘못 앉아 쫓겨났습니다."},
+        {"emoji": "⚫", "name": "밀라노 더비", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+         "success_text": "산시로의 불꽃 응원! 잊지 못할 밤이에요.", "fail_text": "경기 중 정전… 환불도 안 해 준답니다."},
+        {"emoji": "🇰🇷", "name": "K리그 슈퍼매치", "success_rate": 0.80, "win": (15000, 40000), "lose": (-12000, -5000),
+         "success_text": "만원 관중! 굿즈도 한가득 챙겼어요.", "fail_text": "주차장에서 2시간 갇혀 있었어요."},
+        {"emoji": "🌍", "name": "월드컵 예선", "success_rate": 0.75, "win": (15000, 40000), "lose": (-12000, -5000),
+         "success_text": "국가대표 극장골! 목이 다 쉬었어요.", "fail_text": "시차 적응 실패로 경기 내내 졸았어요."},
+        {"emoji": "🏆", "name": "챔피언스리그 결승", "success_rate": 0.60, "win": (25000, 60000), "lose": (-20000, -8000),
+         "success_text": "빅이어 세리머니를 눈앞에서 봤습니다!!", "fail_text": "티켓값만 날리고 연장전 전에 막차를 탔어요."},
+    ]
+
+    @staticmethod
+    def watch_money_mult(level: int) -> int:
+        return min(int(level), WATCH_MAX_LEVEL)
+
+    @classmethod
+    def watch_tier(cls, level: int) -> str:
+        return cls.WATCH_LEVEL_NAMES[min(int(level), WATCH_MAX_LEVEL) - 1]
+
+    def _watch_roll(self, level: int, con, user_id: int):
+        """(돈 변동, 경험치 변동, 표시 정보). 성공하면 레벨별 확률로 아이템을 같은 트랜잭션에서 지급한다."""
+        ev = random.choice(self.WATCH_EVENTS)
+        mult = self.watch_money_mult(level)
+        if random.random() >= min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1)):
+            base = random.randint(*ev["lose"])
+            return base * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "item": None, "base": base, "mult": mult}
+        item = None
+        if random.random() < self.WATCH_DROP[min(level, WATCH_MAX_LEVEL) - 1]:
+            item = random.choices(list(self.WATCH_ITEM_WEIGHTS), weights=list(self.WATCH_ITEM_WEIGHTS.values()))[0]
+            give_item(con, user_id, item)
+        base = random.randint(*ev["win"])
+        return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "item": item, "base": base, "mult": mult}
+
+    def _watch_status(self, r: dict, xp_gain: int | None = None) -> str:
+        lv = r["level"]
+        return self._grind_status(r, WATCH_MAX_LEVEL, self.watch_tier(lv), self.watch_money_mult(lv), xp_gain)
+
+    @staticmethod
+    def _watch_card(user, title: str, caster: str, color: int) -> discord.Embed:
+        return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 직관 일지")
+
+    @app_commands.command(name="직관", description="경기장에 직접 가서 응원! 돈과 아이템을 얻습니다 (오늘 훈련 30회 완료 후 열림 · 하루 5회)")
+    async def watch(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        user, now_ts = interaction.user, int(time.time())
+        try:
+            r = await self.db.play_watch(user.id, now_ts, lambda lv, con: self._watch_roll(lv, con, user.id),
+                                         cooldown_sec=self.WATCH_COOLDOWN)
+        except Exception as e:
+            return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
+
+        if not r["ok"] and r["reason"] == "locked":
+            e = self._watch_card(user, "🔒 아직 경기장에 갈 수 없어요",
+                                 "오늘 일과를 다 마쳐야 직관을 갈 수 있어요! 스카우트 → 훈련 → 직관 순서예요.", ui.DARK)
+            e.description += (f"\n\n`훈련` **{r['req_used']}/{r['req_limit']}회** — `/훈련`을 먼저 마쳐 주세요\n"
+                              + self._watch_status(r))
+            return await interaction.followup.send(embed=e)
+        if not r["ok"]:
+            return await self._grind_blocked(
+                interaction, r, now_ts, self._watch_card, self._watch_status(r),
+                ("🌙 오늘 직관 끝", "오늘 경기는 여기까지! 내일 또 경기장에서 만나요."),
+                ("🚇 경기장 가는 중", "지하철 타고 이동 중이에요. 조금만 기다려 주세요!"),
+                ("✅ 직관 준비 완료", "유니폼 챙겼습니다! 지금 바로 `/직관` 가능해요."),
+            )
+
+        info, ev, item = r["info"], r["info"]["ev"], r["info"]["item"]
+        if r["leveled"]:
+            old_lv = r["level"] - r["leveled"]
+            title, color = f"🆙 레벨 업! Lv.{old_lv} → Lv.{r['level']}", ui.GOLD
+        elif item:
+            title, color = f"{ev['emoji']} {ev['name']} — 🎁 아이템 획득!", ui.GOLD
+        elif info["ok"]:
+            title, color = f"{ev['emoji']} {ev['name']} — 최고의 경기!", ui.WIN
+        else:
+            title, color = f"{ev['emoji']} {ev['name']} — 망한 직관…", ui.LOSE
+        e = self._watch_card(user, title, info["line"], color)
+        if item:
+            emoji, name, desc = ITEMS[item]
+            e.description += f"\n\n🎁 **{emoji} {name}** 획득! — {desc}\n`/가방`에서 사용할 수 있어요."
+        e.description += ("\n\n" + self._settle_line(r["delta"], info) + "\n"
+                          f"`잔액` **{r['new_bal']:,}원**\n" + self._watch_status(r, 3 if info["ok"] else -1))
+        if r["leveled"]:
+            e.description += (f"\n\n🆙 **{self.watch_tier(r['level'])}** 승급! 보상 {self.watch_money_mult(old_lv)}배 → "
+                              f"**{self.watch_money_mult(r['level'])}배** · 아이템 획득 확률 상승")
+        e.set_thumbnail(url=ui.emoji_url(ITEMS[item][0] if item else "🏟️"))
+        await interaction.followup.send(embed=e)
+
+    # ✅ 가방 · 아이템 사용
+    async def _bag_embed(self, user) -> tuple[discord.Embed, dict]:
+        inv, buffs = await self.db.inventory(user.id)
+        lines = [f"{e} **{n}** × {inv.get(k, 0)}\n　 *{d}*" for k, (e, n, d) in ITEMS.items()]
+        e = ui.card("🎒 내 가방", "\n".join(lines), ui.INFO, user, "🎒 아이템")
+        if buffs.get("muffler"):
+            e.add_field(name="✨ 사용 중", value=f"🧣 응원 머플러 — 남은 경기 **{buffs['muffler']}경기** (전력 +{MUFFLER_BONUS})",
+                        inline=False)
+        e.set_footer(text="아이템은 /직관 에서 얻어요 · 아래 버튼으로 바로 사용")
+        return e, inv
+
+    @app_commands.command(name="가방", description="보유 아이템과 사용 중인 효과를 확인하고 바로 사용합니다")
+    async def bag(self, interaction: discord.Interaction):
+        e, inv = await self._bag_embed(interaction.user)
+        await interaction.response.send_message(embed=e, view=BagView(self, interaction.user, inv))
+
+    @app_commands.command(name="사용", description="아이템을 사용합니다")
+    @app_commands.describe(아이템="사용할 아이템")
+    @app_commands.choices(아이템=[app_commands.Choice(name=f"{e} {n} — {d}"[:100], value=k) for k, (e, n, d) in ITEMS.items()])
+    async def use(self, interaction: discord.Interaction, 아이템: str):
+        await interaction.response.send_message(embed=await self._use_embed(interaction.user, 아이템))
+
+    async def _use_embed(self, user, item: str) -> discord.Embed:
+        emoji, name, desc = ITEMS[item]
+        r = await self.db.use_item(user.id, item, int(time.time()))
+        if not r["ok"]:
+            return ui.card(f"🙅 {emoji} {name}이(가) 없어요", "`/직관`에서 얻을 수 있어요.", ui.LOSE, user, "🎒 아이템")
+        if item == "muffler":
+            msg = f"다음 **{r['uses']}경기** 동안 구단 전력 **+{MUFFLER_BONUS}** (친선경기 · 공식경기)"
+        else:
+            what = "스카우트" if item == "scout_reset" else "훈련"
+            msg = f"오늘 {what} **+{r['extra']}회** 추가! 지금 바로 `/{what}` 하러 가세요."
+        return ui.card(f"{emoji} {name} 사용!", msg, ui.GOLD, user, "🎒 아이템")
 
     # ✅ 페널티킥: 방향 선택 없이 완전 랜덤, 쿨타임 없음 — 중계 연출 후 결과
     @staticmethod

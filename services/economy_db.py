@@ -18,11 +18,31 @@ SCOUT_MAX_LEVEL = 5
 SCOUT_DAILY_LIMIT = 15
 SCOUT_XP_NEED = (120, 600, 1200, 3000)   # 하루 약 30 XP 기준 4일 · 20일 · 40일 · 100일
 
+# 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 반복 콘텐츠. 하루 5회, 최대 Lv.5, 아이템을 얻는다.
+WATCH_MAX_LEVEL = 5
+WATCH_DAILY_LIMIT = 5
+WATCH_XP_NEED = (30, 120, 300, 700)       # 하루 약 12 XP 기준 3일 · 10일 · 25일 · 60일
+
 # 레벨·경험치·일일 횟수를 쓰는 반복 콘텐츠 규칙: 테이블 → (만렙, 하루 횟수, 필요 XP 표)
 GRIND_RULES = {
     "training": (TRAIN_MAX_LEVEL, TRAIN_DAILY_LIMIT, TRAIN_XP_NEED),
     "scouting": (SCOUT_MAX_LEVEL, SCOUT_DAILY_LIMIT, SCOUT_XP_NEED),
+    "spectating": (WATCH_MAX_LEVEL, WATCH_DAILY_LIMIT, WATCH_XP_NEED),
 }
+
+# 아이템: key → (이모지, 이름, 설명)
+ITEMS = {
+    "muffler":     ("🧣", "응원 머플러",     "다음 5경기 동안 구단 전력 +3 (친선경기 · 공식경기)"),
+    "scout_reset": ("🧳", "스카우트 리셋권", f"오늘 스카우트 +{SCOUT_DAILY_LIMIT}회"),
+    "train_reset": ("🔄", "훈련 리셋권",     f"오늘 훈련 +{TRAIN_DAILY_LIMIT}회"),
+}
+MUFFLER_USES, MUFFLER_BONUS = 5, 3
+
+
+def give_item(con, user_id: int, item: str, qty: int = 1) -> None:
+    """같은 트랜잭션 안에서 아이템 지급 (직관 드롭 등)."""
+    con.execute("INSERT INTO inventory(user_id, item, qty) VALUES(?,?,?) "
+                "ON CONFLICT(user_id, item) DO UPDATE SET qty = qty + excluded.qty", (int(user_id), item, int(qty)))
 
 # 출석: 누적 출석 일수가 이 날에 닿으면 보너스 (빠져도 초기화되지 않는다)
 ATTEND_BONUS = {7: 50_000, 14: 100_000, 30: 300_000, 50: 500_000, 100: 1_000_000, 200: 2_000_000, 365: 5_000_000}
@@ -131,6 +151,28 @@ class EconomyDB:
                 )
                 """
             )
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS spectating (
+                    user_id INTEGER PRIMARY KEY,
+                    last_play_ts INTEGER NOT NULL DEFAULT 0,
+                    level INTEGER NOT NULL DEFAULT 1,
+                    xp INTEGER NOT NULL DEFAULT 0,
+                    day_key INTEGER NOT NULL DEFAULT 0,
+                    day_count INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            # 리셋권: 그날(bonus_day) 추가로 할 수 있는 횟수
+            for t in GRIND_RULES:
+                for col in ("bonus_day", "bonus_count"):
+                    try:
+                        con.execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+                    except sqlite3.OperationalError:
+                        pass
+            # 아이템: 가방(보유 수량)과 사용 중인 효과(남은 횟수)
+            con.execute("CREATE TABLE IF NOT EXISTS inventory (user_id INTEGER, item TEXT, qty INTEGER, PRIMARY KEY(user_id, item))")
+            con.execute("CREATE TABLE IF NOT EXISTS buffs (user_id INTEGER, item TEXT, uses INTEGER, PRIMARY KEY(user_id, item))")
                         # ───────────── 토토 ─────────────
             con.execute(
                 """
@@ -1136,6 +1178,9 @@ class EconomyDB:
                         ("penalty_kick",          "user_id"),
                         ("training",              "user_id"),
                         ("scouting",              "user_id"),
+                        ("spectating",            "user_id"),
+                        ("inventory",             "user_id"),
+                        ("buffs",                 "user_id"),
                         ("clubs",                 "user_id"),
                         ("club_lineup",           "user_id"),
                         ("club_bonus",            "user_id"),
@@ -1172,6 +1217,52 @@ class EconomyDB:
     async def play_scout(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
         return await self._play_grind("scouting", user_id, now_ts, roll, cooldown_sec)
 
+    async def play_watch(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
+        """직관은 그날 훈련을 전부(30회) 마쳐야 열린다 (훈련은 스카우트 15회 뒤) — 스카우트 → 훈련 → 직관."""
+        return await self._play_grind("spectating", user_id, now_ts, roll, cooldown_sec,
+                                      require=("training", TRAIN_DAILY_LIMIT))
+
+    # ───────────── 아이템 ─────────────
+    async def inventory(self, user_id: int) -> tuple[dict[str, int], dict[str, int]]:
+        """(가방 {아이템: 수량}, 사용 중 효과 {아이템: 남은 횟수})."""
+        def fn(con):
+            inv = {i: int(q) for i, q in con.execute("SELECT item, qty FROM inventory WHERE user_id=? AND qty>0", (user_id,))}
+            buffs = {i: int(u) for i, u in con.execute("SELECT item, uses FROM buffs WHERE user_id=? AND uses>0", (user_id,))}
+            return inv, buffs
+        return await self._tx(fn)
+
+    async def give_item(self, user_id: int, item: str, qty: int = 1) -> None:
+        await self._tx(lambda con: give_item(con, user_id, item, qty))
+
+    async def use_item(self, user_id: int, item: str, now_ts: int) -> dict:
+        """아이템 사용. 실패 reason: none(없음). 성공 시 효과 설명용 값."""
+        day = _kst_day(now_ts)
+
+        def fn(con):
+            row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()
+            if not row or int(row[0]) <= 0:
+                return {"ok": False, "reason": "none"}
+            con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item=?", (user_id, item))
+            if item == "muffler":
+                con.execute("INSERT INTO buffs(user_id, item, uses) VALUES(?, 'muffler', ?) "
+                            "ON CONFLICT(user_id, item) DO UPDATE SET uses = uses + excluded.uses", (user_id, MUFFLER_USES))
+                uses = con.execute("SELECT uses FROM buffs WHERE user_id=? AND item='muffler'", (user_id,)).fetchone()[0]
+                return {"ok": True, "uses": int(uses)}
+            table, extra = {"scout_reset": ("scouting", SCOUT_DAILY_LIMIT), "train_reset": ("training", TRAIN_DAILY_LIMIT)}[item]
+            con.execute(f"INSERT OR IGNORE INTO {table}(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
+            bday, bcount = con.execute(f"SELECT bonus_day, bonus_count FROM {table} WHERE user_id=?", (user_id,)).fetchone()
+            total = (int(bcount) if bday == day else 0) + extra
+            con.execute(f"UPDATE {table} SET bonus_day=?, bonus_count=? WHERE user_id=?", (day, total, user_id))
+            return {"ok": True, "extra": total}
+        return await self._tx(fn)
+
+    async def consume_buff(self, user_id: int, item: str) -> bool:
+        """사용 중인 효과를 1회 소모 (남아 있으면 True)."""
+        def fn(con):
+            return con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item=? AND uses>0",
+                               (user_id, item)).rowcount > 0
+        return await self._tx(fn)
+
     async def _play_grind(self, table: str, user_id: int, now_ts: int, roll, cooldown_sec: int,
                           require: tuple | None = None) -> dict:
         """
@@ -1192,13 +1283,15 @@ class EconomyDB:
                     con.execute("BEGIN IMMEDIATE;")
                     con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
                     con.execute(f"INSERT OR IGNORE INTO {table}(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
-                    level, xp, day_key, used, last = con.execute(
-                        f"SELECT level, xp, day_key, day_count, last_play_ts FROM {table} WHERE user_id=?", (user_id,)
+                    level, xp, day_key, used, last, bonus_day, bonus = con.execute(
+                        f"SELECT level, xp, day_key, day_count, last_play_ts, bonus_day, bonus_count FROM {table} "
+                        "WHERE user_id=?", (user_id,)
                     ).fetchone()
                     if day_key != day:
                         used = 0
+                    cap = limit + (int(bonus) if bonus_day == day else 0)   # 리셋권으로 늘어난 오늘 횟수
                     base = {"ok": False, "level": level, "xp": xp, "need": grind_xp_need(table, level),
-                            "used": used, "limit": limit}
+                            "used": used, "limit": cap}
                     if require:
                         req_table, req_limit = require
                         row = con.execute(f"SELECT day_key, day_count FROM {req_table} WHERE user_id=?",
@@ -1207,7 +1300,7 @@ class EconomyDB:
                         if req_used < req_limit:
                             con.execute("ROLLBACK;")
                             return {**base, "reason": "locked", "req_used": req_used, "req_limit": req_limit}
-                    if used >= limit:
+                    if used >= cap:
                         con.execute("ROLLBACK;")
                         return {**base, "reason": "limit"}
                     if now_ts - last < cooldown_sec:
@@ -1233,7 +1326,7 @@ class EconomyDB:
                     new_bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
                     con.execute("COMMIT;")
                     return {"ok": True, "level": level, "xp": xp, "need": grind_xp_need(table, level),
-                            "used": used, "limit": limit, "leveled": leveled,
+                            "used": used, "limit": cap, "leveled": leveled,
                             "new_bal": int(new_bal), "delta": int(delta), "info": info}
                 except Exception:
                     try:
