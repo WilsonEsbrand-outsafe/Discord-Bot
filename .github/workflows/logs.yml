@@ -1,0 +1,36 @@
+name: Server logs (read-only)
+
+# 봇을 재시작하지 않고 서버 로그와 DB 상태만 본다.
+# 실행: GitHub → Actions → "Server logs (read-only)" → Run workflow
+#       또는  gh workflow run logs.yml -f minutes=60
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "최근 몇 분 로그"
+        default: "30"
+
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read logs
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          script: |
+            cd /home/ubuntu/discord-bot || exit 1
+            echo "배포 커밋: $(git rev-parse --short HEAD)"
+            systemctl is-active discord-bot
+            sudo journalctl -u discord-bot --since "${{ github.event.inputs.minutes }} min ago" --no-pager | tail -n 200
+            python3 - <<'PY'
+            import sqlite3
+            con = sqlite3.connect("file:data/economy.sqlite3?mode=ro", uri=True)
+            q = lambda s: con.execute(s).fetchone()[0]
+            print("긴 선수 ID 남은 수:", q("SELECT COUNT(*) FROM pm_players WHERE player_id LIKE 'P%' AND length(player_id) > 10"))
+            print("선수 번호 최대:", q("SELECT MAX(CAST(player_id AS INTEGER)) FROM pm_players WHERE player_id NOT LIKE 'AMT_%'"))
+            print("현역 선수 수:", q("SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"))
+            print("구단 수:", q("SELECT COUNT(*) FROM clubs"))
+            PY
