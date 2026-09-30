@@ -78,10 +78,25 @@ async def _club_flow():
     assert (await clubs.get_club(U1))["name"] == "테스트 FC"
     assert not (await clubs.create_club(U1, "또", NOW))[0]                       # 중복 생성 불가
     assert not (await clubs.create_club(U2, "가" * 31, NOW))[0]                  # 30자 제한
+    # 2.00 이전에 만든 구단처럼 선발 명단이 비어 있고 주장도 없는 상태 — 화면이 깨지면 안 된다
+    from types import SimpleNamespace
+    from cogs.club import _team_embed
+    owner = SimpleNamespace(id=U1, display_name="구단주", display_avatar=SimpleNamespace(url="https://x/a.png"))
+    team = await clubs.get_team(U1)
+    assert team["filled"] == 0 and team["captain"] is None
+    e = _team_embed(team, owner)
+    assert "주장` 없음" in e.description and "/자동편성" in e.description
+    assert (await clubs.set_formation(U1, "4-3-3"))[0]                          # 빈 명단 포메이션 변경
+    _team_embed(await clubs.get_team(U1), owner)
+    assert (await clubs.set_formation(U1, "4-4-2"))[0]
+
     await pm.give_amateur_squad(U1)
     assert (await clubs.auto_lineup(U1))[0]
     team = await clubs.get_team(U1)
     assert team["filled"] == 11 and team["formation"] == "4-4-2"
+    assert (await clubs.set_slot(U1, 5, None))[0]                               # 빈자리 + 주장 없음
+    _team_embed(await clubs.get_team(U1), owner)
+    assert (await clubs.auto_lineup(U1))[0]
 
     ok, _ = await clubs.set_formation(U1, "3-5-2")
     team = await clubs.get_team(U1)

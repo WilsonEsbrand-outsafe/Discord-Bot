@@ -30,7 +30,8 @@ def _slot_text(s: dict, captain: Optional[str]) -> str:
 
 def _team_embed(team: dict, owner: discord.abc.User) -> discord.Embed:
     captain = team["captain"]
-    cap_name = next((s["name"] for s in team["lineup"] if s.get("player_id") == captain), None)
+    # 빈 자리(player_id None)와 주장 없음(None)이 같다고 판정되지 않게 captain 부터 확인한다.
+    cap_name = next((s["name"] for s in team["lineup"] if captain and s.get("player_id") == captain), None)
     head = (
         f"`포메이션` **{team['formation']}** · `전력` **{team['rating']}**\n"
         f"`선발` {team['filled']}/11명 · `주장` {cap_name or '없음'}"
