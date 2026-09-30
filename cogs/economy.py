@@ -575,51 +575,42 @@ class Economy(commands.Cog):
         await interaction.followup.send(embed=e)
 
     # ✅ 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 일과. 쿨타임 10초 · 하루 100회 · 최대 Lv.5
-    # 한 번 보상은 작고, 경기장 이벤트로 아이템을 자주 얻는다 (성공·실패와 무관).
+    # 결과 3가지: 경기 관람(돈 +) · 경기장 이벤트(아이템) · 실패(돈 -). 리셋권 · 스킵권은 나오지 않는다.
     WATCH_COOLDOWN = 10
     WATCH_LEVEL_NAMES = ["🎟️ 일반석 관중", "🧣 원정 팬", "📣 서포터즈", "🎫 시즌권자", "👑 레전드 서포터"]
-    WATCH_DROP = (0.05, 0.06, 0.07, 0.08, 0.10)            # 레벨별 아이템 이벤트 확률 (매 직관)
-    WATCH_ITEM_WEIGHTS = {"muffler": 50, "train_reset": 15, "scout_reset": 15,
-                          "scout_skip": 7, "train_skip": 7, "watch_skip": 6}
-    WATCH_ITEM_EVENTS = {   # 아이템별 경기장 이벤트 멘트
+    WATCH_KINDS = ("관람", "이벤트", "실패")
+    WATCH_ODDS = (0.80, 0.15, 0.05)
+    WATCH_ITEM_WEIGHTS = {"muffler": 1}   # 이벤트 아이템 비중 — 추후 직관 연계 아이템을 여기에
+    WATCH_ITEM_EVENTS = {   # 이벤트로 나오는 아이템 → 경기장 이벤트 멘트. 새 아이템은 여기와 WATCH_ITEM_WEIGHTS 에 추가
         "muffler": ("선수가 관중석으로 던진 머플러를 잡았어요!", "옆자리 팬이 우승 기념 머플러를 선물해 줬어요!",
-                    "구단 굿즈샵 오픈 기념 선착순 머플러를 받았어요!"),
-        "train_reset": ("하프타임 경품 추첨에 당첨! 훈련 리셋권이에요!", "전광판 키스캠에 잡혀 경품을 받았어요!",
-                        "코치님이 사인과 함께 특별 훈련권을 건네줬어요!"),
-        "scout_reset": ("VIP석 스카우트와 명함을 교환했어요!", "경기 후 믹스트존에서 스카우트 초대장을 받았어요!",
-                        "옆자리 에이전트가 출장 티켓을 양보해 줬어요!"),
-        "scout_skip": ("구단 전용기 탑승권을 얻었어요! 출장이 순식간이에요!",
-                       "스카우트 부장이 보고서 뭉치를 통째로 넘겨줬어요!"),
-        "train_skip": ("코칭스태프가 오늘 훈련 일지를 대신 써 주겠대요!",
-                       "피지컬 코치의 원포인트 레슨권에 당첨됐어요!"),
-        "watch_skip": ("시즌 하이라이트 DVD를 선물 받았어요! 오늘 경기 몰아보기!",
-                       "구단 OTT 이용권 당첨! 남은 경기는 집에서 한 번에!"),
+                    "구단 굿즈샵 오픈 기념 선착순 머플러를 받았어요!", "하프타임 경품 추첨에 당첨! 응원 머플러예요!",
+                    "전광판 키스캠에 잡혀 기념 머플러를 받았어요!"),
     }
     _W, _L = (800, 2500), (-600, -200)
     WATCH_EVENTS = [
-        {"emoji": "🔴", "name": "북런던 더비", "success_rate": 0.75, "win": _W, "lose": _L,
+        {"emoji": "🔴", "name": "북런던 더비", "win": _W, "lose": _L,
          "success_text": "종료 직전 결승골! 경기장이 떠나갈 듯한 함성이에요!", "fail_text": "0-0… 90분 내내 하품만 했어요."},
-        {"emoji": "⚪", "name": "엘 클라시코", "success_rate": 0.75, "win": _W, "lose": _L,
+        {"emoji": "⚪", "name": "엘 클라시코", "win": _W, "lose": _L,
          "success_text": "신예의 원더골을 두 눈으로 봤습니다!", "fail_text": "암표를 샀는데 가짜였어요…"},
-        {"emoji": "🔵", "name": "맨체스터 더비", "success_rate": 0.75, "win": _W, "lose": _L,
+        {"emoji": "🔵", "name": "맨체스터 더비", "win": _W, "lose": _L,
          "success_text": "5골이 터진 난타전! 본전 이상 뽑았습니다.", "fail_text": "비가 쏟아져 우비값만 나갔어요."},
-        {"emoji": "🟡", "name": "레비어 더비", "success_rate": 0.75, "win": _W, "lose": _L,
+        {"emoji": "🟡", "name": "레비어 더비", "win": _W, "lose": _L,
          "success_text": "노란 벽의 응원에 소름이 돋았어요!", "fail_text": "원정석에 잘못 앉아 쫓겨났습니다."},
-        {"emoji": "⚫", "name": "밀라노 더비", "success_rate": 0.75, "win": _W, "lose": _L,
+        {"emoji": "⚫", "name": "밀라노 더비", "win": _W, "lose": _L,
          "success_text": "산시로의 불꽃 응원! 잊지 못할 밤이에요.", "fail_text": "경기 중 정전… 환불도 안 해 준답니다."},
-        {"emoji": "🇰🇷", "name": "K리그 슈퍼매치", "success_rate": 0.80, "win": _W, "lose": _L,
+        {"emoji": "🇰🇷", "name": "K리그 슈퍼매치", "win": _W, "lose": _L,
          "success_text": "만원 관중! 굿즈도 한가득 챙겼어요.", "fail_text": "주차장에서 2시간 갇혀 있었어요."},
-        {"emoji": "🌍", "name": "월드컵 예선", "success_rate": 0.75, "win": _W, "lose": _L,
+        {"emoji": "🌍", "name": "월드컵 예선", "win": _W, "lose": _L,
          "success_text": "국가대표 극장골! 목이 다 쉬었어요.", "fail_text": "시차 적응 실패로 경기 내내 졸았어요."},
-        {"emoji": "🟢", "name": "올드펌 더비", "success_rate": 0.75, "win": _W, "lose": _L,
+        {"emoji": "🟢", "name": "올드펌 더비", "win": _W, "lose": _L,
          "success_text": "셀틱 파크의 함성에 귀가 먹먹해요!", "fail_text": "양 팀 팬 사이에 끼어 경기를 거의 못 봤어요."},
-        {"emoji": "🇯🇵", "name": "J리그 개막전", "success_rate": 0.80, "win": _W, "lose": _L,
+        {"emoji": "🇯🇵", "name": "J리그 개막전", "win": _W, "lose": _L,
          "success_text": "응원가 떼창에 합류했어요! 현지 팬들과 친구 먹었습니다.", "fail_text": "도시락을 경기장 밖에 두고 왔어요…"},
-        {"emoji": "🇺🇸", "name": "MLS 올스타전", "success_rate": 0.80, "win": _W, "lose": _L,
+        {"emoji": "🇺🇸", "name": "MLS 올스타전", "win": _W, "lose": _L,
          "success_text": "하프타임 쇼까지 풀코스! 본전 뽑았어요.", "fail_text": "핫도그값이 티켓값보다 비쌌어요."},
-        {"emoji": "🏴", "name": "FA컵 결승", "success_rate": 0.70, "win": _W, "lose": _L,
+        {"emoji": "🏴", "name": "FA컵 결승", "win": _W, "lose": _L,
          "success_text": "웸블리에서 승부차기 끝 우승을 봤어요!", "fail_text": "웸블리 가는 지하철이 멈췄어요…"},
-        {"emoji": "🏆", "name": "챔피언스리그 결승", "success_rate": 0.60, "win": (1500, 5000), "lose": (-1200, -400),
+        {"emoji": "🏆", "name": "챔피언스리그 결승", "win": (1500, 5000), "lose": (-1200, -400),
          "success_text": "빅이어 세리머니를 눈앞에서 봤습니다!!", "fail_text": "티켓값만 날리고 연장전 전에 막차를 탔어요."},
     ]
 
@@ -632,20 +623,20 @@ class Economy(commands.Cog):
         return cls.WATCH_LEVEL_NAMES[min(int(level), WATCH_MAX_LEVEL) - 1]
 
     def _watch_roll(self, level: int, con, user_id: int):
-        """(돈 변동, 경험치 변동, 표시 정보). 레벨별 확률로 아이템 이벤트가 터지면 같은 트랜잭션에서 지급한다."""
+        """(돈 변동, 경험치 변동, 표시 정보). 관람 80% / 이벤트 15% / 실패 5% (레벨은 보상 배율만).
+        이벤트는 돈 대신 아이템 — 같은 트랜잭션에서 지급한다."""
         ev = random.choice(self.WATCH_EVENTS)
         mult = self.watch_money_mult(level)
-        item = None
-        if random.random() < self.WATCH_DROP[min(level, WATCH_MAX_LEVEL) - 1]:
+        kind = random.choices(self.WATCH_KINDS, weights=self.WATCH_ODDS)[0]
+        if kind == "이벤트":
             item = random.choices(list(self.WATCH_ITEM_WEIGHTS), weights=list(self.WATCH_ITEM_WEIGHTS.values()))[0]
             give_item(con, user_id, item)
-        info = {"ev": ev, "item": item, "item_line": random.choice(self.WATCH_ITEM_EVENTS[item]) if item else None,
-                "mult": mult}
-        if random.random() >= min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1)):
-            base = random.randint(*ev["lose"])
-            return base * mult, -1, {**info, "ok": False, "line": ev["fail_text"], "base": base}
-        base = random.randint(*ev["win"])
-        return base * mult, 3, {**info, "ok": True, "line": ev["success_text"], "base": base}
+            return 0, 3, {"ev": ev, "kind": kind, "ok": True, "item": item, "base": 0, "mult": mult,
+                          "line": random.choice(self.WATCH_ITEM_EVENTS[item])}
+        ok = kind == "관람"
+        base = random.randint(*ev["win" if ok else "lose"])
+        return base * mult, 3 if ok else -1, {"ev": ev, "kind": kind, "ok": ok, "item": None, "base": base, "mult": mult,
+                                              "line": ev["success_text" if ok else "fail_text"]}
 
     def _watch_status(self, r: dict, xp_gain: int | None = None) -> str:
         lv = r["level"]
@@ -655,7 +646,7 @@ class Economy(commands.Cog):
     def _watch_card(user, title: str, caster: str, color: int) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 직관 일지")
 
-    @app_commands.command(name="직관", description=f"경기장에 직접 가서 응원! 아이템 이벤트가 자주 터져요 (훈련 30회 후 열림 · 쿨타임 10초 · 하루 {WATCH_DAILY_LIMIT}회)")
+    @app_commands.command(name="직관", description=f"경기장에 직접 가서 응원! 관람 80% · 이벤트(아이템) 15% · 실패 5% (훈련 30회 후 · 하루 {WATCH_DAILY_LIMIT}회)")
     async def watch(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user, now_ts = interaction.user, int(time.time())
@@ -686,18 +677,19 @@ class Economy(commands.Cog):
         elif item:
             title, color = f"🎉 경기장 이벤트! — {ev['emoji']} {ev['name']}", ui.GOLD
         elif info["ok"]:
-            title, color = f"{ev['emoji']} {ev['name']} — 최고의 경기!", ui.WIN
+            title, color = f"{ev['emoji']} {ev['name']} — 경기 관람 성공!", ui.WIN
         else:
             title, color = f"{ev['emoji']} {ev['name']} — 망한 직관…", ui.LOSE
         e = self._watch_card(user, title, info["line"], color)
         if item:
             emoji, name, desc = ITEMS[item]
-            e.description += f"\n\n🎁 *{info['item_line']}*\n**{emoji} {name}** 획득! — {desc} · `/가방`에서 사용"
-        e.description += ("\n\n" + self._settle_line(r["delta"], info) + "\n"
-                          f"`잔액` **{r['new_bal']:,}원**\n" + self._watch_status(r, 3 if info["ok"] else -1))
+            e.description += f"\n\n🎁 **{emoji} {name}** 획득! — {desc} · `/가방`에서 사용\n`잔액` **{r['new_bal']:,}원**\n"
+        else:
+            e.description += "\n\n" + self._settle_line(r["delta"], info) + f"\n`잔액` **{r['new_bal']:,}원**\n"
+        e.description += self._watch_status(r, 3 if info["ok"] else -1)
         if r["leveled"]:
             e.description += (f"\n\n🆙 **{self.watch_tier(r['level'])}** 승급! 보상 {self.watch_money_mult(old_lv)}배 → "
-                              f"**{self.watch_money_mult(r['level'])}배** · 아이템 획득 확률 상승")
+                              f"**{self.watch_money_mult(r['level'])}배**")
         e.set_thumbnail(url=ui.emoji_url(ITEMS[item][0] if item else "🏟️"))
         await interaction.followup.send(embed=e)
 
@@ -745,7 +737,7 @@ class Economy(commands.Cog):
     def _no_item_card(user, item: str) -> discord.Embed:
         emoji, name, _ = ITEMS[item]
         return ui.card(f"🙅 {emoji} {name}이(가) 없어요",
-                       "`/상점`에서 살 수 있어요." if item in SHOP_PRICES else "`/직관` `/쿠폰`으로 얻을 수 있어요.",
+                       "`/상점`에서 살 수 있어요." if item in SHOP_PRICES else "지금은 `/쿠폰` 같은 이벤트로 얻을 수 있어요.",
                        ui.LOSE, user, "🎒 아이템")
 
     async def _skip_embed(self, user, item: str) -> tuple[discord.Embed, bool]:
@@ -770,8 +762,9 @@ class Economy(commands.Cog):
                            ui.LOSE, user, "🎒 아이템"), False
 
         infos = r["infos"]
-        wins = sum(1 for i in infos if i["ok"])
-        lines = [f"`자동 완료` **{r['plays']}회** · 성공 {wins} · 실패 {r['plays'] - wins}",
+        kinds = [i.get("kind") or ("성공" if i["ok"] else "실패") for i in infos]
+        order = self.WATCH_KINDS if table == "spectating" else ("성공", "실패")
+        lines = [f"`자동 완료` **{r['plays']}회** · " + " · ".join(f"{k} {kinds.count(k)}" for k in order),
                  f"`정산` **{ui.won(r['delta'])}**", f"`잔액` **{r['new_bal']:,}원**", status(r, r["xp_gain"])]
         found = [i["found"] for i in infos if i.get("found")]
         if found:

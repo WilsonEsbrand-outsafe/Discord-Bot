@@ -111,25 +111,36 @@ async def _items():
         assert (await db.play_training(X, T + 1000 + i * 30, lambda lv, con: (0, 0, None)))["ok"]
     assert (await db.play_training(X, T + 5000, lambda lv, con: (0, 0, None)))["reason"] == "limit"
 
-    # 직관: 하루 100회 · 쿨타임 10초 · 아이템 이벤트는 같은 트랜잭션에서 가방에 들어온다 (성공·실패 무관)
+    # 직관: 하루 100회 · 쿨타임 10초 · 관람 80% / 이벤트 15% / 실패 5%
+    # 이벤트는 돈 대신 아이템(같은 트랜잭션에서 가방으로) · 리셋권 · 스킵권은 나오지 않는다
     assert edb.WATCH_DAILY_LIMIT == 100 and Economy.WATCH_COOLDOWN == 10
-    old = Economy.WATCH_DROP
-    Economy.WATCH_DROP = (1.0,) * 5
-    try:
-        got, fails = {}, 0
-        for i in range(edb.WATCH_DAILY_LIMIT):
-            r = await db.play_watch(X, T + 6000 + i * 10, lambda lv, con: eco._watch_roll(lv, con, X), cooldown_sec=10)
-            assert r["ok"] and r["info"]["item"] and r["info"]["item_line"]
-            got[r["info"]["item"]] = got.get(r["info"]["item"], 0) + 1
-            fails += not r["info"]["ok"]
-            assert abs(r["info"]["base"]) <= 5000                               # 한 번 보상은 작다
-        assert fails > 0                                                        # 실패해도 이벤트는 터진다
-        r = await db.play_watch(X, T + 6000 + 100 * 10, lambda lv, con: (0, 0, None), cooldown_sec=10)
-        assert r["reason"] == "limit"
-    finally:
-        Economy.WATCH_DROP = old
+    assert dict(zip(Economy.WATCH_KINDS, Economy.WATCH_ODDS)) == {"관람": 0.80, "이벤트": 0.15, "실패": 0.05}
+    assert not set(Economy.WATCH_ITEM_WEIGHTS) & (set(edb.RESET_ITEMS) | set(edb.SKIP_ITEMS))
+    assert set(Economy.WATCH_ITEM_WEIGHTS) <= set(Economy.WATCH_ITEM_EVENTS)
+    import random as _r
+    _r.seed(22)
+    got, kinds = {}, {k: 0 for k in Economy.WATCH_KINDS}
+    for i in range(edb.WATCH_DAILY_LIMIT):
+        r = await db.play_watch(X, T + 6000 + i * 10, lambda lv, con: eco._watch_roll(lv, con, X), cooldown_sec=10)
+        info = r["info"]
+        assert r["ok"] and abs(info["base"]) <= 5000                            # 한 번 보상은 작다
+        kinds[info["kind"]] += 1
+        if info["kind"] == "이벤트":
+            assert info["item"] and r["delta"] == 0 and info["ok"]              # 이벤트: 아이템만
+            got[info["item"]] = got.get(info["item"], 0) + 1
+        else:
+            assert not info["item"] and (r["delta"] > 0) == info["ok"] == (info["kind"] == "관람")
+    assert all(kinds.values()) and kinds["관람"] > kinds["이벤트"] > kinds["실패"], kinds
+    mem = sqlite3.connect(":memory:")                                         # 비율 확인: 2만 번 굴리기
+    mem.execute("CREATE TABLE inventory (user_id INTEGER, item TEXT, qty INTEGER, PRIMARY KEY(user_id, item))")
+    n = 20_000
+    rolled = [eco._watch_roll(1, mem, 1)[2]["kind"] for _ in range(n)]
+    for k, p in zip(Economy.WATCH_KINDS, Economy.WATCH_ODDS):
+        assert abs(rolled.count(k) / n - p) < 0.015, (k, rolled.count(k) / n)
+    r = await db.play_watch(X, T + 6000 + 100 * 10, lambda lv, con: (0, 0, None), cooldown_sec=10)
+    assert r["reason"] == "limit"
     inv, _ = await db.inventory(X)
-    assert all(inv.get(k, 0) == n for k, n in got.items())
+    assert inv == got
     await db._tx(lambda con: con.execute("DELETE FROM inventory WHERE user_id=?", (X,)))   # 아래 테스트를 위해 비운다
 
     # 직관 리셋권 → 오늘 직관 +100회
@@ -283,7 +294,7 @@ async def _skips():
     assert ok and "**30회**" in e.description and "`/직관`" in e.description and "`정산`" in e.description
     await db.give_item(S, "watch_skip")
     e, ok = await eco._use_embed(user, "watch_skip")
-    assert ok and "**100회**" in e.description
+    assert ok and "**100회** · 관람" in e.description and "이벤트" in e.description
     assert (await db.play_watch(S, T + 9999, lambda lv, con: (0, 0, None), 0))["reason"] == "limit"
 
 
