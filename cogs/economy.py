@@ -562,7 +562,7 @@ class Economy(commands.Cog):
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
 
-    # ✅ 배팅(야구 타석): 페널티킥과 같은 방식 — 결과표에서 한 줄 뽑아 순이익 = 베팅 x 배수. 기대값 약 -1.1%.
+    # ✅ 야구(타석): 페널티킥과 같은 방식 — 결과표에서 한 줄 뽑아 순이익 = 베팅 x 배수. 기대값 약 -1.1%.
     # 마지막 줄(땅볼)이 부동소수 잔여 구간을 받는다.
     BAT_MIN_BET = 5_000
     BAT_SPAM_LINES = [
@@ -589,7 +589,7 @@ class Economy(commands.Cog):
     def _bat_card(user, title: str, caster: str, color: int) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 야구 중계")
 
-    @app_commands.command(name="배팅", description="타석에 서서 한 방! 장외홈런 50배 수익, 트리플 플레이 10배 손실 (최소 5,000원)")
+    @app_commands.command(name="야구", description="타석에 서서 한 방! 장외홈런 50배 수익, 트리플 플레이 10배 손실 (최소 5,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 5,000원)")
     async def batting(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
