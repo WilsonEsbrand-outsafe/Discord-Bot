@@ -3,6 +3,7 @@ import asyncio
 import os
 import time
 import random
+from typing import Optional
 from fractions import Fraction
 import discord
 from discord import app_commands
@@ -1116,6 +1117,97 @@ class Economy(commands.Cog):
             await interaction.edit_original_response(embed=e)
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
+
+    # ✅ 리그: 내 구단을 실제 리그(20팀)에 넣고 한 시즌을 돌려 최종 순위로 정산. 순위는 완전 랜덤(구단 전력 무관).
+    # 순위별 순이익 배수 합 = 0 이라 기대값 0.
+    LEAGUE_MIN_BET = 1_000
+    LEAGUES = {
+        "프리미어리그": ["아스날", "애스턴 빌라", "본머스", "브렌트퍼드", "브라이턴", "번리", "첼시", "크리스탈 팰리스",
+                     "에버턴", "풀럼", "리즈", "리버풀", "맨시티", "맨유", "뉴캐슬", "노팅엄", "선덜랜드", "토트넘",
+                     "웨스트햄", "울버햄튼"],
+        "라리가": ["알라베스", "아틀레틱", "아틀레티코", "바르셀로나", "셀타 비고", "엘체", "에스파뇰", "헤타페", "지로나",
+                "레반테", "마요르카", "오사수나", "라요", "베티스", "레알 마드리드", "오비에도", "레알 소시에다드",
+                "세비야", "발렌시아", "비야레알"],
+        "세리에A": ["아탈란타", "볼로냐", "칼리아리", "코모", "크레모네세", "피오렌티나", "제노아", "베로나", "인테르",
+                  "유벤투스", "라치오", "레체", "밀란", "나폴리", "파르마", "피사", "로마", "사수올로", "토리노", "우디네세"],
+    }
+    # (끝 순위, 순이익 배수, 라벨)
+    LEAGUE_PAYOUT = [
+        (1, 10, "🏆 리그 우승"), (2, 5, "⭐ 챔피언스리그 진출"), (3, 3, "⭐ 챔피언스리그 진출"),
+        (4, 2, "⭐ 챔피언스리그 진출"), (5, 1, "🌍 유로파리그 진출"), (8, 0, "😐 중상위권"),
+        (14, -1, "😶 중위권"), (17, -2, "😰 강등권 싸움"), (20, -3, "⬇️ 강등"),
+    ]
+    LEAGUE_ROUNDS = (("개막 5라운드", 5), ("전반기 종료", 19), ("30라운드", 30))
+
+    @classmethod
+    def league_payout(cls, rank: int) -> tuple[int, str]:
+        return next((m, label) for last, m, label in cls.LEAGUE_PAYOUT if rank <= last)
+
+    @staticmethod
+    def _league_table(teams: list[str], rng=random) -> list[dict]:
+        """teams(최종 순위 순)에 그럴듯한 38경기 성적을 붙인다: 승점·득실차는 순위대로 줄어든다."""
+        rows, pts, gd = [], rng.randint(80, 94), rng.randint(35, 60)
+        for name in teams:
+            d = rng.randint(4, 12)
+            w = max(0, (pts - d) // 3)
+            d = pts - 3 * w
+            l = max(0, 38 - w - d)
+            rows.append({"name": name, "pts": pts, "w": w, "d": d, "l": l, "gd": gd})
+            pts = max(12, pts - rng.randint(0, 6))
+            gd -= rng.randint(1, 8)
+        return rows
+
+    @app_commands.command(name="리그", description="내 구단을 실제 리그에 넣고 한 시즌! 우승 10배 수익 ~ 강등 3배 손실 (최소 1,000원)")
+    @app_commands.rename(amount="베팅액")
+    @app_commands.describe(amount="베팅 금액 (최소 1,000원)", 리그="뛰어들 리그 (비우면 랜덤)")
+    @app_commands.choices(리그=[app_commands.Choice(name=k, value=k) for k in LEAGUES])
+    async def league(self, interaction: discord.Interaction, amount: app_commands.Range[int, LEAGUE_MIN_BET],
+                     리그: Optional[str] = None):
+        user, amount = interaction.user, int(amount)
+        await interaction.response.defer()
+        if (ban := await self._bet_ban_card(user)):
+            return await interaction.followup.send(embed=ban)
+        sec = "🎙️ 리그 중계"
+        bal = await self.db.get_balance(user.id)
+        if bal < amount:
+            return await interaction.followup.send(embed=self._caster_card(
+                user, "🙅 리그에 참가할 수 없어요", f"참가비가 부족합니다! `베팅` {amount:,}원 · `잔액` {bal:,}원", ui.LOSE, sec))
+
+        league = 리그 or random.choice(list(self.LEAGUES))
+        mine = (await self.db.club_name(user.id)) or f"{user.display_name} FC"
+        others = random.sample(self.LEAGUES[league], 19)
+        rank = random.randint(1, 20)                       # 최종 순위는 완전 랜덤
+        order = others[:rank - 1] + [mine] + others[rank - 1:]
+        table = self._league_table(order)
+        mult, label = self.league_payout(rank)
+        delta = amount * mult
+        try:
+            new_bal = await self.db.add_balance(user.id, delta)
+        except Exception as ex:
+            return await interaction.followup.send(f"❌ DB 오류: {type(ex).__name__}")
+
+        def line(i: int, r: dict) -> str:
+            name = f"**{r['name']}** 👈" if r["name"] == mine else r["name"]
+            return f"`{i + 1:>2}` {name} · **{r['pts']}점** · {r['w']}승 {r['d']}무 {r['l']}패 · {r['gd']:+d}"
+
+        color = ui.GOLD if rank == 1 else (ui.DOOM if mult <= -3 else ui.tone(delta))
+        final = ui.card(f"{label} — {mine} {rank}위", "\n".join(line(i, r) for i, r in enumerate(table)),
+                        color, user, sec)
+        final.description += f"\n\n`리그` {league} · `정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**"
+        final.set_thumbnail(url=ui.emoji_url("🏆" if rank == 1 else "⚽"))
+        try:
+            msg = await interaction.followup.send(embed=self._caster_card(
+                user, f"⚽ {league} 개막!", f"{mine}, {amount:,}원을 걸고 {league}에 뛰어듭니다! 목표는 우승!", ui.DARK, sec),
+                wait=True)
+            for stage, _rnd in self.LEAGUE_ROUNDS:
+                await asyncio.sleep(1.3)
+                mid = max(1, min(20, rank + random.randint(-5, 5)))   # 시즌 중 순위는 오르내린다
+                await msg.edit(embed=self._caster_card(
+                    user, f"📊 {stage} — {mine} {mid}위", f"{league} {stage}! 현재 {mid}위를 달리고 있습니다.", ui.DARK, sec))
+            await asyncio.sleep(1.5)
+            await msg.edit(embed=final)
+        except discord.HTTPException:
+            await interaction.followup.send(embed=final)
 
     # ✅ 홀인원: 확률 극악 잭팟
     HOLEINONE_MIN  = 100_000

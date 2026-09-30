@@ -17,7 +17,13 @@ matplotlib.rcParams["font.family"] = "NanumGothic"
 matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
 from services.economy_db import EconomyDB
-from services.player_market_db import PlayerMarketDB, PACKS, JACKPOT_PROB, JACKPOT_RANGE
+from services.player_market_db import PlayerMarketDB, PACKS, JACKPOT_PROB, JACKPOT_RANGE, player_profile
+
+PACK_EMOJI = {
+    "브론즈": "🥉", "실버": "🥈", "골드": "🥇",
+    "플래티넘": "💎", "다이아몬드": "🔷", "아이콘": "👑", "얼티밋": "🌟",
+    "공격수": "⚽", "미드필더": "🎯", "수비수": "🛡️", "골키퍼": "🧤",
+}
 from services.notifier import send_notify
 from auth import OWNER_ID
 
@@ -400,10 +406,7 @@ class PlayersMarket(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         """팩 종류 자동완성"""
-        pack_emoji = {
-            "브론즈": "🥉", "실버": "🥈", "골드": "🥇",
-            "플래티넘": "💎", "다이아몬드": "🔷", "아이콘": "👑", "얼티밋": "🌟",
-        }
+        pack_emoji = PACK_EMOJI
         return [
             app_commands.Choice(
                 name=f"{pack_emoji.get(k, '🎁')} {k}팩  |  {PACKS[k]['price']:,}원 / 장",
@@ -494,10 +497,14 @@ class PlayersMarket(commands.Cog):
     async def _player_detail_embed(self, row, viewer: discord.abc.User) -> discord.Embed:
         (pid, name, nation, pos, age, ovr, potg, basev, retired, price, floor_p, ceil_p, last_ts) = row
         have = await self.pm.get_holding(viewer.id, pid)
+        pot = await self.pm.player_pot(pid) or int(ovr)
+        prof = player_profile(pid, pos)
         state = "💤 은퇴" if int(retired) == 1 else "🟢 활동"
+        grow = f" (+{pot - int(ovr)})" if pot > int(ovr) else " (완성형)"
         desc = (
-            f"`#{pid}` · {nation} · **{pos}** · {age}세 · {state}\n\n"
-            f"`능력` OVR **{ovr}** · 잠재 **{potg}**\n"
+            f"`#{pid}` · {nation} · **{pos}** · {age}세 · {state}\n"
+            f"`체격` {prof['height']}cm · {prof['weight']}kg · `주발` {prof['foot']}\n\n"
+            f"`능력` OVR **{ovr}** → 잠재 **{pot}** ({potg}){grow}\n"
             f"`시세` **{int(price):,}원** (기준가 {int(basev):,}원)\n"
             f"`범위` {int(floor_p):,} ~ {int(ceil_p):,}원\n"
             f"`보유` {viewer.display_name}님 **{have}장**"
@@ -801,10 +808,7 @@ class PlayersMarket(commands.Cog):
     async def pack_info(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        pack_emoji = {
-            "브론즈": "🥉", "실버": "🥈", "골드": "🥇",
-            "플래티넘": "💎", "다이아몬드": "🔷", "아이콘": "👑", "얼티밋": "🌟",
-        }
+        pack_emoji = PACK_EMOJI
         pool_counts = await self.pm.count_pack_pool()
 
         embed = discord.Embed(

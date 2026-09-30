@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+import zlib
 import sqlite3
 import time
 from collections import Counter
@@ -162,6 +163,11 @@ PACKS = {
                   "jackpot": (1.6, None)},
     "얼티밋":    {"price":  7_500_000, "min_price":  5_600_000, "max_price":       None, "center": 0.95,
                   "jackpot": (1.35, None)},
+    # 포지션 팩: 골드와 같은 가격대에서 한 포지션만 나온다
+    "공격수":    {"price":    500_000, "min_price":    175_000, "max_price":    900_000, "pos": "FW"},
+    "미드필더":  {"price":    500_000, "min_price":    175_000, "max_price":    900_000, "pos": "MF"},
+    "수비수":    {"price":    500_000, "min_price":    175_000, "max_price":    900_000, "pos": "DF"},
+    "골키퍼":    {"price":    500_000, "min_price":    175_000, "max_price":    900_000, "pos": "GK"},
 }
 
 # ── 잭팟(대박) ─────────────────────────────────────────────
@@ -330,6 +336,16 @@ def _pick(players: list, weights: list):
     return random.choices(players, weights=weights, k=1)[0]
 
 
+def player_profile(player_id: str, pos: str) -> dict:
+    """주발 · 키 · 몸무게 — 선수 ID 로 정해지는 고정값 (DB 에 저장하지 않는다)."""
+    rng = random.Random(zlib.crc32(f"profile:{player_id}".encode()))
+    lo, hi = {"GK": (184, 198), "DF": (176, 194), "MF": (166, 186), "FW": (168, 192)}.get(pos, (170, 190))
+    height = rng.randint(lo, hi)
+    weight = round(height * height * rng.uniform(21.0, 24.5) / 10_000)
+    foot = rng.choices(("오른발", "왼발", "양발"), weights=(72, 22, 6))[0]
+    return {"foot": foot, "height": height, "weight": weight}
+
+
 def _draw_from_pool(con, pack: dict, pack_price: int, pulls: int) -> tuple[str, list]:
     """풀 쿼리·가중치·추첨 — buy_pack / simulate_pack 공유 헬퍼.
 
@@ -348,6 +364,8 @@ def _draw_from_pool(con, pack: dict, pack_price: int, pulls: int) -> tuple[str, 
         """
     ).fetchall()
     everyone = [(str(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), int(r[5])) for r in rows]
+    if pack.get("pos"):   # 포지션 팩은 그 포지션 선수만 (잭팟 포함)
+        everyone = [p for p in everyone if p[4] == pack["pos"]]
 
     min_p = int(pack.get("min_price", 0) or 0)
     max_p = pack.get("max_price", None)
@@ -1043,26 +1061,18 @@ class PlayerMarketDB:
                     for pack_name, pack_data in PACKS.items():
                         min_p = int(pack_data.get("min_price", 0) or 0)
                         max_p = pack_data.get("max_price", None)
-                        if max_p is not None:
-                            row = con.execute(
-                                """
-                                SELECT COUNT(*) FROM pm_players p
-                                LEFT JOIN pm_market m ON m.player_id = p.player_id
-                                WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
-                                  AND COALESCE(m.price, p.base_value) BETWEEN ? AND ?
-                                """,
-                                (min_p, int(max_p)),
-                            ).fetchone()
-                        else:
-                            row = con.execute(
-                                """
-                                SELECT COUNT(*) FROM pm_players p
-                                LEFT JOIN pm_market m ON m.player_id = p.player_id
-                                WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
-                                  AND COALESCE(m.price, p.base_value) >= ?
-                                """,
-                                (min_p,),
-                            ).fetchone()
+                        pos = pack_data.get("pos")
+                        row = con.execute(
+                            """
+                            SELECT COUNT(*) FROM pm_players p
+                            LEFT JOIN pm_market m ON m.player_id = p.player_id
+                            WHERE p.retired = 0 AND p.player_id NOT LIKE 'AMT_%'
+                              AND COALESCE(m.price, p.base_value) >= ?
+                              AND (? IS NULL OR COALESCE(m.price, p.base_value) <= ?)
+                              AND (? IS NULL OR p.position = ?)
+                            """,
+                            (min_p, max_p, max_p, pos, pos),
+                        ).fetchone()
                         result[pack_name] = int(row[0]) if row else 0
                     return result
                 finally:
@@ -1140,6 +1150,18 @@ class PlayerMarketDB:
                         """,
                         (pid, pid, pid),
                     ).fetchone()
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def player_pot(self, player_id: str) -> Optional[int]:
+        """잠재 능력치 숫자 (선수가 없으면 None)."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    row = con.execute("SELECT pot FROM pm_players WHERE player_id=?", (str(player_id),)).fetchone()
+                    return int(row[0]) if row else None
                 finally:
                     con.close()
             return await self._run(work)

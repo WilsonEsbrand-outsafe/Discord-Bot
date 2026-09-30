@@ -325,6 +325,33 @@ def test_prune_price_history_in_batches():
     assert run(pm.prune_price_history(now)) == 0        # 두 번째는 할 일 없음
 
 
+def test_position_packs_and_profile():
+    """포지션 팩은 그 포지션만 · 풀 개수도 포지션별 · 체격은 선수 ID 로 고정."""
+    from services.player_market_db import _draw_from_pool, player_profile
+    eco, pm = run(_setup())
+    counts = run(pm.count_pack_pool())
+    con = pm._connect()
+    try:
+        total = 0
+        for name, pos in (("공격수", "FW"), ("미드필더", "MF"), ("수비수", "DF"), ("골키퍼", "GK")):
+            cfg = PACKS[name]
+            assert cfg["pos"] == pos and cfg["price"] == PACKS["골드"]["price"]
+            total += counts[name]
+            status, picks = _draw_from_pool(con, cfg, cfg["price"], 200)
+            if status != "OK":
+                assert counts[name] == 0
+                continue
+            assert all(row[4] == pos for row, _ in picks), name
+        assert total <= counts["골드"] and total > 0             # 골드 구간을 포지션별로 나눈 것
+    finally:
+        con.close()
+    a, b = player_profile("123", "GK"), player_profile("123", "GK")
+    assert a == b and 184 <= a["height"] <= 198 and a["foot"] in ("오른발", "왼발", "양발")
+    assert 50 <= a["weight"] <= 100
+    feet = {player_profile(str(i), "MF")["foot"] for i in range(200)}
+    assert feet == {"오른발", "왼발", "양발"}
+
+
 def test_news_skipped_when_market_closed():
     eco, pm = run(_setup())
     closed = 23 * 3600                        # 08:00 KST

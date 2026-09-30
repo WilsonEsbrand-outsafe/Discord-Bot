@@ -80,6 +80,47 @@ def test_table_games():
     asyncio.run(flow())
 
 
+def test_league():
+    """리그: 20팀 · 순위별 배수 합 0(기대값 0) · 순위표는 승점 내림차순 · 명령 정산이 순위와 맞는다."""
+    mults = [Economy.league_payout(r)[0] for r in range(1, 21)]
+    assert sum(mults) == 0 and mults == sorted(mults, reverse=True) and mults[0] == 10 and mults[-1] == -3
+    assert all(len(set(t)) == 20 for t in Economy.LEAGUES.values())
+    rng = random.Random(3)
+    for _ in range(200):
+        t = Economy._league_table([f"t{i}" for i in range(20)], rng)
+        pts = [r["pts"] for r in t]
+        assert pts == sorted(pts, reverse=True)
+        assert all(r["w"] * 3 + r["d"] == r["pts"] and r["w"] + r["d"] + r["l"] >= 0 and r["l"] >= 0 for r in t)
+
+    from types import SimpleNamespace
+    import cogs.economy as ce
+    eco = Economy.__new__(Economy)
+    eco.db = edb.EconomyDB()
+    user = SimpleNamespace(id=77, display_name="감독", display_avatar=SimpleNamespace(url="https://x/a.png"))
+
+    async def flow():
+        await eco.db.add_balance(user.id, 1_000_000)
+        sent = []
+        async def rec(*a, **k):
+            sent.append(k.get("embed"))
+            return SimpleNamespace(edit=rec)
+        async def noop(*a, **k): pass
+        inter = SimpleNamespace(user=user, response=SimpleNamespace(defer=noop), followup=SimpleNamespace(send=rec))
+        real_sleep, ce.asyncio.sleep = ce.asyncio.sleep, (lambda s: real_sleep(0))
+        try:
+            for _ in range(5):
+                before = await eco.db.get_balance(user.id)
+                await Economy.league.callback(eco, inter, 10_000, "라리가")
+                final = sent[-1]
+                rank = int(final.title.rsplit(" ", 1)[1].rstrip("위"))
+                assert await eco.db.get_balance(user.id) - before == 10_000 * Economy.league_payout(rank)[0]
+                assert "감독 FC** 👈" in final.description and len(sent) >= 5    # 개막 + 3장면 + 최종
+        finally:
+            ce.asyncio.sleep = real_sleep
+
+    asyncio.run(flow())
+
+
 def test_horse_race():
     rng = random.Random(5)
     seen = set()
@@ -263,6 +304,7 @@ if __name__ == "__main__":
     test_penalty_table()
     test_batting_table()
     test_table_games()
+    test_league()
     test_horse_race()
     test_training_roll()
     asyncio.run(_training_db())
@@ -270,4 +312,4 @@ if __name__ == "__main__":
     test_answer_matching()
     test_score()
     asyncio.run(_quiz_db())
-    print("OK: minigames 10 checks passed")
+    print("OK: minigames 11 checks passed")

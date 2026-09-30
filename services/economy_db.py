@@ -358,6 +358,33 @@ class EconomyDB:
             return (True, int(bal), 0, total, bonus)
         return await self._tx(fn)
 
+    async def today_status(self, user_id: int, now_ts: int) -> dict:
+        """튜토리얼 체크리스트용: 오늘 출석 여부 · 스카우트/훈련/직관 횟수 · 구단 유무."""
+        today = _kst_day(now_ts)
+
+        def fn(con):
+            row = con.execute("SELECT last_claim_ts FROM daily_claims WHERE user_id=?", (user_id,)).fetchone()
+            out = {"attended": bool(row and row[0] and _kst_day(row[0]) == today)}
+            for table in GRIND_RULES:
+                r = con.execute(f"SELECT day_key, day_count FROM {table} WHERE user_id=?", (user_id,)).fetchone()
+                out[table] = int(r[1]) if r and r[0] == today else 0
+            try:
+                out["club"] = bool(con.execute("SELECT 1 FROM clubs WHERE user_id=?", (user_id,)).fetchone())
+            except sqlite3.OperationalError:
+                out["club"] = False
+            return out
+        return await self._tx(fn)
+
+    async def club_name(self, user_id: int) -> Optional[str]:
+        """구단 이름 (구단이 없거나 구단 테이블이 아직 없으면 None)."""
+        def fn(con):
+            try:
+                row = con.execute("SELECT club_name FROM clubs WHERE user_id=?", (user_id,)).fetchone()
+            except sqlite3.OperationalError:
+                return None
+            return row[0] if row else None
+        return await self._tx(fn)
+
     # ───────────── 파산 ─────────────
     async def bet_ban_until(self, user_id: int, now_ts: int) -> int:
         """파산 후 베팅 금지가 풀리는 시각 (금지 중이 아니면 0)."""

@@ -1,115 +1,154 @@
-# cogs/tutorial.py
+# cogs/tutorial.py — 단계별 안내 + 오늘의 체크리스트 + 목차 메뉴로 바로 이동
+import time
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from services import ui
+from services.economy_db import SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB
 
+SECTION = "📘 튜토리얼"
+
+# (목차 이모지, 제목, 본문). 첫 장(체크리스트)은 유저마다 내용이 달라서 따로 만든다.
 TUTORIAL_STEPS = [
-    {
-        "title": "튜토리얼 1 / 4 · 구단 만들기",
-        "content": (
-            "이 서버에는 **구단 시스템**이 있습니다.\n\n"
-            "먼저 구단을 만들어야 모든 콘텐츠를 이용할 수 있습니다.\n\n"
-            "**지금 할 일**\n"
-            "`/구단생성 이름:원하는 이름`\n\n"
-            "이름을 비우면 **내 닉네임 FC**로 만들어지고\n"
-            "🎁 **50,000원 보너스**와 아마추어 스쿼드 18명을 받습니다.\n"
-            "`/구단`으로 선발 명단을 보고 `/포메이션` `/선발` `/자동편성`으로 꾸며 보세요."
-        ),
-    },
-    {
-        "title": "튜토리얼 2 / 4 · 돈 받기",
-        "content": (
-            "선수팩과 시장 거래에는 돈이 필요합니다.\n\n"
-            "**하루 1번 무료 보상**을 받을 수 있습니다.\n\n"
-            "**지금 할 일**\n"
-            "`/출석`\n\n"
-            "하루에 한 번 꼭 받아두세요."
-        ),
-    },
-    {
-        "title": "튜토리얼 3 / 4 · 선수 얻기",
-        "content": (
-            "선수는 **선수팩**으로 얻습니다.\n\n"
-            "팩에는 여러 등급이 있으며,\n"
-            "비쌀수록 좋은 선수가 나올 확률이 높습니다.\n\n"
-            "**지금 할 일**\n"
-            "`/선수팩 브론즈`\n\n"
-            "처음에는 브론즈팩으로 충분합니다."
-        ),
-    },
-    {
-        "title": "튜토리얼 4 / 4 · 선수 시장",
-        "content": (
-            "이 서버의 핵심은 **선수 시장**입니다.\n\n"
-            "- 선수 가격은 **10분마다 변동**됩니다\n"
-            "- 시장 이용 시간: **09:00 ~ 23:00**\n\n"
-            "**자주 쓰는 명령어**\n"
-            "`/시장`\n"
-            "`/선수` (검색·상세 정보)\n"
-            "`/구매` `/판매`\n\n"
-            "싸게 사서 비싸게 파는 것도 가능합니다."
-        ),
-    },
+    ("📋", "오늘의 체크리스트", None),
+    ("🏟️", "구단 만들기", (
+        "모든 콘텐츠는 **구단**에서 시작합니다.\n\n"
+        "`/구단생성 이름:` — 창단 보너스 **50,000원** + 아마추어 스쿼드 18명\n"
+        "`/구단` — 포메이션 · 선발 명단 · 전력 보기\n"
+        "`/포메이션` `/선발` `/자동편성` `/주장` — 팀 꾸미기\n"
+        "`/감독` — 감독 영입으로 전력 보너스 (선호 포메이션이면 추가)\n\n"
+        "💡 처음엔 `/자동편성` 한 번이면 충분해요."
+    )),
+    ("💰", "하루 루틴으로 돈 벌기", (
+        "매일 이 순서대로 하면 가장 많이 법니다.\n\n"
+        "1️⃣ `/출석` — 하루 1번 · 누적 7 · 14 · 30 · 50 · 100일… 보너스 (빠져도 초기화 없음)\n"
+        f"2️⃣ `/스카우트` — 하루 {SCOUT_DAILY_LIMIT}회 · 드물게 **실제 선수** 발굴\n"
+        f"3️⃣ `/훈련` — 스카우트를 다 하면 열림 · 하루 {TRAIN_DAILY_LIMIT}회\n"
+        f"4️⃣ `/직관` — 훈련을 다 하면 열림 · 하루 {WATCH_DAILY_LIMIT}회 · **아이템** 획득\n\n"
+        "레벨이 오르면 보상이 **레벨 배**가 됩니다 (Lv.3 = 3배)."
+    )),
+    ("🎒", "아이템", (
+        "`/직관`에 성공하면 확률적으로 아이템을 얻어요.\n\n"
+        "🧣 **응원 머플러** — 다음 5경기 동안 구단 전력 +3\n"
+        "🧳 **스카우트 리셋권** — 오늘 스카우트 +15회\n"
+        "🔄 **훈련 리셋권** — 오늘 훈련 +30회\n\n"
+        "`/가방` — 보유 아이템 확인 · 버튼으로 바로 사용"
+    )),
+    ("🃏", "선수 얻기", (
+        "`/선수팩` — 브론즈 ~ 얼티밋, 그리고 **포지션 팩**(공격수 · 미드필더 · 수비수 · 골키퍼)\n"
+        "`/팩정보` — 팩별 가격대 · 잭팟 · 남은 선수 수\n"
+        "`/팩시뮬` — 돈 안 쓰고 미리 뽑아 보기\n"
+        "`/선수` — 이름 · 국적 · 포지션 · #번호 검색, 키 · 몸무게 · 주발 · 잠재력까지\n\n"
+        "💡 처음엔 브론즈 ~ 실버팩으로 시작해 보세요."
+    )),
+    ("📈", "선수 시장", (
+        "선수 가격은 **10분마다** 움직여요. (거래 시간 09:00 ~ 23:00)\n\n"
+        "`/시장` `/시세` — 가격 · 그래프\n"
+        "`/판매` → 12시간 뒤 안 팔리면 `/매각`(70%)\n"
+        "`/즉시판매` — 바로 50% (구단 선발 선수는 1장 남겨야 해요)\n"
+        "`/이적시장` `/구매` — 다른 유저 매물\n"
+        "`/트레이드` — 유저끼리 선수 · 돈 교환"
+    )),
+    ("⚽", "경기", (
+        "`/친선경기 상대:` — 90분 문자중계 · 돈 없이 전적만 · 🔁 다시 붙기\n"
+        "`/공식경기` — 비슷한 전력 구단과 자동 매칭 · 하루 5경기 · **수당** 지급\n"
+        "`/공식순위` — 이번 달 시즌 순위 (승 3점 · 무 1점)\n\n"
+        "킥오프 때 **예상 승률**이 나와요. 머플러를 쓰면 전력 +3!"
+    )),
+    ("🎲", "미니게임", (
+        "모두 최소 **1,000원** · 결과는 완전 랜덤이에요.\n\n"
+        "`/페널티킥` — 200배 파넨카 ~ 10배 손실\n"
+        "`/야구` `/농구` `/ufc` — 50배 ~ 10배 손실\n"
+        "`/경마` — 4마리 중 한 마리 · 막판 대역전 연출\n"
+        "`/리그` — 내 구단을 실제 리그에 넣고 한 시즌 · 우승 10배 ~ 강등 3배 손실\n\n"
+        "⚠️ 큰 손실은 잔액이 마이너스가 될 수 있어요."
+    )),
+    ("🤝", "스폰서 · 토토", (
+        "`/스폰서` `/스폰서계약` — 돈을 맡기고 기간이 끝나면 수익과 함께 (1 · 7 · 30 · 90 · 365일)\n"
+        "　길게 맡길수록 유리 · 스폰서마다 위험도가 달라요 · 계약 관리는 `/스폰서` 메뉴\n\n"
+        "`/토토` — 축구 · UFC 실제 경기 베팅 (메뉴 → 버튼 → 금액)\n"
+        "`/내베팅` — 내역 · 경기 전 취소"
+    )),
+    ("🆘", "도움말", (
+        "`/지갑` — 잔액 보기\n"
+        "`/송금` — 하루 최대 5,000,000원\n"
+        "`/알림설정` — 판매 · 정산 · 스폰서 만기 등 DM 알림\n"
+        "`/파산신청` — 잔액이 마이너스일 때 선수 · 스폰서를 정리하고 남은 빚 탕감 (30일 1회)\n\n"
+        "언제든 `/튜토리얼`로 다시 볼 수 있어요."
+    )),
 ]
 
 
-class TutorialView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=300)
-        self.step = 0
+def _check(done: bool, text: str) -> str:
+    return f"{'✅' if done else '⬜'} {text}"
 
-    def make_embed(self, user: discord.User) -> discord.Embed:
-        data = TUTORIAL_STEPS[self.step]
-        e = discord.Embed(
-            title=data["title"],
-            description=data["content"],
-            color=0x2ecc71,
-        )
-        e.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+
+async def checklist_embed(db: EconomyDB, user) -> discord.Embed:
+    s = await db.today_status(user.id, int(time.time()))
+    lines = [
+        _check(s["club"], "구단 만들기 — `/구단생성`"),
+        _check(s["attended"], "오늘 출석 — `/출석`"),
+        _check(s["scouting"] >= SCOUT_DAILY_LIMIT, f"스카우트 **{s['scouting']}/{SCOUT_DAILY_LIMIT}** — `/스카우트`"),
+        _check(s["training"] >= TRAIN_DAILY_LIMIT, f"훈련 **{s['training']}/{TRAIN_DAILY_LIMIT}** — `/훈련`"),
+        _check(s["spectating"] >= WATCH_DAILY_LIMIT, f"직관 **{s['spectating']}/{WATCH_DAILY_LIMIT}** — `/직관`"),
+    ]
+    done = sum(line.startswith("✅") for line in lines)
+    e = ui.card(f"📋 오늘의 체크리스트 · {done}/{len(lines)}",
+                f"{ui.bar(done, len(lines))}\n\n" + "\n".join(lines)
+                + "\n\n아래 **목차**에서 궁금한 기능으로 바로 이동할 수 있어요.",
+                ui.GOLD if done == len(lines) else ui.INFO, user, SECTION)
+    return e
+
+
+class TutorialView(discord.ui.View):
+    def __init__(self, db: EconomyDB, user, step: int = 0):
+        super().__init__(timeout=600)
+        self.db, self.user, self.step = db, user, step
+        menu = discord.ui.Select(placeholder="📚 목차 — 원하는 장으로 바로 이동", row=0, options=[
+            discord.SelectOption(label=f"{i}. {title}", value=str(i), emoji=emoji, default=(i == step))
+            for i, (emoji, title, _) in enumerate(TUTORIAL_STEPS)])
+        menu.callback = self._jump
+        self.menu = menu
+        self.add_item(menu)
+        self.prev_btn.disabled = step == 0
+        self.next_btn.disabled = step == len(TUTORIAL_STEPS) - 1
+
+    async def make_embed(self) -> discord.Embed:
+        emoji, title, body = TUTORIAL_STEPS[self.step]
+        if body is None:
+            e = await checklist_embed(self.db, self.user)
+        else:
+            e = ui.card(f"{emoji} {title}", body, ui.INFO, self.user, SECTION)
+        e.set_footer(text=f"{self.step + 1} / {len(TUTORIAL_STEPS)} · ◀ ▶ 로 넘기거나 목차에서 바로 이동")
         return e
 
-    @discord.ui.button(label="◀ 이전", style=discord.ButtonStyle.secondary)
-    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.step > 0:
-            self.step -= 1
-        await interaction.response.edit_message(embed=self.make_embed(interaction.user), view=self)
+    async def _show(self, interaction: discord.Interaction, step: int):
+        view = TutorialView(self.db, self.user, step)
+        await interaction.response.edit_message(embed=await view.make_embed(), view=view)
 
-    @discord.ui.button(label="다음 ▶", style=discord.ButtonStyle.primary)
+    async def _jump(self, interaction: discord.Interaction):
+        await self._show(interaction, int(self.menu.values[0]))
+
+    @discord.ui.button(label="◀ 이전", style=discord.ButtonStyle.secondary, row=1)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._show(interaction, max(0, self.step - 1))
+
+    @discord.ui.button(label="다음 ▶", style=discord.ButtonStyle.primary, row=1)
     async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.step < len(TUTORIAL_STEPS) - 1:
-            self.step += 1
-            await interaction.response.edit_message(embed=self.make_embed(interaction.user), view=self)
-        else:
-            await interaction.response.edit_message(
-                embed=discord.Embed(
-                    title="튜토리얼 완료",
-                    description=(
-                        "튜토리얼이 끝났습니다.\n\n"
-                        "이제 자유롭게 플레이하시면 됩니다.\n\n"
-                        "추천 시작:\n"
-                        "`/구단생성`\n"
-                        "`/출석`\n"
-                        "`/선수팩 브론즈`"
-                    ),
-                    color=0x95a5a6,
-                ),
-                view=None,
-            )
+        await self._show(interaction, min(len(TUTORIAL_STEPS) - 1, self.step + 1))
 
 
 class Tutorial(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.db = EconomyDB()
 
-    @app_commands.command(name="튜토리얼", description="신규 유저용 단계별 튜토리얼을 진행합니다.")
+    @app_commands.command(name="튜토리얼", description="오늘 할 일 체크리스트와 기능별 안내 (목차로 바로 이동)")
     async def tutorial(self, interaction: discord.Interaction):
-        view = TutorialView()
-        await interaction.response.send_message(
-            embed=view.make_embed(interaction.user),
-            view=view,
-            ephemeral=True,
-        )
+        view = TutorialView(self.db, interaction.user)
+        await interaction.response.send_message(embed=await view.make_embed(), view=view, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

@@ -176,10 +176,45 @@ async def _item_screens():
     assert "없어요" in sent[-1]["embed"].title
 
 
+async def _tutorial():
+    """튜토리얼: 체크리스트가 오늘 진행 상황을 반영 · 목차/버튼으로 모든 장을 오간다."""
+    import time as _t
+    from types import SimpleNamespace
+    import cogs.tutorial as tut
+    db = edb.EconomyDB()
+    user = SimpleNamespace(id=31, display_name="뉴비", display_avatar=SimpleNamespace(url="https://x/a.png"))
+    e = await tut.checklist_embed(db, user)
+    assert "0/5" in e.title
+    now = int(_t.time())
+    await db.claim_daily(user.id, 30_000, now)
+    for i in range(3):
+        await db.play_scout(user.id, now + i * 60, lambda lv, con: (0, 0, None))
+    e = await tut.checklist_embed(db, user)
+    assert "1/5" in e.title and "스카우트 **3/15**" in e.description and "✅ 오늘 출석" in e.description
+
+    sent = []
+    async def rec(*a, **k):
+        sent.append(k)
+    inter = SimpleNamespace(user=user, response=SimpleNamespace(send_message=rec, edit_message=rec))
+    cog = tut.Tutorial.__new__(tut.Tutorial)
+    cog.db = db
+    await tut.Tutorial.tutorial.callback(cog, inter)
+    view = sent[-1]["view"]
+    assert sent[-1]["ephemeral"] and view.prev_btn.disabled and len(view.menu.options) == len(tut.TUTORIAL_STEPS)
+    for i in range(1, len(tut.TUTORIAL_STEPS)):                                   # 모든 장이 그려진다
+        view.menu._values = [str(i)]
+        await view._jump(inter)
+        assert sent[-1]["embed"].title.endswith(tut.TUTORIAL_STEPS[i][1])
+    assert sent[-1]["view"].next_btn.disabled
+    await sent[-1]["view"].prev_btn.callback(inter)
+    assert sent[-1]["embed"].title.endswith(tut.TUTORIAL_STEPS[-2][1])
+
+
 def test_flow():
     asyncio.run(_flow())
     asyncio.run(_items())
     asyncio.run(_item_screens())
+    asyncio.run(_tutorial())
 
 
 if __name__ == "__main__":
