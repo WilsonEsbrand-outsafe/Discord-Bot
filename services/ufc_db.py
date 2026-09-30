@@ -89,6 +89,15 @@ class UfcDB:
             return rows
         return await self._run(_fn, user_id)
 
+    async def list_recent_for_user(self, user_id: int, limit: int = 10) -> list[sqlite3.Row]:
+        """정산 완료 포함 최근 베팅 (최신순)."""
+        def _fn(user_id, limit):
+            con = _connect()
+            rows = con.execute("SELECT * FROM ufc_bets WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit)).fetchall()
+            con.close()
+            return rows
+        return await self._run(_fn, user_id, limit)
+
     async def settle(self, event_id: str, winner: str) -> list[dict]:
         def _fn(event_id, winner):
             con = _connect()

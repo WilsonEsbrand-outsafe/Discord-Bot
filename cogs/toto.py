@@ -15,6 +15,10 @@ from services.odds_api import OddsAPI
 
 from services.economy_db import EconomyDB
 from services.notifier import send_notify
+from services import ui
+from services.ufc_db import UfcDB
+from cogs.ufc_toto import place_ufc_bet, upcoming_fights
+from typing import Optional
 
 def _fmt_ts(ts: int) -> str:
     # 디스코드 타임스탬프(로컬 표시)
@@ -46,6 +50,7 @@ class Toto(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = EconomyDB()
+        self.ufc = UfcDB()
         self.session: aiohttp.ClientSession | None = None
         self.api: FootballAPI | None = None
         self.odds: OddsAPI | None = None
@@ -393,300 +398,304 @@ class Toto(commands.Cog):
                 print("❌ [AUTO-SETTLE] loop error:", repr(e))
                 await asyncio.sleep(60)
 
-    # ───────────── 유저 ─────────────
-
-    @app_commands.command(name="토토", description="오픈된 경기 목록과 현재 배당을 보여줍니다.")
-    async def toto_list(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        now_ts = int(time.time())
-        rows = await self.db.toto_list_open_matches(now_ts, limit=20)
-
-        if not rows:
-            return await interaction.followup.send("현재 오픈된 경기가 없습니다.")
-
-        e = discord.Embed(title="📋 토토 경기 목록 (오픈)", description="베팅 시점 배당이 고정됩니다.")
-        for match_id, home, away, kickoff_ts, base_h, base_d, base_a in rows:
-            pool = await self.db.toto_get_match_pool(match_id)
-            oh, od, oa = self.db.toto_compute_dynamic_odds(
-                base_home=base_h,
-                base_draw=base_d,
-                base_away=base_a,
-                pool_home=pool["1"],
-                pool_draw=pool["X"],
-                pool_away=pool["2"],
-                alpha=self.ALPHA,
-                smoothing=self.SMOOTHING,
-                cap_pct=self.CAP_PCT,
-            )
-
-            e.add_field(
-                name=f"{home} vs {away}",
-                value=(
-                    f"킥오프: {_fmt_ts(kickoff_ts)}\n"
-                    f"배당: **1** {oh} · **X** {od} · **2** {oa}\n"
-                    f"ID: `{match_id}`"
-                ),
-                inline=False,
-            )
-
-        await interaction.followup.send(embed=e)
-
-    @app_commands.command(name="베팅", description="경기에 베팅합니다.")
-    @app_commands.describe(match_id="경기 선택", pick="베팅할 결과", amount="베팅 금액")
-    @app_commands.autocomplete(match_id=match_autocomplete)
-    @app_commands.choices(pick=[
-        app_commands.Choice(name="1 - 홈승", value="1"),
-        app_commands.Choice(name="X - 무승부", value="X"),
-        app_commands.Choice(name="2 - 원정승", value="2"),
-    ])
-    async def bet(self, interaction: discord.Interaction, match_id: str, pick: str, amount: int):
-        await interaction.response.defer()
-
-        pick = (pick or "").strip().upper()
-        if pick == "0":
-            pick = "X"
-
-        m = await self.db.toto_get_match(match_id)
-        if not m:
-            return await interaction.followup.send("❌ 경기를 찾을 수 없습니다.")
-        _, home, away, kickoff_ts, status, _, base_h, base_d, base_a = m
-        if status != "open":
-            return await interaction.followup.send("❌ 이미 마감된 경기입니다.")
-        now_ts = int(time.time())
-        if now_ts >= int(kickoff_ts) - 600:
-            return await interaction.followup.send("❌ 경기 시작 10분 전부터 베팅이 마감됩니다.")
-
-
-        # 현재 동적 배당 계산
+    # ───────────── 공통 ─────────────
+    async def _odds(self, match_id: str, base_h: float, base_d: float, base_a: float) -> dict[str, float]:
+        """현재 동적 배당 {1, X, 2}."""
         pool = await self.db.toto_get_match_pool(match_id)
         oh, od, oa = self.db.toto_compute_dynamic_odds(
-            base_home=base_h,
-            base_draw=base_d,
-            base_away=base_a,
-            pool_home=pool["1"],
-            pool_draw=pool["X"],
-            pool_away=pool["2"],
-            alpha=self.ALPHA,
-            smoothing=self.SMOOTHING,
-            cap_pct=self.CAP_PCT,
+            base_home=base_h, base_draw=base_d, base_away=base_a,
+            pool_home=pool["1"], pool_draw=pool["X"], pool_away=pool["2"],
+            alpha=self.ALPHA, smoothing=self.SMOOTHING, cap_pct=self.CAP_PCT,
         )
-        odds = {"1": oh, "X": od, "2": oa}.get(pick)
-        if odds is None:
-            return await interaction.followup.send("❌ 픽은 1 / X / 2 중 하나여야 합니다.")
+        return {"1": oh, "X": od, "2": oa}
 
+    async def place_soccer_bet(self, user_id: int, match_id: str, pick: str, amount: int):
+        """축구 베팅. (실패 이유 또는 None, 성공 정보)"""
+        m = await self.db.toto_get_match(match_id)
+        if not m:
+            return "경기를 찾을 수 없습니다.", None
+        _, home, away, kickoff_ts, status, _, base_h, base_d, base_a = m
+        if status != "open":
+            return "이미 마감된 경기입니다.", None
         now_ts = int(time.time())
-        err = await self.db.toto_place_bet(
-            user_id=interaction.user.id,
-            match_id=match_id,
-            pick=pick,
-            amount=int(amount),
-            odds_locked=float(odds),
-            now_ts=now_ts,
-        )
+        if now_ts >= int(kickoff_ts) - 600:
+            return "경기 시작 10분 전부터 베팅이 마감됩니다.", None
+        odds = (await self._odds(match_id, base_h, base_d, base_a))[pick]
+        err = await self.db.toto_place_bet(user_id=user_id, match_id=match_id, pick=pick, amount=int(amount),
+                                           odds_locked=float(odds), now_ts=now_ts)
         if err:
-            return await interaction.followup.send(f"❌ {err}")
+            return err, None
+        return None, {"home": home, "away": away, "odds": float(odds)}
 
-        e = discord.Embed(title="✅ 베팅 완료", description=f"{interaction.user.mention}")
-        e.add_field(name="경기", value=f"{home} vs {away}", inline=False)
-        e.add_field(name="픽", value=_pick_name(pick), inline=True)
-        e.add_field(name="베팅", value=f"{int(amount):,}원", inline=True)
-        e.add_field(name="고정 배당", value=f"{odds}", inline=True)
-        e.add_field(name="예상 지급(적중 시)", value=f"{int(int(amount)*float(odds)):,}원", inline=False)
-        await interaction.followup.send(embed=e)
+    async def show_pick(self, interaction: discord.Interaction, game: dict):
+        """경기를 고르면: 본인에게만 결과 버튼(현재 배당)을 보여준다."""
+        if game["kind"] == "soccer":
+            m = await self.db.toto_get_match(game["match_id"])
+            if not m or m[4] != "open" or time.time() >= int(m[3]) - 600:
+                return await interaction.response.send_message("❌ 베팅이 마감된 경기입니다.", ephemeral=True)
+            odds = await self._odds(game["match_id"], *m[6:9])
+            picks = [("1", f"{game['home']} 승", odds["1"]), ("X", "무승부", odds["X"]), ("2", f"{game['away']} 승", odds["2"])]
+            title = f"⚽ {game['home']} vs {game['away']}"
+        else:
+            f = game["fight"]
+            picks = [(f["home"], f["home"], f["home_odds"]), (f["away"], f["away"], f["away_odds"])]
+            title = f"🥊 {f['home']} vs {f['away']}"
+        e = ui.card(title, f"킥오프 <t:{game['ts']}:f> (<t:{game['ts']}:R>)\n\n"
+                    + "\n".join(f"• {label} **{o:.2f}배**" for _, label, o in picks)
+                    + "\n\n아래 버튼을 누르고 금액을 입력하면 바로 베팅됩니다. 배당은 베팅 순간 고정돼요.",
+                    ui.INFO, interaction.user, SECTION)
+        await interaction.response.send_message(embed=e, view=PickView(self, game, picks), ephemeral=True)
 
-    @app_commands.command(name="내베팅", description="최근 베팅 내역을 확인합니다. (정산 완료 포함)")
+    # ───────────── 유저 ─────────────
+    @app_commands.command(name="토토", description="축구·UFC 경기 목록과 배당 — 메뉴에서 골라 바로 베팅")
+    async def toto_list(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        now_ts = int(time.time())
+        rows = await self.db.toto_list_open_matches(now_ts, limit=15)
+        live = await self.db.toto_list_in_progress(now_ts, limit=10)
+        fights = (await upcoming_fights())[:8]
+
+        games, options, parts = {}, [], []
+        n = 0
+        if rows:
+            lines = []
+            for match_id, home, away, kickoff_ts, base_h, base_d, base_a in rows:
+                n += 1
+                o = await self._odds(match_id, base_h, base_d, base_a)
+                games[f"s:{match_id}"] = {"kind": "soccer", "match_id": match_id, "home": home, "away": away,
+                                          "ts": int(kickoff_ts)}
+                options.append(discord.SelectOption(label=f"{n}. {home} vs {away}"[:100], value=f"s:{match_id}",
+                                                    emoji="⚽", description=_short_ts(kickoff_ts)))
+                lines.append(f"`{n}` **{home} vs {away}** · <t:{int(kickoff_ts)}:R>\n"
+                             f"　 홈 **{o['1']}** · 무 **{o['X']}** · 원정 **{o['2']}**")
+            parts.append("**⚽ 축구**\n" + "\n".join(lines))
+        if fights:
+            lines = []
+            for f in fights:
+                n += 1
+                ts = int(datetime.fromisoformat(f["commence_time"].replace("Z", "+00:00")).timestamp())
+                games[f"u:{f['event_id']}"] = {"kind": "ufc", "fight": f, "ts": ts}
+                options.append(discord.SelectOption(label=f"{n}. {f['home']} vs {f['away']}"[:100],
+                                                    value=f"u:{f['event_id']}", emoji="🥊", description=_short_ts(ts)))
+                lines.append(f"`{n}` **{f['home']} vs {f['away']}** · <t:{ts}:R>\n"
+                             f"　 {f['home']} **{f['home_odds']:.2f}** · {f['away']} **{f['away_odds']:.2f}**")
+            parts.append("**🥊 UFC**\n" + "\n".join(lines))
+        if live:
+            parts.append("**🔴 진행 중** (베팅 마감 · 끝나면 자동 정산)\n" + "\n".join(
+                f"**{home} vs {away}** · 킥오프 <t:{int(k)}:R>" for _, home, away, k, *_ in live))
+
+        if not options:
+            e = ui.card("🎰 토토", "지금은 베팅할 수 있는 경기가 없어요." + ("\n\n" + parts[0] if parts else ""),
+                        ui.EVEN, interaction.user, SECTION)
+            return await interaction.followup.send(embed=e)
+        e = ui.card("🎰 토토", "\n\n".join(parts), ui.INFO, interaction.user, SECTION)
+        e.set_footer(text="아래 메뉴에서 경기를 고르면 바로 베팅 · 배당은 베팅 순간 고정 · 내역·취소는 /내베팅")
+        await interaction.followup.send(embed=e, view=GameMenu(self, games, options[:25]))
+
+    @app_commands.command(name="내베팅", description="축구·UFC 베팅 내역 — 경기 시작 전 축구 베팅은 여기서 취소")
     async def my_bets(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-
-        rows = await self.db.toto_list_user_bets(interaction.user.id, limit=20)
-        if not rows:
-            return await interaction.followup.send("베팅 내역이 없습니다.", ephemeral=True)
-
-        e = discord.Embed(title="🧾 내 베팅 내역 (최근 20건)")
-        total_bet = 0
-        total_payout = 0
-
-        for match_id, home, away, kickoff_ts, status, result, pick, amount, odds_locked, settled, payout in rows:
-            total_bet += int(amount)
-            total_payout += int(payout)
-
-            if int(settled) == 1:
-                win = int(payout) > 0
-                result_text = f"{'✅ 적중' if win else '❌ 미적중'} | 지급: **{int(payout):,}원**"
-            elif status == "closed":
-                result_text = "🟡 경기 중 (정산 대기)"
-            else:
-                result_text = f"🟢 베팅 진행중 | 킥오프: {_fmt_ts(kickoff_ts)}"
-
-            e.add_field(
-                name=f"{home} vs {away}",
-                value=(
-                    f"픽: **{_pick_name(pick)}** | 베팅: **{int(amount):,}원** | 배당: {odds_locked}\n"
-                    f"{result_text}"
-                ),
-                inline=False,
-            )
-
-        profit = total_payout - total_bet
-        sign = "+" if profit >= 0 else ""
-        e.set_footer(text=f"총 베팅: {total_bet:,}원 | 총 수령: {total_payout:,}원 | 손익: {sign}{profit:,}원")
-        await interaction.followup.send(embed=e, ephemeral=True)
-
-    @app_commands.command(name="베팅취소", description="내 베팅을 취소하고 전액 환불받습니다. (경기 시작 전만)")
-    @app_commands.describe(match_id="경기 선택")
-    @app_commands.autocomplete(match_id=match_autocomplete)
-    async def cancel_bet(self, interaction: discord.Interaction, match_id: str):
-        await interaction.response.defer(ephemeral=True)
-
-        ok, msg = await self.db.toto_cancel_bet(
-            user_id=interaction.user.id,
-            match_id=match_id.strip(),
-            now_ts=int(time.time()),
-        )
-        if not ok:
-            return await interaction.followup.send(f"❌ {msg}", ephemeral=True)
-
-        await interaction.followup.send(f"✅ {msg}", ephemeral=True)
-
-    @app_commands.command(name="진행중", description="현재 진행 중인 토토 경기를 확인합니다.")
-    async def live_matches(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        now_ts = int(time.time())
-        rows = await self.db.toto_list_in_progress(now_ts, limit=20)
-
-        if not rows:
-            return await interaction.followup.send("현재 진행 중인 경기가 없습니다.")
-
-        e = discord.Embed(title="⚽ 진행 중인 경기")
-        for match_id, home, away, kickoff_ts, base_h, base_d, base_a in rows:
-            elapsed_min = max(0, (int(time.time()) - int(kickoff_ts)) // 60)  # ✅ 추가
-
-            pool = await self.db.toto_get_match_pool(match_id)
-            oh, od, oa = self.db.toto_compute_dynamic_odds(
-                base_home=base_h,
-                base_draw=base_d,
-                base_away=base_a,
-                pool_home=pool["1"],
-                pool_draw=pool["X"],
-                pool_away=pool["2"],
-                alpha=self.ALPHA,
-                smoothing=self.SMOOTHING,
-                cap_pct=self.CAP_PCT,
-            )
-
-            e.add_field(
-                name=f"{home} vs {away}",
-                value=(
-                    f"시작: {_fmt_ts(kickoff_ts)} (경과 {elapsed_min}분)\n"
-                    f"배당: **1** {oh} · **X** {od} · **2** {oa}\n"
-                    f"ID: `{match_id}`"
-                ),
-                inline=False,
-            )
-
-        await interaction.followup.send(embed=e)
-
-    # ───────────── 나만 사용 명령어 ─────────────
-
-    @app_commands.command(name="토토불러오기", description="(관리자) football-data.org에서 다음 경기들을 자동 등록합니다.")
-    @app_commands.describe(competition="대회 코드(기본 PL)", limit="가져올 경기 수(1~20)")
-    @app_commands.check(owner_only)
-    async def import_matches(self, interaction: discord.Interaction, competition: str = "PL", limit: int = 10):
-        await interaction.response.defer(ephemeral=True)
-
-        if not self.api:
-            return await interaction.followup.send("❌ API가 아직 초기화되지 않았습니다. 봇을 재시작해 주세요.", ephemeral=True)
-
-        limit       = max(1, min(20, int(limit)))
-        competition = (competition or "PL").strip().upper()
-
-        r = await self._do_import(competition=competition, limit=limit)
-
-        lines = [
-            f"**대회**: {competition}",
-            f"**API 수신**: {r['fetched']}경기",
-            f"**DB 등록**: {r['added']}경기",
-            f"**배당 이벤트**: {r['odds_events']}개 (The Odds API)",
-            f"**배당 적용**: {r['odds_applied']}/{r['added']} "
-            + ("✅" if r['odds_applied'] > 0 else "❌ (기본값 사용)"),
-        ]
-        if r["error"]:
-            lines.append(f"⚠️ 오류: `{r['error']}`")
-        for note in r.get("notes", []):
-            lines.append(f"• {note}")
-
-        await interaction.followup.send("\n".join(lines), ephemeral=True)
-
-    @app_commands.command(name="경기삭제", description="(관리자) 오픈된 토토 경기를 환불 후 삭제합니다.")
-    @app_commands.describe(match_id="경기 ID")
-    @app_commands.check(owner_only)
-    async def delete_match(self, interaction: discord.Interaction, match_id: str):
-        
-        await interaction.response.defer(ephemeral=True)
-
-        ok, msg = await self.db.toto_refund_and_delete_open_match(match_id.strip())
-        if not ok:
-            return await interaction.followup.send(f"❌ {msg}", ephemeral=True)
-
-        await interaction.followup.send(f"✅ {msg}", ephemeral=True)
-
-    @app_commands.command(name="경기등록", description="(관리자) 토토 경기를 수동 등록합니다.")
-    @app_commands.describe(match_id="고유 ID", home="홈팀", away="원정팀", kickoff_ts="킥오프 유닉스 타임(초)")
-    @app_commands.check(owner_only)
-    async def add_match(self, interaction: discord.Interaction, match_id: str, home: str, away: str, kickoff_ts: int):
-   
-        await interaction.response.defer(ephemeral=True)
-
-        await self.db.toto_upsert_match(
-            match_id=match_id.strip(),
-            home=home.strip(),
-            away=away.strip(),
-            kickoff_ts=int(kickoff_ts),
-            base_home=self.BASE_HOME,
-            base_draw=self.BASE_DRAW,
-            base_away=self.BASE_AWAY,
-        )
-        await interaction.followup.send("✅ 경기 등록/갱신 완료", ephemeral=True)
-
-    @app_commands.command(name="결과", description="(관리자) 경기 결과를 입력하고 정산합니다. (1/X/2)")
-    @app_commands.describe(match_id="경기 ID", result="1 / X / 2")
-    @app_commands.check(owner_only)
-    async def set_result(self, interaction: discord.Interaction, match_id: str, result: str):
-
-        await interaction.response.defer(ephemeral=True)
-
-        ok, msg = await self.db.toto_set_result_and_settle(match_id.strip(), result.strip().upper(), int(time.time()))
-        if not ok:
-            return await interaction.followup.send(f"❌ {msg}", ephemeral=True)
-
-        await interaction.followup.send(f"✅ {msg}", ephemeral=True)
-        await self._notify_settle_dm(match_id.strip())
-
-    @app_commands.command(name="배당확인", description="(관리자) The Odds API에서 현재 배당 가능한 축구 대회 목록을 확인합니다.")
-    @app_commands.check(owner_only)
-    async def check_odds_sports(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        if not self.odds:
-            return await interaction.followup.send("❌ Odds API 미초기화", ephemeral=True)
-
-        sports = await self.odds.list_active_sports()
-        soccer = [s for s in sports if "soccer" in s.get("key", "")]
-
-        if not soccer:
+        user, now_ts = interaction.user, int(time.time())
+        soccer = await self.db.toto_list_user_bets(user.id, limit=10)
+        ufc = await self.ufc.list_recent_for_user(user.id, limit=10)
+        if not soccer and not ufc:
             return await interaction.followup.send(
-                "현재 배당 있는 축구 대회가 없습니다. (ODDS_API_KEY 확인 필요)", ephemeral=True
-            )
+                embed=ui.card("🧾 내 베팅", "베팅 내역이 없어요. `/토토`에서 시작해 보세요!", ui.EVEN, user, SECTION),
+                ephemeral=True)
 
-        lines = [f"`{s['key']}` — {s.get('title', '')}" for s in soccer]
-        text = "\n".join(lines)
-        # 2000자 제한 대비
-        if len(text) > 1800:
-            text = text[:1800] + "\n…(생략)"
+        total_bet = total_pay = 0
+        parts, cancellable = [], []
+        if soccer:
+            lines = []
+            for match_id, home, away, kickoff_ts, status, result, pick, amount, odds, settled, payout in soccer:
+                total_bet += int(amount)
+                total_pay += int(payout)
+                if int(settled):
+                    state = f"✅ 적중 **+{int(payout):,}원**" if int(payout) > 0 else "❌ 미적중"
+                elif status == "closed":
+                    state = "🟡 경기 중 · 정산 대기"
+                else:
+                    state = f"🟢 킥오프 <t:{int(kickoff_ts)}:R>"
+                    if now_ts < int(kickoff_ts) - 600:
+                        cancellable.append((match_id, f"{home} vs {away}", int(amount)))
+                lines.append(f"**{home} vs {away}** · {_pick_name(pick)} · {int(amount):,}원 × {odds}\n　 {state}")
+            parts.append("**⚽ 축구**\n" + "\n".join(lines))
+        if ufc:
+            lines = []
+            for r in ufc:
+                home, away = r["match_id"].split("|", 1)
+                total_bet += r["amount"]
+                if r["settled"]:
+                    pay = int(r["amount"] * r["odds"]) if r["won"] else 0
+                    total_pay += pay
+                    state = f"✅ 적중 **+{pay:,}원**" if r["won"] else "❌ 미적중"
+                else:
+                    state = f"🟢 진행 중 · 적중 시 **{int(r['amount'] * r['odds']):,}원**"
+                lines.append(f"**{home} vs {away}** · {r['fighter']} · {r['amount']:,}원 × {r['odds']:.2f}\n　 {state}")
+            parts.append("**🥊 UFC**\n" + "\n".join(lines))
 
-        await interaction.followup.send(f"**현재 배당 있는 축구 대회:**\n{text}", ephemeral=True)
+        e = ui.card("🧾 내 베팅", "\n\n".join(parts), ui.INFO, user, SECTION)
+        e.set_footer(text=f"총 베팅 {total_bet:,}원 · 총 수령 {total_pay:,}원"
+                          + (" · 아래 메뉴로 축구 베팅 취소(전액 환불)" if cancellable else ""))
+        view = CancelMenu(self, user.id, cancellable) if cancellable else discord.utils.MISSING
+        await interaction.followup.send(embed=e, view=view, ephemeral=True)
+
+    # ───────────── 관리자 ─────────────
+    @app_commands.command(name="토토관리", description="(관리자) 경기 불러오기 · 등록 · 삭제 · 결과 입력 · 배당 확인")
+    @app_commands.describe(작업="할 작업", 경기="경기 ID (등록 · 삭제 · 결과)", 결과="경기 결과 (결과 입력)",
+                           홈="홈팀 (등록)", 원정="원정팀 (등록)", 킥오프="킥오프 유닉스 타임(초) (등록)",
+                           대회="대회 코드 (불러오기, 기본 PL)", 개수="불러올 경기 수 1~20 (불러오기)")
+    @app_commands.choices(
+        작업=[app_commands.Choice(name="📥 경기 불러오기", value="import"),
+              app_commands.Choice(name="➕ 경기 등록", value="add"),
+              app_commands.Choice(name="🗑️ 경기 삭제 (환불)", value="delete"),
+              app_commands.Choice(name="🏁 결과 입력 · 정산", value="result"),
+              app_commands.Choice(name="📊 배당 대회 확인", value="odds")],
+        결과=[app_commands.Choice(name="1 - 홈승", value="1"), app_commands.Choice(name="X - 무승부", value="X"),
+              app_commands.Choice(name="2 - 원정승", value="2")],
+    )
+    @app_commands.autocomplete(경기=match_autocomplete)
+    @app_commands.check(owner_only)
+    async def manage(self, interaction: discord.Interaction, 작업: str, 경기: Optional[str] = None,
+                     결과: Optional[str] = None, 홈: Optional[str] = None, 원정: Optional[str] = None,
+                     킥오프: Optional[int] = None, 대회: str = "PL", 개수: int = 10):
+        await interaction.response.defer(ephemeral=True)
+        say = lambda msg: interaction.followup.send(msg, ephemeral=True)   # noqa: E731
+        need = {"add": (경기, 홈, 원정, 킥오프), "delete": (경기,), "result": (경기, 결과)}.get(작업, ())
+        if any(v is None for v in need):
+            return await say("❌ 이 작업에 필요한 값이 빠졌어요. (등록: 경기·홈·원정·킥오프 / 삭제: 경기 / 결과: 경기·결과)")
+
+        if 작업 == "import":
+            if not self.api:
+                return await say("❌ API가 아직 초기화되지 않았습니다. 봇을 재시작해 주세요.")
+            competition = (대회 or "PL").strip().upper()
+            r = await self._do_import(competition=competition, limit=max(1, min(20, int(개수))))
+            lines = [
+                f"**대회**: {competition}",
+                f"**API 수신**: {r['fetched']}경기",
+                f"**DB 등록**: {r['added']}경기",
+                f"**배당 이벤트**: {r['odds_events']}개 (The Odds API)",
+                f"**배당 적용**: {r['odds_applied']}/{r['added']} " + ("✅" if r['odds_applied'] > 0 else "❌ (기본값 사용)"),
+            ]
+            if r["error"]:
+                lines.append(f"⚠️ 오류: `{r['error']}`")
+            lines += [f"• {note}" for note in r.get("notes", [])]
+            return await say("\n".join(lines))
+
+        if 작업 == "add":
+            await self.db.toto_upsert_match(match_id=경기.strip(), home=홈.strip(), away=원정.strip(),
+                                            kickoff_ts=int(킥오프), base_home=self.BASE_HOME,
+                                            base_draw=self.BASE_DRAW, base_away=self.BASE_AWAY)
+            return await say("✅ 경기 등록/갱신 완료")
+
+        if 작업 == "delete":
+            ok, msg = await self.db.toto_refund_and_delete_open_match(경기.strip())
+            return await say(f"{'✅' if ok else '❌'} {msg}")
+
+        if 작업 == "result":
+            ok, msg = await self.db.toto_set_result_and_settle(경기.strip(), 결과, int(time.time()))
+            await say(f"{'✅' if ok else '❌'} {msg}")
+            if ok:
+                await self._notify_settle_dm(경기.strip())
+            return
+
+        # odds
+        if not self.odds:
+            return await say("❌ Odds API 미초기화")
+        soccer = [s for s in await self.odds.list_active_sports() if "soccer" in s.get("key", "")]
+        if not soccer:
+            return await say("현재 배당 있는 축구 대회가 없습니다. (ODDS_API_KEY 확인 필요)")
+        text = "\n".join(f"`{s['key']}` — {s.get('title', '')}" for s in soccer)
+        await say(f"**현재 배당 있는 축구 대회:**\n{text[:1800]}" + ("\n…(생략)" if len(text) > 1800 else ""))
+
+
+# ───────────── 화면 구성 요소 ─────────────
+SECTION = "🎰 토토"
+
+
+def _short_ts(ts: int) -> str:
+    return dt.datetime.fromtimestamp(int(ts), dt.timezone(dt.timedelta(hours=9))).strftime("%m/%d %H:%M KST")
+
+
+class GameMenu(discord.ui.View):
+    """/토토 아래 경기 선택 메뉴 — 누구나 골라서 각자 베팅."""
+
+    def __init__(self, cog: "Toto", games: dict, options: list[discord.SelectOption]):
+        super().__init__(timeout=900)
+        self.cog, self.games = cog, games
+        self.select = discord.ui.Select(placeholder="🎯 베팅할 경기를 고르세요", options=options)
+        self.select.callback = self._chosen
+        self.add_item(self.select)
+
+    async def _chosen(self, interaction: discord.Interaction):
+        game = self.games.get(self.select.values[0])
+        if game is None:
+            return await interaction.response.send_message("❌ 목록이 오래됐어요. `/토토`를 다시 열어 주세요.", ephemeral=True)
+        await self.cog.show_pick(interaction, game)
+
+
+class PickView(discord.ui.View):
+    def __init__(self, cog: "Toto", game: dict, picks: list[tuple[str, str, float]]):
+        super().__init__(timeout=300)
+        for i, (pick, label, odds) in enumerate(picks):
+            b = discord.ui.Button(label=f"{label} · {odds:.2f}배"[:80],
+                                  style=(discord.ButtonStyle.primary, discord.ButtonStyle.secondary,
+                                         discord.ButtonStyle.danger)[i if len(picks) == 3 else i * 2])
+            b.callback = self._open(cog, game, pick, label, odds)
+            self.add_item(b)
+
+    @staticmethod
+    def _open(cog, game, pick, label, odds):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.send_modal(BetModal(cog, game, pick, label, odds))
+        return cb
+
+
+class BetModal(discord.ui.Modal):
+    amount = discord.ui.TextInput(label="베팅 금액 (원)", placeholder="예: 10000", max_length=12)
+
+    def __init__(self, cog: "Toto", game: dict, pick: str, label: str, odds: float):
+        super().__init__(title=f"{label} 베팅"[:45])
+        self.cog, self.game, self.pick, self.label, self.odds = cog, game, pick, label, odds
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.amount.value.replace(",", "").replace("원", "").strip()
+        if not raw.isdigit() or int(raw) <= 0:
+            return await interaction.response.send_message("❌ 금액은 1 이상의 숫자로 입력해 주세요.", ephemeral=True)
+        amount, user = int(raw), interaction.user
+        if self.game["kind"] == "soccer":
+            err, info = await self.cog.place_soccer_bet(user.id, self.game["match_id"], self.pick, amount)
+            odds, title = (info or {}).get("odds"), f"⚽ {self.game['home']} vs {self.game['away']}"
+        else:
+            f = self.game["fight"]
+            err = await place_ufc_bet(user.id, f, self.pick, self.odds, amount, self.cog.db, self.cog.ufc)
+            odds, title = self.odds, f"🥊 {f['home']} vs {f['away']}"
+        if err:
+            return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
+        e = ui.card("✅ 베팅 완료",
+                    f"`경기` **{title}**\n`픽` **{self.label}**\n"
+                    f"`베팅` **{amount:,}원** · `배당` **{odds:.2f}배** (고정)\n"
+                    f"`적중 시` **{int(amount * odds):,}원**",
+                    ui.WIN, user, SECTION)
+        await interaction.response.send_message(embed=e)
+
+
+class CancelMenu(discord.ui.View):
+    """/내베팅 — 경기 시작 10분 전까지 축구 베팅 취소(전액 환불)."""
+
+    def __init__(self, cog: "Toto", user_id: int, bets: list[tuple[str, str, int]]):
+        super().__init__(timeout=300)
+        self.cog, self.user_id = cog, user_id
+        self.select = discord.ui.Select(
+            placeholder="↩️ 취소할 축구 베팅 (전액 환불)",
+            options=[discord.SelectOption(label=f"{name} · {amt:,}원"[:100], value=mid) for mid, name, amt in bets[:25]])
+        self.select.callback = self._cancel
+        self.add_item(self.select)
+
+    async def _cancel(self, interaction: discord.Interaction):
+        ok, msg = await self.cog.db.toto_cancel_bet(user_id=self.user_id, match_id=self.select.values[0],
+                                                    now_ts=int(time.time()))
+        await interaction.response.send_message(f"{'✅' if ok else '❌'} {msg}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
