@@ -187,7 +187,7 @@ async def _scout_flow():
     assert Economy.scout_money_mult(5) == 5 and Economy.scout_tier(5).endswith("전설의 스카우트")
     # Lv.2→3, Lv.4→5 는 앞 구간보다 확실히 길다
     need = edb.SCOUT_XP_NEED
-    assert need == tuple(sorted(need)) and need[1] >= 150 and need[3] >= 500, need
+    assert need == tuple(sorted(need)) and need[1] >= 600 and need[3] >= 3000, need
 
 
 def test_scout_flow():
