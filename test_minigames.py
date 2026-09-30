@@ -64,22 +64,36 @@ def test_horse_race():
 
     async def flow():
         await eco.db.add_balance(user.id, 100_000)
-        sent = []
-        rec = lambda *a, **k: sent.append(k.get("embed"))                     # noqa: E731
-        async def arec(*a, **k): rec(*a, **k)
-        inter = SimpleNamespace(response=SimpleNamespace(edit_message=arec),
+        sent, views = [], []
+        async def arec(*a, **k):
+            sent.append(k.get("embed")); views.append(k.get("view"))
+            return SimpleNamespace(edit=arec)
+        async def anoop(*a, **k): pass
+        inter = SimpleNamespace(user=user, response=SimpleNamespace(defer=anoop, edit_message=arec),
                                 edit_original_response=arec, followup=SimpleNamespace(send=arec))
         real_sleep, ce.asyncio.sleep = ce.asyncio.sleep, (lambda s: real_sleep(0))
         try:
-            random.seed(9)
-            await eco._run_race(inter, SimpleNamespace(race=race, amount=10_000, user=user), 0)
+            # 말을 고르면: 출주표에서 베팅금 차감 → 결과에서 베팅금 + 순이익 지급 → 전체 변동 = 순이익
+            await Economy.horse_race.callback(eco, inter, 10_000)
+            assert await eco.db.get_balance(user.id) == 90_000
+            view = views[-1]
+            n = len(sent)
+            await view.children[0].callback(inter)
+            assert len(sent) - n == 5 and "잔액" in sent[-1].description        # 대기 + 3장면 + 결과
+            played = await eco.db.get_balance(user.id) - 100_000
+            assert played in {10_000 * m for m in view.race["prizes"]}, played
+            await view.on_timeout()                                              # 고른 뒤엔 시간 초과가 무시된다
+            assert await eco.db.get_balance(user.id) == 100_000 + played
+
+            # 60초 동안 안 고르면: 베팅금을 잃고 화면은 실격
+            await Economy.horse_race.callback(eco, inter, 10_000)
+            await views[-1].on_timeout()
+            assert "실격" in sent[-1].title and "-10,000원" in sent[-1].description
+            assert await eco.db.get_balance(user.id) == 90_000 + played
         finally:
             ce.asyncio.sleep = real_sleep
-        assert len(sent) == 5 and "잔액" in sent[-1].description               # 대기 + 3장면 + 결과
-        return await eco.db.get_balance(user.id)
 
-    bal = asyncio.run(flow())
-    assert bal - 100_000 in {30_000, 10_000, -10_000, -30_000}, bal
+    asyncio.run(flow())
 
 
 def test_training_roll():

@@ -64,8 +64,9 @@ class RaceView(discord.ui.View):
     async def on_timeout(self):
         if self.done or self.message is None:
             return
-        e = ui.card("⌛ 출주 취소", '> 🎙️ *"말을 고르지 않아 경주가 취소됐습니다. 베팅금은 그대로예요."*',
-                    ui.EVEN, self.user, Economy.RACE_SECTION)
+        # 베팅금은 출주표를 띄울 때 이미 빠져나갔다 — 안 고르면 그대로 잃는다.
+        e = ui.card("⌛ 출주 실격", '> 🎙️ *"기수가 끝내 나타나지 않았습니다! 실격 처리됩니다."*'
+                    f"\n\n`정산` **{ui.won(-self.amount)}** · 1배 손실", ui.LOSE, self.user, Economy.RACE_SECTION)
         try:
             await self.message.edit(embed=e, view=None)
         except discord.HTTPException:
@@ -563,6 +564,7 @@ class Economy(commands.Cog):
 
     # ✅ 경마: 말 10마리 중 4마리 출주. 말 정보(승률·각질·컨디션)는 분위기용 — 순위는 완전 랜덤.
     # 상금표도 경주마다 랜덤: 1·2위 수익, 3·4위 손실. 수익 합 = 손실 합이라 기대값 0.
+    # 베팅금은 출주표를 띄울 때 먼저 빠져나간다 — 상금표만 보고 안 고르면(60초) 베팅금을 잃는다.
     RACE_MIN_BET = 5_000
     RACE_TRACK = 12
     RACE_SECTION = "🎙️ 경마 중계"
@@ -627,7 +629,7 @@ class Economy(commands.Cog):
                     + f"\n\n**🏆 상금표** · `베팅` **{amount:,}원**\n" + "\n".join(prize),
                     ui.INFO, user, self.RACE_SECTION)
         e.set_thumbnail(url=ui.emoji_url("🏇"))
-        e.set_footer(text="60초 안에 아래 버튼으로 말을 골라 주세요")
+        e.set_footer(text="60초 안에 말을 고르지 않으면 실격 — 베팅금은 돌려받지 못합니다")
         return e
 
     def _race_broke(self, user, amount: int, bal: int) -> discord.Embed:
@@ -648,8 +650,13 @@ class Economy(commands.Cog):
         horses = random.sample(self.RACE_HORSES, 4)
         race = {"no": random.randint(1, 12), "horses": horses,
                 "moods": [random.choice(self.RACE_MOODS) for _ in horses], "prizes": self._race_prizes()}
+        await self.db.add_balance(user.id, -amount)   # 마권 발매: 베팅금 먼저 차감
         view = RaceView(self, user, amount, race)
-        view.message = await interaction.followup.send(embed=self._race_card(user, amount, race), view=view, wait=True)
+        try:
+            view.message = await interaction.followup.send(embed=self._race_card(user, amount, race), view=view, wait=True)
+        except discord.HTTPException:
+            await self.db.add_balance(user.id, amount)   # 출주표를 못 띄웠으면 환불
+            raise
 
     async def _run_race(self, interaction: discord.Interaction, view, pick: int):
         race, amount, user = view.race, view.amount, view.user
@@ -665,11 +672,9 @@ class Economy(commands.Cog):
             view=None)
 
         # 결과를 먼저 저장하고 나서 연출한다 (연출이 실패해도 돈은 정확하다).
+        # 베팅금은 이미 빠져 있으니 돌려주면서 순이익을 더한다 → 전체 변동 = delta.
         try:
-            bal = await self.db.get_balance(user.id)
-            if bal < amount:   # 고르는 사이 돈을 다른 데 썼다
-                return await interaction.edit_original_response(embed=self._race_broke(user, amount, bal))
-            new_bal = await self.db.add_balance(user.id, delta)
+            new_bal = await self.db.add_balance(user.id, amount + delta)
         except Exception as ex:
             return await interaction.followup.send(f"❌ DB 오류: {type(ex).__name__}")
 
