@@ -1096,6 +1096,7 @@ class EconomyDB:
                         ("club_bonus",            "user_id"),
                         ("quiz_stats",            "user_id"),
                         ("quiz_results",          "user_id"),
+                        ("sponsor_contracts",     "user_id"),
                         ("notification_settings", "user_id"),
                         ("toto_bets",             "user_id"),
                     ]:
