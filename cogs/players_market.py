@@ -297,9 +297,26 @@ class PlayersMarket(commands.Cog):
         self.money = EconomyDB()
         self.pm = PlayerMarketDB()
         self.expire_task.start()
+        self.prune_task.start()
 
     def cog_unload(self):
         self.expire_task.cancel()
+        self.prune_task.cancel()
+
+    @tasks.loop(hours=6)
+    async def prune_task(self):
+        """30일보다 오래된 시세 기록 정리 (6시간마다, 조금씩 나눠서)"""
+        try:
+            n = await self.pm.prune_price_history(int(time.time()))
+            if n:
+                print(f"[PM] 오래된 시세 기록 정리: {n:,}행")
+        except Exception as e:
+            print(f"[PM] prune_task 오류: {e!r}")
+
+    @prune_task.before_loop
+    async def before_prune_task(self):
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(180)   # 부팅 직후 루프들과 겹치지 않게
 
     async def cog_load(self):
         await self.pm.ensure_bootstrap(int(time.time()))

@@ -295,6 +295,36 @@ def test_tick_path_emits_news():
     assert stored >= len(seen), (stored, len(seen))
 
 
+def test_prune_price_history_in_batches():
+    """30일보다 오래된 시세 기록만, 배치로 나눠 지운다."""
+    from services.player_market_db import PRICE_HISTORY_KEEP_DAYS
+    eco, pm = run(_setup())
+    con = pm._connect()
+    try:
+        pid = con.execute("SELECT player_id FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' LIMIT 1").fetchone()[0]
+        now = NOW_OPEN + 400 * 86400
+        old_ts = [now - (PRICE_HISTORY_KEEP_DAYS + 1) * 86400 - k * 600 for k in range(2500)]
+        new_ts = [now - k * 600 for k in range(100)]
+        con.executemany("INSERT OR IGNORE INTO pm_price_history(player_id, price, tick_ts) VALUES(?, 1, ?)",
+                        [(pid, t) for t in old_ts + new_ts])
+        con.commit()
+        cutoff = now - PRICE_HISTORY_KEEP_DAYS * 86400
+        before_old = con.execute("SELECT COUNT(*) FROM pm_price_history WHERE tick_ts < ?", (cutoff,)).fetchone()[0]
+        before_new = con.execute("SELECT COUNT(*) FROM pm_price_history WHERE tick_ts >= ?", (cutoff,)).fetchone()[0]
+    finally:
+        con.close()
+    deleted = run(pm.prune_price_history(now, batch=1000, pause=0))
+    con = pm._connect()
+    try:
+        left_old = con.execute("SELECT COUNT(*) FROM pm_price_history WHERE tick_ts < ?", (cutoff,)).fetchone()[0]
+        left_new = con.execute("SELECT COUNT(*) FROM pm_price_history WHERE tick_ts >= ?", (cutoff,)).fetchone()[0]
+    finally:
+        con.close()
+    assert deleted == before_old >= 2500 and left_old == 0
+    assert left_new == before_new                       # 최근 기록은 그대로
+    assert run(pm.prune_price_history(now)) == 0        # 두 번째는 할 일 없음
+
+
 def test_news_skipped_when_market_closed():
     eco, pm = run(_setup())
     closed = 23 * 3600                        # 08:00 KST

@@ -173,6 +173,10 @@ JACKPOT_RANGE = (2.5, 5.5)    # 기본 잭팟 대상: 팩 단가의 2.5~5.5배 (
 # 일반 추첨의 분포 중심을 팩 단가보다 낮게 둬서 하우스 엣지를 만든다.
 # 이 값이 팩 전체 EV를 좌우하는 손잡이다 — 1.00이면 팩이 본전치기가 된다.
 PACK_VALUE_CENTER = 0.90
+
+# 시세 기록 보관 기간. /시세 그래프는 최대 7일치만 쓴다.
+# 예전엔 지우지 않아 144일치(1,048만 행, DB 1.3GB)가 쌓였다.
+PRICE_HISTORY_KEEP_DAYS = 30
 PACK_MAX_PULLS = 10
 POOL_SIZE = 1_000   # 시장에 상시 유지할 활성 선수 수
 
@@ -1210,6 +1214,33 @@ class PlayerMarketDB:
                 finally:
                     con.close()
             return await self._run(work)
+
+    async def prune_price_history(self, now_ts: int, keep_days: int = PRICE_HISTORY_KEEP_DAYS,
+                                  batch: int = 5_000, pause: float = 0.5) -> int:
+        """keep_days 보다 오래된 시세 기록을 batch 행씩 나눠 지운다. 지운 행 수를 돌려준다.
+        한 번에 지우면 수백만 행 동안 DB 쓰기가 막히므로, 배치마다 커밋하고 잠깐 쉰다.
+        (5천 행 ≈ 0.3초 — 그동안 다른 선수 명령은 그만큼만 기다린다)"""
+        cutoff = int(now_ts) - int(keep_days) * 86400
+        total = 0
+        while True:
+            async with self._lock:
+                def work():
+                    con = self._connect()
+                    try:
+                        cur = con.execute(
+                            "DELETE FROM pm_price_history WHERE rowid IN "
+                            "(SELECT rowid FROM pm_price_history WHERE tick_ts < ? LIMIT ?)",
+                            (cutoff, int(batch)),
+                        )
+                        con.commit()
+                        return cur.rowcount
+                    finally:
+                        con.close()
+                n = await self._run(work)
+            total += n
+            if n < batch:
+                return total
+            await asyncio.sleep(pause)
 
     async def price_history(self, player_id: str, since_ts: int, limit: int = 400):
         """ID 단순화(2.00) 이전 기록은 옛 ID 로 남아 있어 pm_id_alias 로 함께 읽는다."""

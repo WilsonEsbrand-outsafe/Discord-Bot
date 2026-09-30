@@ -323,7 +323,7 @@ class Economy(commands.Cog):
     def _train_card(user, title: str, caster: str, color: int) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 훈련장 리포트")
 
-    @app_commands.command(name="훈련", description="랜덤 훈련으로 돈과 경험치를 얻습니다. (쿨타임 30초 · 하루 30회 · Lv.N = 보상 N배)")
+    @app_commands.command(name="훈련", description="랜덤 훈련으로 돈과 경험치를 얻습니다. (오늘 스카우트 15회 완료 후 열림 · 쿨타임 30초 · 하루 30회)")
     async def training(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user = interaction.user
@@ -333,6 +333,12 @@ class Economy(commands.Cog):
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
 
+        if not r["ok"] and r["reason"] == "locked":
+            e = self._train_card(user, "🔒 훈련장이 아직 잠겨 있어요",
+                                 "오늘 스카우트 출장을 모두 마쳐야 훈련장이 열립니다!", ui.DARK)
+            e.description += (f"\n\n`스카우트` **{r['req_used']}/{r['req_limit']}회** — `/스카우트`로 먼저 다녀오세요\n"
+                              + self._train_status(r))
+            return await interaction.followup.send(embed=e)
         if not r["ok"]:
             return await self._grind_blocked(
                 interaction, r, now_ts, self._train_card, self._train_status(r),
@@ -440,6 +446,8 @@ class Economy(commands.Cog):
         if r["leveled"]:
             e.description += (f"\n\n🆙 **{self.scout_tier(r['level'])}** 승급! 보상 {self.scout_money_mult(old_lv)}배 → "
                               f"**{self.scout_money_mult(r['level'])}배** · 선수 발굴 확률과 희귀 선수 비중 상승")
+        if r["used"] >= r["limit"]:
+            e.description += "\n\n🔓 오늘 스카우트 완료! 이제 `/훈련`을 할 수 있어요."
         e.set_thumbnail(url=ui.emoji_url("💎" if found else ev["emoji"]))
         await interaction.followup.send(embed=e)
 

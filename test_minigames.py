@@ -55,9 +55,19 @@ def test_training_roll():
     assert needs == sorted(needs) and len(set(needs)) == 9     # 레벨이 오를수록 필요 경험치 증가
 
 
+async def _finish_scouting(db, user_id: int, ts: int):
+    """훈련은 그날 스카우트 15회를 마쳐야 열린다 — 테스트에선 그날 스카우트를 다 한 것으로 만든다."""
+    for i in range(edb.SCOUT_DAILY_LIMIT):
+        r = await db.play_scout(user_id, ts - 3600 + 60 * i, lambda lv, con: (0, 0, None))
+        assert r["ok"], r
+
+
 async def _training_db():
     db = edb.EconomyDB()
     now = 1_800_000_000
+    r = await db.play_training(1, now, lambda lv, con: (1000, 3, None))
+    assert not r["ok"] and r["reason"] == "locked" and r["req_used"] == 0 and r["req_limit"] == 15
+    await _finish_scouting(db, 1, now)
     r = await db.play_training(1, now, lambda lv, con: (-500, -1, None))
     assert r["ok"] and r["xp"] == 0 and r["new_bal"] == -500   # 경험치는 0 아래로 안 내려감
     r = await db.play_training(1, now + 10, lambda lv, con: (1000, 0, None))
@@ -68,10 +78,13 @@ async def _training_db():
     r = await db.play_training(1, now + 30 * 30, lambda lv, con: (1000, 0, None))
     assert not r["ok"] and r["reason"] == "limit" and r["used"] == 30
     assert await db.get_balance(1) == 29_000 - 500
-    # 다음 날 초기화 + 경험치 몰아주기로 만렙(10)
+    # 다음 날 초기화: 다시 잠김 → 스카우트 후 경험치 몰아주기로 만렙(10)
+    assert (await db.play_training(1, now + 86400, lambda lv, con: (0, 10_000, None)))["reason"] == "locked"
+    await _finish_scouting(db, 1, now + 86400)
     r = await db.play_training(1, now + 86400, lambda lv, con: (0, 10_000, None))
     assert r["ok"] and r["level"] == edb.TRAIN_MAX_LEVEL == 10 and r["xp"] == 0 and r["used"] == 1
     # 필요 경험치 딱 맞으면 한 레벨만 오른다
+    await _finish_scouting(db, 2, now)
     r = await db.play_training(2, now, lambda lv, con: (0, edb.train_xp_need(1), None))
     assert r["level"] == 2 and r["xp"] == 0 and r["need"] == edb.train_xp_need(2)
 

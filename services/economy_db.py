@@ -12,10 +12,11 @@ TRAIN_DAILY_LIMIT = 30
 # Lv.N → Lv.N+1 에 필요한 XP. 레벨이 오를수록 늘어난다 (만렙까지 합계 2,190 XP ≈ 한 달 남짓).
 TRAIN_XP_NEED = (30, 60, 100, 150, 210, 280, 360, 450, 550)
 
-# 스카우트: 훈련의 상위 버전 — 하루 15회, 최대 Lv.5 (만렙까지 합계 540 XP ≈ 3주)
+# 스카우트: 훈련의 상위 버전 — 하루 15회, 최대 Lv.5.
+# Lv.2→3 과 Lv.4→5 를 길게 잡았다 (만렙까지 합계 850 XP ≈ 4주, 하루 약 30 XP 기준).
 SCOUT_MAX_LEVEL = 5
 SCOUT_DAILY_LIMIT = 15
-SCOUT_XP_NEED = (40, 90, 160, 250)
+SCOUT_XP_NEED = (40, 150, 160, 500)
 
 # 레벨·경험치·일일 횟수를 쓰는 반복 콘텐츠 규칙: 테이블 → (만렙, 하루 횟수, 필요 XP 표)
 GRIND_RULES = {
@@ -1116,18 +1117,22 @@ class EconomyDB:
 
     # ✅ 훈련: 하루 횟수 제한 + 레벨(성공률·보상 증가)
     async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30) -> dict:
-        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec)
+        """훈련은 그날 스카우트를 전부(15회) 마쳐야 열린다."""
+        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec,
+                                      require=("scouting", SCOUT_DAILY_LIMIT))
 
     async def play_scout(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
         return await self._play_grind("scouting", user_id, now_ts, roll, cooldown_sec)
 
-    async def _play_grind(self, table: str, user_id: int, now_ts: int, roll, cooldown_sec: int) -> dict:
+    async def _play_grind(self, table: str, user_id: int, now_ts: int, roll, cooldown_sec: int,
+                          require: tuple | None = None) -> dict:
         """
         레벨·경험치·일일 횟수가 있는 반복 콘텐츠(훈련·스카우트) 공용.
         roll(level, con) -> (delta, xp_gain, info) 를 트랜잭션 안에서 호출해 결과를 반영한다.
         (con 을 넘기는 건 스카우트가 같은 트랜잭션 안에서 선수 카드를 지급하기 위해서다.)
         반환 dict: ok, level, xp, need, used, limit, leveled, new_bal, delta, info
-        ok=False 면 reason 이 "cooldown"(remaining 초) 또는 "limit"(오늘 횟수 소진).
+        ok=False 면 reason 이 "cooldown"(remaining 초), "limit"(오늘 횟수 소진),
+        "locked"(require=(테이블, 횟수) 를 오늘 아직 못 채움 — req_used / req_limit).
         경험치는 음수가 될 수 있지만 레벨 안에서 0 아래로는 내려가지 않는다(레벨 다운 없음).
         """
         max_level, limit, _ = GRIND_RULES[table]
@@ -1146,6 +1151,14 @@ class EconomyDB:
                         used = 0
                     base = {"ok": False, "level": level, "xp": xp, "need": grind_xp_need(table, level),
                             "used": used, "limit": limit}
+                    if require:
+                        req_table, req_limit = require
+                        row = con.execute(f"SELECT day_key, day_count FROM {req_table} WHERE user_id=?",
+                                          (user_id,)).fetchone()
+                        req_used = int(row[1]) if row and row[0] == day else 0
+                        if req_used < req_limit:
+                            con.execute("ROLLBACK;")
+                            return {**base, "reason": "locked", "req_used": req_used, "req_limit": req_limit}
                     if used >= limit:
                         con.execute("ROLLBACK;")
                         return {**base, "reason": "limit"}
