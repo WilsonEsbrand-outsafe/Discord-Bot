@@ -33,6 +33,45 @@ def _embed(title: str, desc: str, user: discord.abc.User) -> discord.Embed:
     return e
 
 
+class RaceView(discord.ui.View):
+    """경마 출주표의 말 선택 버튼 — 경주를 연 사람만, 한 번만 누를 수 있다."""
+
+    def __init__(self, cog: "Economy", user, amount: int, race: dict):
+        super().__init__(timeout=60)
+        self.cog, self.user, self.amount, self.race = cog, user, amount, race
+        self.message = None
+        self.done = False
+        for i, h in enumerate(race["horses"]):
+            b = discord.ui.Button(label=f"{i + 1}번 {h[1]}", emoji=h[0], style=discord.ButtonStyle.primary)
+            b.callback = self._picker(i)
+            self.add_item(b)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("🙅 경주를 연 사람만 말을 고를 수 있어요.", ephemeral=True)
+            return False
+        return True
+
+    def _picker(self, idx: int):
+        async def pick(interaction: discord.Interaction):
+            if self.done:   # 연타 방지
+                return await interaction.response.defer()
+            self.done = True
+            self.stop()
+            await self.cog._run_race(interaction, self, idx)
+        return pick
+
+    async def on_timeout(self):
+        if self.done or self.message is None:
+            return
+        e = ui.card("⌛ 출주 취소", '> 🎙️ *"말을 고르지 않아 경주가 취소됐습니다. 베팅금은 그대로예요."*',
+                    ui.EVEN, self.user, Economy.RACE_SECTION)
+        try:
+            await self.message.edit(embed=e, view=None)
+        except discord.HTTPException:
+            pass
+
+
 class Economy(commands.Cog):
     TRAIN_COOLDOWN   = 30
 
@@ -519,6 +558,145 @@ class Economy(commands.Cog):
             msg = await interaction.followup.send(embed=ready, wait=True)
             await asyncio.sleep(1.2)
             await msg.edit(embed=e)
+        except discord.HTTPException:
+            await interaction.followup.send(embed=e)
+
+    # ✅ 경마: 말 10마리 중 4마리 출주. 말 정보(승률·각질·컨디션)는 분위기용 — 순위는 완전 랜덤.
+    # 상금표도 경주마다 랜덤: 1·2위 수익, 3·4위 손실. 수익 합 = 손실 합이라 기대값 0.
+    RACE_MIN_BET = 5_000
+    RACE_TRACK = 12
+    RACE_SECTION = "🎙️ 경마 중계"
+    RACE_HORSES = [   # (이모지, 이름, 승률 %, 각질, 한 줄 소개) — 표시용
+        ("👑", "킹스로드",   35, "선입", "지난 시즌 챔피언"),
+        ("⚡", "번개질주",   31, "선행", "출발 반응은 리그 최고"),
+        ("💎", "다이아스텝", 29, "선입", "몸값만 50억"),
+        ("🔥", "불꽃심장",   27, "선행", "지는 걸 제일 싫어해요"),
+        ("🌪️", "폭풍추격",   24, "추입", "막판 스퍼트가 무섭습니다"),
+        ("🌊", "파도타기",   20, "선입", "비 오는 날 유독 강함"),
+        ("🌙", "달빛소나타", 18, "자유", "야간 경주만 되면 펄펄"),
+        ("🍗", "치킨런",     15, "추입", "당근보다 치킨을 좋아함"),
+        ("🍀", "네잎클로버", 12, "추입", "운 하나로 버티는 중"),
+        ("🐢", "느긋한오후",  6, "자유", "오늘도 풍경 감상 중"),
+    ]
+    RACE_MOODS = ("😆 최상", "🙂 좋음", "😐 보통", "😫 나쁨")
+    RACE_PLACES = ("🥇", "🥈", "🥉", "4️⃣")
+    RACE_CALLS = (   # 장면별 (소제목, 캐스터 멘트) — {0}{1} = 그 장면의 1·2번째 말
+        ("출발!", "게이트가 열립니다! {0}, 스타트가 좋아요!"),
+        ("3코너", "3코너를 돌아 나옵니다! 선두는 {0}, 바짝 따라붙는 {1}!"),
+        ("마지막 직선", "마지막 직선 주로!! {0}, {1}! 치열한 경합입니다!!"),
+    )
+    RACE_RESULTS = (   # 순위별 (이모지, 헤드라인, 캐스터 멘트)
+        ("🏆", "우승!!", "결승선을 가장 먼저 통과합니다! 탁월한 안목이에요!"),
+        ("🥈", "2위!", "아깝게 2위! 그래도 상금은 챙겨 갑니다."),
+        ("🥉", "3위…", "3위로 들어옵니다. 조금만 더 버텼다면…"),
+        ("🐌", "꼴찌…", "마지막으로 들어옵니다… 오늘은 영 컨디션이 아니었네요."),
+    )
+
+    @staticmethod
+    def _race_prizes(rng=random) -> list[int]:
+        """[1위, 2위, 3위, 4위] 순이익 배수. 1위 > 2위 ≥ 1, 4위 손실 > 3위 손실, 수익 합 = 손실 합(3~8)."""
+        s = rng.choices(range(3, 9), weights=(25, 25, 18, 14, 10, 8))[0]
+        top = rng.randint(s // 2 + 1, s - 1)     # 1위 몫
+        worst = rng.randint(s // 2 + 1, s - 1)   # 4위 손실
+        return [top, s - top, -(s - worst), -worst]
+
+    @classmethod
+    def _race_frames(cls, finish: list[int], rng=random) -> list[list[int]]:
+        """장면 3개의 말 위치(출주 번호순). 초반엔 뒤섞이고, 갈수록 최종 순위대로 벌어진다."""
+        rank = {h: r for r, h in enumerate(finish)}
+        w = cls.RACE_TRACK
+        return [[max(0, min(w - 1, round(f * w + (1.5 - rank[i]) * f * 1.4 + rng.uniform(-2, 2) * (1 - f))))
+                 for i in range(len(finish))]
+                for f in (0.25, 0.55, 0.85)]
+
+    @classmethod
+    def _race_lanes(cls, horses, pos: list[int], pick: int) -> str:
+        return "\n".join(
+            f"`{i + 1}` {h[0]} {ui.bar(p, cls.RACE_TRACK, cls.RACE_TRACK)}🏁 "
+            + (f"**{h[1]}** 👈" if i == pick else h[1])
+            for i, (h, p) in enumerate(zip(horses, pos)))
+
+    def _race_card(self, user, amount: int, race: dict) -> discord.Embed:
+        horses = race["horses"]
+        lines = [f"`{i + 1}` {h[0]} **{h[1]}** · 승률 {h[2]}% · {h[3]} · {m}\n　 *{h[4]}*"
+                 for i, (h, m) in enumerate(zip(horses, race["moods"]))]
+        prize = [f"{p} {i + 1}위 **{ui.won(amount * m)}** · {self._pk_label(m)}"
+                 for i, (p, m) in enumerate(zip(self.RACE_PLACES, race["prizes"]))]
+        e = ui.card(f"🏇 제{race['no']}경주 출주표",
+                    '> 🎙️ *"오늘의 출주마 네 마리입니다! 어느 말에 거시겠어요?"*\n\n' + "\n".join(lines)
+                    + f"\n\n**🏆 상금표** · `베팅` **{amount:,}원**\n" + "\n".join(prize),
+                    ui.INFO, user, self.RACE_SECTION)
+        e.set_thumbnail(url=ui.emoji_url("🏇"))
+        e.set_footer(text="60초 안에 아래 버튼으로 말을 골라 주세요")
+        return e
+
+    def _race_broke(self, user, amount: int, bal: int) -> discord.Embed:
+        return ui.card("🙅 마권을 살 수 없어요",
+                       f'> 🎙️ *"잔액이 부족해 매표소에서 돌려보냈습니다!"*\n\n`베팅` **{amount:,}원**\n`잔액` **{bal:,}원**',
+                       ui.LOSE, user, self.RACE_SECTION)
+
+    @app_commands.command(name="경마", description="출주마 4마리 중 한 마리에 베팅! 1·2위는 수익, 3·4위는 손실 (최소 5,000원)")
+    @app_commands.rename(amount="베팅액")
+    @app_commands.describe(amount="베팅 금액 (최소 5,000원)")
+    async def horse_race(self, interaction: discord.Interaction, amount: app_commands.Range[int, RACE_MIN_BET]):
+        user, amount = interaction.user, int(amount)
+        await interaction.response.defer()
+        bal = await self.db.get_balance(user.id)
+        if bal < amount:
+            return await interaction.followup.send(embed=self._race_broke(user, amount, bal))
+
+        horses = random.sample(self.RACE_HORSES, 4)
+        race = {"no": random.randint(1, 12), "horses": horses,
+                "moods": [random.choice(self.RACE_MOODS) for _ in horses], "prizes": self._race_prizes()}
+        view = RaceView(self, user, amount, race)
+        view.message = await interaction.followup.send(embed=self._race_card(user, amount, race), view=view, wait=True)
+
+    async def _run_race(self, interaction: discord.Interaction, view, pick: int):
+        race, amount, user = view.race, view.amount, view.user
+        horses, sec, title = race["horses"], self.RACE_SECTION, f"🏇 제{race['no']}경주"
+        finish = random.sample(range(4), 4)   # 순위는 완전 랜덤
+        place = finish.index(pick)
+        mult = race["prizes"][place]
+        delta = amount * mult
+
+        await interaction.response.edit_message(
+            embed=ui.card(f"{title} — 출발 대기", f'> 🎙️ *"{horses[pick][1]}에 {amount:,}원! 게이트에 들어갑니다…"*',
+                          ui.DARK, user, sec),
+            view=None)
+
+        # 결과를 먼저 저장하고 나서 연출한다 (연출이 실패해도 돈은 정확하다).
+        try:
+            bal = await self.db.get_balance(user.id)
+            if bal < amount:   # 고르는 사이 돈을 다른 데 썼다
+                return await interaction.edit_original_response(embed=self._race_broke(user, amount, bal))
+            new_bal = await self.db.add_balance(user.id, delta)
+        except Exception as ex:
+            return await interaction.followup.send(f"❌ DB 오류: {type(ex).__name__}")
+
+        try:
+            for (stage, call), pos in zip(self.RACE_CALLS, self._race_frames(finish)):
+                order = sorted(range(4), key=lambda i: (-pos[i], finish.index(i)))
+                await asyncio.sleep(1.2)
+                await interaction.edit_original_response(embed=ui.card(
+                    f"{title} — {stage}",
+                    f'> 🎙️ *"{call.format(horses[order[0]][1], horses[order[1]][1])}"*\n\n'
+                    + self._race_lanes(horses, pos, pick),
+                    ui.DARK, user, sec))
+            await asyncio.sleep(1.2)
+        except discord.HTTPException:
+            pass
+
+        emoji, headline, caster = self.RACE_RESULTS[place]
+        board = "\n".join(f"{self.RACE_PLACES[r]} {horses[i][0]} " + (f"**{horses[i][1]}** 👈" if i == pick else horses[i][1])
+                          for r, i in enumerate(finish))
+        color = ui.GOLD if place == 0 else (ui.DOOM if mult <= -5 else ui.tone(delta))
+        e = ui.card(f"{emoji} {horses[pick][1]} {headline}",
+                    f'> 🎙️ *"{caster}"*\n\n{board}\n\n'
+                    f"`정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**",
+                    color, user, sec)
+        e.set_thumbnail(url=ui.emoji_url(emoji))
+        try:
+            await interaction.edit_original_response(embed=e)
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
 

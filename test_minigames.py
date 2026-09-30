@@ -35,6 +35,53 @@ def test_penalty_table():
     assert [label(Fraction(m)) for m in ("200", "1", "0", "-1", "-10")] == ["200배 수익", "1배 수익", "본전", "1배 손실", "10배 손실"]
 
 
+def test_horse_race():
+    rng = random.Random(5)
+    seen = set()
+    for _ in range(3000):
+        p = Economy._race_prizes(rng)
+        assert p[0] > p[1] > 0 > p[2] > p[3] and sum(p) == 0, p    # 1·2위 수익, 3·4위 손실, 기대값 0
+        assert p[0] <= 7 and p[3] >= -7
+        seen.add(tuple(p))
+    assert len(seen) > 10                                           # 상금표가 경주마다 다양하다
+    assert len({h[1] for h in Economy.RACE_HORSES}) == 10 and Economy.RACE_MIN_BET == 5_000
+    for _ in range(300):
+        finish = rng.sample(range(4), 4)
+        frames = Economy._race_frames(finish, rng)
+        assert len(frames) == len(Economy.RACE_CALLS)
+        assert all(0 <= x < Economy.RACE_TRACK for f in frames for x in f)
+        assert frames[-1][finish[0]] > frames[-1][finish[3]]          # 마지막 직선에선 우승마가 꼴찌보다 앞
+
+    # 출주표 → 버튼 선택 → 연출 → 결과까지 화면이 깨지지 않고 돈이 정확히 정산되는지
+    from types import SimpleNamespace
+    import cogs.economy as ce
+    eco = Economy.__new__(Economy)
+    eco.db = edb.EconomyDB()
+    user = SimpleNamespace(id=55, display_name="기수", display_avatar=SimpleNamespace(url="https://x/a.png"))
+    race = {"no": 3, "horses": Economy.RACE_HORSES[:4], "moods": ["🙂 좋음"] * 4, "prizes": [3, 1, -1, -3]}
+    card = eco._race_card(user, 10_000, race)
+    assert "+30,000원" in card.description and "-30,000원" in card.description
+
+    async def flow():
+        await eco.db.add_balance(user.id, 100_000)
+        sent = []
+        rec = lambda *a, **k: sent.append(k.get("embed"))                     # noqa: E731
+        async def arec(*a, **k): rec(*a, **k)
+        inter = SimpleNamespace(response=SimpleNamespace(edit_message=arec),
+                                edit_original_response=arec, followup=SimpleNamespace(send=arec))
+        real_sleep, ce.asyncio.sleep = ce.asyncio.sleep, (lambda s: real_sleep(0))
+        try:
+            random.seed(9)
+            await eco._run_race(inter, SimpleNamespace(race=race, amount=10_000, user=user), 0)
+        finally:
+            ce.asyncio.sleep = real_sleep
+        assert len(sent) == 5 and "잔액" in sent[-1].description               # 대기 + 3장면 + 결과
+        return await eco.db.get_balance(user.id)
+
+    bal = asyncio.run(flow())
+    assert bal - 100_000 in {30_000, 10_000, -10_000, -30_000}, bal
+
+
 def test_training_roll():
     eco = Economy.__new__(Economy)
     lo = min(min(e["win"][0], -e["lose"][1]) for e in Economy.TRAIN_EVENTS)
@@ -149,10 +196,11 @@ async def _quiz_db():
 
 if __name__ == "__main__":
     test_penalty_table()
+    test_horse_race()
     test_training_roll()
     asyncio.run(_training_db())
     test_questions_build()
     test_answer_matching()
     test_score()
     asyncio.run(_quiz_db())
-    print("OK: minigames 7 checks passed")
+    print("OK: minigames 8 checks passed")
