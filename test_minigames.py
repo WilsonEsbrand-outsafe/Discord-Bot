@@ -35,6 +35,16 @@ def test_penalty_table():
     assert [label(Fraction(m)) for m in ("200", "1", "0", "-1", "-10")] == ["200배 수익", "1배 수익", "본전", "1배 손실", "10배 손실"]
 
 
+def test_batting_table():
+    t = Economy.BAT_TABLE
+    assert abs(sum(r[0] for r in t) - 1) < 1e-9
+    ev = sum(r[0] * float(Fraction(r[1])) for r in t)
+    assert -0.02 < ev < 0, ev
+    m = {r[3].rstrip("!"): r[1] for r in t}
+    assert (m["장외홈런"], m["끝내기 홈런"], m["볼넷"], m["뜬공"], m["땅볼"], m["삼진"], m["병살타"], m["트리플 플레이"]) ==         ("50", "10", "0", "-1", "-1", "-2", "-5", "-10")
+    assert t[-1][3] == "땅볼" and max(t, key=lambda r: r[0])[3] == "안타"
+
+
 def test_horse_race():
     rng = random.Random(5)
     seen = set()
@@ -210,6 +220,7 @@ async def _quiz_db():
 
 if __name__ == "__main__":
     test_penalty_table()
+    test_batting_table()
     test_horse_race()
     test_training_roll()
     asyncio.run(_training_db())
@@ -217,4 +228,4 @@ if __name__ == "__main__":
     test_answer_matching()
     test_score()
     asyncio.run(_quiz_db())
-    print("OK: minigames 8 checks passed")
+    print("OK: minigames 9 checks passed")

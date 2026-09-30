@@ -562,6 +562,77 @@ class Economy(commands.Cog):
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
 
+    # ✅ 배팅(야구 타석): 페널티킥과 같은 방식 — 결과표에서 한 줄 뽑아 순이익 = 베팅 x 배수. 기대값 약 -1.1%.
+    # 마지막 줄(땅볼)이 부동소수 잔여 구간을 받는다.
+    BAT_MIN_BET = 5_000
+    BAT_SPAM_LINES = [
+        ("🧢 타자가 장갑을 고쳐 끼는 중", "타임! 타자가 배터박스를 잠깐 벗어났어요. 곧 다시 섭니다!"),
+        ("🤚 투수가 사인을 거부합니다", "포수와 사인이 안 맞네요. 잠시만 기다려 주세요!"),
+        ("🧹 심판이 홈플레이트를 쓸고 있어요", "홈플레이트 청소 중입니다. 먼지가 좀 많았네요!"),
+    ]
+    BAT_TABLE = [   # (확률, 순이익 배수, 이모지, 헤드라인, 캐스터 멘트)
+        (0.001, "50",  "🌌", "장외홈런!!!",   "공이… 구장 밖으로 사라집니다!! 비거리 측정 불가!"),
+        (0.005, "10",  "🎆", "끝내기 홈런!!", "9회말 투아웃! 이 한 방으로 경기를 끝냅니다!!"),
+        (0.020, "5",   "💥", "홈런!",         "넘어갑니다! 담장 밖으로!"),
+        (0.030, "3",   "🏃", "3루타!",        "우중간을 가릅니다! 3루까지 전력 질주!"),
+        (0.070, "2",   "⚾", "2루타!",        "라인 타고 빠집니다! 여유 있게 2루!"),
+        (0.270, "1",   "✅", "안타",          "깔끔한 안타! 1루에 나갑니다."),
+        (0.080, "0",   "🚶", "볼넷",          "끝까지 골라냅니다. 걸어서 1루로… 본전이에요."),
+        (0.182, "-1",  "🎈", "뜬공",          "높이 떴지만… 중견수가 편하게 잡아냅니다."),
+        (0.080, "-2",  "🌀", "삼진",          "헛스윙 삼진! 방망이가 허공을 가릅니다."),
+        (0.020, "-5",  "💀", "병살타",        "6-4-3 병살… 찬스가 한순간에 날아갑니다."),
+        (0.003, "-10", "☠️", "트리플 플레이", "트리플 플레이?! 한 번에 아웃 세 개… 믿을 수 없는 참사입니다!"),
+        (0.239, "-1",  "🐛", "땅볼",          "유격수 앞 땅볼, 1루에서 아웃."),
+    ]
+
+    @staticmethod
+    def _bat_card(user, title: str, caster: str, color: int) -> discord.Embed:
+        return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 야구 중계")
+
+    @app_commands.command(name="배팅", description="타석에 서서 한 방! 장외홈런 50배 수익, 트리플 플레이 10배 손실 (최소 5,000원)")
+    @app_commands.rename(amount="베팅액")
+    @app_commands.describe(amount="베팅 금액 (최소 5,000원)")
+    async def batting(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
+        user = interaction.user
+        now = time.monotonic()
+        key = ("bat", user.id)
+        if now - self._pk_last.get(key, 0.0) < self.PK_SPAM_GAP:
+            title, caster = random.choice(self.BAT_SPAM_LINES)
+            return await interaction.response.send_message(embed=self._bat_card(user, title, caster, ui.DARK), ephemeral=True)
+        self._pk_last[key] = now
+
+        await interaction.response.defer()
+        amount = int(amount)
+        cur_bal = await self.db.get_balance(user.id)
+        if cur_bal < amount:
+            e = self._bat_card(user, "🙅 타석에 설 수 없어요", "잔액이 부족해 대기 타석에서 돌아갑니다!", ui.LOSE)
+            e.description += f"\n\n`베팅` **{amount:,}원**\n`잔액` **{cur_bal:,}원**"
+            return await interaction.followup.send(embed=e)
+
+        roll, acc = random.random(), 0.0
+        for prob, mult_s, emoji, headline, caster in self.BAT_TABLE:
+            acc += prob
+            if roll < acc:
+                break
+        mult = Fraction(mult_s)
+        delta = int(amount * mult)
+        try:
+            new_bal = await self.db.add_balance(user.id, delta)
+        except Exception as ex:
+            return await interaction.followup.send(f"❌ DB 오류: {type(ex).__name__}")
+
+        color = ui.GOLD if mult >= 5 else (ui.DOOM if mult <= -5 else ui.tone(delta))
+        e = self._bat_card(user, f"{emoji} {headline}", caster, color)
+        e.description += f"\n\n`정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**"
+        e.set_thumbnail(url=ui.emoji_url(emoji))
+        try:
+            pitch = self._bat_card(user, "⚾ 투수, 와인드업…", f"{amount:,}원이 걸린 한 타석! 던졌습니다—", ui.DARK)
+            msg = await interaction.followup.send(embed=pitch, wait=True)
+            await asyncio.sleep(1.2)
+            await msg.edit(embed=e)
+        except discord.HTTPException:
+            await interaction.followup.send(embed=e)
+
     # ✅ 경마: 말 10마리 중 4마리 출주. 말 정보(승률·각질·컨디션)는 분위기용 — 순위는 완전 랜덤.
     # 상금표도 경주마다 랜덤: 1·2위 수익, 3·4위 손실. 수익 합 = 손실 합이라 기대값 0.
     # 베팅금은 출주표를 띄울 때 먼저 빠져나간다 — 상금표만 보고 안 고르면(60초) 베팅금을 잃는다.
