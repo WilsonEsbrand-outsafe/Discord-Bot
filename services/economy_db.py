@@ -38,10 +38,16 @@ ITEMS = {
     "scout_reset": ("🧳", "스카우트 리셋권", f"오늘 스카우트 +{SCOUT_DAILY_LIMIT}회"),
     "train_reset": ("🔄", "훈련 리셋권",     f"오늘 훈련 +{TRAIN_DAILY_LIMIT}회"),
     "watch_reset": ("🎟️", "직관 리셋권",     f"오늘 직관 +{WATCH_DAILY_LIMIT}회"),
+    "scout_skip":  ("🛫", "스카우트 스킵권", "오늘 남은 스카우트를 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
+    "train_skip":  ("⏩", "훈련 스킵권",     "오늘 남은 훈련을 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
+    "watch_skip":  ("📺", "직관 스킵권",     "오늘 남은 직관을 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
 }
 MUFFLER_USES, MUFFLER_BONUS = 5, 3
 RESET_ITEMS = {"scout_reset": ("scouting", SCOUT_DAILY_LIMIT), "train_reset": ("training", TRAIN_DAILY_LIMIT),
                "watch_reset": ("spectating", WATCH_DAILY_LIMIT)}
+SKIP_ITEMS = {"scout_skip": "scouting", "train_skip": "training", "watch_skip": "spectating"}
+# 순서: 스카우트 → 훈련 → 직관. 테이블 → (먼저 끝내야 하는 테이블, 횟수)
+GRIND_REQUIRE = {"training": ("scouting", SCOUT_DAILY_LIMIT), "spectating": ("training", TRAIN_DAILY_LIMIT)}
 
 # 아이템 상점: key → 가격 (구매 제한 없음). 리셋권은 팔지 않는다 — 직관 이벤트 · 쿠폰으로만.
 SHOP_PRICES = {"muffler": 200_000}
@@ -1237,16 +1243,18 @@ class EconomyDB:
     # ✅ 훈련: 하루 횟수 제한 + 레벨(성공률·보상 증가)
     async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30) -> dict:
         """훈련은 그날 스카우트를 전부(15회) 마쳐야 열린다."""
-        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec,
-                                      require=("scouting", SCOUT_DAILY_LIMIT))
+        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec)
 
     async def play_scout(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
         return await self._play_grind("scouting", user_id, now_ts, roll, cooldown_sec)
 
     async def play_watch(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
         """직관은 그날 훈련을 전부(30회) 마쳐야 열린다 (훈련은 스카우트 15회 뒤) — 스카우트 → 훈련 → 직관."""
-        return await self._play_grind("spectating", user_id, now_ts, roll, cooldown_sec,
-                                      require=("training", TRAIN_DAILY_LIMIT))
+        return await self._play_grind("spectating", user_id, now_ts, roll, cooldown_sec)
+
+    async def use_skip(self, user_id: int, item: str, now_ts: int, roll) -> dict:
+        """스킵권: 오늘 남은 횟수를 쿨타임 없이 한 번에 돌려 결과(돈 · 경험치 · 선수 · 아이템)를 그대로 받는다."""
+        return await self._play_grind(SKIP_ITEMS[item], user_id, now_ts, roll, 0, skip_item=item)
 
     # ───────────── 아이템 ─────────────
     async def inventory(self, user_id: int) -> tuple[dict[str, int], dict[str, int]]:
@@ -1322,17 +1330,20 @@ class EconomyDB:
         return await self._tx(fn)
 
     async def _play_grind(self, table: str, user_id: int, now_ts: int, roll, cooldown_sec: int,
-                          require: tuple | None = None) -> dict:
+                          skip_item: str | None = None) -> dict:
         """
-        레벨·경험치·일일 횟수가 있는 반복 콘텐츠(훈련·스카우트) 공용.
+        레벨·경험치·일일 횟수가 있는 반복 콘텐츠(스카우트·훈련·직관) 공용.
         roll(level, con) -> (delta, xp_gain, info) 를 트랜잭션 안에서 호출해 결과를 반영한다.
-        (con 을 넘기는 건 스카우트가 같은 트랜잭션 안에서 선수 카드를 지급하기 위해서다.)
-        반환 dict: ok, level, xp, need, used, limit, leveled, new_bal, delta, info
+        (con 을 넘기는 건 스카우트·직관이 같은 트랜잭션 안에서 선수 카드·아이템을 지급하기 위해서다.)
+        반환 dict: ok, level, xp, need, used, limit, leveled, new_bal, delta, info, infos, plays, xp_gain
         ok=False 면 reason 이 "cooldown"(remaining 초), "limit"(오늘 횟수 소진),
-        "locked"(require=(테이블, 횟수) 를 오늘 아직 못 채움 — req_used / req_limit).
+        "locked"(GRIND_REQUIRE 의 앞 단계를 오늘 아직 못 채움 — req_used / req_limit).
+        skip_item(스킵권)을 주면 쿨타임 없이 오늘 남은 횟수를 전부 돌리고 그 아이템 1개를 쓴다.
+        이때 reason 은 "none"(아이템 없음) / "locked" / "done"(남은 횟수 없음) — 실패하면 아이템은 그대로.
         경험치는 음수가 될 수 있지만 레벨 안에서 0 아래로는 내려가지 않는다(레벨 다운 없음).
         """
         max_level, limit, _ = GRIND_RULES[table]
+        require = GRIND_REQUIRE.get(table)
         day = (now_ts + 9 * 3600) // 86400  # KST 날짜 키
         async with self._lock:
             def work():
@@ -1350,33 +1361,49 @@ class EconomyDB:
                     cap = limit + (int(bonus) if bonus_day == day else 0)   # 리셋권으로 늘어난 오늘 횟수
                     base = {"ok": False, "level": level, "xp": xp, "need": grind_xp_need(table, level),
                             "used": used, "limit": cap}
+
+                    def fail(**why):
+                        con.execute("ROLLBACK;")
+                        return {**base, **why}
+
+                    if skip_item:
+                        row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?",
+                                          (user_id, skip_item)).fetchone()
+                        if not row or int(row[0]) <= 0:
+                            return fail(reason="none")
                     if require:
                         req_table, req_limit = require
                         row = con.execute(f"SELECT day_key, day_count FROM {req_table} WHERE user_id=?",
                                           (user_id,)).fetchone()
                         req_used = int(row[1]) if row and row[0] == day else 0
                         if req_used < req_limit:
-                            con.execute("ROLLBACK;")
-                            return {**base, "reason": "locked", "req_used": req_used, "req_limit": req_limit}
+                            return fail(reason="locked", req_used=req_used, req_limit=req_limit)
                     if used >= cap:
-                        con.execute("ROLLBACK;")
-                        return {**base, "reason": "limit"}
-                    if now_ts - last < cooldown_sec:
-                        con.execute("ROLLBACK;")
-                        return {**base, "reason": "cooldown", "remaining": cooldown_sec - (now_ts - last)}
+                        return fail(reason="done" if skip_item else "limit")
+                    if skip_item:
+                        con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item=?", (user_id, skip_item))
+                        plays = cap - used
+                    elif now_ts - last < cooldown_sec:
+                        return fail(reason="cooldown", remaining=cooldown_sec - (now_ts - last))
+                    else:
+                        plays = 1
 
-                    delta, xp_gain, info = roll(level, con)
-                    xp = max(0, xp + int(xp_gain))
-                    leveled = 0
-                    while level < max_level and xp >= grind_xp_need(table, level):
-                        xp -= grind_xp_need(table, level)
-                        level += 1
-                        leveled += 1
-                    if level >= max_level:
-                        xp = 0
-                    used += 1
+                    total = gained = leveled = 0
+                    infos = []
+                    for _ in range(plays):   # 한 판씩 굴린다 — 중간에 레벨이 오르면 다음 판부터 새 레벨로
+                        delta, xp_gain, info = roll(level, con)
+                        total, gained = total + int(delta), gained + int(xp_gain)
+                        infos.append(info)
+                        xp = max(0, xp + int(xp_gain))
+                        while level < max_level and xp >= grind_xp_need(table, level):
+                            xp -= grind_xp_need(table, level)
+                            level += 1
+                            leveled += 1
+                        if level >= max_level:
+                            xp = 0
+                    used += plays
 
-                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (int(delta), user_id))
+                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total, user_id))
                     con.execute(
                         f"UPDATE {table} SET level=?, xp=?, day_key=?, day_count=?, last_play_ts=? WHERE user_id=?",
                         (level, xp, day, used, now_ts, user_id),
@@ -1384,8 +1411,8 @@ class EconomyDB:
                     new_bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
                     con.execute("COMMIT;")
                     return {"ok": True, "level": level, "xp": xp, "need": grind_xp_need(table, level),
-                            "used": used, "limit": cap, "leveled": leveled,
-                            "new_bal": int(new_bal), "delta": int(delta), "info": info}
+                            "used": used, "limit": cap, "leveled": leveled, "new_bal": int(new_bal),
+                            "delta": total, "info": infos[-1], "infos": infos, "plays": plays, "xp_gain": gained}
                 except Exception:
                     try:
                         con.execute("ROLLBACK;")

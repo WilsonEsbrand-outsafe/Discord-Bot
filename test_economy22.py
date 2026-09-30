@@ -203,13 +203,15 @@ async def _item_screens():
     await db.give_item(user.id, "muffler")
     await Economy.bag.callback(eco, inter)
     view = sent[-1]["view"]
+    assert sent[-1]["ephemeral"]                                              # 가방은 나만 보인다
     assert "× 1" in sent[-1]["embed"].description and len(view.children) == 1
     assert "리셋권" not in sent[-1]["embed"].description                       # 없는 아이템은 안 보인다
     await view.children[0].callback(inter)                                    # [응원 머플러 사용]
-    result, bag = sent[-1]["embeds"]
-    assert "사용" in result.title and bag.fields and "5경기" in bag.fields[0].value
-    await Economy.use.callback(eco, inter, "train_reset")                    # 없는 아이템
-    assert "없어요" in sent[-1]["embed"].title
+    bag, result = sent[-2], sent[-1]
+    assert bag["embed"].title == "🎒 내 가방" and "5경기" in bag["embed"].fields[0].value   # 내 가방은 새로고침
+    assert "사용" in result["embed"].title and result["ephemeral"] is False            # 사용 결과는 모두에게
+    await Economy.use.callback(eco, inter, "train_reset")                    # 없는 아이템 → 나만
+    assert "없어요" in sent[-1]["embed"].title and sent[-1]["ephemeral"]
 
     # /상점: 선수팩을 고르면 몇 장 살지 메뉴가 뜨고 → 고른 장수로 개봉 · 돌아가기
     import cogs.players_market as cpm
@@ -237,6 +239,52 @@ async def _item_screens():
     assert bought == [("골드", 3)] and isinstance(sent[-1]["view"], cpm.ShopView)
     await qty.back.callback(inter)
     assert isinstance(sent[-1]["view"], cpm.ShopView)
+
+
+async def _skips():
+    """스킵권: 오늘 남은 횟수를 한 번에 · 결과(+/-)는 한 판씩 굴린 합 · 순서 잠금 · 다 했으면 안 쓰인다."""
+    from types import SimpleNamespace
+    db = edb.EconomyDB()
+    eco = Economy.__new__(Economy)
+    eco.db = db
+    S, T = 41, int(__import__("time").time())   # 화면(_use_embed)은 실제 시각을 쓴다
+    user = SimpleNamespace(id=S, display_name="스킵", display_avatar=SimpleNamespace(url="https://x/a.png"))
+    e, ok = await eco._use_embed(user, "train_skip")
+    assert not ok and "없어요" in e.title                                     # 아이템 없음
+    await db.give_item(S, "train_skip")
+    e, ok = await eco._use_embed(user, "train_skip")
+    assert not ok and "스카우트" in e.description and "그대로" in e.description   # 스카우트 전엔 잠김
+    assert (await db.inventory(S))[0]["train_skip"] == 1                      # 실패하면 안 쓰인다
+
+    # 스카우트 3번 직접 → 스킵권으로 남은 12번 (쿨타임 무시) · 돈은 각 판의 합
+    for i in range(3):
+        assert (await db.play_scout(S, T + i * 60, lambda lv, con: (1000, 3, {"ok": True})))["ok"]
+    await db.give_item(S, "scout_skip")
+    bal0 = await db.get_balance(S)
+    r = await db.use_skip(S, "scout_skip", T + 130, lambda lv, con: (-500, -1, {"ok": False}))
+    assert r["ok"] and r["plays"] == 12 and len(r["infos"]) == 12 and r["used"] == r["limit"] == 15
+    assert r["delta"] == -6000 and await db.get_balance(S) == bal0 - 6000     # 마이너스도 그대로
+    await db.give_item(S, "scout_skip")
+    assert (await db.use_skip(S, "scout_skip", T + 200, lambda lv, con: (0, 0, {})))["reason"] == "done"
+    assert (await db.inventory(S))[0]["scout_skip"] == 1
+
+    # 중간에 레벨이 오르면 다음 판부터 새 레벨로 굴린다
+    Q = 42
+    await db.give_item(Q, "scout_skip")
+    seen = []
+    def roll(lv, con):
+        seen.append(lv)
+        return 100 * lv, edb.SCOUT_XP_NEED[0], {"ok": True}
+    r = await db.use_skip(Q, "scout_skip", T, roll)
+    assert seen[:3] == [1, 2, 2] and r["leveled"] >= 1 and r["delta"] == 100 * sum(seen)
+
+    # 화면: 훈련 스킵 30회 (실제 훈련 굴림) → 결과 카드 · 다음 단계 안내 / 직관 스킵 100회
+    e, ok = await eco._use_embed(user, "train_skip")
+    assert ok and "**30회**" in e.description and "`/직관`" in e.description and "`정산`" in e.description
+    await db.give_item(S, "watch_skip")
+    e, ok = await eco._use_embed(user, "watch_skip")
+    assert ok and "**100회**" in e.description
+    assert (await db.play_watch(S, T + 9999, lambda lv, con: (0, 0, None), 0))["reason"] == "limit"
 
 
 async def _tutorial():
@@ -277,6 +325,7 @@ def test_flow():
     asyncio.run(_flow())
     asyncio.run(_items())
     asyncio.run(_item_screens())
+    asyncio.run(_skips())
     asyncio.run(_tutorial())
 
 

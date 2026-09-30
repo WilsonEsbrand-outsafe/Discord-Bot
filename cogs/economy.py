@@ -10,7 +10,7 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    BANKRUPT_FORGIVE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SHOP_PRICES, EconomyDB, SCOUT_MAX_LEVEL,
+    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SHOP_PRICES, SKIP_ITEMS, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
@@ -78,7 +78,7 @@ class RaceView(discord.ui.View):
 
 
 class BagView(discord.ui.View):
-    """/가방 — 가진 아이템마다 [사용] 버튼 (가방 주인만)."""
+    """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼. 사용 결과는 채널에 공개로 올린다."""
 
     def __init__(self, cog: "Economy", user, inv: dict):
         super().__init__(timeout=180)
@@ -97,9 +97,10 @@ class BagView(discord.ui.View):
 
     def _use(self, key: str):
         async def cb(interaction: discord.Interaction):
-            result = await self.cog._use_embed(self.user, key)
+            result, ok = await self.cog._use_embed(self.user, key)
             bag, inv = await self.cog._bag_embed(self.user)
-            await interaction.response.edit_message(embeds=[result, bag], view=BagView(self.cog, self.user, inv))
+            await interaction.response.edit_message(embed=bag, view=BagView(self.cog, self.user, inv))
+            await interaction.followup.send(embed=result, ephemeral=not ok)   # 성공은 모두에게, 실패는 나만
         return cb
 
 
@@ -578,7 +579,8 @@ class Economy(commands.Cog):
     WATCH_COOLDOWN = 10
     WATCH_LEVEL_NAMES = ["🎟️ 일반석 관중", "🧣 원정 팬", "📣 서포터즈", "🎫 시즌권자", "👑 레전드 서포터"]
     WATCH_DROP = (0.05, 0.06, 0.07, 0.08, 0.10)            # 레벨별 아이템 이벤트 확률 (매 직관)
-    WATCH_ITEM_WEIGHTS = {"muffler": 60, "train_reset": 20, "scout_reset": 20}
+    WATCH_ITEM_WEIGHTS = {"muffler": 50, "train_reset": 15, "scout_reset": 15,
+                          "scout_skip": 7, "train_skip": 7, "watch_skip": 6}
     WATCH_ITEM_EVENTS = {   # 아이템별 경기장 이벤트 멘트
         "muffler": ("선수가 관중석으로 던진 머플러를 잡았어요!", "옆자리 팬이 우승 기념 머플러를 선물해 줬어요!",
                     "구단 굿즈샵 오픈 기념 선착순 머플러를 받았어요!"),
@@ -586,6 +588,12 @@ class Economy(commands.Cog):
                         "코치님이 사인과 함께 특별 훈련권을 건네줬어요!"),
         "scout_reset": ("VIP석 스카우트와 명함을 교환했어요!", "경기 후 믹스트존에서 스카우트 초대장을 받았어요!",
                         "옆자리 에이전트가 출장 티켓을 양보해 줬어요!"),
+        "scout_skip": ("구단 전용기 탑승권을 얻었어요! 출장이 순식간이에요!",
+                       "스카우트 부장이 보고서 뭉치를 통째로 넘겨줬어요!"),
+        "train_skip": ("코칭스태프가 오늘 훈련 일지를 대신 써 주겠대요!",
+                       "피지컬 코치의 원포인트 레슨권에 당첨됐어요!"),
+        "watch_skip": ("시즌 하이라이트 DVD를 선물 받았어요! 오늘 경기 몰아보기!",
+                       "구단 OTT 이용권 당첨! 남은 경기는 집에서 한 번에!"),
     }
     _W, _L = (800, 2500), (-600, -200)
     WATCH_EVENTS = [
@@ -704,30 +712,86 @@ class Economy(commands.Cog):
         e.set_footer(text="아이템은 /직관 · /상점 · /쿠폰 으로 얻어요 · 아래 버튼으로 바로 사용")
         return e, inv
 
-    @app_commands.command(name="가방", description="보유 아이템과 사용 중인 효과를 확인하고 바로 사용합니다")
+    @app_commands.command(name="가방", description="보유 아이템과 사용 중인 효과를 확인하고 바로 사용합니다 (나만 보기)")
     async def bag(self, interaction: discord.Interaction):
         e, inv = await self._bag_embed(interaction.user)
-        await interaction.response.send_message(embed=e, view=BagView(self, interaction.user, inv))
+        await interaction.response.send_message(embed=e, view=BagView(self, interaction.user, inv), ephemeral=True)
 
     @app_commands.command(name="사용", description="아이템을 사용합니다")
     @app_commands.describe(아이템="사용할 아이템")
     @app_commands.choices(아이템=[app_commands.Choice(name=f"{e} {n} — {d}"[:100], value=k) for k, (e, n, d) in ITEMS.items()])
     async def use(self, interaction: discord.Interaction, 아이템: str):
-        await interaction.response.send_message(embed=await self._use_embed(interaction.user, 아이템))
+        e, ok = await self._use_embed(interaction.user, 아이템)
+        await interaction.response.send_message(embed=e, ephemeral=not ok)
 
-    async def _use_embed(self, user, item: str) -> discord.Embed:
+    GRIND_NAMES = {"scouting": "스카우트", "training": "훈련", "spectating": "직관"}
+
+    async def _use_embed(self, user, item: str) -> tuple[discord.Embed, bool]:
+        """아이템 사용 → (결과 카드, 성공 여부)."""
         emoji, name, desc = ITEMS[item]
+        if item in SKIP_ITEMS:
+            return await self._skip_embed(user, item)
         r = await self.db.use_item(user.id, item, int(time.time()))
         if not r["ok"]:
-            return ui.card(f"🙅 {emoji} {name}이(가) 없어요",
-                           "`/상점`에서 살 수 있어요." if item in SHOP_PRICES else "`/직관` `/쿠폰`으로 얻을 수 있어요.",
-                           ui.LOSE, user, "🎒 아이템")
+            return self._no_item_card(user, item), False
         if item == "muffler":
             msg = f"다음 **{r['uses']}경기** 동안 구단 전력 **+{MUFFLER_BONUS}** (친선경기 · 공식경기)"
         else:
-            what = {"scouting": "스카우트", "training": "훈련", "spectating": "직관"}[RESET_ITEMS[item][0]]
+            what = self.GRIND_NAMES[RESET_ITEMS[item][0]]
             msg = f"오늘 {what} **+{r['extra']}회** 추가! 지금 바로 `/{what}` 하러 가세요."
-        return ui.card(f"{emoji} {name} 사용!", msg, ui.GOLD, user, "🎒 아이템")
+        return ui.card(f"{emoji} {name} 사용!", msg, ui.GOLD, user, "🎒 아이템"), True
+
+    @staticmethod
+    def _no_item_card(user, item: str) -> discord.Embed:
+        emoji, name, _ = ITEMS[item]
+        return ui.card(f"🙅 {emoji} {name}이(가) 없어요",
+                       "`/상점`에서 살 수 있어요." if item in SHOP_PRICES else "`/직관` `/쿠폰`으로 얻을 수 있어요.",
+                       ui.LOSE, user, "🎒 아이템")
+
+    async def _skip_embed(self, user, item: str) -> tuple[discord.Embed, bool]:
+        """스킵권: 오늘 남은 횟수를 한 번에 — 원래 받았을 결과(+/-)를 합쳐서 보여준다."""
+        emoji, name, _ = ITEMS[item]
+        table = SKIP_ITEMS[item]
+        what = self.GRIND_NAMES[table]
+        roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id),
+                "training": self._train_roll,
+                "spectating": lambda lv, con: self._watch_roll(lv, con, user.id)}[table]
+        status = {"scouting": self._scout_status, "training": self._train_status, "spectating": self._watch_status}[table]
+        r = await self.db.use_skip(user.id, item, int(time.time()), roll)
+        if not r["ok"]:
+            if r["reason"] == "none":
+                return self._no_item_card(user, item), False
+            if r["reason"] == "locked":
+                prev = self.GRIND_NAMES[GRIND_REQUIRE[table][0]]
+                msg = f"`/{prev}` 을(를) 먼저 마쳐야 {what}이(가) 열려요. (오늘 {prev} {r['req_used']}/{r['req_limit']}회)"
+            else:
+                msg = f"오늘 {what}은(는) 이미 다 했어요. ({r['used']}/{r['limit']}회)"
+            return ui.card(f"🙅 {emoji} {name}을(를) 쓸 수 없어요", msg + "\n스킵권은 그대로 남아 있어요.",
+                           ui.LOSE, user, "🎒 아이템"), False
+
+        infos = r["infos"]
+        wins = sum(1 for i in infos if i["ok"])
+        lines = [f"`자동 완료` **{r['plays']}회** · 성공 {wins} · 실패 {r['plays'] - wins}",
+                 f"`정산` **{ui.won(r['delta'])}**", f"`잔액` **{r['new_bal']:,}원**", status(r, r["xp_gain"])]
+        found = [i["found"] for i in infos if i.get("found")]
+        if found:
+            lines.append("\n💎 **선수 발굴!**\n" + "\n".join(
+                f"　{f['tier']} **{f['name']}** `#{f['player_id']}` · {f['pos']} · OVR {f['ovr']}" for f in found))
+        got = {}
+        for i in infos:
+            if i.get("item"):
+                got[i["item"]] = got.get(i["item"], 0) + 1
+        if got:
+            lines.append("\n🎁 **경기장 이벤트!** " + " · ".join(f"{ITEMS[k][0]} {ITEMS[k][1]} × {n}" for k, n in got.items()))
+        if r["leveled"]:
+            lines.append(f"\n🆙 **레벨 업!** Lv.{r['level'] - r['leveled']} → **Lv.{r['level']}**")
+        nxt = {"scouting": "훈련", "training": "직관"}.get(table)
+        if nxt:
+            lines.append(f"\n🔓 이제 `/{nxt}` 할 수 있어요.")
+        color = ui.GOLD if (r["leveled"] or found) else ui.tone(r["delta"])
+        e = ui.card(f"{emoji} {name} 사용! — 오늘 {what} 한 번에 끝", "\n".join(lines), color, user, "🎒 아이템")
+        e.set_thumbnail(url=ui.emoji_url(emoji))
+        return e, True
 
     @app_commands.command(name="쿠폰", description="쿠폰 코드를 입력해 보상을 받습니다 (계정당 코드마다 한 번)")
     @app_commands.describe(코드="쿠폰 코드")
