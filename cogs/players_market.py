@@ -17,8 +17,8 @@ matplotlib.rcParams["font.family"] = "NanumGothic"
 matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
 from services import ui
-from services.economy_db import ITEMS, SHOP_DAILY, SHOP_PRICES, EconomyDB
-from services.player_market_db import PlayerMarketDB, PACKS, JACKPOT_PROB, JACKPOT_RANGE, player_profile
+from services.economy_db import ITEMS, SHOP_PRICES, EconomyDB
+from services.player_market_db import PlayerMarketDB, PACKS, PACK_MAX_PULLS, JACKPOT_PROB, JACKPOT_RANGE, player_profile
 
 PACK_EMOJI = {
     "브론즈": "🥉", "실버": "🥈", "골드": "🥇",
@@ -75,7 +75,7 @@ def _normalize_results(results: list) -> list:
 def _format_pack_results(
     results: list, pack_price_per: int
 ) -> tuple[str, str, int]:
-    """팩 뽑기 결과를 포맷팅. /선수팩 · /팩시뮬 공통 사용.
+    """팩 뽑기 결과를 포맷팅. /상점 · /팩시뮬 공통 사용.
 
     Returns:
         (grade_summary, lines_text, total_value)
@@ -106,21 +106,12 @@ class _SkipView(discord.ui.View):
         await interaction.response.defer()
 
 
-class ShopView(discord.ui.View):
-    """/상점 — 선수팩(1장)과 아이템을 한 메뉴에서 산다. 상점을 연 사람만."""
+class _ShopOwnerView(discord.ui.View):
+    """상점을 연 사람만 누를 수 있다."""
 
     def __init__(self, cog: "PlayersMarket", user):
         super().__init__(timeout=300)
         self.cog, self.user = cog, user
-        opts = [discord.SelectOption(label=f"{k}팩 · {p['price']:,}원", value=f"pack:{k}",
-                                     emoji=PACK_EMOJI.get(k, "🎁"), description="선수 카드 1장")
-                for k, p in PACKS.items()]
-        opts += [discord.SelectOption(label=f"{ITEMS[k][1]} · {price:,}원", value=f"item:{k}", emoji=ITEMS[k][0],
-                                      description=f"{ITEMS[k][2]} · 하루 {SHOP_DAILY}개"[:100])
-                 for k, price in SHOP_PRICES.items()]
-        self.menu = discord.ui.Select(placeholder="🛒 살 상품을 고르세요", options=opts[:25])
-        self.menu.callback = self._buy
-        self.add_item(self.menu)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
@@ -128,23 +119,58 @@ class ShopView(discord.ui.View):
             return False
         return True
 
+
+class ShopView(_ShopOwnerView):
+    """/상점 — 선수팩과 아이템을 한 메뉴에서 산다. 선수팩을 고르면 몇 장 살지 묻는다."""
+
+    def __init__(self, cog: "PlayersMarket", user):
+        super().__init__(cog, user)
+        opts = [discord.SelectOption(label=f"{k}팩 · {p['price']:,}원 / 장", value=f"pack:{k}",
+                                     emoji=PACK_EMOJI.get(k, "🎁"), description=f"선수 카드 1~{PACK_MAX_PULLS}장")
+                for k, p in PACKS.items()]
+        opts += [discord.SelectOption(label=f"{ITEMS[k][1]} · {price:,}원", value=f"item:{k}", emoji=ITEMS[k][0],
+                                      description=ITEMS[k][2][:100])
+                 for k, price in SHOP_PRICES.items()]
+        self.menu = discord.ui.Select(placeholder="🛒 살 상품을 고르세요", options=opts[:25])
+        self.menu.callback = self._buy
+        self.add_item(self.menu)
+
     async def _buy(self, interaction: discord.Interaction):
         kind, key = self.menu.values[0].split(":", 1)
         if kind == "pack":
-            await interaction.response.defer()
-            return await self.cog._buy_pack(interaction, key, 1)
+            return await interaction.response.edit_message(view=PackQtyView(self.cog, self.user, key))
         emoji, name, desc = ITEMS[key]
-        r = await self.cog.money.buy_item(self.user.id, key, int(time.time()))
+        r = await self.cog.money.buy_item(self.user.id, key)
         if r["ok"]:
             e = ui.card(f"🛒 {emoji} {name} 구매!", f"{desc}\n\n`가격` **-{r['price']:,}원** · `잔액` **{r['balance']:,}원**\n"
                         f"`보유` **{r['qty']}개** · `/가방`에서 바로 사용", ui.WIN, self.user, "🛒 상점")
-        elif r["reason"] == "daily":
-            e = ui.card("🙅 오늘은 더 살 수 없어요", f"{emoji} {name}은(는) 하루 {SHOP_DAILY}개까지예요. 내일 00:00에 다시 열려요!",
-                        ui.EVEN, self.user, "🛒 상점")
         else:
             e = ui.card("🙅 잔액이 부족해요", f"`가격` **{SHOP_PRICES[key]:,}원**\n`잔액` **{r['balance']:,}원**",
                         ui.LOSE, self.user, "🛒 상점")
         await interaction.response.send_message(embed=e)
+
+
+class PackQtyView(_ShopOwnerView):
+    """상점에서 선수팩을 고른 뒤: 몇 장 살지 (1~10장, 총액 표시) · 돌아가기."""
+
+    def __init__(self, cog: "PlayersMarket", user, pack: str):
+        super().__init__(cog, user)
+        self.pack, price = pack, PACKS[pack]["price"]
+        self.qty = discord.ui.Select(
+            placeholder=f"{PACK_EMOJI.get(pack, '🎁')} {pack}팩 — 몇 장 살까요?",
+            options=[discord.SelectOption(label=f"{n}장 · {price * n:,}원", value=str(n))
+                     for n in range(1, PACK_MAX_PULLS + 1)])
+        self.qty.callback = self._open
+        self.add_item(self.qty)
+
+    async def _open(self, interaction: discord.Interaction):
+        # 상점 메뉴를 처음 상태로 돌려놓고, 개봉 연출은 새 메시지로
+        await interaction.response.edit_message(view=ShopView(self.cog, self.user))
+        await self.cog._buy_pack(interaction, self.pack, int(self.qty.values[0]))
+
+    @discord.ui.button(label="돌아가기", emoji="↩️", style=discord.ButtonStyle.secondary, row=1)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(view=ShopView(self.cog, self.user))
 
 
 # ───────────────── 즉시판매 UI ─────────────────
@@ -650,29 +676,21 @@ class PlayersMarket(commands.Cog):
             embed=_embed("📋 이적시장 등록" if ok else "❌ 등록 실패", msg, interaction.user),
         )
 
-    # ───────────────── 팩 ─────────────────
-    @app_commands.command(name="선수팩", description="선수팩을 구매합니다. (종류별 확률/가격 차등)")
-    @app_commands.describe(종류="브론즈/실버/골드/플래티넘/다이아몬드/아이콘/얼티밋", 장수="1~10")
-    @app_commands.autocomplete(종류=pack_type_autocomplete)
-    async def pack(self, interaction: discord.Interaction, 종류: str, 장수: int = 1):
-        await interaction.response.defer()
-        await self._buy_pack(interaction, 종류, 장수)
-
-    @app_commands.command(name="상점", description="선수팩 · 아이템(머플러 · 리셋권)을 한곳에서 삽니다")
+    # ───────────────── 상점 (선수팩 · 아이템) ─────────────────
+    @app_commands.command(name="상점", description="선수팩 · 아이템을 한곳에서 삽니다 (메뉴에서 고르면 바로 구매)")
     async def shop(self, interaction: discord.Interaction):
         user = interaction.user
-        bought = await self.money.shop_bought_today(user.id, int(time.time()))
         packs = "\n".join(f"{PACK_EMOJI.get(k, '🎁')} **{k}팩** · {p['price']:,}원" for k, p in PACKS.items())
-        items = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** · {price:,}원 · 오늘 {bought.get(k, 0)}/{SHOP_DAILY}\n"
-                          f"　 *{ITEMS[k][2]}*" for k, price in SHOP_PRICES.items())
+        items = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** · {price:,}원\n　 *{ITEMS[k][2]}*"
+                          for k, price in SHOP_PRICES.items())
         e = ui.card("🛒 상점", f"`잔액` **{await self.money.get_balance(user.id):,}원**", ui.INFO, user, "🛒 상점")
-        e.add_field(name="🃏 선수팩", value=packs, inline=True)
+        e.add_field(name="🃏 선수팩 (장당)", value=packs, inline=True)
         e.add_field(name="🎒 아이템", value=items, inline=True)
-        e.set_footer(text="아래 메뉴에서 고르면 바로 구매 · 선수팩은 1장씩 (여러 장은 /선수팩) · 아이템은 하루 한도가 있어요")
+        e.set_footer(text=f"아래 메뉴에서 고르세요 · 선수팩은 1~{PACK_MAX_PULLS}장 선택 · 팩 확률은 /팩정보")
         await interaction.response.send_message(embed=e, view=ShopView(self, user))
 
     async def _buy_pack(self, interaction: discord.Interaction, 종류: str, 장수: int):
-        """/선수팩 · /상점 공용: 결제 → 개봉 연출. interaction 은 이미 defer 된 상태."""
+        """/상점: 결제 → 개봉 연출. interaction 은 이미 응답(defer/edit)된 상태 — 결과는 followup 으로."""
         종류 = (종류 or "").strip()
         if 종류 not in PACKS:
             kinds = ", ".join(PACKS.keys())

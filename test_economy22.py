@@ -163,24 +163,24 @@ async def _items():
     inv, buffs = await db.inventory(X)
     assert "muffler" not in inv and "muffler" not in buffs
 
-    # 상점: 돈을 내고 가방에 · 아이템마다 하루 한도 · 잔액 부족 · 다음 날 다시
+    # 상점: 리셋권은 팔지 않는다 · 돈을 내고 가방에 · 구매 제한 없음 · 잔액 부족
     Z = 13
-    price = edb.SHOP_PRICES["train_reset"]
-    assert (await db.buy_item(Z, "train_reset", T))["reason"] == "balance"
+    assert not set(edb.SHOP_PRICES) & set(edb.RESET_ITEMS)
+    price = edb.SHOP_PRICES["muffler"]
+    assert (await db.buy_item(Z, "muffler"))["reason"] == "balance"
     await db.add_balance(Z, price * 3)
-    r = await db.buy_item(Z, "train_reset", T)
-    assert r["ok"] and r["balance"] == price * 2 and r["qty"] == 1
-    assert (await db.buy_item(Z, "train_reset", T + 60))["reason"] == "daily"
-    assert (await db.buy_item(Z, "train_reset", T + D))["ok"]
-    assert await db.shop_bought_today(Z, T + D) == {"train_reset": 1}
-    assert (await db.inventory(Z))[0]["train_reset"] == 2
+    for n in (1, 2, 3):
+        r = await db.buy_item(Z, "muffler")
+        assert r["ok"] and r["balance"] == price * (3 - n) and r["qty"] == n
+    assert (await db.buy_item(Z, "muffler"))["reason"] == "balance"
+    await db._tx(lambda con: con.execute("DELETE FROM inventory WHERE user_id=?", (Z,)))
 
     # 쿠폰: 코드 대소문자 무시 · 계정당 한 번 · 없는 코드 · 만료
     items, expires = edb.COUPONS["PATCH22"]
     assert set(items) == {"scout_reset", "train_reset", "watch_reset"}
     assert (await db.redeem_coupon(Z, "nope", T))["reason"] == "unknown"
     r = await db.redeem_coupon(Z, " patch22 ", expires - 1)
-    assert r["ok"] and (await db.inventory(Z))[0] == {"train_reset": 3, "scout_reset": 1, "watch_reset": 1}
+    assert r["ok"] and (await db.inventory(Z))[0] == {"train_reset": 1, "scout_reset": 1, "watch_reset": 1}
     assert (await db.redeem_coupon(Z, "PATCH22", expires - 1))["reason"] == "used"
     assert (await db.redeem_coupon(Z + 1, "PATCH22", expires))["reason"] == "expired"
 
@@ -209,6 +209,29 @@ async def _item_screens():
     assert "사용" in result.title and bag.fields and "5경기" in bag.fields[0].value
     await Economy.use.callback(eco, inter, "train_reset")                    # 없는 아이템
     assert "없어요" in sent[-1]["embed"].title
+
+    # /상점: 선수팩을 고르면 몇 장 살지 메뉴가 뜨고 → 고른 장수로 개봉 · 돌아가기
+    import cogs.players_market as cpm
+    shop = cpm.PlayersMarket.__new__(cpm.PlayersMarket)
+    shop.money = db
+    bought = []
+    async def fake_buy(_inter, pack, n):
+        bought.append((pack, n))
+    shop._buy_pack = fake_buy
+    assert not hasattr(cpm.PlayersMarket, "pack")                              # /선수팩 삭제
+    await cpm.PlayersMarket.shop.callback(shop, inter)
+    view = sent[-1]["view"]
+    assert not any(o.value.startswith("item:") and o.value[5:] in edb.RESET_ITEMS for o in view.menu.options)
+    view.menu._values = ["pack:골드"]
+    await view._buy(inter)
+    qty = sent[-1]["view"]
+    assert isinstance(qty, cpm.PackQtyView) and len(qty.qty.options) == 10
+    assert qty.qty.options[-1].label == "10장 · 5,000,000원"
+    qty.qty._values = ["3"]
+    await qty._open(inter)
+    assert bought == [("골드", 3)] and isinstance(sent[-1]["view"], cpm.ShopView)
+    await qty.back.callback(inter)
+    assert isinstance(sent[-1]["view"], cpm.ShopView)
 
 
 async def _tutorial():

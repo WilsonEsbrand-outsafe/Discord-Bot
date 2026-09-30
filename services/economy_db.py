@@ -43,9 +43,8 @@ MUFFLER_USES, MUFFLER_BONUS = 5, 3
 RESET_ITEMS = {"scout_reset": ("scouting", SCOUT_DAILY_LIMIT), "train_reset": ("training", TRAIN_DAILY_LIMIT),
                "watch_reset": ("spectating", WATCH_DAILY_LIMIT)}
 
-# 아이템 상점: key → 가격. 아이템마다 하루(KST) SHOP_DAILY 개까지.
-SHOP_PRICES = {"muffler": 200_000, "scout_reset": 700_000, "train_reset": 1_000_000, "watch_reset": 300_000}
-SHOP_DAILY = 1
+# 아이템 상점: key → 가격 (구매 제한 없음). 리셋권은 팔지 않는다 — 직관 이벤트 · 쿠폰으로만.
+SHOP_PRICES = {"muffler": 200_000}
 
 # 쿠폰: 코드(대문자) → (지급 아이템 {key: 수량}, 만료 시각)
 COUPONS = {
@@ -188,9 +187,7 @@ class EconomyDB:
             # 아이템: 가방(보유 수량)과 사용 중인 효과(남은 횟수)
             con.execute("CREATE TABLE IF NOT EXISTS inventory (user_id INTEGER, item TEXT, qty INTEGER, PRIMARY KEY(user_id, item))")
             con.execute("CREATE TABLE IF NOT EXISTS buffs (user_id INTEGER, item TEXT, uses INTEGER, PRIMARY KEY(user_id, item))")
-            # 상점 하루 구매 수 · 쿠폰 사용 기록
-            con.execute("CREATE TABLE IF NOT EXISTS shop_daily (user_id INTEGER, item TEXT, day_key INTEGER, cnt INTEGER, "
-                        "PRIMARY KEY(user_id, item))")
+            # 쿠폰 사용 기록
             con.execute("CREATE TABLE IF NOT EXISTS coupon_used (user_id INTEGER, code TEXT, PRIMARY KEY(user_id, code))")
                         # ───────────── 토토 ─────────────
             con.execute(
@@ -1208,7 +1205,6 @@ class EconomyDB:
                         ("spectating",            "user_id"),
                         ("inventory",             "user_id"),
                         ("buffs",                 "user_id"),
-                        ("shop_daily",            "user_id"),
                         ("coupon_used",           "user_id"),
                         ("clubs",                 "user_id"),
                         ("club_lineup",           "user_id"),
@@ -1286,27 +1282,16 @@ class EconomyDB:
             return {"ok": True, "extra": total}
         return await self._tx(fn)
 
-    async def shop_bought_today(self, user_id: int, now_ts: int) -> dict[str, int]:
-        day = _kst_day(now_ts)
-        return await self._tx(lambda con: {i: int(c) for i, c in con.execute(
-            "SELECT item, cnt FROM shop_daily WHERE user_id=? AND day_key=?", (user_id, day))})
-
-    async def buy_item(self, user_id: int, item: str, now_ts: int) -> dict:
-        """상점 구매: 돈을 내고 가방에 1개. 실패 reason: daily(오늘 한도) / balance."""
-        day, price = _kst_day(now_ts), SHOP_PRICES[item]
+    async def buy_item(self, user_id: int, item: str) -> dict:
+        """상점 구매: 돈을 내고 가방에 1개. 실패 reason: balance."""
+        price = SHOP_PRICES[item]
 
         def fn(con):
-            row = con.execute("SELECT day_key, cnt FROM shop_daily WHERE user_id=? AND item=?", (user_id, item)).fetchone()
-            cnt = int(row[1]) if row and row[0] == day else 0
-            if cnt >= SHOP_DAILY:
-                return {"ok": False, "reason": "daily"}
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
             if bal < price:
                 return {"ok": False, "reason": "balance", "balance": bal}
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (price, user_id))
-            con.execute("INSERT OR REPLACE INTO shop_daily(user_id, item, day_key, cnt) VALUES(?,?,?,?)",
-                        (user_id, item, day, cnt + 1))
             give_item(con, user_id, item)
             qty = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()[0]
             return {"ok": True, "price": price, "balance": bal - price, "qty": int(qty)}

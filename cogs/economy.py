@@ -10,7 +10,8 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    ATTEND_BONUS, BANKRUPT_FORGIVE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, EconomyDB, SCOUT_MAX_LEVEL, TRAIN_MAX_LEVEL,
+    ATTEND_BONUS, BANKRUPT_FORGIVE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SHOP_PRICES, EconomyDB, SCOUT_MAX_LEVEL,
+    TRAIN_MAX_LEVEL,
     TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
@@ -731,7 +732,8 @@ class Economy(commands.Cog):
         emoji, name, desc = ITEMS[item]
         r = await self.db.use_item(user.id, item, int(time.time()))
         if not r["ok"]:
-            return ui.card(f"🙅 {emoji} {name}이(가) 없어요", "`/직관` `/상점` `/쿠폰`으로 얻을 수 있어요.",
+            return ui.card(f"🙅 {emoji} {name}이(가) 없어요",
+                           "`/상점`에서 살 수 있어요." if item in SHOP_PRICES else "`/직관` `/쿠폰`으로 얻을 수 있어요.",
                            ui.LOSE, user, "🎒 아이템")
         if item == "muffler":
             msg = f"다음 **{r['uses']}경기** 동안 구단 전력 **+{MUFFLER_BONUS}** (친선경기 · 공식경기)"
