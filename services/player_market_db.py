@@ -708,9 +708,8 @@ class PlayerMarketDB:
                 """)
 
             con.commit()
-            migrated = _migrate_short_player_ids(con)
-            if migrated:
-                print(f"[PM] 선수 ID 단순화: {migrated}명")
+            # ponytail: ID 단순화 마이그레이션은 서버 DB(선수 9천여 명·시세 기록 대량)에서 부팅을 막아
+            # 일시 중단했다. 빠른 방식으로 바꾼 뒤 다시 켠다.
         finally:
             con.close()
 
