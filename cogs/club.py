@@ -11,8 +11,8 @@ from discord.ext import commands
 
 from services import ui
 from services.club_db import (
-    CLUB_NAME_MAX, FORMATIONS, MANAGERS, OFFICIAL_MIN_BET, SLOT_GROUP, ClubDB, effective_ovr, match_highlights,
-    official_odds, season_key, simulate_match, win_probs,
+    CLUB_NAME_MAX, FORMATIONS, MANAGERS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
+    match_highlights, official_odds, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
 from services.player_market_db import PlayerMarketDB
@@ -270,6 +270,15 @@ class Club(commands.Cog):
             return f"일방적인 경기였습니다! 오늘의 주인공은 {winner}!"
         return f"치열한 승부 끝에 웃은 쪽은 {winner}!"
 
+    @staticmethod
+    def _star_line(x: dict) -> str:
+        """경기 결과 카드의 유망주 줄: 골 · 도움 · 경험치(감점 사유) · OVR 상승."""
+        line = f"\n🌟 **{x['name']}** #{x['number']} · {x['goals']}골 {x['assists']}도움"
+        if x["xp"] is not None:
+            why = ", ".join(PROSPECT_XP_LABEL[k] for k in x["minus"])
+            line += f" · 경험치 **{x['xp']:+d}**" + (f" ({why})" if why else "")
+        return line + (f" · OVR {x['ovr0']} → **{x['ovr']}** ⬆️" if x["ovr"] > x["ovr0"] else "")
+
     async def _load_sides(self, interaction, user, home_id: int, away_id: int, away_label: str, section: str):
         """두 구단을 불러오고 문제가 있으면 안내 후 None."""
         home, away = await self.clubs.get_team(home_id), await self.clubs.get_team(away_id)
@@ -304,11 +313,10 @@ class Club(commands.Cog):
         pw, pd, pl = win_probs(h["rating"], a["rating"])
         extra = await after(result) if after else ""
         # 양 팀 유망주 기록(출전 · 골 · 도움) + 성장
-        stars = await self.clubs.record_prospects([(h["xi"], hg, ag), (a["xi"], ag, hg)], result["goals"], int(time.time()))
+        stars = await self.clubs.record_prospects([(h["xi"], hg, ag), (a["xi"], ag, hg)], result["goals"],
+                                                  int(time.time()), highlights)
         if stars:
-            extra = "\n" + "".join(f"\n🌟 **{x['name']}** #{x['number']} · {x['goals']}골 {x['assists']}도움"
-                                   + (f" · OVR {x['ovr0']} → **{x['ovr']}** ⬆️" if x["ovr"] > x["ovr0"] else "")
-                                   for x in stars) + extra
+            extra = "\n" + "".join(self._star_line(x) for x in stars) + extra
 
         def log_until(minute: int) -> str:
             lines = [f"`{x['minute']:>2}'` {'⚽' if x['goal'] else '▫️'} "

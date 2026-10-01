@@ -141,10 +141,11 @@ def simulate_match(home: dict, away: dict, rng: random.Random = random) -> dict:
 
 
 # ───────────── 90분 문자중계 ─────────────
+_MISS = "{p}, 1대1 찬스를 놓칩니다… 아쉬워요!"   # 유망주 경험치 - (옐로카드도)
 _CHANCES = (
     "{p}의 중거리 슛! 골키퍼가 몸을 날려 막아냅니다!",
     "{p}의 헤더가 골대를 강타합니다!",
-    "{p}, 1대1 찬스를 놓칩니다… 아쉬워요!",
+    _MISS,
     "{p}의 프리킥이 벽에 걸립니다.",
     "{p}의 슛이 골문을 살짝 벗어납니다.",
     "{p}, 오프사이드 깃발이 올라갑니다.",
@@ -154,10 +155,11 @@ _GOAL_CALLS = ("골!!! {p}!!", "{p}의 슛— 들어갑니다!!", "{p}가 해냅
 
 
 def match_highlights(result: dict, home: dict, away: dict, rng: random.Random = random) -> list[dict]:
-    """골 + 골이 아닌 장면(선방·골대·경고)을 섞은 90분 하이라이트. [{minute, side, text, goal}] 시간순."""
+    """골 + 골이 아닌 장면(선방·골대·경고)을 섞은 90분 하이라이트. [{minute, side, text, goal}] 시간순.
+    골이 아닌 장면엔 player_id 와 kind(card · miss · None)도 붙인다 — 유망주 경험치 감점용."""
     def pick(team):
         xi = team["xi"] or [{"name": team["name"], "pos": "MF", "ovr": 50}]
-        return rng.choice([p for p in xi if p["pos"] != "GK"] or xi)["name"]
+        return rng.choice([p for p in xi if p["pos"] != "GK"] or xi)
 
     out = [{"minute": g["minute"], "side": g["side"], "goal": True,
             "text": rng.choice(_GOAL_CALLS).format(p=g["scorer"]) + (f" (도움 {g['assist']})" if g.get("assist") else "")}
@@ -165,8 +167,11 @@ def match_highlights(result: dict, home: dict, away: dict, rng: random.Random = 
     for _ in range(rng.randint(5, 8)):
         side = rng.choice(("home", "away"))
         team = home if side == "home" else away
-        tpl = rng.choice(_CARDS) if rng.random() < 0.2 else rng.choice(_CHANCES)
-        out.append({"minute": rng.randint(2, 89), "side": side, "goal": False, "text": tpl.format(p=pick(team))})
+        card = rng.random() < 0.2
+        tpl = rng.choice(_CARDS) if card else rng.choice(_CHANCES)
+        who = pick(team)
+        out.append({"minute": rng.randint(2, 89), "side": side, "goal": False, "text": tpl.format(p=who["name"]),
+                    "player_id": who.get("player_id"), "kind": "card" if card else ("miss" if tpl == _MISS else None)})
     out.sort(key=lambda h: (h["minute"], not h["goal"]))
     return out
 
@@ -224,7 +229,10 @@ PROSPECT_YEAR = 7 * 86400        # 유망주 1살 = 실제 7일 (일반 선수�
 PROSPECT_PRIME_END = 30          # 30세까지 성장 · 31세부터 해마다 OVR -1~3
 PROSPECT_RETIRE_AGE = 40         # 40세가 되면 은퇴
 PROSPECT_DAILY_GROWTH = 20       # 하루(KST)에 성장 경험치가 쌓이는 경기 수 (기록은 매 경기)
-PROSPECT_XP = {"app": 10, "goal": 6, "assist": 4, "W": 5, "D": 2, "L": 0}
+# 경기당 성장 경험치. 음수는 감점 — 경험치는 0 밑으로 내려가지 않는다 (OVR 은 안 떨어진다).
+# rout = 3골 차 이상 대패(패배 -5 에 더해서) · card = 옐로카드 · miss = 1대1 찬스 놓침 (중계 장면 그대로)
+PROSPECT_XP = {"app": 10, "goal": 6, "assist": 4, "W": 5, "D": 2, "L": -5, "rout": -5, "card": -3, "miss": -2}
+PROSPECT_XP_LABEL = {"L": "패배", "rout": "대패", "card": "경고", "miss": "찬스 놓침"}
 PROSPECT_NAME_MAX = 12
 PROSPECT_FEET = ("오른발", "왼발", "양발")
 PROSPECT_HEIGHT = (150, 210)
@@ -748,9 +756,11 @@ class ClubDB:
             return {"ok": True, "balance": bal - PROSPECT_PRICE, **self._prospect_by_id(con, cur.lastrowid, now_ts)}
         return await self._tx(fn)
 
-    async def record_prospects(self, sides: list[tuple[list[dict], int, int]], goals: list[dict], now_ts: int) -> list[dict]:
-        """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 그리고 성장 경험치 (하루 PROSPECT_DAILY_GROWTH 경기까지,
-        30세까지, 잠재력까지). sides: [(선발 xi, 득점, 실점)] — 양 팀 모두. 뛴 유망주마다 결과 dict."""
+    async def record_prospects(self, sides: list[tuple[list[dict], int, int]], goals: list[dict], now_ts: int,
+                               events: list[dict] = ()) -> list[dict]:
+        """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 그리고 성장 경험치 ± (하루 PROSPECT_DAILY_GROWTH 경기까지,
+        30세까지, 잠재력까지). sides: [(선발 xi, 득점, 실점)] — 양 팀 모두. events: 중계 장면(경고 · 찬스 놓침).
+        뛴 유망주마다 결과 dict (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키)."""
         if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, _, _ in sides for s in xi):
             return []
         day = kst_day(now_ts)
@@ -772,8 +782,12 @@ class ClubDB:
                     played = p["day_n"] if p["day_key"] == day else 0
                     ovr, xp = p["ovr"], p["xp"]
                     grew = played < PROSPECT_DAILY_GROWTH and p["age"] <= PROSPECT_PRIME_END and ovr < p["pot"]
+                    parts = {"app": 1, "goal": g, "assist": a, res: 1, "rout": int(ga - gf >= 3),
+                             "card": sum(e.get("player_id") == pid and e.get("kind") == "card" for e in events),
+                             "miss": sum(e.get("player_id") == pid and e.get("kind") == "miss" for e in events)}
+                    delta = sum(PROSPECT_XP[k] * n for k, n in parts.items())
                     if grew:
-                        xp += PROSPECT_XP["app"] + g * PROSPECT_XP["goal"] + a * PROSPECT_XP["assist"] + PROSPECT_XP[res]
+                        xp = max(0, xp + delta)
                         while ovr < p["pot"] and xp >= prospect_xp_need(ovr):
                             xp -= prospect_xp_need(ovr)
                             ovr += 1
@@ -785,7 +799,8 @@ class ClubDB:
                         "peak_ovr=?, peak_age=?, day_key=?, day_n=? WHERE id=?",
                         (g, a, ovr, xp, *peak, day, played + 1, p["id"]))
                     out.append({"user_id": owner[0], "name": p["name"], "number": p["number"], "goals": g, "assists": a,
-                                "ovr0": p["ovr"], "ovr": ovr, "grew": grew})
+                                "ovr0": p["ovr"], "ovr": ovr, "grew": grew, "xp": delta if grew else None,
+                                "minus": [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0]})
             return out
         return await self._tx(fn)
 

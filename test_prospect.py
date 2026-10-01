@@ -84,6 +84,12 @@ def test_assists():
     assert not any(g["assist_id"].endswith("0") for g in assisted)                                            # 골키퍼는 도움 X
     hl = cc.match_highlights({"goals": assisted[:1]}, {"name": "A", "xi": []}, {"name": "B", "xi": []})
     assert f"(도움 {assisted[0]['assist']})" in next(h for h in hl if h["goal"])["text"]
+    # 중계 장면에 선수 ID · 감점 종류(경고 · 1대1 찬스 놓침)가 붙는다
+    scenes = [h for _ in range(100) for h in cc.match_highlights(
+        {"goals": []}, {"name": "A", "xi": xi("a")}, {"name": "B", "xi": xi("b")}, rng)]
+    assert {h["kind"] for h in scenes} == {"card", "miss", None} and all(h["player_id"] for h in scenes)
+    assert all((h["kind"] == "card") == any(w in h["text"] for w in ("옐로카드", "경고")) for h in scenes)
+    assert all((h["kind"] == "miss") == ("1대1" in h["text"]) for h in scenes)
 
 
 async def _flow():
@@ -140,7 +146,18 @@ async def _flow():
     after = (await clubs.prospects(A, now))["active"]
     assert not x["grew"] and (after["ovr"], after["xp"]) == (before["ovr"], before["xp"]) and after["goals"] == before["goals"] + 1
     x = (await clubs.record_prospects([([me], 0, 0)], [], now + 86400))[0]       # 다음 날 다시 성장
-    assert x["grew"]
+    assert x["grew"] and x["xp"] == 12 and x["minus"] == []
+    # 감점: 3골 차 대패 + 경고 + 찬스 놓침 → 10 - 5 - 5 - 3 - 2 = -5 · 경험치는 0 밑으로 안 간다 (OVR 그대로)
+    sql("UPDATE prospects SET xp=3 WHERE id=?", r["id"])
+    before = (await clubs.prospects(A, now))["active"]
+    ev = [{"player_id": pid, "kind": "card"}, {"player_id": pid, "kind": "miss"}, {"player_id": "x", "kind": "card"},
+          {"player_id": pid, "kind": None}]
+    x = (await clubs.record_prospects([([me], 0, 3)], [], now + 86400, ev))[0]
+    after = (await clubs.prospects(A, now))["active"]
+    assert x["xp"] == -5 and x["minus"] == ["L", "rout", "card", "miss"] and (after["xp"], after["ovr"]) == (0, before["ovr"])
+    assert cc.Club._star_line(x) == "\n🌟 **손흥민** #7 · 0골 0도움 · 경험치 **-5** (패배, 대패, 경고, 찬스 놓침)"
+    x = (await clubs.record_prospects([([me], 1, 2)], [], now + 86400))[0]       # 1골 차 패배는 +5
+    assert x["xp"] == 5 and x["minus"] == ["L"]
     # 잠재력까지만: 잠재력에 닿으면 경험치는 0
     sql("UPDATE prospects SET ovr=pot-1, xp=0 WHERE id=?", r["id"])
     for _ in range(30):
