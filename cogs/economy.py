@@ -359,7 +359,7 @@ class Economy(commands.Cog):
     async def wallet(self, interaction: discord.Interaction):
         bal = await self.db.get_balance(interaction.user.id)
         e = _embed("💰 지갑", f"{interaction.user.mention} 잔액: **{bal:,}**", interaction.user)
-        await interaction.response.send_message(embed=e, ephemeral=True)
+        await interaction.response.send_message(embed=e)
 
     ATTEND_REWARD = 30_000
 
