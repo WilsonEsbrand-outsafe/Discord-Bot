@@ -416,7 +416,8 @@ async def _skips():
     await db.give_item(S, "watch_skip")
     e, ok = await eco._use_embed(user, "watch_skip")
     assert ok and "**100회** · 관람" in e.description and "이벤트" in e.description
-    assert (await db.play_watch(S, T + 9999, lambda lv, con: (0, 0, None), 0))["reason"] == "limit"
+    _r = await db.play_watch(S, T + 1, lambda lv, con: (0, 0, None), 0)   # 같은 날 (+9999 는 밤에 날이 바뀐다)
+    assert _r["reason"] == "limit"
 
 
 async def _tutorial():

@@ -43,12 +43,11 @@ ITEMS = {
     "watch_skip":  ("📺", "직관 스킵권",     "오늘 남은 직관을 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
     "toto_slip":   ("🧾", "토토 용지",       "길에서 주운 토토 용지 — 가질까, 신고할까?"),
     "steroid":     ("💉", "스테로이드 주사기", "내 유망주에게 주사 — OVR · 잠재력 상승? 약물 검출 · 은퇴?"),
-    "box":         ("🎁", "점검 보상 상자",   "열면 카드 3장 중 하나를 골라 스킵권 · 리셋권 중 하나를 받아요"),
+    "box":         ("🎁", "점검 보상 상자",   "뒤집힌 카드 6장 중 한 장을 골라 스킵권 · 리셋권 하나를 받아요"),
 }
-# 점검 보상 상자: 이 중 하나 × 1~3장 (1장 60% · 2장 30% · 3장 10%)
+# 점검 보상 상자: 6종을 한 장씩 뒤집어 섞고, 고른 한 장을 받는다
 BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
-BOX_QTY = ((1, 60), (2, 30), (3, 10))
-BOX_CHOICES = 3
+BOX_CHOICES = len(BOX_REWARDS)
 # 원가 = 상점 가격. 판매가는 원가의 50% · 원가가 없는 아이템(리셋권 · 스킵권 · 토토 용지)은 사고팔 수 없다.
 ITEM_PRICES = {"muffler": 50_000, "steroid": 30_000_000}
 SHOP_DAILY_LIMITS = {"steroid": 3}   # 하루(KST) 구매 한도가 있는 아이템
@@ -1518,15 +1517,14 @@ class EconomyDB:
         return await self._tx(fn)
 
     async def open_box(self, user_id: int, pick: int, rng=random) -> dict:
-        """점검 보상 상자 열기: 카드 BOX_CHOICES 장을 깔고 pick 번째를 받는다.
+        """점검 보상 상자 열기: 6종 카드를 섞어 깔고 pick 번째 한 장을 받는다.
         {"ok", "cards": [(아이템, 수량)], "pick"} · 실패 reason: none."""
         def fn(con):
             row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='box'", (user_id,)).fetchone()
             if not row or int(row[0]) <= 0:
                 return {"ok": False, "reason": "none"}
             con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='box'", (user_id,))
-            cards = [(rng.choice(BOX_REWARDS), rng.choices([q for q, _ in BOX_QTY], weights=[w for _, w in BOX_QTY])[0])
-                     for _ in range(BOX_CHOICES)]
+            cards = [(k, 1) for k in rng.sample(BOX_REWARDS, BOX_CHOICES)]
             give_item(con, user_id, *cards[pick])
             return {"ok": True, "cards": cards, "pick": pick}
         return await self._tx(fn)

@@ -123,7 +123,7 @@ async def _flow():
     assert (await db.redeem_coupon(A, "PATCH25", now))["reason"] == "used"
     r = await db.open_box(A, 1, rng=random.Random(3))
     item, qty = r["cards"][1]
-    assert r["ok"] and len(r["cards"]) == 3 and item in edb.BOX_REWARDS and 1 <= qty <= 3
+    assert r["ok"] and sorted(k for k, _ in r["cards"]) == sorted(edb.BOX_REWARDS) and qty == 1
     inv = (await db.inventory(A))[0]
     assert inv.get("box", 0) == 0 and inv[item] >= qty
     assert (await db.open_box(A, 0))["reason"] == "none"

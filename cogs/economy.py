@@ -838,13 +838,13 @@ class Economy(commands.Cog):
         e, ok = await self._use_embed(user, 아이템, rookie=release.preview(interaction.guild_id))
         await interaction.response.send_message(embed=e, ephemeral=not ok)
 
-    # ✅ 점검 보상 상자: 카드 3장 중 하나 → 스킵권 · 리셋권 중 하나 × 1~3장
+    # ✅ 점검 보상 상자: 뒤집힌 6종 카드 중 한 장 → 그 스킵권 · 리셋권 1장
     async def _box_prompt(self, interaction: discord.Interaction, user):
         if not (await self.db.inventory(user.id))[0].get("box"):
             return await interaction.response.send_message(embed=self._no_item_card(user, "box"), ephemeral=True)
         e = ui.card("🎁 점검 보상 상자를 열었어요!",
                     f"카드 {BOX_CHOICES}장 중 하나를 골라 주세요.\n"
-                    "스카우트 · 훈련 · 직관 **스킵권** 또는 **리셋권** 중 하나가 1~3장 들어 있어요.",
+                    "스카우트 · 훈련 · 직관 **스킵권**과 **리셋권** 6종이 한 장씩 섞여 있어요.",
                     ui.GOLD, user, "🎒 아이템")
         e.set_thumbnail(url=ui.emoji_url("🎁"))
         await interaction.response.send_message(embed=e, view=BoxView(self, user))
