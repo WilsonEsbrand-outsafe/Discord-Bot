@@ -17,7 +17,7 @@ matplotlib.rcParams["font.family"] = "NanumGothic"
 matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
 from services import ui
-from services.economy_db import ITEMS, SHOP_PRICES, EconomyDB
+from services.economy_db import ITEMS, SELL_PRICES, SHOP_PRICES, EconomyDB
 from services.player_market_db import PlayerMarketDB, PACKS, PACK_MAX_PULLS, JACKPOT_PROB, JACKPOT_RANGE, player_profile
 
 PACK_EMOJI = {
@@ -195,9 +195,10 @@ class _ShopOwnerView(discord.ui.View):
 
 
 class ShopView(_ShopOwnerView):
-    """/상점 — 선수팩과 아이템을 한 메뉴에서 산다. 선수팩을 고르면 몇 장 살지 묻는다."""
+    """/상점 — 🛒 사기(선수팩 · 아이템) + 💸 팔기(가진 아이템, 원가의 50%). 선수팩을 고르면 몇 장 살지 묻는다.
+    사고팔면 상점 화면(잔액 · 보유)을 새로 그리고, 결과는 채널에 공개로 올린다."""
 
-    def __init__(self, cog: "PlayersMarket", user):
+    def __init__(self, cog: "PlayersMarket", user, inv: dict):
         super().__init__(cog, user)
         opts = [discord.SelectOption(label=f"{k}팩 · {p['price']:,}원 / 장", value=f"pack:{k}",
                                      emoji=PACK_EMOJI.get(k, "🎁"), description=f"선수 카드 1~{PACK_MAX_PULLS}장")
@@ -208,6 +209,24 @@ class ShopView(_ShopOwnerView):
         self.menu = discord.ui.Select(placeholder="🛒 살 상품을 고르세요", options=opts[:25])
         self.menu.callback = self._buy
         self.add_item(self.menu)
+
+        sell = []
+        for k, each in SELL_PRICES.items():
+            n, (emoji, name, _) = inv.get(k, 0), ITEMS[k]
+            if n:
+                sell.append(discord.SelectOption(label=f"{name} 1개 팔기 · +{each:,}원", value=f"{k}:1", emoji=emoji))
+            if n > 1:
+                sell.append(discord.SelectOption(label=f"{name} 전부({n}개) 팔기 · +{each * n:,}원", value=f"{k}:{n}",
+                                                 emoji=emoji))
+        if sell:
+            self.sell = discord.ui.Select(placeholder="💸 아이템 팔기 (원가의 50%)", options=sell[:25])
+            self.sell.callback = self._sell
+            self.add_item(self.sell)
+
+    async def _redraw(self, interaction: discord.Interaction, result: discord.Embed, ok: bool):
+        e, view = await self.cog._shop_screen(self.user)
+        await interaction.response.edit_message(embed=e, view=view)
+        await interaction.followup.send(embed=result, ephemeral=not ok)   # 성공은 모두에게, 실패는 나만
 
     async def _buy(self, interaction: discord.Interaction):
         kind, key = self.menu.values[0].split(":", 1)
@@ -221,7 +240,19 @@ class ShopView(_ShopOwnerView):
         else:
             e = ui.card("🙅 잔액이 부족해요", f"`가격` **{SHOP_PRICES[key]:,}원**\n`잔액` **{r['balance']:,}원**",
                         ui.LOSE, self.user, "🛒 상점")
-        await interaction.response.send_message(embed=e)
+        await self._redraw(interaction, e, r["ok"])
+
+    async def _sell(self, interaction: discord.Interaction):
+        key, qty = self.sell.values[0].split(":")
+        emoji, name, _ = ITEMS[key]
+        r = await self.cog.money.sell_item(self.user.id, key, int(qty))
+        if r["ok"]:
+            e = ui.card(f"💸 {emoji} {name} {r['qty']}개 판매", f"`판매가` 개당 {r['each']:,}원 (원가의 50%)\n"
+                        f"`정산` **+{r['gain']:,}원** · `잔액` **{r['balance']:,}원**\n`남은 수량` {r['left']}개",
+                        ui.WIN, self.user, "🛒 상점")
+        else:
+            e = ui.card("🙅 팔 수 없어요", "가진 수량이 부족해요. 상점을 다시 열어 주세요.", ui.LOSE, self.user, "🛒 상점")
+        await self._redraw(interaction, e, r["ok"])
 
 
 class PackQtyView(_ShopOwnerView):
@@ -239,12 +270,14 @@ class PackQtyView(_ShopOwnerView):
 
     async def _open(self, interaction: discord.Interaction):
         # 상점 메뉴를 처음 상태로 돌려놓고, 개봉 연출은 새 메시지로
-        await interaction.response.edit_message(view=ShopView(self.cog, self.user))
+        e, view = await self.cog._shop_screen(self.user)
+        await interaction.response.edit_message(embed=e, view=view)
         await self.cog._buy_pack(interaction, self.pack, int(self.qty.values[0]))
 
     @discord.ui.button(label="돌아가기", emoji="↩️", style=discord.ButtonStyle.secondary, row=1)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(view=ShopView(self.cog, self.user))
+        e, view = await self.cog._shop_screen(self.user)
+        await interaction.response.edit_message(embed=e, view=view)
 
 
 # ───────────────── 즉시판매 UI ─────────────────
@@ -740,15 +773,23 @@ class PlayersMarket(commands.Cog):
     # ───────────────── 상점 (선수팩 · 아이템) ─────────────────
     @app_commands.command(name="상점", description="선수팩 · 아이템을 한곳에서 삽니다 (메뉴에서 고르면 바로 구매)")
     async def shop(self, interaction: discord.Interaction):
-        user = interaction.user
+        e, view = await self._shop_screen(interaction.user)
+        await interaction.response.send_message(embed=e, view=view)
+
+    async def _shop_screen(self, user) -> tuple[discord.Embed, ShopView]:
+        """상점 화면: 잔액 · 살 것(선수팩 · 아이템) · 팔 것(가진 아이템) + 메뉴."""
+        inv, _ = await self.money.inventory(user.id)
         packs = "\n".join(f"{PACK_EMOJI.get(k, '🎁')} **{k}팩** · {p['price']:,}원" for k, p in PACKS.items())
         items = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** · {price:,}원\n　 *{ITEMS[k][2]}*"
                           for k, price in SHOP_PRICES.items())
+        sell = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** × {inv[k]} · 개당 +{each:,}원"
+                         for k, each in SELL_PRICES.items() if inv.get(k))
         e = ui.card("🛒 상점", f"`잔액` **{await self.money.get_balance(user.id):,}원**", ui.INFO, user, "🛒 상점")
         e.add_field(name="🃏 선수팩 (장당)", value=packs, inline=True)
         e.add_field(name="🎒 아이템", value=items, inline=True)
-        e.set_footer(text=f"아래 메뉴에서 고르세요 · 선수팩은 1~{PACK_MAX_PULLS}장 선택 · 팩 확률은 /팩정보")
-        await interaction.response.send_message(embed=e, view=ShopView(self, user))
+        e.add_field(name="💸 팔기 (원가의 50%)", value=sell or "팔 수 있는 아이템이 없어요.", inline=False)
+        e.set_footer(text=f"아래 메뉴에서 고르세요 · 선수팩은 1~{PACK_MAX_PULLS}장 선택 · 리셋권 · 스킵권 · 토토 용지는 사고팔 수 없어요")
+        return e, ShopView(self, user, inv)
 
     async def _buy_pack(self, interaction: discord.Interaction, 종류: str, 장수: int):
         """/상점: 결제 → 개봉 연출. interaction 은 이미 응답(defer/edit)된 상태 — 결과는 followup 으로."""

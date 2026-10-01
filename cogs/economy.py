@@ -10,7 +10,7 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SELL_PRICES, SHOP_PRICES, SKIP_ITEMS,
+    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SHOP_PRICES, SKIP_ITEMS,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
@@ -80,29 +80,16 @@ class RaceView(discord.ui.View):
 
 
 class BagView(discord.ui.View):
-    """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼 + 💸 판매 메뉴. 사용 결과는 채널에 공개로 올린다."""
+    """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼. 사용 결과는 채널에 공개로 올린다. (판매는 /상점)"""
 
     def __init__(self, cog: "Economy", user, inv: dict):
         super().__init__(timeout=180)
         self.cog, self.user = cog, user
-        sell = []
         for key, (emoji, name, _) in ITEMS.items():
-            n = inv.get(key, 0)
-            if n <= 0:
-                continue
-            b = discord.ui.Button(label=f"{name} 사용 ({n})", emoji=emoji, style=discord.ButtonStyle.primary)
-            b.callback = self._use(key)
-            self.add_item(b)
-            if key in SELL_PRICES:
-                each = SELL_PRICES[key]
-                sell.append(discord.SelectOption(label=f"{name} 1개 팔기 · +{each:,}원", value=f"{key}:1", emoji=emoji))
-                if n > 1:
-                    sell.append(discord.SelectOption(label=f"{name} 전부({n}개) 팔기 · +{each * n:,}원",
-                                                     value=f"{key}:{n}", emoji=emoji))
-        if sell:
-            self.sell = discord.ui.Select(placeholder="💸 아이템 판매 (원가의 50%)", options=sell[:25], row=4)
-            self.sell.callback = self._sell
-            self.add_item(self.sell)
+            if inv.get(key, 0) > 0:
+                b = discord.ui.Button(label=f"{name} 사용 ({inv[key]})", emoji=emoji, style=discord.ButtonStyle.primary)
+                b.callback = self._use(key)
+                self.add_item(b)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
@@ -123,19 +110,6 @@ class BagView(discord.ui.View):
             await self._refresh(interaction)
             await interaction.followup.send(embed=result, ephemeral=not ok)   # 성공은 모두에게, 실패는 나만
         return cb
-
-    async def _sell(self, interaction: discord.Interaction):
-        key, qty = self.sell.values[0].split(":")
-        emoji, name, _ = ITEMS[key]
-        r = await self.cog.db.sell_item(self.user.id, key, int(qty))
-        await self._refresh(interaction)
-        if r["ok"]:
-            e = ui.card(f"💸 {emoji} {name} {r['qty']}개 판매", f"`판매가` 개당 {r['each']:,}원 (원가의 50%)\n"
-                        f"`정산` **+{r['gain']:,}원** · `잔액` **{r['balance']:,}원**\n`남은 수량` {r['left']}개",
-                        ui.WIN, self.user, "🎒 아이템")
-        else:
-            e = ui.card("🙅 판매할 수 없어요", "수량이 부족해요. 가방을 다시 확인해 주세요.", ui.LOSE, self.user, "🎒 아이템")
-        await interaction.followup.send(embed=e, ephemeral=True)
 
 
 class TotoSlipView(discord.ui.View):
@@ -761,17 +735,15 @@ class Economy(commands.Cog):
     # ✅ 가방 · 아이템 사용
     async def _bag_embed(self, user) -> tuple[discord.Embed, dict]:
         inv, buffs = await self.db.inventory(user.id)
-        lines = [f"{e} **{n}** × {inv[k]} · "
-                 + (f"판매가 {SELL_PRICES[k]:,}원" if k in SELL_PRICES else "판매 불가") + f"\n　 *{d}*"
-                 for k, (e, n, d) in ITEMS.items() if inv.get(k)]
+        lines = [f"{e} **{n}** × {inv[k]}\n　 *{d}*" for k, (e, n, d) in ITEMS.items() if inv.get(k)]
         e = ui.card("🎒 내 가방", "\n".join(lines) or "가방이 비어 있어요.", ui.INFO, user, "🎒 아이템")
         if buffs.get("muffler"):
             e.add_field(name="✨ 사용 중", value=f"🧣 응원 머플러 — 남은 경기 **{buffs['muffler']}경기** (전력 +{MUFFLER_BONUS})",
                         inline=False)
-        e.set_footer(text="아이템은 /직관 · /상점 · /쿠폰 으로 얻어요 · 버튼으로 바로 사용 · 아래 메뉴로 판매(원가의 50%)")
+        e.set_footer(text="아이템은 /직관 · /상점 · /쿠폰 으로 얻어요 · 버튼으로 바로 사용 · 판매는 /상점")
         return e, inv
 
-    @app_commands.command(name="가방", description="보유 아이템 확인 · 사용 · 판매 (나만 보기)")
+    @app_commands.command(name="가방", description="보유 아이템 확인 · 바로 사용 (나만 보기)")
     async def bag(self, interaction: discord.Interaction):
         e, inv = await self._bag_embed(interaction.user)
         await interaction.response.send_message(embed=e, view=BagView(self, interaction.user, inv), ephemeral=True)

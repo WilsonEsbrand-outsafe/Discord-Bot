@@ -43,9 +43,8 @@ ITEMS = {
     "watch_skip":  ("📺", "직관 스킵권",     "오늘 남은 직관을 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
     "toto_slip":   ("🧾", "토토 용지",       "길에서 주운 토토 용지 — 가질까, 신고할까?"),
 }
-# 원가. 판매가는 원가의 50% · 여기에 없는 아이템(토토 용지)은 사고팔 수 없다.
-ITEM_PRICES = {"muffler": 50_000, "scout_reset": 300_000, "train_reset": 300_000, "watch_reset": 200_000,
-               "scout_skip": 200_000, "train_skip": 300_000, "watch_skip": 100_000}
+# 원가 = 상점 가격. 판매가는 원가의 50% · 원가가 없는 아이템(리셋권 · 스킵권 · 토토 용지)은 사고팔 수 없다.
+ITEM_PRICES = {"muffler": 50_000}
 SELL_RATE = 0.5
 SELL_PRICES = {k: int(p * SELL_RATE) for k, p in ITEM_PRICES.items()}
 MUFFLER_USES, MUFFLER_BONUS = 5, 3
@@ -55,11 +54,11 @@ SKIP_ITEMS = {"scout_skip": "scouting", "train_skip": "training", "watch_skip": 
 # 순서: 스카우트 → 훈련 → 직관. 테이블 → (먼저 끝내야 하는 테이블, 횟수)
 GRIND_REQUIRE = {"training": ("scouting", SCOUT_DAILY_LIMIT), "spectating": ("training", TRAIN_DAILY_LIMIT)}
 
-# 아이템 상점: key → 가격 (구매 제한 없음). 리셋권 · 스킵권은 상점에서 팔지 않는다.
-SHOP_PRICES = {k: ITEM_PRICES[k] for k in ("muffler",)}
+# 아이템 상점: key → 가격 (구매 제한 없음)
+SHOP_PRICES = ITEM_PRICES
 
 # 토토 용지(직관 이벤트에서 줍는다): 사용할 때 금액이 정해지고, 가진다 / 신고한다 중 고른다.
-TOTO_SLIP_AMOUNT = (10_000, 100_000)
+TOTO_SLIP_AMOUNT = (200_000, 1_000_000)
 TOTO_KEEP = (("win", 3, 0.20), ("even", 1, 0.50), ("illegal", -2, 0.30))   # (결과, 금액 배수, 확률)
 TOTO_REPORT_PROB, TOTO_REPORT_RATE, TOTO_REPORT_XP = 0.70, (0.5, 0.8), 30  # 포상 확률 · 금액 대비 포상 비율 · 직관 경험치
 
@@ -1322,7 +1321,7 @@ class EconomyDB:
         return await self._tx(fn)
 
     async def sell_item(self, user_id: int, item: str, qty: int) -> dict:
-        """아이템 판매: 개당 원가의 50%. 실패 reason: unsellable(토토 용지 등) / short(수량 부족)."""
+        """아이템 판매: 개당 원가의 50%. 실패 reason: unsellable(원가 없는 아이템) / short(수량 부족)."""
         if item not in SELL_PRICES:
             return {"ok": False, "reason": "unsellable"}
         each = SELL_PRICES[item]

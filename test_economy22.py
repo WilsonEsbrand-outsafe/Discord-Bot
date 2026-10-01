@@ -198,8 +198,10 @@ async def _items():
     r = await db.sell_item(Z, "muffler", 2)
     assert r["ok"] and r["gain"] == price and r["each"] == price // 2 and r["left"] == 1 and r["balance"] == price
     assert (await db.sell_item(Z, "muffler", 2))["reason"] == "short"
-    assert "toto_slip" not in edb.ITEM_PRICES and (await db.sell_item(Z, "toto_slip", 1))["reason"] == "unsellable"
-    assert set(edb.SELL_PRICES) == set(edb.ITEMS) - {"toto_slip"}
+    for k in ("toto_slip", "scout_reset", "train_skip"):                      # 원가 없는 아이템은 못 판다
+        assert (await db.sell_item(Z, k, 1))["reason"] == "unsellable"
+    assert set(edb.SELL_PRICES) == set(edb.SHOP_PRICES) == {"muffler"}
+    assert edb.TOTO_SLIP_AMOUNT == (200_000, 1_000_000)
     await db._tx(lambda con: con.execute("DELETE FROM inventory WHERE user_id=?", (Z,)))
 
     # 토토 용지: 가진다 → 3배 / 그대로 / -2배 · 신고 → 포상금(금액보다 적게) + 직관 경험치 / 아무것도
@@ -253,8 +255,8 @@ async def _item_screens():
     await Economy.bag.callback(eco, inter)
     view = sent[-1]["view"]
     assert sent[-1]["ephemeral"]                                              # 가방은 나만 보인다
-    assert "× 1" in sent[-1]["embed"].description and "판매가 25,000원" in sent[-1]["embed"].description
-    assert [type(c).__name__ for c in view.children] == ["Button", "Select"]   # [사용] + 💸 판매 메뉴
+    assert "× 1" in sent[-1]["embed"].description
+    assert [type(c).__name__ for c in view.children] == ["Button"]            # [사용] 만 (판매는 /상점)
     assert "리셋권" not in sent[-1]["embed"].description                       # 없는 아이템은 안 보인다
     await view.children[0].callback(inter)                                    # [응원 머플러 사용]
     bag, result = sent[-2], sent[-1]
@@ -263,21 +265,9 @@ async def _item_screens():
     await Economy.use.callback(eco, inter, "train_reset")                    # 없는 아이템 → 나만
     assert "없어요" in sent[-1]["embed"].title and sent[-1]["ephemeral"]
 
-    # 가방에서 판매: 1개 / 전부 · 결과는 나만 · 가방 새로고침
-    await db.give_item(user.id, "muffler", 3)
-    await Economy.bag.callback(eco, inter)
-    sell = sent[-1]["view"].sell
-    assert [o.value for o in sell.options] == ["muffler:1", "muffler:3"] and "+75,000원" in sell.options[1].label
-    bal0 = await db.get_balance(user.id)
-    sell._values = ["muffler:3"]
-    await sent[-1]["view"]._sell(inter)
-    assert "3개 판매" in sent[-1]["embed"].title and sent[-1]["ephemeral"] and "가방이 비어" in sent[-2]["embed"].description
-    assert await db.get_balance(user.id) - bal0 == 75_000
-
-    # 토토 용지: [사용] → 가진다 / 신고한다 (나만) → 결과는 모두에게 · 판매 메뉴에는 없음
+    # 토토 용지: [사용] → 가진다 / 신고한다 (나만) → 결과는 모두에게
     await db.give_item(user.id, "toto_slip")
     await Economy.bag.callback(eco, inter)
-    assert "판매 불가" in sent[-1]["embed"].description and not hasattr(sent[-1]["view"], "sell")
     await sent[-1]["view"].children[0].callback(inter)
     slip = sent[-1]["view"]
     assert sent[-1]["ephemeral"] and "가질까요" not in sent[-1]["embed"].title and "어떻게" in sent[-1]["embed"].title
@@ -320,6 +310,28 @@ async def _item_screens():
     assert bought == [("골드", 3)] and isinstance(sent[-1]["view"], cpm.ShopView)
     await qty.back.callback(inter)
     assert isinstance(sent[-1]["view"], cpm.ShopView)
+
+    # /상점에서 팔기: 가진 아이템만 메뉴에 · 원가의 50% · 결과는 모두에게 · 상점 화면 새로고침
+    assert not hasattr(sent[-1]["view"], "sell")                              # 팔 게 없으면 판매 메뉴 없음
+    await db.give_item(user.id, "muffler", 3)
+    await db.give_item(user.id, "train_reset")                                # 원가 없는 아이템은 판매 목록에 없다
+    await cpm.PlayersMarket.shop.callback(shop, inter)
+    view = sent[-1]["view"]
+    assert [o.value for o in view.sell.options] == ["muffler:1", "muffler:3"] and "+75,000원" in view.sell.options[1].label
+    assert "개당 +25,000원" in sent[-1]["embed"].fields[2].value and "리셋권" not in sent[-1]["embed"].fields[2].value
+    bal0 = await db.get_balance(user.id)
+    view.sell._values = ["muffler:3"]
+    await view._sell(inter)
+    redraw, result = sent[-2], sent[-1]
+    assert "3개 판매" in result["embed"].title and result["ephemeral"] is False         # 결과는 공개
+    assert not hasattr(redraw["view"], "sell") and "없어요" in redraw["embed"].fields[2].value
+    assert await db.get_balance(user.id) - bal0 == 75_000
+    # 구매도 결과는 공개 · 화면 새로고침 → 산 머플러가 판매 메뉴에 바로 뜬다
+    await db.add_balance(user.id, 50_000)
+    redraw["view"].menu._values = ["item:muffler"]
+    await redraw["view"]._buy(inter)
+    assert "구매" in sent[-1]["embed"].title and sent[-1]["ephemeral"] is False
+    assert [o.value for o in sent[-2]["view"].sell.options] == ["muffler:1"]
 
 
 async def _skips():
