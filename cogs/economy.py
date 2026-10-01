@@ -81,7 +81,7 @@ class RaceView(discord.ui.View):
 
 
 class BagView(discord.ui.View):
-    """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼. 사용 결과는 채널에 공개로 올린다. (판매는 /상점)"""
+    """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼. 사용 결과는 채널에 공개로 올린다. (판매는 /아이템상점)"""
 
     def __init__(self, cog: "Economy", user, inv: dict):
         super().__init__(timeout=180)
@@ -772,7 +772,7 @@ class Economy(commands.Cog):
         if buffs.get("muffler"):
             e.add_field(name="✨ 사용 중", value=f"🧣 응원 머플러 — 남은 경기 **{buffs['muffler']}경기** (전력 +{MUFFLER_BONUS})",
                         inline=False)
-        e.set_footer(text="아이템은 /직관 · /상점 · /쿠폰 으로 얻어요 · 버튼으로 바로 사용 · 판매는 /상점")
+        e.set_footer(text="아이템은 /직관 · /아이템상점 · /쿠폰 으로 얻어요 · 버튼으로 바로 사용 · 판매는 /아이템상점")
         return e, inv
 
     @app_commands.command(name="가방", description="보유 아이템 확인 · 바로 사용 (나만 보기)")
@@ -890,7 +890,7 @@ class Economy(commands.Cog):
 
     def _no_item_card(self, user, item: str) -> discord.Embed:
         emoji, name, _ = ITEMS[item]
-        where = ("`/상점`에서 살 수 있어요." if item in SHOP_PRICES else
+        where = ("`/아이템상점`에서 살 수 있어요." if item in SHOP_PRICES else
                  "`/직관` 경기장 이벤트에서 얻을 수 있어요." if item in self.WATCH_ITEM_WEIGHTS else
                  "지금은 `/쿠폰` 같은 이벤트로 얻을 수 있어요.")
         return ui.card(f"🙅 {emoji} {name}이(가) 없어요", where, ui.LOSE, user, "🎒 아이템")

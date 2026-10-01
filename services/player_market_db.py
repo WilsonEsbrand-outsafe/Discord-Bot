@@ -113,8 +113,35 @@ def roll_news(name: str) -> tuple[str, float]:
     return template.format(name=name), random.uniform(lo, hi)
 
 
-# 포지션
+# 포지션 — 실제 스쿼드 비율에 맞춘 가중치 (GK 10% · DF 32% · MF 33% · FW 25%).
+# 2.4 이전엔 네 포지션이 25%씩 균등이라 골키퍼가 실제의 2.5배였다 → _rebalance_goalkeepers 가 남는 골키퍼를 옮긴다.
 POSITIONS = ["GK", "DF", "MF", "FW"]
+POSITION_WEIGHTS = (10, 32, 33, 25)
+GK_SHARE_MAX = 0.13      # 활성 선수 중 골키퍼가 이 비율을 넘으면 조정 (목표는 10%)
+
+
+def _rebalance_goalkeepers(con, rng=random) -> tuple[int, int, int]:
+    """골키퍼가 너무 많으면 아무도 안 가진(보유 · 매물 · 트레이드 X) 골키퍼를 DF/MF/FW 로 옮겨 10%에 맞춘다.
+    (옮긴 수, 원래 골키퍼 수, 활성 선수 수). 균형이 맞으면 아무것도 안 한다."""
+    active, gk = con.execute(
+        "SELECT COUNT(*), COALESCE(SUM(position='GK'), 0) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"
+    ).fetchone()
+    if not active or gk <= active * GK_SHARE_MAX:
+        return 0, gk, active
+    free = [r[0] for r in con.execute(
+        """
+        SELECT p.player_id FROM pm_players p
+        WHERE p.retired=0 AND p.position='GK' AND p.player_id NOT LIKE 'AMT_%'
+          AND NOT EXISTS (SELECT 1 FROM pm_holdings h WHERE h.player_id=p.player_id AND h.qty>0)
+          AND NOT EXISTS (SELECT 1 FROM pm_listings l WHERE l.player_id=p.player_id AND l.status='active')
+          AND NOT EXISTS (SELECT 1 FROM pm_trade_items i JOIN pm_trades t ON t.trade_id=i.trade_id
+                          WHERE i.player_id=p.player_id AND t.status='pending')
+        ORDER BY RANDOM() LIMIT ?
+        """, (gk - round(active * POSITION_WEIGHTS[0] / sum(POSITION_WEIGHTS)),))]
+    for pid in free:
+        con.execute("UPDATE pm_players SET position=? WHERE player_id=?",
+                    (rng.choices(POSITIONS[1:], weights=POSITION_WEIGHTS[1:])[0], pid))
+    return len(free), gk, active
 
 # ───────────── 아마추어 스타터 스쿼드 (구단 생성 시 자동 지급) ─────────────
 # GK 2 · DF 5 · MF 6 · FW 5 = 18명
@@ -560,6 +587,7 @@ class MarketStatus:
 class PlayerMarketDB:
     def __init__(self):
         self._lock = asyncio.Lock()
+        self._gk_checked = False
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -814,6 +842,19 @@ class PlayerMarketDB:
             await self._run(work)
 
         await self.ensure_active_pool(now_ts, target=POOL_SIZE)
+        if not self._gk_checked:   # 부팅마다 한 번 — 새로 뽑히는 선수는 가중치대로라 한 번 맞추면 유지된다
+            self._gk_checked = True
+            async with self._lock:
+                def rebalance():
+                    con = self._connect()
+                    try:
+                        out = _rebalance_goalkeepers(con)
+                        con.commit()
+                        return out
+                    finally:
+                        con.close()
+                moved, gk, active = await self._run(rebalance)
+            print(f"[PM] 골키퍼 {gk - moved}/{active}명" + (f" (조정: {gk}명 중 {moved}명을 DF/MF/FW로)" if moved else ""))
 
     async def recalculate_price_ranges(self, now_ts: int) -> int:
         """모든 활성 선수의 floor/ceil을 현재 공식으로 재계산합니다.
@@ -978,7 +1019,7 @@ class PlayerMarketDB:
 
         nation = pick_weighted_nation()
         name = random_name_by_nation(nation)
-        pos = random.choice(POSITIONS)
+        pos = random.choices(POSITIONS, weights=POSITION_WEIGHTS)[0]
 
         base_value = self._compute_base_value(age, ovr, pot)
         floor_p, ceil_p = self._compute_floor_ceil(base_value)

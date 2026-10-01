@@ -280,7 +280,7 @@ async def _item_screens():
     view = sent[-1]["view"]
     assert sent[-1]["ephemeral"]                                              # 가방은 나만 보인다
     assert "× 1" in sent[-1]["embed"].description
-    assert [type(c).__name__ for c in view.children] == ["Button"]            # [사용] 만 (판매는 /상점)
+    assert [type(c).__name__ for c in view.children] == ["Button"]            # [사용] 만 (판매는 /아이템상점)
     assert "리셋권" not in sent[-1]["embed"].description                       # 없는 아이템은 안 보인다
     await view.children[0].callback(inter)                                    # [응원 머플러 사용]
     bag, result = sent[-2], sent[-1]
@@ -310,7 +310,7 @@ async def _item_screens():
     assert "회수" in sent[-1]["embed"].title and "보유 **0개**" in sent[-1]["embed"].description
     assert "watch_skip" not in (await db.inventory(22))[0]
 
-    # /상점: 선수팩을 고르면 몇 장 살지 메뉴가 뜨고 → 고른 장수로 개봉 · 돌아가기
+    # /선수팩상점: 선수팩을 고르면 몇 장 살지 메뉴가 뜨고 → 고른 장수로 개봉 · 돌아가기
     import cogs.players_market as cpm
     shop = cpm.PlayersMarket.__new__(cpm.PlayersMarket)
     shop.money = db
@@ -323,11 +323,17 @@ async def _item_screens():
     for ys in ([100, 120, 90, 130], [500, 400, 450, 300], [7, 7, 7]):          # /시세 그래프: 상승 · 하락 · 평평
         png = cpm.price_chart_png("선수", "#1 · FW", [i * 600 for i in range(len(ys))], ys, 110, 24)
         assert png[:8] == b"\x89PNG\r\n\x1a\n"
-    await cpm.PlayersMarket.shop.callback(shop, inter)
+    assert not hasattr(cpm.PlayersMarket, "shop")                              # /상점 → /선수팩상점 · /아이템상점
+    await cpm.PlayersMarket.item_shop.callback(shop, inter)
     view = sent[-1]["view"]
-    assert not any(o.value.startswith("item:") and o.value[5:] in edb.RESET_ITEMS for o in view.menu.options)
-    assert "30,000,000원 · 오늘 0/3" in sent[-1]["embed"].fields[1].value                 # 스테로이드 하루 한도 표시
+    assert all(o.value.startswith("item:") for o in view.menu.options) and "아이템 상점" in sent[-1]["embed"].title
+    assert not any(o.value[5:] in edb.RESET_ITEMS for o in view.menu.options)
+    assert "30,000,000원 · 오늘 0/3" in sent[-1]["embed"].fields[0].value                 # 스테로이드 하루 한도 표시
     assert "하루 3개" in next(o for o in view.menu.options if o.value == "item:steroid").description
+    await cpm.PlayersMarket.pack_shop.callback(shop, inter)
+    view = sent[-1]["view"]
+    assert all(o.value.startswith("pack:") for o in view.menu.options) and not hasattr(view, "sell")
+    assert "선수팩 상점" in sent[-1]["embed"].title and len(view.menu.options) == len(pmdb.PACKS)
     view.menu._values = ["pack:골드"]
     await view._buy(inter)
     qty = sent[-1]["view"]
@@ -335,24 +341,26 @@ async def _item_screens():
     assert qty.qty.options[-1].label == "10장 · 5,000,000원"
     qty.qty._values = ["3"]
     await qty._open(inter)
-    assert bought == [("골드", 3)] and isinstance(sent[-1]["view"], cpm.ShopView)
+    assert bought == [("골드", 3)] and sent[-1]["view"].kind == "pack"          # 개봉 뒤 선수팩 상점으로
     await qty.back.callback(inter)
-    assert isinstance(sent[-1]["view"], cpm.ShopView)
+    assert isinstance(sent[-1]["view"], cpm.ShopView) and sent[-1]["view"].kind == "pack"
 
-    # /상점에서 팔기: 가진 아이템만 메뉴에 · 원가의 50% · 결과는 모두에게 · 상점 화면 새로고침
+    # /아이템상점에서 팔기: 가진 아이템만 메뉴에 · 원가의 50% · 결과는 모두에게 · 상점 화면 새로고침
+    await cpm.PlayersMarket.item_shop.callback(shop, inter)
     assert not hasattr(sent[-1]["view"], "sell")                              # 팔 게 없으면 판매 메뉴 없음
     await db.give_item(user.id, "muffler", 3)
     await db.give_item(user.id, "train_reset")                                # 원가 없는 아이템은 판매 목록에 없다
-    await cpm.PlayersMarket.shop.callback(shop, inter)
+    await cpm.PlayersMarket.item_shop.callback(shop, inter)
     view = sent[-1]["view"]
     assert [o.value for o in view.sell.options] == ["muffler:1", "muffler:3"] and "+75,000원" in view.sell.options[1].label
-    assert "개당 +25,000원" in sent[-1]["embed"].fields[2].value and "리셋권" not in sent[-1]["embed"].fields[2].value
+    assert "개당 +25,000원" in sent[-1]["embed"].fields[1].value and "리셋권" not in sent[-1]["embed"].fields[1].value
     bal0 = await db.get_balance(user.id)
     view.sell._values = ["muffler:3"]
     await view._sell(inter)
     redraw, result = sent[-2], sent[-1]
     assert "3개 판매" in result["embed"].title and result["ephemeral"] is False         # 결과는 공개
-    assert not hasattr(redraw["view"], "sell") and "없어요" in redraw["embed"].fields[2].value
+    assert not hasattr(redraw["view"], "sell") and "없어요" in redraw["embed"].fields[1].value
+    assert redraw["view"].kind == "item" and "아이템 상점" in redraw["embed"].title
     assert await db.get_balance(user.id) - bal0 == 75_000
     # 구매도 결과는 공개 · 화면 새로고침 → 산 머플러가 판매 메뉴에 바로 뜬다
     await db.add_balance(user.id, 50_000)

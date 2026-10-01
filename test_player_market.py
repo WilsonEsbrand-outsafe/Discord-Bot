@@ -371,6 +371,39 @@ def test_pack_card_shows_age_and_potential():
         assert f"{age}세" in line and f"OVR **{ovr}**" in line and f"잠재 {pot}({potg})" in line
 
 
+def test_goalkeeper_share():
+    """새 선수는 GK 10% · DF 32% · MF 33% · FW 25% · 예전 균등 분포(GK 25%)는 안 가진 골키퍼만 옮겨 10%로."""
+    import random
+    import sqlite3
+    pm = PlayerMarketDB()
+    random.seed(7)
+    pos = [pm._spawn_player(0, 0)["position"] for _ in range(4000)]
+    assert 0.08 < pos.count("GK") / 4000 < 0.12 and 0.29 < pos.count("DF") / 4000 < 0.35
+
+    run(_setup())
+    con = sqlite3.connect(_tmp)
+    ids = [r[0] for r in con.execute(
+        "SELECT player_id FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' ORDER BY player_id")]
+    for i, pid in enumerate(ids):                        # 2.4 이전처럼 네 포지션 균등으로 되돌린다
+        con.execute("UPDATE pm_players SET position=? WHERE player_id=?", (pmdb.POSITIONS[i % 4], pid))
+    held, listed = ids[0], ids[4]                         # 둘 다 GK — 누가 가진(올린) 골키퍼는 그대로 둔다
+    con.execute("INSERT OR REPLACE INTO pm_holdings(user_id, player_id, qty) VALUES(9, ?, 1)", (held,))
+    con.execute("INSERT INTO pm_listings(seller_id, player_id, qty, price_per, listed_at, expires_at, instant_sell_at) "
+                "VALUES(9, ?, 1, 1000, 0, 9999999999, 0)", (listed,))
+    con.commit()
+    moved, gk, active = pmdb._rebalance_goalkeepers(con)
+    con.commit()
+    left = con.execute("SELECT position, COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' "
+                       "GROUP BY position").fetchall()
+    share = dict(left)
+    assert gk == len(ids[::4]) and moved == gk - round(active * 0.10) and share["GK"] == round(active * 0.10), left
+    assert all(share[p] > share["GK"] for p in ("DF", "MF", "FW"))
+    assert con.execute("SELECT position FROM pm_players WHERE player_id=?", (held,)).fetchone()[0] == "GK"
+    assert con.execute("SELECT position FROM pm_players WHERE player_id=?", (listed,)).fetchone()[0] == "GK"
+    assert pmdb._rebalance_goalkeepers(con)[0] == 0      # 한 번 맞추면 더 안 건드린다
+    con.close()
+
+
 def test_news_skipped_when_market_closed():
     eco, pm = run(_setup())
     closed = 23 * 3600                        # 08:00 KST
