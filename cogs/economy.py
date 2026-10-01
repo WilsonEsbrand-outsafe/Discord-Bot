@@ -643,14 +643,15 @@ class Economy(commands.Cog):
         await interaction.followup.send(embed=e)
 
     # ✅ 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 일과. 쿨타임 10초 · 하루 100회 · 최대 Lv.5
-    # 결과 3가지: 경기 관람(돈 +) 80% · 실패(돈 -) 15% · 경기장 이벤트(아이템) 5%. 리셋권 · 스킵권은 나오지 않는다.
+    # 결과 3가지: 경기 관람(돈 +) 65% · 실패(돈 -) 25% · 경기장 이벤트(아이템) 10%. 리셋권 · 스킵권은 나오지 않는다.
     WATCH_COOLDOWN = 10
     WATCH_LEVEL_NAMES = ["🎟️ 일반석 관중", "🧣 원정 팬", "📣 서포터즈", "🎫 시즌권자", "👑 레전드 서포터"]
     WATCH_KINDS = ("관람", "이벤트", "실패")
-    WATCH_ODDS = (0.80, 0.05, 0.15)
+    WATCH_ODDS = (0.65, 0.10, 0.25)
+    _WO = dict(zip(WATCH_KINDS, WATCH_ODDS))
     # 이벤트 안에서 나오는 아이템 비중(%) — 직관 연계 아이템은 여기와 WATCH_ITEM_EVENTS 에
-    # 토토 용지 20% → 하루 100회면 이벤트 5번 중 1번꼴 (하루 1장)
-    WATCH_ITEM_WEIGHTS = {"muffler": 77, "toto_slip": 20, "steroid": 3}
+    # 하루 100회 기준 이벤트 10번 → 토토 용지 10% 면 하루 1장 · 스테로이드 1.5% 면 이전과 같은 하루 0.15개
+    WATCH_ITEM_WEIGHTS = {"muffler": 88.5, "toto_slip": 10, "steroid": 1.5}
     WATCH_ITEM_EVENTS = {   # 이벤트로 나오는 아이템 → 경기장 이벤트 멘트. 새 아이템은 여기와 WATCH_ITEM_WEIGHTS 에 추가
         "muffler": ("선수가 관중석으로 던진 머플러를 잡았어요!", "옆자리 팬이 우승 기념 머플러를 선물해 줬어요!",
                     "구단 굿즈샵 오픈 기념 선착순 머플러를 받았어요!", "하프타임 경품 추첨에 당첨! 응원 머플러예요!",
@@ -697,7 +698,7 @@ class Economy(commands.Cog):
         return cls.WATCH_LEVEL_NAMES[min(int(level), WATCH_MAX_LEVEL) - 1]
 
     def _watch_roll(self, level: int, con, user_id: int):
-        """(돈 변동, 경험치 변동, 표시 정보). 관람 80% / 이벤트 15% / 실패 5% (레벨은 보상 배율만).
+        """(돈 변동, 경험치 변동, 표시 정보). 결과 확률은 WATCH_ODDS (레벨은 보상 배율만).
         이벤트는 돈 대신 아이템 — 같은 트랜잭션에서 지급한다."""
         ev = random.choice(self.WATCH_EVENTS)
         mult = self.watch_money_mult(level)
@@ -720,7 +721,8 @@ class Economy(commands.Cog):
     def _watch_card(user, title: str, caster: str, color: int) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 직관 일지")
 
-    @app_commands.command(name="직관", description=f"경기장에 직접 가서 응원! 관람 80% · 이벤트(아이템) 15% · 실패 5% (훈련 30회 후 · 하루 {WATCH_DAILY_LIMIT}회)")
+    @app_commands.command(name="직관", description=f"경기장에 직접 가서 응원! 관람 {_WO['관람']:.0%} · 실패 {_WO['실패']:.0%} · "
+                                                f"이벤트(아이템) {_WO['이벤트']:.0%} (훈련 30회 후 · 하루 {WATCH_DAILY_LIMIT}회)")
     async def watch(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user, now_ts = interaction.user, int(time.time())

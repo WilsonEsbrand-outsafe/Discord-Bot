@@ -114,11 +114,14 @@ async def _items():
     # 직관: 하루 100회 · 쿨타임 10초 · 관람 80% / 이벤트 15% / 실패 5%
     # 이벤트는 돈 대신 아이템(같은 트랜잭션에서 가방으로) · 리셋권 · 스킵권은 나오지 않는다
     assert edb.WATCH_DAILY_LIMIT == 100 and Economy.WATCH_COOLDOWN == 10
-    assert dict(zip(Economy.WATCH_KINDS, Economy.WATCH_ODDS)) == {"관람": 0.80, "이벤트": 0.05, "실패": 0.15}
-    assert Economy.WATCH_ITEM_WEIGHTS == {"muffler": 77, "toto_slip": 20, "steroid": 3}
-    toto_per_day = edb.WATCH_DAILY_LIMIT * dict(zip(Economy.WATCH_KINDS, Economy.WATCH_ODDS))["이벤트"] \
-        * Economy.WATCH_ITEM_WEIGHTS["toto_slip"] / sum(Economy.WATCH_ITEM_WEIGHTS.values())
-    assert abs(toto_per_day - 1) < 1e-9                                       # 하루 100회면 토토 용지 평균 1장
+    assert dict(zip(Economy.WATCH_KINDS, Economy.WATCH_ODDS)) == {"관람": 0.65, "이벤트": 0.10, "실패": 0.25}
+    assert Economy.WATCH_ITEM_WEIGHTS == {"muffler": 88.5, "toto_slip": 10, "steroid": 1.5}
+
+    def per_day(item):   # 하루 100회 다 했을 때 평균 개수
+        w = Economy.WATCH_ITEM_WEIGHTS
+        return edb.WATCH_DAILY_LIMIT * Economy._WO["이벤트"] * w[item] / sum(w.values())
+    assert abs(per_day("toto_slip") - 1) < 1e-9 and abs(per_day("steroid") - 0.15) < 1e-9   # 용지 하루 1장 · 주사기 그대로
+    assert "관람 65% · 실패 25% · 이벤트(아이템) 10%" in Economy.watch.description
     assert not set(Economy.WATCH_ITEM_WEIGHTS) & (set(edb.RESET_ITEMS) | set(edb.SKIP_ITEMS))
     assert set(Economy.WATCH_ITEM_WEIGHTS) <= set(Economy.WATCH_ITEM_EVENTS)
     import random as _r
@@ -143,8 +146,8 @@ async def _items():
         assert abs(rolled.count(k) / n - p) < 0.015, (k, rolled.count(k) / n)
     items = [eco._watch_roll(1, mem, 1)[2]["item"] for _ in range(n)]           # 이벤트 안에서 아이템 비중
     events = [i for i in items if i]
-    assert abs(events.count("muffler") / len(events) - 0.77) < 0.04 and set(events) <= set(Economy.WATCH_ITEM_WEIGHTS)
-    assert abs(events.count("toto_slip") / len(events) - 0.20) < 0.04
+    assert abs(events.count("muffler") / len(events) - 0.885) < 0.03 and set(events) <= set(Economy.WATCH_ITEM_WEIGHTS)
+    assert abs(events.count("toto_slip") / len(events) - 0.10) < 0.03
     r = await db.play_watch(X, T + 6000 + 100 * 10, lambda lv, con: (0, 0, None), cooldown_sec=10)
     assert r["reason"] == "limit"
     inv, _ = await db.inventory(X)
