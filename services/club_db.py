@@ -142,37 +142,39 @@ def simulate_match(home: dict, away: dict, rng: random.Random = random) -> dict:
 
 
 # ───────────── 90분 문자중계 ─────────────
+# 장면 → (중계 줄 앞 이모지, 문구)
 _MISS = "{p}, 1대1 찬스를 놓칩니다… 아쉬워요!"   # 유망주 경험치 - (옐로카드도)
 _CHANCES = (
-    "{p}의 중거리 슛! 골키퍼가 몸을 날려 막아냅니다!",
-    "{p}의 헤더가 골대를 강타합니다!",
-    _MISS,
-    "{p}의 프리킥이 벽에 걸립니다.",
-    "{p}의 슛이 골문을 살짝 벗어납니다.",
-    "{p}, 오프사이드 깃발이 올라갑니다.",
+    ("🧤", "{p}의 중거리 슛! 골키퍼가 몸을 날려 막아냅니다!"),
+    ("🥅", "{p}의 헤더가 골대를 강타합니다!"),
+    ("😩", _MISS),
+    ("🧱", "{p}의 프리킥이 벽에 걸립니다."),
+    ("💨", "{p}의 슛이 골문을 살짝 벗어납니다."),
+    ("🚩", "{p}, 오프사이드 깃발이 올라갑니다."),
 )
-_CARDS = ("{p}에게 옐로카드! 거친 태클이었어요.", "{p}, 시간 끌기로 경고를 받습니다.")
+_CARDS = (("🟨", "{p}에게 옐로카드! 거친 태클이었어요."), ("🟨", "{p}, 시간 끌기로 경고를 받습니다."))
 _GOAL_CALLS = ("골!!! {p}!!", "{p}의 슛— 들어갑니다!!", "{p}가 해냅니다! 골!!", "그림 같은 골! {p}!!")
 
 
 def match_highlights(result: dict, home: dict, away: dict, rng: random.Random = random) -> list[dict]:
-    """골 + 골이 아닌 장면(선방·골대·경고)을 섞은 90분 하이라이트. [{minute, side, text, goal}] 시간순.
+    """골 + 골이 아닌 장면(선방·골대·경고)을 섞은 90분 하이라이트. [{minute, side, icon, text, goal}] 시간순.
     골이 아닌 장면엔 player_id 와 kind(card · miss · None)도 붙인다 — 유망주 경험치 감점용."""
     def pick(team):
         xi = team["xi"] or [{"name": team["name"], "pos": "MF", "ovr": 50}]
         return rng.choice([p for p in xi if p["pos"] != "GK"] or xi)
 
-    out = [{"minute": g["minute"], "side": g["side"], "goal": True,
+    out = [{"minute": g["minute"], "side": g["side"], "goal": True, "icon": "⚽",
             "text": rng.choice(_GOAL_CALLS).format(p=g["scorer"]) + (f" (도움 {g['assist']})" if g.get("assist") else "")}
            for g in result["goals"]]
     for _ in range(rng.randint(5, 8)):
         side = rng.choice(("home", "away"))
         team = home if side == "home" else away
         card = rng.random() < 0.2
-        tpl = rng.choice(_CARDS) if card else rng.choice(_CHANCES)
+        icon, tpl = rng.choice(_CARDS) if card else rng.choice(_CHANCES)
         who = pick(team)
-        out.append({"minute": rng.randint(2, 89), "side": side, "goal": False, "text": tpl.format(p=who["name"]),
-                    "player_id": who.get("player_id"), "kind": "card" if card else ("miss" if tpl == _MISS else None)})
+        out.append({"minute": rng.randint(2, 89), "side": side, "goal": False, "icon": icon,
+                    "text": tpl.format(p=who["name"]), "player_id": who.get("player_id"),
+                    "kind": "card" if card else ("miss" if tpl == _MISS else None)})
     out.sort(key=lambda h: (h["minute"], not h["goal"]))
     return out
 

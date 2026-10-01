@@ -90,6 +90,9 @@ def test_assists():
     assert {h["kind"] for h in scenes} == {"card", "miss", None} and all(h["player_id"] for h in scenes)
     assert all((h["kind"] == "card") == any(w in h["text"] for w in ("옐로카드", "경고")) for h in scenes)
     assert all((h["kind"] == "miss") == ("1대1" in h["text"]) for h in scenes)
+    icon = {"옐로카드": "🟨", "경고": "🟨", "골키퍼가": "🧤", "골대": "🥅", "1대1": "😩", "벽": "🧱", "벗어납니다": "💨", "오프사이드": "🚩"}
+    assert all(h["icon"] == next(v for k, v in icon.items() if k in h["text"]) for h in scenes)   # 장면마다 맞는 이모지
+    assert {h["icon"] for h in scenes} == set(icon.values())
 
 
 async def _flow():

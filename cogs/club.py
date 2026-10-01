@@ -331,7 +331,7 @@ class Club(commands.Cog):
             extra = "\n" + "".join(self._star_line(x) for x in stars) + extra
 
         def log_until(minute: int) -> str:
-            lines = [f"`{x['minute']:>2}'` {'⚽' if x['goal'] else '▫️'} "
+            lines = [f"`{x['minute']:>2}'` {x['icon']} "
                      + (f"**{x['text']}**" if x["goal"] else x["text"])
                      + f" *({h['name'] if x['side'] == 'home' else a['name']})*"
                      for x in highlights if x["minute"] <= minute]
