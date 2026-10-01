@@ -27,7 +27,8 @@ def _slot_text(s: dict, captain: Optional[str]) -> str:
     eff = effective_ovr(s["ovr"], s["pos"], s["slot"])
     power = f"{s['ovr']}" if eff == s["ovr"] else f"{s['ovr']}→{eff}⚠️"
     cap = " ©️" if s["player_id"] == captain else ""
-    return f"{s['slot']} **{s['name']}** {power}{cap}"
+    name = f"🌟**{s['name']}** #{s['number']}" if s.get("prospect") else f"**{s['name']}**"
+    return f"{s['slot']} {name} {power}{cap}"
 
 
 def _team_embed(team: dict, owner: discord.abc.User) -> discord.Embed:
@@ -41,6 +42,8 @@ def _team_embed(team: dict, owner: discord.abc.User) -> discord.Embed:
         f"`전적` {team['wins']}승 {team['draws']}무 {team['losses']}패"
         + (f"\n`감독` {MANAGERS[team['manager']][0]} {MANAGERS[team['manager']][1]} (+{team['manager_bonus']})"
            if team.get("manager") in MANAGERS else "")
+        + ("\n`영구결번` 🏅 " + " · ".join(f"#{n}" for n in team["retired_numbers"])
+           if team.get("retired_numbers") else "")
     )
     body = []
     for group, label in _LINES:
@@ -126,7 +129,8 @@ class Club(commands.Cog):
                 continue
             eff = effective_ovr(p["ovr"], p["pos"], slot) if slot else p["ovr"]
             fit = "" if eff == p["ovr"] else f" → {eff}"
-            rows.append((eff, app_commands.Choice(name=f"{p['name']} · {p['pos']} · OVR {p['ovr']}{fit}"[:100],
+            star = "🌟 유망주 " if p.get("prospect") else ""
+            rows.append((eff, app_commands.Choice(name=f"{star}{p['name']} · {p['pos']} · OVR {p['ovr']}{fit}"[:100],
                                                   value=p["player_id"])))
         rows.sort(key=lambda r: -r[0])
         return [c for _, c in rows[:25]]
@@ -299,6 +303,12 @@ class Club(commands.Cog):
         highlights = match_highlights(result, h, a)
         pw, pd, pl = win_probs(h["rating"], a["rating"])
         extra = await after(result) if after else ""
+        # 양 팀 유망주 기록(출전 · 골 · 도움) + 성장
+        stars = await self.clubs.record_prospects([(h["xi"], hg, ag), (a["xi"], ag, hg)], result["goals"], int(time.time()))
+        if stars:
+            extra = "\n" + "".join(f"\n🌟 **{x['name']}** #{x['number']} · {x['goals']}골 {x['assists']}도움"
+                                   + (f" · OVR {x['ovr0']} → **{x['ovr']}** ⬆️" if x["ovr"] > x["ovr0"] else "")
+                                   for x in stars) + extra
 
         def log_until(minute: int) -> str:
             lines = [f"`{x['minute']:>2}'` {'⚽' if x['goal'] else '▫️'} "

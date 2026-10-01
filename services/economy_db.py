@@ -42,7 +42,7 @@ ITEMS = {
     "train_skip":  ("⏩", "훈련 스킵권",     "오늘 남은 훈련을 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
     "watch_skip":  ("📺", "직관 스킵권",     "오늘 남은 직관을 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
     "toto_slip":   ("🧾", "토토 용지",       "길에서 주운 토토 용지 — 가질까, 신고할까?"),
-    "steroid":     ("💉", "스테로이드 주사기", "내 선수에게 주사 — OVR · 잠재력 상승? 약물 검출 · 은퇴?"),
+    "steroid":     ("💉", "스테로이드 주사기", "내 유망주에게 주사 — OVR · 잠재력 상승? 약물 검출 · 은퇴?"),
 }
 # 원가 = 상점 가격. 판매가는 원가의 50% · 원가가 없는 아이템(리셋권 · 스킵권 · 토토 용지)은 사고팔 수 없다.
 ITEM_PRICES = {"muffler": 50_000, "steroid": 30_000_000}
@@ -1242,6 +1242,7 @@ class EconomyDB:
                         ("club_lineup",           "user_id"),
                         ("club_bonus",            "user_id"),
                         ("club_official",         "user_id"),
+                        ("prospects",             "user_id"),
                         ("quiz_stats",            "user_id"),
                         ("quiz_results",          "user_id"),
                         ("sponsor_contracts",     "user_id"),

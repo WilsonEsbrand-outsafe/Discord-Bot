@@ -6,6 +6,9 @@ from discord import app_commands
 from discord.ext import commands
 
 from services import ui
+from services.club_db import (
+    PROSPECT_DAILY_GROWTH, PROSPECT_PRICE, PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR,
+)
 from services.economy_db import SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB
 
 SECTION = "📘 튜토리얼"
@@ -38,7 +41,7 @@ TUTORIAL_STEPS = [
         f"🎟️ **직관 리셋권** — 오늘 직관 +{WATCH_DAILY_LIMIT}회\n"
         "🛫 ⏩ 📺 **스카우트 · 훈련 · 직관 스킵권** — 오늘 남은 횟수를 한 번에 끝내고 결과(+/-)를 그대로\n"
         "🧾 **토토 용지** — `/직관` 길에서 줍는 용지 · 가지면 3배 / 그대로 / 불법 -2배, 신고하면 포상금 + 경험치\n"
-        "💉 **스테로이드 주사기** — `/상점` 3,000만원(하루 3개) · `/직관` 이벤트 · 나만 가진 선수에게 주사\n"
+        "💉 **스테로이드 주사기** — `/상점` 3,000만원(하루 3개) · `/직관` 이벤트 · **내 유망주**에게만 주사\n"
         "　→ OVR · 잠재력 상승… 또는 약물 검출 · 은퇴\n\n"
         "`/가방` — 나만 보이는 가방 · 버튼으로 바로 사용 (사용 결과는 모두에게 보여요)\n"
         "💸 `/상점`에서 **판매** — 원가의 50% · 머플러 · 스테로이드만 (리셋권 · 스킵권 · 토토 용지는 사고팔 수 없어요)"
@@ -49,6 +52,16 @@ TUTORIAL_STEPS = [
         "`/팩정보` — 팩별 가격대 · 잭팟 · 남은 선수 수\n"
         "`/선수` — 이름 · 국적 · 포지션 · #번호 검색, 키 · 몸무게 · 주발 · 잠재력까지\n\n"
         "💡 처음엔 브론즈 ~ 실버팩으로 시작해 보세요."
+    )),
+    ("🌟", "유망주", (
+        f"`/유망주생성` — **{PROSPECT_PRICE:,}원**으로 나만의 선수를 만들어요\n"
+        "　이름 · 국적 · 포지션 · 등번호 · 생일 · 주발 · 키를 직접 정하고, 능력치는 17세 · OVR 50~58 · 잠재력 75~94 랜덤\n"
+        "　🔒 이적시장 · 판매 · 트레이드 불가 · 한 번에 한 명\n\n"
+        "`/선발`로 내 구단에 넣고 `/친선경기` `/공식경기`에 내보내면 **출전 · 골 · 도움**이 쌓이고 성장해요\n"
+        f"　(하루 {PROSPECT_DAILY_GROWTH}경기까지 · 잠재력까지 · 💉 스테로이드는 유망주에게만)\n"
+        f"🕰️ 1살 = 실제 {PROSPECT_YEAR // 86400}일 · {PROSPECT_PRIME_END + 1}세부터 노쇠 · {PROSPECT_RETIRE_AGE}세 은퇴\n\n"
+        "`/유망주` — 세부 능력치 · 커리어 · 명예의 전당\n"
+        "`/유망주은퇴` — 전성기 커리어로 저장 · 🏅 등번호 영구결번 (`/영구결번`)"
     )),
     ("📈", "선수 시장", (
         "선수 가격은 **10분마다** 움직여요. (거래 시간 09:00 ~ 23:00)\n\n"

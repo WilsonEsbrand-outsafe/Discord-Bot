@@ -362,96 +362,6 @@ async def _item_screens():
     assert [o.value for o in sent[-2]["view"].sell.options] == ["muffler:1"]
 
 
-async def _steroid():
-    """스테로이드 주사기: 나만 가진 현역 선수에게만 · 결과별 능력치 · 기준가/시세 범위 갱신 · 은퇴 · 화면."""
-    from types import SimpleNamespace
-    db, pm = edb.EconomyDB(), pmdb.PlayerMarketDB()
-    S, S2 = 61, 62
-    con = sqlite3.connect(TMP)
-    free = [r[0] for r in con.execute(
-        "SELECT player_id FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' AND pot < 90 "
-        "AND ovr BETWEEN 62 AND 84 AND age < 30 "   # 바닥가(OVR 55 이하)가 아니어야 능력치 변화가 기준가에 보인다
-        "AND player_id NOT IN (SELECT player_id FROM pm_holdings) ORDER BY ovr LIMIT 12")]
-    con.close()
-    shared, *mine = free
-
-    def hold(uid, pid):
-        c = sqlite3.connect(TMP)
-        c.execute("INSERT OR REPLACE INTO pm_holdings(user_id, player_id, qty) VALUES(?,?,1)", (uid, pid))
-        c.commit(); c.close()
-
-    def player(pid):
-        c = sqlite3.connect(TMP)
-        row = c.execute("SELECT p.ovr, p.pot, p.base_value, p.retired, m.price, m.floor_price, m.ceil_price FROM pm_players p "
-                        "LEFT JOIN pm_market m ON m.player_id=p.player_id WHERE p.player_id=?", (pid,)).fetchone()
-        c.close()
-        return dict(zip(("ovr", "pot", "base", "retired", "price", "floor", "ceil"), row))
-
-    hold(S, shared); hold(S2, shared)                                          # 다른 유저도 가진 선수
-    for pid in mine:
-        hold(S, pid)
-    targets = {t["player_id"] for t in await pm.steroid_targets(S)}
-    assert shared not in targets and set(mine) <= targets and not any(t.startswith("AMT_") for t in targets)
-    assert (await pm.use_steroid(S, mine[0], NOW))["reason"] == "none"        # 주사기 없음
-    await db.give_item(S, "steroid", 10)
-    r = await pm.use_steroid(S, shared, NOW)
-    assert r["reason"] == "shared" and r["others"] == 1 and (await db.inventory(S))[0]["steroid"] == 10   # 안 쓰임
-    assert (await pm.use_steroid(S, "999999", NOW))["reason"] == "not_mine"
-
-    class Forced:   # 결과를 정해 놓고 굴린다 (변화량은 최대치)
-        def __init__(self, kind):
-            self.kind = kind
-        def choices(self, population, weights):
-            return [self.kind]
-        def randint(self, a, b):
-            return b
-
-    assert set(edb_steroid := pmdb.STEROID_TABLE) == {"ovr", "pot", "awaken", "none", "doping", "retire"}
-    assert abs(sum(edb_steroid.values()) - 1) < 1e-9
-    want = {"ovr": (3, 0), "pot": (0, 5), "awaken": (3, 3), "none": (0, 0), "doping": (-4, 0)}
-    for pid, kind in zip(mine, list(want) + ["retire"]):
-        before = player(pid)
-        r = await pm.use_steroid(S, pid, NOW, Forced(kind))
-        after = player(pid)
-        assert r["ok"] and r["kind"] == kind and r["price0"] == before["price"], (kind, r)
-        if kind == "retire":
-            assert after["retired"] == 1 and after["price"] == 0 and r["price"] == 0
-            assert pid not in {t["player_id"] for t in await pm.steroid_targets(S)}
-            continue
-        d_ovr, d_pot = want[kind]
-        assert after["ovr"] == before["ovr"] + d_ovr and after["pot"] == max(before["pot"] + d_pot, after["ovr"]), (kind, before, after)
-        assert after["base"] == pm._compute_base_value(r["age"], after["ovr"], after["pot"])
-        assert after["floor"] <= after["price"] <= after["ceil"] and r["price"] == after["price"]
-        if after["base"] != before["base"]:                                     # 시세도 기준가 방향으로 바로 움직인다
-            assert (after["price"] > before["price"]) == (after["base"] > before["base"]), (kind, before, after)
-        if kind in ("ovr", "awaken"):
-            assert after["base"] > before["base"]
-        if kind == "doping":
-            assert after["base"] < before["base"]
-    assert (await db.inventory(S))[0]["steroid"] == 4
-
-    # 화면: 주사할 선수 고르기(나만) → 결과는 모두에게 · 고를 선수가 없으면 안내
-    eco = Economy.__new__(Economy)
-    eco.db, eco.pm = db, pm
-    user = SimpleNamespace(id=S, display_name="약사", display_avatar=SimpleNamespace(url="https://x/a.png"))
-    sent = []
-    async def rec(*a, **k):
-        sent.append(k)
-    inter = SimpleNamespace(user=user, response=SimpleNamespace(send_message=rec, edit_message=rec),
-                            followup=SimpleNamespace(send=rec))
-    await eco._steroid_prompt(inter, user)
-    view = sent[-1]["view"]
-    assert sent[-1]["ephemeral"] and "누구에게" in sent[-1]["embed"].title
-    assert shared not in {o.value for o in view.pick.options} and mine[6] in {o.value for o in view.pick.options}
-    view.pick._values = [mine[6]]
-    await view._inject(inter)
-    assert sent[-2]["view"] is None and sent[-1].get("ephemeral") is None and "💉" in sent[-1]["embed"].title
-    lonely = SimpleNamespace(id=63, display_name="빈손", display_avatar=SimpleNamespace(url="https://x/a.png"))
-    await db.give_item(63, "steroid")
-    await eco._steroid_prompt(SimpleNamespace(user=lonely, response=SimpleNamespace(send_message=rec)), lonely)
-    assert "없어요" in sent[-1]["embed"].title and sent[-1]["ephemeral"]
-
-
 async def _skips():
     """스킵권: 오늘 남은 횟수를 한 번에 · 결과(+/-)는 한 판씩 굴린 합 · 순서 잠금 · 다 했으면 안 쓰인다."""
     from types import SimpleNamespace
@@ -536,7 +446,6 @@ def test_flow():
     asyncio.run(_flow())
     asyncio.run(_items())
     asyncio.run(_item_screens())
-    asyncio.run(_steroid())
     asyncio.run(_skips())
     asyncio.run(_tutorial())
 

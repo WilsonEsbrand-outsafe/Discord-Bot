@@ -346,28 +346,6 @@ def player_profile(player_id: str, pos: str) -> dict:
     return {"foot": foot, "height": height, "weight": weight}
 
 
-# 스테로이드 주사기(가방 아이템 'steroid'): 결과 → 확률
-STEROID_TABLE = {
-    "ovr": 0.35,      # 💪 OVR +1~3
-    "pot": 0.25,      # 🌱 잠재력 +2~5
-    "awaken": 0.03,   # ⭐ 각성: OVR +3 · 잠재력 +3
-    "none": 0.20,     # 😐 효과 없음
-    "doping": 0.12,   # 🚨 약물 검출: 징계 후유증으로 OVR -2~4
-    "retire": 0.05,   # ⚰️ 부작용으로 은퇴
-}
-
-
-def _shared_count(con, user_id: int, pid: str) -> int:
-    """이 선수에 걸린 남의 몫: 다른 유저 보유 카드 + 다른 유저 매물 + 진행 중인 트레이드.
-    선수 능력치는 모든 카드가 함께 쓰므로, 0 이 아니면 스테로이드를 쓸 수 없다."""
-    return int(con.execute(
-        "SELECT (SELECT COALESCE(SUM(qty), 0) FROM pm_holdings WHERE player_id=? AND user_id<>? AND qty>0)"
-        " + (SELECT COALESCE(SUM(qty), 0) FROM pm_listings WHERE player_id=? AND seller_id<>? AND status='active')"
-        " + (SELECT COUNT(*) FROM pm_trade_items i JOIN pm_trades t ON t.trade_id=i.trade_id"
-        "    WHERE i.player_id=? AND t.status='pending')",
-        (pid, int(user_id), pid, int(user_id), pid)).fetchone()[0])
-
-
 def _draw_from_pool(con, pack: dict, pack_price: int, pulls: int) -> tuple[str, list]:
     """풀 쿼리·가중치·추첨 — buy_pack 헬퍼.
 
@@ -1242,97 +1220,6 @@ class PlayerMarketDB:
                 con = self._connect()
                 try:
                     return self._lineup_ids(con, user_id)
-                finally:
-                    con.close()
-            return await self._run(work)
-
-    # ───────────────── 스테로이드 주사기 ─────────────────
-    async def steroid_targets(self, user_id: int) -> list[dict]:
-        """주사할 수 있는 내 선수: 현역 · 아마추어 제외 · 나만 가진 선수 (OVR 높은 순)."""
-        async with self._lock:
-            def work():
-                con = self._connect()
-                try:
-                    rows = con.execute(
-                        "SELECT p.player_id, p.name, p.position, p.age, p.ovr, p.pot, p.pot_grade FROM pm_holdings h "
-                        "JOIN pm_players p ON p.player_id=h.player_id WHERE h.user_id=? AND h.qty>0 AND p.retired=0 "
-                        "AND p.player_id NOT LIKE 'AMT_%' ORDER BY p.ovr DESC, p.pot DESC", (int(user_id),)).fetchall()
-                    keys = ("player_id", "name", "pos", "age", "ovr", "pot", "pot_grade")
-                    return [dict(zip(keys, r)) for r in rows if not _shared_count(con, user_id, r[0])]
-                finally:
-                    con.close()
-            return await self._run(work)
-
-    async def use_steroid(self, user_id: int, player_id: str, now_ts: int, rng=random) -> dict:
-        """가방의 스테로이드 주사기 1개를 내 선수에게. 결과 kind 는 STEROID_TABLE 의 키.
-        능력치가 바뀌면 기준가 · 시세 범위도 새로 잡는다(시세는 새 범위 안으로). 은퇴면 시세 0.
-        실패 reason: none(주사기 없음) / not_mine(내 현역 선수 아님) / shared(다른 유저도 가진 선수) — 주사기는 그대로."""
-        pid = str(player_id)
-        async with self._lock:
-            def work():
-                con = self._connect()
-                try:
-                    con.execute("BEGIN IMMEDIATE;")
-
-                    def fail(**why):
-                        con.execute("ROLLBACK;")
-                        return {"ok": False, **why}
-
-                    row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='steroid'", (int(user_id),)).fetchone()
-                    if not row or int(row[0]) <= 0:
-                        return fail(reason="none")
-                    p = con.execute(
-                        "SELECT p.name, p.age, p.ovr, p.pot, COALESCE(m.price, p.base_value), p.base_value FROM pm_players p "
-                        "JOIN pm_holdings h ON h.player_id=p.player_id AND h.user_id=? AND h.qty>0 "
-                        "LEFT JOIN pm_market m ON m.player_id=p.player_id "
-                        "WHERE p.player_id=? AND p.retired=0 AND p.player_id NOT LIKE 'AMT_%'", (int(user_id), pid)).fetchone()
-                    if not p:
-                        return fail(reason="not_mine")
-                    others = _shared_count(con, user_id, pid)
-                    if others:
-                        return fail(reason="shared", others=others)
-                    con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='steroid'", (int(user_id),))
-
-                    name, age, ovr0, pot0, price0, base0 = p
-                    kind = rng.choices(list(STEROID_TABLE), weights=list(STEROID_TABLE.values()))[0]
-                    ovr, pot = int(ovr0), int(pot0)
-                    if kind == "ovr":
-                        ovr = min(99, ovr + rng.randint(1, 3))
-                    elif kind == "pot":
-                        pot = min(99, pot + rng.randint(2, 5))
-                    elif kind == "awaken":
-                        ovr, pot = min(99, ovr + 3), min(99, pot + 3)
-                    elif kind == "doping":
-                        ovr = max(1, ovr - rng.randint(2, 4))
-                    pot = max(pot, ovr)
-                    out = {"ok": True, "kind": kind, "player_id": pid, "name": name, "age": int(age),
-                           "ovr0": int(ovr0), "pot0": int(pot0), "ovr": ovr, "pot": pot, "price0": int(price0)}
-
-                    if kind == "retire":   # 시장 틱의 은퇴 처리와 같다
-                        con.execute("UPDATE pm_players SET retired=1, updated_ts=? WHERE player_id=?", (int(now_ts), pid))
-                        con.execute("UPDATE pm_market SET price=0, floor_price=0, ceil_price=0, last_update_ts=? "
-                                    "WHERE player_id=?", (int(now_ts), pid))
-                        con.execute("INSERT OR IGNORE INTO pm_price_history(player_id, price, tick_ts) VALUES(?, 0, ?)",
-                                    (pid, int(now_ts)))
-                        out["price"] = 0
-                    else:
-                        base = self._compute_base_value(int(age), ovr, pot)
-                        floor_p, ceil_p = self._compute_floor_ceil(base)
-                        # 시세도 기준가가 변한 비율만큼 바로 움직인다 (새 시세 범위 안으로)
-                        price = min(ceil_p, max(floor_p, round(int(price0) * base / max(1, int(base0)))))
-                        con.execute("UPDATE pm_players SET ovr=?, pot=?, pot_grade=?, base_value=?, updated_ts=? "
-                                    "WHERE player_id=?", (ovr, pot, pot_grade_for_value(pot), int(base), int(now_ts), pid))
-                        con.execute("UPDATE pm_market SET floor_price=?, ceil_price=?, price=? WHERE player_id=?",
-                                    (floor_p, ceil_p, price, pid))
-                        out["price"] = price
-                    con.execute("COMMIT;")
-                    return out
-                except Exception:
-                    try:
-                        con.execute("ROLLBACK;")
-                    except Exception:
-                        pass
-                    raise
                 finally:
                     con.close()
             return await self._run(work)
