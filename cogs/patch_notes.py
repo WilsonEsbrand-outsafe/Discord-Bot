@@ -9,10 +9,10 @@ from pathlib import Path
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from auth import owner_only
-from patch_notes_data import PATCH_NOTES
+from patch_notes_data import NOTICES, PATCH_NOTES
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
 
@@ -21,6 +21,46 @@ class PatchNotesCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._init_db()
+        self.notice_loop.start()
+
+    def cog_unload(self):
+        self.notice_loop.cancel()
+
+    # ─── 예약 공지 (patch_notes_data.NOTICES) — 시각이 되면 한 번만 ───
+    def _claim_notice(self, key: str) -> bool:
+        con = self._connect()
+        try:
+            con.execute("CREATE TABLE IF NOT EXISTS notices_sent (key TEXT PRIMARY KEY, ts INTEGER NOT NULL)")
+            cur = con.execute("INSERT OR IGNORE INTO notices_sent(key, ts) VALUES(?, ?)", (key, int(time.time())))
+            con.commit()
+            return cur.rowcount == 1
+        finally:
+            con.close()
+
+    async def send_all(self, embed: discord.Embed) -> tuple[int, int]:
+        success, fail = 0, 0
+        for guild in self.bot.guilds:
+            channel = await asyncio.to_thread(self._pick_channel, guild)
+            try:
+                await channel.send(embed=embed)
+                success += 1
+            except Exception:
+                fail += 1
+        return success, fail
+
+    @tasks.loop(minutes=1)
+    async def notice_loop(self):
+        now = int(time.time())
+        for key, ts, title, content in NOTICES:
+            if ts <= now and await asyncio.to_thread(self._claim_notice, key):
+                e = discord.Embed(title=title, description=content, color=0xE67E22)
+                e.timestamp = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
+                ok, fail = await self.send_all(e)
+                print(f"[공지] {key} 성공 {ok} / 실패 {fail}")
+
+    @notice_loop.before_loop
+    async def _before_notice(self):
+        await self.bot.wait_until_ready()
 
     # ─── DB ───
     def _connect(self):
@@ -129,17 +169,7 @@ class PatchNotesCog(commands.Cog):
         await asyncio.to_thread(self._save_patch, version, content, now_ts)
         embed = self._make_embed(version, content, now_ts)
 
-        success, fail = 0, 0
-        for guild in self.bot.guilds:
-            channel = await asyncio.to_thread(self._pick_channel, guild)
-            if channel:
-                try:
-                    await channel.send(embed=embed)
-                    success += 1
-                except Exception:
-                    fail += 1
-            else:
-                fail += 1
+        success, fail = await self.send_all(embed)
 
         await interaction.followup.send(
             f"✅ **v{version}** 패치노트 전송 완료!\n"
