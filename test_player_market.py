@@ -352,6 +352,25 @@ def test_position_packs_and_profile():
     assert feet == {"오른발", "왼발", "양발"}
 
 
+def test_pack_card_shows_age_and_potential():
+    """팩 개봉 카드에 나이 · OVR · 잠재력(등급)까지 나온다."""
+    from services.player_market_db import _draw_from_pool
+    from cogs.players_market import _card_line
+    eco, pm = run(_setup())
+    con = pm._connect()
+    try:
+        cfg = PACKS["골드"]
+        status, picks = _draw_from_pool(con, cfg, cfg["price"], 5)
+    finally:
+        con.close()
+    assert status == "OK"
+    for row, hit in picks:
+        pid, price, name, nation, pos, ovr, age, pot, potg = row
+        assert 15 <= age <= 45 and pot >= ovr and potg
+        _, line = _card_line(row, cfg["price"], hit)
+        assert f"{age}세" in line and f"OVR **{ovr}**" in line and f"잠재 {pot}({potg})" in line
+
+
 def test_news_skipped_when_market_closed():
     eco, pm = run(_setup())
     closed = 23 * 3600                        # 08:00 KST

@@ -15,7 +15,7 @@ from services.economy_db import (
     TRAIN_MAX_LEVEL,
     TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
-from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
+from services.player_market_db import SCOUT_FIND_PROB, STEROID_TABLE, PlayerMarketDB, give_player, scout_find_player
 from services.notifier import send_notify
 from services import ui
 
@@ -103,9 +103,10 @@ class BagView(discord.ui.View):
 
     def _use(self, key: str):
         async def cb(interaction: discord.Interaction):
-            if key == "toto_slip":   # 가진다 / 신고한다 를 먼저 고른다
-                return await interaction.response.send_message(
-                    embed=self.cog._slip_card(self.user), view=TotoSlipView(self.cog, self.user), ephemeral=True)
+            if key == "toto_slip":   # 가진다 / 신고한다 고르는 화면부터 모두에게
+                return await self.cog._slip_prompt(interaction, self.user)
+            if key == "steroid":     # 주사할 선수부터 고른다
+                return await self.cog._steroid_prompt(interaction, self.user)
             result, ok = await self.cog._use_embed(self.user, key)
             await self._refresh(interaction)
             await interaction.followup.send(embed=result, ephemeral=not ok)   # 성공은 모두에게, 실패는 나만
@@ -113,24 +114,23 @@ class BagView(discord.ui.View):
 
 
 class TotoSlipView(discord.ui.View):
-    """🧾 토토 용지 사용 — 가진다 / 신고한다 (본인에게만 보임). 결과는 채널에 공개."""
+    """🧾 토토 용지 — 가진다 / 신고한다. 모두에게 보이는 메시지에서 주운 사람만 고르고, 그 메시지가 결과로 바뀐다."""
 
     def __init__(self, cog: "Economy", user):
-        super().__init__(timeout=180)
+        super().__init__(timeout=300)
         self.cog, self.user = cog, user
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.user.id
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("🙅 용지를 주운 사람만 고를 수 있어요.", ephemeral=True)
+            return False
+        return True
 
     async def _choose(self, interaction: discord.Interaction, choice: str):
         self.stop()
         r = await self.cog.db.use_toto_slip(self.user.id, choice)
-        if not r["ok"]:
-            return await interaction.response.edit_message(embed=self.cog._no_item_card(self.user, "toto_slip"), view=None)
-        picked = "💰 가진다" if choice == "keep" else "🚨 신고한다"
-        await interaction.response.edit_message(
-            embed=ui.card(f"🧾 토토 용지 — {picked}", "결과는 채널에 올라갔어요.", ui.DARK, self.user, "🎒 아이템"), view=None)
-        await interaction.followup.send(embed=self.cog._slip_result(self.user, r))
+        e = self.cog._slip_result(self.user, r) if r["ok"] else self.cog._no_item_card(self.user, "toto_slip")
+        await interaction.response.edit_message(embed=e, view=None)
 
     @discord.ui.button(label="가진다", emoji="💰", style=discord.ButtonStyle.success)
     async def keep(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -139,6 +139,36 @@ class TotoSlipView(discord.ui.View):
     @discord.ui.button(label="신고한다", emoji="🚨", style=discord.ButtonStyle.danger)
     async def report(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._choose(interaction, "report")
+
+
+class SteroidView(discord.ui.View):
+    """💉 스테로이드 주사기 — 주사할 내 선수 고르기 (본인에게만). 결과는 채널에 공개."""
+
+    def __init__(self, cog: "Economy", user, targets: list[dict]):
+        super().__init__(timeout=180)
+        self.cog, self.user = cog, user
+        self.pick = discord.ui.Select(placeholder="💉 주사할 선수를 고르세요", options=[
+            discord.SelectOption(label=f"{t['name']} · {t['pos']} · {t['age']}세"[:100], value=str(t["player_id"]),
+                                 description=f"OVR {t['ovr']} · 잠재 {t['pot']}({t['pot_grade']}) · #{t['player_id']}")
+            for t in targets[:25]])
+        self.pick.callback = self._inject
+        self.add_item(self.pick)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user.id
+
+    async def _inject(self, interaction: discord.Interaction):
+        self.stop()
+        r = await self.cog.pm.use_steroid(self.user.id, self.pick.values[0], int(time.time()))
+        if not r["ok"]:
+            msg = {"none": "주사기가 없어요.", "not_mine": "이제 내 현역 선수가 아니에요.",
+                   "shared": "그 사이 다른 유저도 이 선수를 갖게 됐어요. 나만 가진 선수에게만 쓸 수 있어요."}[r["reason"]]
+            return await interaction.response.edit_message(
+                embed=ui.card("🙅 주사할 수 없어요", msg + "\n주사기는 그대로 남아 있어요.", ui.LOSE, self.user, "🎒 아이템"),
+                view=None)
+        await interaction.response.edit_message(
+            embed=ui.card(f"💉 {r['name']}에게 주사 완료", "결과는 채널에 올라갔어요.", ui.DARK, self.user, "🎒 아이템"), view=None)
+        await interaction.followup.send(embed=self.cog._steroid_result(self.user, r))
 
 
 class BankruptConfirm(discord.ui.View):
@@ -325,6 +355,7 @@ class Economy(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = EconomyDB()
+        self.pm = PlayerMarketDB()             # 스테로이드 주사기 (선수 능력치)
         self._pk_last: dict[int, float] = {}   # 유저별 마지막 페널티킥 시각 (도배 방지)
 
     # ───────────── 유저 명령어 ─────────────
@@ -612,18 +643,21 @@ class Economy(commands.Cog):
         await interaction.followup.send(embed=e)
 
     # ✅ 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 일과. 쿨타임 10초 · 하루 100회 · 최대 Lv.5
-    # 결과 3가지: 경기 관람(돈 +) · 경기장 이벤트(아이템) · 실패(돈 -). 리셋권 · 스킵권은 나오지 않는다.
+    # 결과 3가지: 경기 관람(돈 +) 80% · 실패(돈 -) 15% · 경기장 이벤트(아이템) 5%. 리셋권 · 스킵권은 나오지 않는다.
     WATCH_COOLDOWN = 10
     WATCH_LEVEL_NAMES = ["🎟️ 일반석 관중", "🧣 원정 팬", "📣 서포터즈", "🎫 시즌권자", "👑 레전드 서포터"]
     WATCH_KINDS = ("관람", "이벤트", "실패")
-    WATCH_ODDS = (0.80, 0.15, 0.05)
-    WATCH_ITEM_WEIGHTS = {"muffler": 60, "toto_slip": 40}   # 이벤트 아이템 비중 — 직관 연계 아이템은 여기에
+    WATCH_ODDS = (0.80, 0.05, 0.15)
+    # 이벤트 안에서 나오는 아이템 비중(%) — 직관 연계 아이템은 여기와 WATCH_ITEM_EVENTS 에
+    WATCH_ITEM_WEIGHTS = {"muffler": 96, "toto_slip": 2.5, "steroid": 1.5}
     WATCH_ITEM_EVENTS = {   # 이벤트로 나오는 아이템 → 경기장 이벤트 멘트. 새 아이템은 여기와 WATCH_ITEM_WEIGHTS 에 추가
         "muffler": ("선수가 관중석으로 던진 머플러를 잡았어요!", "옆자리 팬이 우승 기념 머플러를 선물해 줬어요!",
                     "구단 굿즈샵 오픈 기념 선착순 머플러를 받았어요!", "하프타임 경품 추첨에 당첨! 응원 머플러예요!",
                     "전광판 키스캠에 잡혀 기념 머플러를 받았어요!"),
         "toto_slip": ("경기장 가는 길에 토토 용지를 주웠다!", "길을 가다 바닥에 떨어진 토토 용지를 주웠다!",
                       "옆자리 아저씨가 두고 간 토토 용지를 주웠다!"),
+        "steroid": ("경기장 화장실에서 수상한 주사기를 주웠다…", "의문의 트레이너가 슬쩍 주사기를 건넸다…",
+                    "원정팀 라커룸 앞에 떨어진 주사기를 주웠다…"),
     }
     _W, _L = (800, 2500), (-600, -200)
     WATCH_EVENTS = [
@@ -754,14 +788,61 @@ class Economy(commands.Cog):
     async def use(self, interaction: discord.Interaction, 아이템: str):
         user = interaction.user
         if 아이템 == "toto_slip":
-            if not (await self.db.inventory(user.id))[0].get("toto_slip"):
-                return await interaction.response.send_message(embed=self._no_item_card(user, 아이템), ephemeral=True)
-            return await interaction.response.send_message(embed=self._slip_card(user), view=TotoSlipView(self, user),
-                                                           ephemeral=True)
+            return await self._slip_prompt(interaction, user)
+        if 아이템 == "steroid":
+            return await self._steroid_prompt(interaction, user)
         e, ok = await self._use_embed(user, 아이템)
         await interaction.response.send_message(embed=e, ephemeral=not ok)
 
     # ✅ 토토 용지: 가진다(3배 · 그대로 · 불법 -2배) / 신고한다(포상금 + 직관 경험치 · 또는 아무것도)
+    async def _slip_prompt(self, interaction: discord.Interaction, user):
+        """고르는 화면부터 모두에게 — 고르면 이 메시지가 결과로 바뀐다."""
+        if not (await self.db.inventory(user.id))[0].get("toto_slip"):
+            return await interaction.response.send_message(embed=self._no_item_card(user, "toto_slip"), ephemeral=True)
+        await interaction.response.send_message(embed=self._slip_card(user), view=TotoSlipView(self, user))
+
+    # ✅ 스테로이드 주사기: 나만 가진 현역 선수에게 — OVR · 잠재력 상승 / 효과 없음 / 약물 검출 / 은퇴
+    STEROID_TEXT = {   # 결과 → (제목, 확률표 이름)
+        "ovr": ("💪 근육이 터질 듯!", "OVR 상승"), "pot": ("🌱 잠재력이 깨어났다!", "잠재력 상승"),
+        "awaken": ("⭐ 각성!!", "각성(둘 다)"), "none": ("😐 아무 일도 없었다…", "효과 없음"),
+        "doping": ("🚨 약물 검출!", "약물 검출(OVR 하락)"), "retire": ("⚰️ 부작용으로 은퇴…", "은퇴"),
+    }
+
+    async def _steroid_prompt(self, interaction: discord.Interaction, user):
+        if not (await self.db.inventory(user.id))[0].get("steroid"):
+            return await interaction.response.send_message(embed=self._no_item_card(user, "steroid"), ephemeral=True)
+        targets = await self.pm.steroid_targets(user.id)
+        if not targets:
+            return await interaction.response.send_message(embed=ui.card(
+                "💉 주사할 수 있는 선수가 없어요",
+                "**나만 가진 현역 선수**에게만 쓸 수 있어요.\n선수 능력치는 그 선수 카드를 가진 모두가 함께 쓰기 때문에, "
+                "다른 유저도 가진 선수(매물 · 트레이드 중 포함)와 아마추어 선수는 막아 뒀어요.",
+                ui.LOSE, user, "🎒 아이템"), ephemeral=True)
+        cells = [f"{self.STEROID_TEXT[k][0].split()[0]} {self.STEROID_TEXT[k][1]} **{p:.0%}**" for k, p in STEROID_TABLE.items()]
+        odds = " · ".join(cells[:3]) + "\n" + " · ".join(cells[3:])
+        e = ui.card("💉 스테로이드 주사기 — 누구에게 놓을까요?",
+                    f"나만 가진 현역 선수 **{len(targets)}명** 중에서 고르세요{' (OVR 높은 25명)' if len(targets) > 25 else ''}.\n\n"
+                    f"{odds}\n\n결과는 채널에 모두에게 공개돼요.", ui.INFO, user, "🎒 아이템")
+        e.set_thumbnail(url=ui.emoji_url("💉"))
+        await interaction.response.send_message(embed=e, view=SteroidView(self, user, targets), ephemeral=True)
+
+    def _steroid_result(self, user, r: dict) -> discord.Embed:
+        title, _ = self.STEROID_TEXT[r["kind"]]
+        change = {
+            "ovr": f"OVR **{r['ovr0']} → {r['ovr']}**",
+            "pot": f"잠재력 **{r['pot0']} → {r['pot']}**",
+            "awaken": f"OVR **{r['ovr0']} → {r['ovr']}** · 잠재력 **{r['pot0']} → {r['pot']}**",
+            "none": "주사기만 날렸어요.",
+            "doping": f"약물 검출로 징계! 후유증으로 OVR **{r['ovr0']} → {r['ovr']}**",
+            "retire": "부작용으로 은퇴했어요… `/방출`로 기준가의 30%에 정리할 수 있어요.",
+        }[r["kind"]]
+        color = {"ovr": ui.WIN, "pot": ui.WIN, "awaken": ui.GOLD, "none": ui.EVEN}.get(r["kind"], ui.DOOM)
+        e = ui.card(f"💉 {r['name']} — {title}",
+                    f"`#{r['player_id']}` · {r['age']}세\n> *{change}*\n\n`시세` {r['price0']:,}원 → **{r['price']:,}원**",
+                    color, user, "🎒 아이템")
+        e.set_thumbnail(url=ui.emoji_url(title.split()[0]))
+        return e
+
     @staticmethod
     def _slip_card(user) -> discord.Embed:
         (_, win, pw), (_, even, pe), (_, bad, pb) = TOTO_KEEP

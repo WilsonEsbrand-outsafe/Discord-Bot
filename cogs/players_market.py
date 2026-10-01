@@ -128,11 +128,12 @@ _LABEL_COLOR = {
 
 
 def _card_line(row, pack_price_per: int, is_jackpot: bool = False) -> tuple[str, str]:
-    """뽑은 선수 1명을 (라벨, 표시줄)로 만든다."""
-    pid, cur_price, name, nation, pos, ovr = row
+    """뽑은 선수 1명을 (라벨, 표시줄)로 만든다 — 나이 · OVR · 잠재력까지."""
+    pid, cur_price, name, nation, pos, ovr, age, pot, potg = row
     label = _price_label(cur_price, pack_price_per)
     mark = "💥 **JACKPOT** " if is_jackpot else ""
-    return label, f"• {mark}{label} `#{pid}` {name} ({nation}) {pos} / OVR {ovr} / **{cur_price:,}원**"
+    return label, (f"• {mark}{label} `#{pid}` **{name}** ({nation}) {pos} · {age}세 · "
+                   f"OVR **{ovr}** · 잠재 {pot}({potg}) · **{cur_price:,}원**")
 
 
 def _normalize_results(results: list) -> list:
