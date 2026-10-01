@@ -272,7 +272,7 @@ async def _item_screens():
         sent.append(k)
         return SimpleNamespace(edit=rec)
     async def noop(*a, **k): pass
-    inter = SimpleNamespace(user=user, response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
+    inter = SimpleNamespace(guild_id=1374213619793006704, user=user, response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
                             followup=SimpleNamespace(send=rec))
     await Economy.watch.callback(eco, inter)                                   # 훈련 전: 잠김
     assert "잠겨" not in sent[-1]["embed"].title and "갈 수 없어요" in sent[-1]["embed"].title
@@ -287,7 +287,8 @@ async def _item_screens():
     bag, result = sent[-2], sent[-1]
     assert bag["embed"].title == "🎒 내 가방" and "5경기" in bag["embed"].fields[0].value   # 내 가방은 새로고침
     assert "사용" in result["embed"].title and result["ephemeral"] is False            # 사용 결과는 모두에게
-    assert not hasattr(Economy, "use")                                         # /사용 삭제 — 사용은 /가방 버튼으로
+    import release
+    assert "사용" in release.LEGACY_ONLY                                       # /사용은 2.5 서버 목록에서 빠진다 (/가방 버튼으로)
     e, ok = await eco._use_embed(user, "train_reset")                         # 없는 아이템 → 실패 (나만 보기)
     assert not ok and "없어요" in e.title
 
@@ -297,7 +298,7 @@ async def _item_screens():
     await sent[-1]["view"].children[0].callback(inter)
     slip = sent[-1]["view"]
     assert sent[-1].get("ephemeral") is None and "어떻게" in sent[-1]["embed"].title   # 공개
-    other = SimpleNamespace(user=SimpleNamespace(id=999), response=SimpleNamespace(send_message=rec))
+    other = SimpleNamespace(guild_id=1374213619793006704, user=SimpleNamespace(id=999), response=SimpleNamespace(send_message=rec))
     assert not await slip.interaction_check(other) and sent[-1]["ephemeral"]          # 남은 못 고른다
     await slip.report.callback(inter)
     assert sent[-1]["view"] is None and "토토 용지" in sent[-1]["embed"].title         # 같은 메시지가 결과로
@@ -437,7 +438,7 @@ async def _tutorial():
     sent = []
     async def rec(*a, **k):
         sent.append(k)
-    inter = SimpleNamespace(user=user, response=SimpleNamespace(send_message=rec, edit_message=rec))
+    inter = SimpleNamespace(guild_id=1374213619793006704, user=user, response=SimpleNamespace(send_message=rec, edit_message=rec))
     cog = tut.Tutorial.__new__(tut.Tutorial)
     cog.db = db
     await tut.Tutorial.tutorial.callback(cog, inter)

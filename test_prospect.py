@@ -176,7 +176,7 @@ async def _flow():
     sent, rec, noop = recorder()
     cog = cp.Prospect.__new__(cp.Prospect)
     cog.clubs = clubs
-    inter = SimpleNamespace(user=member(A, "흥민맘"), response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
+    inter = SimpleNamespace(guild_id=1374213619793006704, user=member(A, "흥민맘"), response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
                             followup=SimpleNamespace(send=rec))
     await cp.Prospect.show.callback(cog, inter, None)
     e = sent[-1]["embed"]
@@ -225,7 +225,7 @@ async def _flow():
     await sent[-1]["view"].inject.callback(inter)
     assert sent[-2]["view"] is None and "💉" in sent[-1]["embed"].title and "유망주 `#7`" in sent[-1]["embed"].description
     lonely = member(999, "빈손")
-    await econ._steroid_prompt(SimpleNamespace(user=lonely, response=SimpleNamespace(send_message=rec)), lonely)
+    await econ._steroid_prompt(SimpleNamespace(guild_id=1374213619793006704, user=lonely, response=SimpleNamespace(send_message=rec)), lonely)
     assert "유망주가 없어요" in sent[-1]["embed"].title
 
     # 은퇴 + 영구결번 → 명예의 전당 · 그 번호로는 새로 못 만든다 · /구단에 걸린다
@@ -273,7 +273,7 @@ async def _flow():
     await clubs.create_club(D, "삭제 FC", now)
     rd = await clubs.create_prospect(D, INFO, now)
     await clubs.set_slot(D, lw, rd["pid"])
-    di = SimpleNamespace(user=member(D, "삭제러"), response=SimpleNamespace(send_message=rec, edit_message=rec))
+    di = SimpleNamespace(guild_id=1374213619793006704, user=member(D, "삭제러"), response=SimpleNamespace(send_message=rec, edit_message=rec))
     await cp.Prospect.delete.callback(cog, di)
     assert "삭제할까요" in sent[-1]["embed"].title and "환불" not in sent[-1]["embed"].title
     await sent[-1]["view"].cancel.callback(di)
@@ -360,7 +360,7 @@ async def _flow():
     cdb.INJURY_BASE = cdb.INJURY_PER_PRONE = 0
     # /의료진 화면: 목록 · 영입
     club.money = eco
-    ei = SimpleNamespace(user=member(E, "부상러"), response=SimpleNamespace(defer=noop), followup=SimpleNamespace(send=rec))
+    ei = SimpleNamespace(guild_id=1374213619793006704, user=member(E, "부상러"), response=SimpleNamespace(defer=noop), followup=SimpleNamespace(send=rec))
     await cc.Club.medic.callback(club, ei, None)
     assert "✅ 🩺 **스포츠 의학 박사**" in sent[-1]["embed"].description
     bal = await eco.get_balance(E)

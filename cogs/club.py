@@ -11,7 +11,7 @@ from discord.ext import commands
 
 from services import ui
 from services.club_db import (
-    CLUB_NAME_MAX, FORMATIONS, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
+    CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
     match_highlights, official_odds, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
@@ -46,6 +46,9 @@ def _team_embed(team: dict, owner: discord.abc.User) -> discord.Embed:
            if team.get("medic") in MEDICS else "")
         + ("\n`영구결번` 🏅 " + " · ".join(f"#{n}" for n in team["retired_numbers"])
            if team.get("retired_numbers") else "")
+        + (f"\n`경기장` 🏟️ {team['stadium']}" if team.get("stadium") else "")
+        + (f"\n`스쿼드 B` {ELITE_CLUBS[team['elite']][0]} {ELITE_CLUBS[team['elite']][1]}"
+           + (" · **경기에 사용 중**" if team["squad_b"] else "") if team.get("elite") in ELITE_CLUBS else "")
     )
     body = []
     for group, label in _LINES:
@@ -56,7 +59,7 @@ def _team_embed(team: dict, owner: discord.abc.User) -> discord.Embed:
         desc += "\n\n선발 명단이 비어 있습니다. `/자동편성`으로 바로 채울 수 있어요."
     if any(s.get("injured") for s in team["lineup"]):
         desc += "\n\n🚑 부상 중인 유망주는 복귀할 때까지 빈자리로 계산돼요. (자리는 그대로 지켜요)"
-    e = ui.card(f"🏟️ {team['name']}", desc, ui.INFO, owner, "🏟️ 구단")
+    e = ui.card(f"{team.get('emblem') or '🏟️'} {team['name']}", desc, ui.INFO, owner, "🏟️ 구단")
     e.set_thumbnail(url=owner.display_avatar.url)
     return e
 
@@ -293,7 +296,7 @@ class Club(commands.Cog):
 
     async def _load_sides(self, interaction, user, home_id: int, away_id: int, away_label: str, section: str):
         """두 구단을 불러오고 문제가 있으면 안내 후 None."""
-        home, away = await self.clubs.get_team(home_id), await self.clubs.get_team(away_id)
+        home, away = await self.clubs.match_team(home_id), await self.clubs.match_team(away_id)
         if not home or not away:
             who = "내" if not home else f"{away_label}의"
             await interaction.followup.send(embed=ui.card("❌ 경기 불가", f"{who} 구단이 없습니다.", ui.LOSE, user, section))
@@ -306,12 +309,13 @@ class Club(commands.Cog):
         return home, away
 
     async def _sides(self, home_id: int, away_id: int, home: dict, away: dict) -> list[dict]:
-        """경기에 나설 두 팀 — 응원 머플러를 쓰는 중이면 1회 소모하고 전력 +3."""
+        """경기에 나설 두 팀 — 응원 머플러를 쓰는 중이면 1회 소모하고 전력 +3 (스쿼드 B 는 머플러 없음)."""
         sides = []
         for uid, team in ((home_id, home), (away_id, away)):
-            muffler = await self.money.consume_buff(uid, "muffler")
+            muffler = team.get("squad") != "B" and await self.money.consume_buff(uid, "muffler")
             rating = team["rating"] + (MUFFLER_BONUS if muffler else 0)
-            sides.append({"name": team["name"] + (" 🧣" if muffler else ""), "rating": rating,
+            name = (f"{team['emblem']} " if team.get("emblem") else "") + team["name"]
+            sides.append({"name": name + (" 🧣" if muffler else ""), "rating": rating, "stadium": team.get("stadium"),
                           "xi": [s for s in team["lineup"] if s.get("player_id")]})
         return sides
 
@@ -341,8 +345,9 @@ class Club(commands.Cog):
             return (sum(g["side"] == "home" and g["minute"] <= minute for g in result["goals"]),
                     sum(g["side"] == "away" and g["minute"] <= minute for g in result["goals"]))
 
+        venue = f"🏟️ **{h['stadium']}**\n" if h.get("stadium") else ""
         kickoff = ui.card(f"{title_tag} {h['name']} vs {a['name']}",
-                          f"> 🎙️ *\"전력 {h['rating']} 대 {a['rating']}! 주심의 휘슬과 함께 킥오프!\"*\n\n"
+                          f"{venue}> 🎙️ *\"전력 {h['rating']} 대 {a['rating']}! 주심의 휘슬과 함께 킥오프!\"*\n\n"
                           f"`예상 승률` {h['name']} **{pw:.0%}** · 무 **{pd:.0%}** · {a['name']} **{pl:.0%}**" + note,
                           ui.DARK, user, section)
         color = ui.WIN if hg > ag else (ui.LOSE if hg < ag else ui.EVEN)
@@ -426,7 +431,7 @@ class Club(commands.Cog):
                 return
             (me, opp), opp_id = sides, opp_user.id
         else:
-            me = await self.clubs.get_team(user.id)
+            me = await self.clubs.match_team(user.id)
             if not me or not me["filled"]:
                 return await interaction.followup.send(embed=ui.card(
                     "❌ 경기 불가", _NO_CLUB if not me else "선발 명단이 비어 있습니다. `/자동편성`을 먼저 해 주세요.",
@@ -434,7 +439,7 @@ class Club(commands.Cog):
             # 상대: 선발이 있는 다른 유저 구단 중 전력이 가장 비슷한 5팀에서 무작위
             pool = []
             for uid in await self.clubs.official_opponents(user.id):
-                t = await self.clubs.get_team(uid)
+                t = await self.clubs.match_team(uid)
                 if t and t["filled"]:
                     pool.append((abs(t["rating"] - me["rating"]), uid, t))
             if not pool:

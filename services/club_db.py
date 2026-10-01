@@ -203,6 +203,74 @@ MEDICS = {
 }
 
 
+# ───────────── 시설 (2.5) ─────────────
+# key → (이모지, 이름, 효과 문구({} = 레벨 × 단위), 레벨당 단위). 레벨 0~5, 다음 레벨 비용은 FACILITY_COSTS[지금 레벨].
+FACILITIES = {
+    "stadium":  ("🏟️", "경기장",        "공식경기 적중 상금 +{}%", 4),
+    "training": ("🏋️", "훈련장",        "유망주 경험치 +{}%", 10),
+    "youth":    ("🎓", "유스 아카데미", "새 유망주 잠재력 +{}", 1),
+    "medical":  ("🏥", "메디컬 센터",   "유망주 부상 확률 -{}%", 10),
+}
+FACILITY_COSTS = (10_000_000, 30_000_000, 100_000_000, 300_000_000, 1_000_000_000)
+FACILITY_MAX = len(FACILITY_COSTS)
+
+
+def facility_effect(key: str, level: int) -> str:
+    return FACILITIES[key][2].format(level * FACILITIES[key][3])
+
+
+# ───────────── 구단 꾸미기 (2.5) ─────────────
+EMBLEMS = ("🦁", "🐯", "🦅", "🐺", "🐉", "🦈", "🐻", "🦊", "🐝", "🦄",
+           "⚡", "🔥", "⭐", "👑", "🛡️", "⚔️", "🌙", "☀️", "🌊", "💎")
+EMBLEM_PRICE = 10_000_000
+STADIUM_PRICE = 30_000_000
+STADIUM_NAME_MAX = 20
+
+
+# ───────────── 명문 구단 (2.5) ─────────────
+# 인수하면 스쿼드 B 로 경기에 쓸 수 있다. 선수는 가상 선수이고 능력치는 영원히 고정 (구단 key 로 시드를 고정해 만든다).
+# 주인이 없으면 표시 가격, 주인이 있으면 지금 가격의 1.5배를 내고 빼앗는다 (낸 돈은 전 주인에게). 한 사람에 한 구단.
+# 규모 → (기본 가격, 하루 수입, 평균 OVR)
+ELITE_SIZES = {"메가": (1_000_000_000, 10_000_000, 84), "빅": (500_000_000, 5_000_000, 80),
+               "미드": (200_000_000, 2_000_000, 76)}
+ELITE_CLUBS = {   # key → (엠블럼, 이름, 규모)
+    "royal": ("🦁", "로열 런던", "메가"), "blancos": ("👑", "마드리드 블랑코스", "메가"),
+    "redstar": ("🔴", "뮌헨 레드스타", "빅"), "diavoli": ("😈", "밀라노 디아볼리", "빅"),
+    "catalunya": ("🔵", "카탈루냐 FC", "빅"), "lumiere": ("🗼", "파리 루미에르", "미드"),
+    "bianconeri": ("🦓", "토리노 비앙코네리", "미드"), "mersey": ("🐦", "머지사이드 레즈", "미드"),
+    "ruhr": ("🐝", "루르 옐로우", "미드"), "ideal": ("❌", "암스테르담 아이디얼", "미드"),
+}
+ELITE_TAKEOVER = 1.5
+ELITE_FORMATION = "4-3-3"
+ELITE_ID = "EL:"
+_EL_FIRST = ("루카스", "마르코", "다니엘", "알렉스", "라파엘", "안드레", "세르히오", "니콜라스", "에밀", "파블로",
+             "레오", "주앙", "이반", "하비", "마테오", "올리버", "휴고", "카이", "엔조", "토비")
+_EL_LAST = ("실바", "무어", "코스타", "베르그", "로시", "가르시아", "산토스", "페레스", "노박", "클라인",
+            "모레노", "리베라", "브룩스", "하트", "로렌", "바르가스", "에릭손", "다비드", "포르테", "레만")
+_EL_NATIONS = ("잉글랜드", "스페인", "독일", "이탈리아", "프랑스", "브라질", "아르헨티나", "포르투갈", "네덜란드", "벨기에")
+
+
+def elite_price(key: str, owner: Optional[int], price: int) -> int:
+    """지금 사려면 내야 하는 돈."""
+    return round(price * ELITE_TAKEOVER) if owner else price
+
+
+def elite_team(key: str) -> dict:
+    """명문 구단의 고정 선발 11명과 전력. get_team 과 같은 모양 (경기에 그대로 쓴다)."""
+    emblem, name, size = ELITE_CLUBS[key]
+    avg = ELITE_SIZES[size][2]
+    rng = random.Random(f"elite-{key}")   # 시드 고정 — 몇 번을 만들어도 같은 선수
+    lineup = []
+    for i, slot in enumerate(FORMATIONS[ELITE_FORMATION]):
+        lineup.append({"slot": slot, "index": i, "player_id": f"{ELITE_ID}{key}:{i}",
+                       "name": f"{rng.choice(_EL_FIRST)} {rng.choice(_EL_LAST)}", "pos": SLOT_GROUP[slot],
+                       "ovr": avg + rng.randint(-4, 4), "nation": rng.choice(_EL_NATIONS)})
+    team = {"key": key, "name": name, "emblem": emblem, "size": size, "formation": ELITE_FORMATION, "captain": None,
+            "lineup": lineup, "manager": None, "medic": None, "manager_bonus": 0, "squad": "B", "stadium": None}
+    team.update(team_rating(lineup, None))
+    return team
+
+
 def manager_bonus(manager: Optional[str], formation: str) -> int:
     if manager not in MANAGERS:
         return 0
@@ -390,7 +458,8 @@ class ClubDB:
             )
             for col in (f"formation TEXT NOT NULL DEFAULT '{DEFAULT_FORMATION}'", "captain TEXT",
                         "wins INTEGER NOT NULL DEFAULT 0", "draws INTEGER NOT NULL DEFAULT 0",
-                        "losses INTEGER NOT NULL DEFAULT 0", "manager TEXT", "medic TEXT"):
+                        "losses INTEGER NOT NULL DEFAULT 0", "manager TEXT", "medic TEXT",
+                        "emblem TEXT", "stadium TEXT", "squad_b INTEGER NOT NULL DEFAULT 0"):
                 try:
                     con.execute(f"ALTER TABLE clubs ADD COLUMN {col}")
                 except sqlite3.OperationalError:
@@ -460,6 +529,14 @@ class ClubDB:
                                 (min(20, random.randint(3, 14) + max(0, prone - 8)), random.randint(4, 17), pid))
             # 현역 유망주는 한 명만
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_prospects_active ON prospects(user_id) WHERE retired_ts=0")
+            # 시설 (구단을 지웠다 다시 만들어도 남는다) · 명문 구단
+            con.execute("CREATE TABLE IF NOT EXISTS club_facilities (user_id INTEGER PRIMARY KEY, "
+                        + ", ".join(f"{k} INTEGER NOT NULL DEFAULT 0" for k in FACILITIES) + ")")
+            con.execute("CREATE TABLE IF NOT EXISTS elite_clubs (key TEXT PRIMARY KEY, owner_id INTEGER, "
+                        "price INTEGER NOT NULL, bought_ts INTEGER NOT NULL DEFAULT 0, income_day INTEGER NOT NULL DEFAULT 0)")
+            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_elite_owner ON elite_clubs(owner_id)")
+            con.executemany("INSERT OR IGNORE INTO elite_clubs(key, price) VALUES(?, ?)",
+                            [(k, ELITE_SIZES[size][0]) for k, (_, _, size) in ELITE_CLUBS.items()])
             con.execute("INSERT OR IGNORE INTO club_bonus(user_id) SELECT user_id FROM clubs")
             con.commit()
         finally:
@@ -582,13 +659,15 @@ class ClubDB:
         """구단 + 선발 11명 + 전력. 구단이 없으면 None."""
         def fn(con):
             row = con.execute(
-                "SELECT club_name, created_ts, formation, captain, wins, draws, losses, manager, medic FROM clubs "
-                "WHERE user_id=?", (int(user_id),),
+                "SELECT club_name, created_ts, formation, captain, wins, draws, losses, manager, medic, emblem, stadium, "
+                "squad_b FROM clubs WHERE user_id=?", (int(user_id),),
             ).fetchone()
             if not row:
                 return None
-            club = dict(zip(("name", "created_ts", "formation", "captain", "wins", "draws", "losses", "manager", "medic"),
-                            row))
+            club = dict(zip(("name", "created_ts", "formation", "captain", "wins", "draws", "losses", "manager", "medic",
+                             "emblem", "stadium", "squad_b"), row))
+            el = con.execute("SELECT key FROM elite_clubs WHERE owner_id=?", (int(user_id),)).fetchone()
+            club["elite"] = el[0] if el else None
             if club["formation"] not in FORMATIONS:
                 club["formation"] = DEFAULT_FORMATION
             squad = self._squad(con, user_id)
@@ -607,6 +686,139 @@ class ClubDB:
             club["manager_bonus"] = manager_bonus(club["manager"], club["formation"]) if club["filled"] else 0
             club["rating"] += club["manager_bonus"]
             return club
+        return await self._tx(fn)
+
+    async def match_team(self, user_id: int) -> Optional[dict]:
+        """경기에 나갈 팀: 스쿼드 B(명문 구단)를 골랐고 아직 주인이면 그 구단, 아니면 내 구단(스쿼드 A)."""
+        team = await self.get_team(user_id)
+        if team and team["squad_b"] and team["elite"]:
+            b = elite_team(team["elite"])
+            b["stadium"] = team["stadium"]
+            return b
+        return team
+
+    async def set_squad(self, user_id: int, use_b: bool) -> dict:
+        """경기에 쓸 스쿼드 고르기. 실패 reason: no_club / no_elite(명문 구단 없음)."""
+        def fn(con):
+            if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (int(user_id),)).fetchone():
+                return {"ok": False, "reason": "no_club"}
+            el = con.execute("SELECT key FROM elite_clubs WHERE owner_id=?", (int(user_id),)).fetchone()
+            if use_b and not el:
+                return {"ok": False, "reason": "no_elite"}
+            con.execute("UPDATE clubs SET squad_b=? WHERE user_id=?", (int(use_b), int(user_id)))
+            return {"ok": True, "elite": el[0] if el else None}
+        return await self._tx(fn)
+
+    # ───────────── 시설 · 꾸미기 ─────────────
+    @staticmethod
+    def _facility(con, user_id: int, key: str) -> int:
+        row = con.execute(f"SELECT {key} FROM club_facilities WHERE user_id=?", (int(user_id),)).fetchone()
+        return int(row[0]) if row else 0
+
+    async def facilities(self, user_id: int) -> dict[str, int]:
+        return await self._tx(lambda con: {k: self._facility(con, user_id, k) for k in FACILITIES})
+
+    @staticmethod
+    def _pay(con, user_id: int, fee: int) -> Optional[int]:
+        """돈을 낸다 → 남은 잔액, 모자라면 None (아무것도 안 바뀜)."""
+        con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
+        bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0])
+        if bal < fee:
+            return None
+        con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (fee, int(user_id)))
+        return bal - fee
+
+    async def upgrade_facility(self, user_id: int, key: str) -> dict:
+        """시설 한 단계 업그레이드. 실패 reason: no_club / max / balance."""
+        def fn(con):
+            if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (int(user_id),)).fetchone():
+                return {"ok": False, "reason": "no_club"}
+            lv = self._facility(con, user_id, key)
+            if lv >= FACILITY_MAX:
+                return {"ok": False, "reason": "max"}
+            fee = FACILITY_COSTS[lv]
+            bal = self._pay(con, user_id, fee)
+            if bal is None:
+                return {"ok": False, "reason": "balance", "fee": fee}
+            con.execute("INSERT OR IGNORE INTO club_facilities(user_id) VALUES(?)", (int(user_id),))
+            con.execute(f"UPDATE club_facilities SET {key}=? WHERE user_id=?", (lv + 1, int(user_id)))
+            return {"ok": True, "level": lv + 1, "fee": fee, "balance": bal}
+        return await self._tx(fn)
+
+    async def decorate(self, user_id: int, col: str, value: str) -> dict:
+        """구단 꾸미기: col = emblem(EMBLEMS 중) / stadium(경기장 이름). 실패 reason: no_club / same / balance."""
+        fee = EMBLEM_PRICE if col == "emblem" else STADIUM_PRICE
+
+        def fn(con):
+            row = con.execute(f"SELECT {col} FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
+            if not row:
+                return {"ok": False, "reason": "no_club"}
+            if row[0] == value:
+                return {"ok": False, "reason": "same"}
+            bal = self._pay(con, user_id, fee)
+            if bal is None:
+                return {"ok": False, "reason": "balance", "fee": fee}
+            con.execute(f"UPDATE clubs SET {col}=? WHERE user_id=?", (value, int(user_id)))
+            return {"ok": True, "fee": fee, "balance": bal}
+        return await self._tx(fn)
+
+    # ───────────── 명문 구단 ─────────────
+    async def elite_list(self) -> list[dict]:
+        def fn(con):
+            rows = con.execute("SELECT key, owner_id, price, bought_ts FROM elite_clubs").fetchall()
+            out = []
+            for key, owner, price, bought in rows:
+                if key not in ELITE_CLUBS:
+                    continue
+                emblem, name, size = ELITE_CLUBS[key]
+                out.append({"key": key, "emblem": emblem, "name": name, "size": size, "owner_id": owner,
+                            "price": int(price), "cost": elite_price(key, owner, int(price)), "bought_ts": bought,
+                            "income": ELITE_SIZES[size][1], "rating": elite_team(key)["rating"]})
+            order = list(ELITE_CLUBS)
+            return sorted(out, key=lambda c: order.index(c["key"]))
+        return await self._tx(fn)
+
+    async def buy_elite(self, user_id: int, key: str, now_ts: int) -> dict:
+        """명문 구단 인수. 주인이 있으면 지금 가격 × 1.5 를 내고, 그 돈은 전 주인에게.
+        실패 reason: no_club / mine / one(이미 다른 명문 구단 주인) / balance."""
+        def fn(con):
+            if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (int(user_id),)).fetchone():
+                return {"ok": False, "reason": "no_club"}
+            owner, price = con.execute("SELECT owner_id, price FROM elite_clubs WHERE key=?", (key,)).fetchone()
+            if owner == int(user_id):
+                return {"ok": False, "reason": "mine"}
+            if con.execute("SELECT 1 FROM elite_clubs WHERE owner_id=?", (int(user_id),)).fetchone():
+                return {"ok": False, "reason": "one"}
+            cost = elite_price(key, owner, int(price))
+            bal = self._pay(con, user_id, cost)
+            if bal is None:
+                return {"ok": False, "reason": "balance", "cost": cost}
+            if owner:
+                con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (owner,))
+                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (cost, owner))
+            con.execute("UPDATE elite_clubs SET owner_id=?, price=?, bought_ts=?, income_day=? WHERE key=?",
+                        (int(user_id), cost, int(now_ts), kst_day(now_ts), key))
+            return {"ok": True, "cost": cost, "prev_owner": owner, "balance": bal}
+        return await self._tx(fn)
+
+    async def settle_elite_income(self, now_ts: int) -> list[dict]:
+        """하루(KST)가 지날 때마다 명문 구단 주인에게 규모별 수입. [{owner_id, key, days, amount}]."""
+        today = kst_day(now_ts)
+
+        def fn(con):
+            out = []
+            for key, owner, day in con.execute(
+                    "SELECT key, owner_id, income_day FROM elite_clubs WHERE owner_id IS NOT NULL AND income_day<?",
+                    (today,)).fetchall():
+                if key not in ELITE_CLUBS:
+                    continue
+                days = today - int(day)
+                amount = days * ELITE_SIZES[ELITE_CLUBS[key][2]][1]
+                con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (owner,))
+                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, owner))
+                con.execute("UPDATE elite_clubs SET income_day=? WHERE key=?", (today, key))
+                out.append({"owner_id": owner, "key": key, "days": days, "amount": amount})
+            return out
         return await self._tx(fn)
 
     async def squad(self, user_id: int) -> list[dict]:
@@ -740,6 +952,9 @@ class ClubDB:
         delta = round(amount * (odds - 1)) if pick == res else -amount
 
         def fn(con):
+            nonlocal delta
+            if delta > 0:   # 경기장: 적중 상금 + 레벨 × 4%
+                delta = round(delta * (1 + self._facility(con, user_id, "stadium") * FACILITIES["stadium"][3] / 100))
             for uid, f, a in ((user_id, gf, ga), (opp_id, ga, gf)):
                 r = "W" if f > a else ("D" if f == a else "L")
                 con.execute("INSERT OR IGNORE INTO club_official(user_id, season) VALUES(?, ?)", (int(uid), season))
@@ -803,8 +1018,10 @@ class ClubDB:
         return await self._tx(fn)
 
     @staticmethod
-    def _prospect_price(con, user_id: int, now_ts: int) -> int:
-        """생성비 — 신인 부스트 기간의 첫 유망주는 반값 (2.5)."""
+    def _prospect_price(con, user_id: int, now_ts: int, rookie: bool = True) -> int:
+        """생성비 — 신인 부스트 기간의 첫 유망주는 반값 (2.5). rookie=False 면 (아직 2.5 전인 서버) 반값 없음."""
+        if not rookie:
+            return PROSPECT_PRICE
         try:
             row = con.execute("SELECT start_ts FROM rookie WHERE user_id=?", (int(user_id),)).fetchone()
         except sqlite3.OperationalError:
@@ -812,10 +1029,10 @@ class ClubDB:
         first = not con.execute("SELECT 1 FROM prospects WHERE user_id=?", (int(user_id),)).fetchone()
         return PROSPECT_PRICE // 2 if first and row and now_ts < rookie_until(row[0]) else PROSPECT_PRICE
 
-    async def prospect_price(self, user_id: int, now_ts: int) -> int:
-        return await self._tx(lambda con: self._prospect_price(con, user_id, now_ts))
+    async def prospect_price(self, user_id: int, now_ts: int, rookie: bool = True) -> int:
+        return await self._tx(lambda con: self._prospect_price(con, user_id, now_ts, rookie))
 
-    async def create_prospect(self, user_id: int, info: dict, now_ts: int, rng=random) -> dict:
+    async def create_prospect(self, user_id: int, info: dict, now_ts: int, rng=random, rookie: bool = True) -> dict:
         """유망주 생성 (PROSPECT_PRICE). info 는 prospect_input 이 정리한 값.
         OVR 50~58 · 잠재력 75~94 에서 시작. 실패 reason: exists(현역 유망주 있음) / retired_number / balance."""
         def fn(con):
@@ -824,13 +1041,13 @@ class ClubDB:
             if con.execute("SELECT 1 FROM prospects WHERE user_id=? AND number=? AND retired_number=1",
                            (int(user_id), info["number"])).fetchone():
                 return {"ok": False, "reason": "retired_number"}
-            price = self._prospect_price(con, user_id, now_ts)
+            price = self._prospect_price(con, user_id, now_ts, rookie)
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0])
             if bal < price:
                 return {"ok": False, "reason": "balance", "balance": bal, "price": price}
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (price, int(user_id)))
-            ovr, pot = rng.randint(50, 58), rng.randint(75, 94)
+            ovr, pot = rng.randint(50, 58), min(99, rng.randint(75, 94) + self._facility(con, user_id, "youth"))
             prone, pro = rng.randint(3, 14), rng.randint(4, 17)   # 히든 능력치 (자신감은 10에서 시작)
             cur = con.execute(
                 "INSERT INTO prospects(user_id, name, nation, position, number, birthday, foot, height, ovr, pot, aged, "
@@ -873,7 +1090,8 @@ class ClubDB:
                              "miss": sum(e.get("player_id") == pid and e.get("kind") == "miss" for e in events)}
                     delta = sum(PROSPECT_XP[k] * n for k, n in parts.items())
                     if delta > 0:   # 프로 의식: 10 이면 그대로, 높을수록 더 많이 (감점에는 안 붙는다)
-                        delta = round(delta * (0.7 + p["pro"] * 0.03))
+                        delta = round(delta * (0.7 + p["pro"] * 0.03)
+                                      * (1 + self._facility(con, owner[0], "training") * FACILITIES["training"][3] / 100))
                     if grew:
                         xp = max(0, xp + delta)
                         while ovr < p["pot"] and xp >= prospect_xp_need(ovr):
@@ -885,7 +1103,8 @@ class ClubDB:
                     conf = min(20, max(1, p["confidence"] + (g > 0) + (a > 0) + (res == "W") - (res == "L")
                                        - parts["rout"] - parts["card"] - parts["miss"]))
                     injury, pot = None, p["pot"]
-                    if rng.random() < INJURY_BASE + p["proneness"] * INJURY_PER_PRONE:
+                    medical = 1 - self._facility(con, owner[0], "medical") * FACILITIES["medical"][3] / 100
+                    if rng.random() < (INJURY_BASE + p["proneness"] * INJURY_PER_PRONE) * medical:
                         injury = self._injure(con, owner[0], p, ovr, pot, now_ts, rng)
                         ovr, pot = injury["ovr"], injury["pot"]
                     con.execute(

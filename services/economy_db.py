@@ -43,7 +43,12 @@ ITEMS = {
     "watch_skip":  ("📺", "직관 스킵권",     "오늘 남은 직관을 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
     "toto_slip":   ("🧾", "토토 용지",       "길에서 주운 토토 용지 — 가질까, 신고할까?"),
     "steroid":     ("💉", "스테로이드 주사기", "내 유망주에게 주사 — OVR · 잠재력 상승? 약물 검출 · 은퇴?"),
+    "box":         ("🎁", "점검 보상 상자",   "열면 카드 3장 중 하나를 골라 스킵권 · 리셋권 중 하나를 받아요"),
 }
+# 점검 보상 상자: 이 중 하나 × 1~3장 (1장 60% · 2장 30% · 3장 10%)
+BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
+BOX_QTY = ((1, 60), (2, 30), (3, 10))
+BOX_CHOICES = 3
 # 원가 = 상점 가격. 판매가는 원가의 50% · 원가가 없는 아이템(리셋권 · 스킵권 · 토토 용지)은 사고팔 수 없다.
 ITEM_PRICES = {"muffler": 50_000, "steroid": 30_000_000}
 SHOP_DAILY_LIMITS = {"steroid": 3}   # 하루(KST) 구매 한도가 있는 아이템
@@ -68,6 +73,7 @@ TOTO_REPORT_PROB, TOTO_REPORT_RATE, TOTO_REPORT_XP = 0.70, (0.5, 0.8), 30  # 포
 COUPONS = {
     "PATCH22": ({"scout_reset": 1, "train_reset": 1, "watch_reset": 1},
                 calendar.timegm((2026, 10, 8, 15, 0, 0))),   # 2026-10-09 00:00 KST 만료
+    "PATCH25": ({"box": 1}, calendar.timegm((2026, 10, 8, 15, 0, 0))),   # 2.5 점검 보상 · 2026-10-09 00:00 KST 만료
 }
 
 
@@ -114,6 +120,15 @@ def rookie_start(con, user_id: int, now_ts: int) -> int:
 def rookie_until(start_ts: int) -> int:
     """신인 부스트가 끝나는 시각 (신인이 아니면 0)."""
     return start_ts + ROOKIE_DAYS * 86400 if start_ts else 0
+
+
+# 송금 조건 (2.5 신규 유저만 — rookie.start_ts > 0): (키, 이름, 진행 값 SQL, 목표)
+TRANSFER_REQUIRE = [
+    ("attend", "출석 7일", "SELECT COALESCE(SUM(total_days), 0) FROM daily_claims WHERE user_id=?", 7),
+    ("official", "공식경기 10판", "SELECT COALESCE(SUM(w + d + l), 0) FROM club_official WHERE user_id=?", 10),
+    ("tutorial", "`/튜토리얼` 체크리스트 완료", "SELECT COUNT(*) FROM tutorial_done WHERE user_id=?", 1),
+    ("rookie", "`/루키미션` 8개 완료", "SELECT COUNT(*) FROM rookie_claims WHERE user_id=?", len(ROOKIE_MISSIONS)),
+]
 
 # 파산: 잔액이 마이너스일 때만. 스폰서 계약을 강제 해지해 원금으로 갚고, 남은 빚의 30~70% 를 랜덤 탕감.
 BANKRUPT_COOLDOWN = 3600             # 한 시간에 한 번
@@ -259,6 +274,7 @@ class EconomyDB:
             con.execute("CREATE TABLE IF NOT EXISTS rookie_claims (user_id INTEGER, mission TEXT, ts INTEGER, "
                         "PRIMARY KEY(user_id, mission))")
             con.execute("CREATE TABLE IF NOT EXISTS eco_migrations (name TEXT PRIMARY KEY)")
+            con.execute("CREATE TABLE IF NOT EXISTS tutorial_done (user_id INTEGER PRIMARY KEY, ts INTEGER NOT NULL)")
             if con.execute("INSERT OR IGNORE INTO eco_migrations(name) VALUES('rookie_veterans')").rowcount:
                 con.execute("INSERT OR IGNORE INTO rookie(user_id, start_ts) SELECT user_id, 0 FROM wallets")
                         # ───────────── 토토 ─────────────
@@ -1348,20 +1364,21 @@ class EconomyDB:
             return await self._run(work)
 
     # ✅ 훈련: 하루 횟수 제한 + 레벨(성공률·보상 증가)
-    async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30) -> dict:
+    # rookie=False: 신인 부스트가 아직 열리지 않은 서버 (release.preview)
+    async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30, rookie: bool = True) -> dict:
         """훈련은 그날 스카우트를 전부(15회) 마쳐야 열린다."""
-        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec)
+        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec, rookie=rookie)
 
-    async def play_scout(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
-        return await self._play_grind("scouting", user_id, now_ts, roll, cooldown_sec)
+    async def play_scout(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60, rookie: bool = True) -> dict:
+        return await self._play_grind("scouting", user_id, now_ts, roll, cooldown_sec, rookie=rookie)
 
-    async def play_watch(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
+    async def play_watch(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60, rookie: bool = True) -> dict:
         """직관은 그날 훈련을 전부(30회) 마쳐야 열린다 (훈련은 스카우트 15회 뒤) — 스카우트 → 훈련 → 직관."""
-        return await self._play_grind("spectating", user_id, now_ts, roll, cooldown_sec)
+        return await self._play_grind("spectating", user_id, now_ts, roll, cooldown_sec, rookie=rookie)
 
-    async def use_skip(self, user_id: int, item: str, now_ts: int, roll) -> dict:
+    async def use_skip(self, user_id: int, item: str, now_ts: int, roll, rookie: bool = True) -> dict:
         """스킵권: 오늘 남은 횟수를 쿨타임 없이 한 번에 돌려 결과(돈 · 경험치 · 선수 · 아이템)를 그대로 받는다."""
-        return await self._play_grind(SKIP_ITEMS[item], user_id, now_ts, roll, 0, skip_item=item)
+        return await self._play_grind(SKIP_ITEMS[item], user_id, now_ts, roll, 0, skip_item=item, rookie=rookie)
 
     # ───────────── 아이템 ─────────────
     async def inventory(self, user_id: int) -> tuple[dict[str, int], dict[str, int]]:
@@ -1500,6 +1517,41 @@ class EconomyDB:
             return {"ok": True, "code": code, "items": items}
         return await self._tx(fn)
 
+    async def open_box(self, user_id: int, pick: int, rng=random) -> dict:
+        """점검 보상 상자 열기: 카드 BOX_CHOICES 장을 깔고 pick 번째를 받는다.
+        {"ok", "cards": [(아이템, 수량)], "pick"} · 실패 reason: none."""
+        def fn(con):
+            row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='box'", (user_id,)).fetchone()
+            if not row or int(row[0]) <= 0:
+                return {"ok": False, "reason": "none"}
+            con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='box'", (user_id,))
+            cards = [(rng.choice(BOX_REWARDS), rng.choices([q for q, _ in BOX_QTY], weights=[w for _, w in BOX_QTY])[0])
+                     for _ in range(BOX_CHOICES)]
+            give_item(con, user_id, *cards[pick])
+            return {"ok": True, "cards": cards, "pick": pick}
+        return await self._tx(fn)
+
+    async def mark_tutorial(self, user_id: int, now_ts: int) -> None:
+        await self._tx(lambda con: con.execute("INSERT OR IGNORE INTO tutorial_done(user_id, ts) VALUES(?, ?)",
+                                               (user_id, now_ts)))
+
+    async def transfer_locks(self, user_id: int) -> list[dict]:
+        """송금 조건 중 못 채운 것 [{name, value, goal}]. 2.5 전부터 있던 유저(신인 아님)는 언제나 빈 목록."""
+        def fn(con):
+            row = con.execute("SELECT start_ts FROM rookie WHERE user_id=?", (user_id,)).fetchone()
+            if row and row[0] == 0:
+                return []
+            out = []
+            for _key, name, q, goal in TRANSFER_REQUIRE:
+                try:
+                    value = int(con.execute(q, (user_id,)).fetchone()[0] or 0)
+                except sqlite3.OperationalError:
+                    value = 0
+                if value < goal:
+                    out.append({"name": name, "value": value, "goal": goal})
+            return out
+        return await self._tx(fn)
+
     async def consume_buff(self, user_id: int, item: str) -> bool:
         """사용 중인 효과를 1회 소모 (남아 있으면 True)."""
         def fn(con):
@@ -1508,7 +1560,7 @@ class EconomyDB:
         return await self._tx(fn)
 
     async def _play_grind(self, table: str, user_id: int, now_ts: int, roll, cooldown_sec: int,
-                          skip_item: str | None = None) -> dict:
+                          skip_item: str | None = None, rookie: bool = True) -> dict:
         """
         레벨·경험치·일일 횟수가 있는 반복 콘텐츠(스카우트·훈련·직관) 공용.
         roll(level, con) -> (delta, xp_gain, info) 를 트랜잭션 안에서 호출해 결과를 반영한다.
@@ -1579,7 +1631,7 @@ class EconomyDB:
                         leveled += up
                     used += plays
                     # 신인 부스트: 처음 시작하고 ROOKIE_DAYS 일 동안 +보상 ×2 (손실은 그대로)
-                    boost = total > 0 and now_ts < rookie_until(rookie_start(con, user_id, now_ts))
+                    boost = rookie and total > 0 and now_ts < rookie_until(rookie_start(con, user_id, now_ts))
                     if boost:
                         total *= ROOKIE_GRIND_MULT
 

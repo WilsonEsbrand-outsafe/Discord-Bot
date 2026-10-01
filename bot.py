@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+import release
 from auth import OWNER_ID, collect_owner_commands, is_owner_command, owner_only, owner_only_error
 
 # ───────────────── 설정 ─────────────────
@@ -245,6 +246,8 @@ async def sync_guild(guild: discord.abc.Snowflake):
         collect_owner_commands(bot.tree)   # 관리자 명령어는 / 목록에서 빼고 /관리자명령어 드롭다운으로
         bot.tree.clear_commands(guild=guild)
         bot.tree.copy_global_to(guild=guild)
+        for name in release.hidden_commands(gid):   # 단계 배포: 공개 전 새 명령어 / 공개 후 없어진 명령어
+            bot.tree.remove_command(name, guild=guild)
 
         # ✅ 타임아웃(예: 25초) 걸어서 무한 대기 방지
         synced = await asyncio.wait_for(bot.tree.sync(guild=guild), timeout=60)
@@ -256,12 +259,63 @@ async def sync_guild(guild: discord.abc.Snowflake):
     except Exception as e:
         print(f"❌ Sync failed for guild {gid}:", repr(e))
 
+# ───────────────── 정기점검 · 가입(구단생성) 먼저 ─────────────────
+SIGNUP_FREE = {"구단생성", "튜토리얼", "명령어"}   # 구단이 없는 새 유저도 쓸 수 있는 명령어
+
+
+def _signed_up(user_id: int) -> bool:
+    """구단이 있거나 2.5 전부터 있던 유저(rookie.start_ts=0)면 가입한 것으로 본다."""
+    import sqlite3
+    con = sqlite3.connect(BASE_DIR / "data" / "economy.sqlite3", timeout=30)
+    try:
+        if con.execute("SELECT 1 FROM clubs WHERE user_id=?", (user_id,)).fetchone():
+            return True
+        row = con.execute("SELECT start_ts FROM rookie WHERE user_id=?", (user_id,)).fetchone()
+        return bool(row and row[0] == 0)
+    except sqlite3.OperationalError:
+        return True
+    finally:
+        con.close()
+
+
+async def _tree_check(interaction: discord.Interaction) -> bool:
+    if interaction.type != discord.InteractionType.application_command or interaction.user.id == OWNER_ID:
+        return True
+    if release.maintenance():
+        start, end = release.MAINTENANCE
+        await interaction.response.send_message(
+            f"🔧 정기점검 중입니다. (<t:{start}:t> ~ <t:{end}:t>) 점검이 끝나면 다시 이용해 주세요.", ephemeral=True)
+        return False
+    name = (interaction.command.qualified_name if interaction.command else "").split(" ")[0]
+    if (release.preview(interaction.guild_id) and name not in SIGNUP_FREE
+            and not await asyncio.to_thread(_signed_up, interaction.user.id)):
+        await interaction.response.send_message(
+            "🏟️ 처음 오셨네요! `/구단생성`으로 구단을 만들어야 다른 명령어를 쓸 수 있어요.\n"
+            "구단 이름은 비워 두면 '닉네임 FC'로 만들어져요.", ephemeral=True)
+        return False
+    return True
+
+bot.tree.interaction_check = _tree_check
+
+
+async def _release_sync():
+    """공개 시각(RELEASE_TS)이 되면 모든 서버의 / 목록을 새 패치로 다시 동기화한다."""
+    wait = release.RELEASE_TS - time.time()
+    if wait <= 0:
+        return
+    await asyncio.sleep(wait + 1)
+    print("🚀 [릴리스] 공개 시각 — 모든 서버 명령어 다시 동기화")
+    for guild in bot.guilds:
+        await sync_guild(guild)
+        await asyncio.sleep(1.5)
+
+
 @bot.event
 async def on_ready():
     print(f"🤖 로그인 성공: {bot.user} (ID: {bot.user.id})")
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -354,6 +408,7 @@ async def on_ready():
 
         asyncio.create_task(tick_loop())
         asyncio.create_task(month_loop())
+        asyncio.create_task(_release_sync())
         print("✅ [PM] 시장 틱/월 진행 루프 시작")
 
 @bot.tree.error
@@ -403,7 +458,7 @@ async def sync_and_reload(interaction: discord.Interaction):
             print(f"⚠️ {_name} 리로드 실패:", repr(e))
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)
@@ -680,7 +735,7 @@ def _guess_category_from_module(cmd: app_commands.Command) -> str:
         return "⚽ 선수 & 이적시장"
     if "trade" in mod:
         return "🤝 트레이드"
-    if "club" in mod or "prospect" in mod:
+    if "club" in mod or "prospect" in mod or "elite" in mod:
         return "🏟️ 클럽"
     return "🧩 기타"
 
