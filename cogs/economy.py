@@ -780,18 +780,6 @@ class Economy(commands.Cog):
         e, inv = await self._bag_embed(interaction.user)
         await interaction.response.send_message(embed=e, view=BagView(self, interaction.user, inv), ephemeral=True)
 
-    @app_commands.command(name="사용", description="아이템을 사용합니다")
-    @app_commands.describe(아이템="사용할 아이템")
-    @app_commands.choices(아이템=[app_commands.Choice(name=f"{e} {n} — {d}"[:100], value=k) for k, (e, n, d) in ITEMS.items()])
-    async def use(self, interaction: discord.Interaction, 아이템: str):
-        user = interaction.user
-        if 아이템 == "toto_slip":
-            return await self._slip_prompt(interaction, user)
-        if 아이템 == "steroid":
-            return await self._steroid_prompt(interaction, user)
-        e, ok = await self._use_embed(user, 아이템)
-        await interaction.response.send_message(embed=e, ephemeral=not ok)
-
     # ✅ 토토 용지: 가진다(3배 · 그대로 · 불법 -2배) / 신고한다(포상금 + 직관 경험치 · 또는 아무것도)
     async def _slip_prompt(self, interaction: discord.Interaction, user):
         """고르는 화면부터 모두에게 — 고르면 이 메시지가 결과로 바뀐다."""

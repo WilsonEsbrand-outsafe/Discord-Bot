@@ -286,8 +286,9 @@ async def _item_screens():
     bag, result = sent[-2], sent[-1]
     assert bag["embed"].title == "🎒 내 가방" and "5경기" in bag["embed"].fields[0].value   # 내 가방은 새로고침
     assert "사용" in result["embed"].title and result["ephemeral"] is False            # 사용 결과는 모두에게
-    await Economy.use.callback(eco, inter, "train_reset")                    # 없는 아이템 → 나만
-    assert "없어요" in sent[-1]["embed"].title and sent[-1]["ephemeral"]
+    assert not hasattr(Economy, "use")                                         # /사용 삭제 — 사용은 /가방 버튼으로
+    e, ok = await eco._use_embed(user, "train_reset")                         # 없는 아이템 → 실패 (나만 보기)
+    assert not ok and "없어요" in e.title
 
     # 토토 용지: [사용] → 고르는 화면부터 모두에게 → 고르면 그 메시지가 결과로 바뀐다
     await db.give_item(user.id, "toto_slip")
@@ -299,7 +300,7 @@ async def _item_screens():
     assert not await slip.interaction_check(other) and sent[-1]["ephemeral"]          # 남은 못 고른다
     await slip.report.callback(inter)
     assert sent[-1]["view"] is None and "토토 용지" in sent[-1]["embed"].title         # 같은 메시지가 결과로
-    await Economy.use.callback(eco, inter, "toto_slip")                       # 다 썼으면 /사용 도 안내만
+    await eco._slip_prompt(inter, user)                                       # 다 쓴 뒤 옛 가방 버튼 → 안내만
     assert "없어요" in sent[-1]["embed"].title and sent[-1]["ephemeral"]
 
     # 관리자: /아이템지급 (음수=회수, 0 아래로는 안 내려감)
