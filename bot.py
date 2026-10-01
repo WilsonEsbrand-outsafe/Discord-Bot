@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from auth import OWNER_ID, owner_only, owner_only_error
+from auth import OWNER_ID, hide_owner_commands, is_owner_command, owner_only, owner_only_error
 
 # ───────────────── 설정 ─────────────────
 BASE_DIR = Path(__file__).resolve().parent
@@ -242,6 +242,7 @@ async def purge_global(interaction: discord.Interaction):
 async def sync_guild(guild: discord.abc.Snowflake):
     gid = getattr(guild, "id", guild)
     try:
+        hide_owner_commands(bot.tree)   # 관리자 명령어는 일반 유저의 / 목록에서 숨김
         bot.tree.clear_commands(guild=guild)
         bot.tree.copy_global_to(guild=guild)
 
@@ -653,13 +654,6 @@ async def recalc_price_ranges_error(interaction: discord.Interaction, error: app
     await owner_only_error(interaction, error)
 
 # ───────────────── /명령어 자동 생성(드롭다운) ─────────────────
-def _is_owner_only_command(cmd: app_commands.Command) -> bool:
-    # owner_only 체크가 걸린 명령어는 제외
-    for chk in getattr(cmd, "checks", []):
-        if getattr(chk, "__name__", "") == "owner_only":
-            return True
-    return False
-
 HIDDEN_COMMANDS: set[str] = {"명령어"}
 
 CATEGORY_ORDER: list[str] = [
@@ -713,7 +707,7 @@ def build_user_help_embeds(bot: commands.Bot) -> list[discord.Embed]:
 
     filtered = [
         (n, d, c) for (n, d, c) in flat
-        if not _is_owner_only_command(c) and c.name not in HIDDEN_COMMANDS
+        if not is_owner_command(c) and c.name not in HIDDEN_COMMANDS
     ]
 
     buckets: dict[str, list[tuple[str, str]]] = {}

@@ -1288,6 +1288,19 @@ class Economy(commands.Cog):
         e.add_field(name="현재 잔액", value=f"{new_bal:,}", inline=True)
         await interaction.followup.send(embed=e)
 
+    @app_commands.command(name="아이템지급", description="(본인전용) 유저에게 아이템을 지급/회수합니다. (음수=회수)")
+    @app_commands.describe(user="대상 유저", 아이템="지급할 아이템", 수량="지급 수량 (음수=회수 · 기본 1)")
+    @app_commands.choices(아이템=[app_commands.Choice(name=f"{e} {n}", value=k) for k, (e, n, _) in ITEMS.items()])
+    @app_commands.check(owner_only)
+    async def grant_item(self, interaction: discord.Interaction, user: discord.Member, 아이템: str, 수량: int = 1):
+        qty = await self.db.give_item(user.id, 아이템, int(수량))
+        emoji, name, desc = ITEMS[아이템]
+        e = ui.card(f"🎁 {emoji} {name} {'지급' if 수량 >= 0 else '회수'}",
+                    f"{user.mention} · `{int(수량):+d}개` → 보유 **{qty}개**\n*{desc}*\n\n`/가방`에서 바로 사용할 수 있어요.",
+                    ui.GOLD if 수량 >= 0 else ui.EVEN, interaction.user, "🛠️ 관리자")
+        e.set_thumbnail(url=ui.emoji_url(emoji))
+        await interaction.response.send_message(embed=e)
+
     @app_commands.command(name="돈설정", description="(본인전용) 유저 잔액을 특정 값으로 설정합니다.")
     @app_commands.describe(user="대상 유저", balance="새 잔액(0 이상)")
     @app_commands.check(owner_only)

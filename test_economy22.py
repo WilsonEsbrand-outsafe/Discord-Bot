@@ -224,6 +224,24 @@ async def _item_screens():
     await Economy.use.callback(eco, inter, "train_reset")                    # 없는 아이템 → 나만
     assert "없어요" in sent[-1]["embed"].title and sent[-1]["ephemeral"]
 
+    # 관리자: /아이템지급 (음수=회수, 0 아래로는 안 내려감)
+    target = SimpleNamespace(id=22, mention="<@22>")
+    await Economy.grant_item.callback(eco, inter, target, "watch_skip", 3)
+    assert "지급" in sent[-1]["embed"].title and "보유 **3개**" in sent[-1]["embed"].description
+    await Economy.grant_item.callback(eco, inter, target, "watch_skip", -5)
+    assert "회수" in sent[-1]["embed"].title and "보유 **0개**" in sent[-1]["embed"].description
+    assert "watch_skip" not in (await db.inventory(22))[0]
+
+    # 관리자(owner_only) 명령어만 / 목록에서 숨긴다 (서버 관리자에게만 보임)
+    from discord import app_commands as ac
+    from auth import hide_owner_commands, is_owner_command
+    cmds = [c for c in vars(Economy).values() if isinstance(c, ac.Command)]
+    owner = {c.name for c in cmds if is_owner_command(c)}
+    assert {"돈지급", "돈설정", "아이템지급", "유저초기화"} <= owner and "지갑" not in owner
+    assert hide_owner_commands(SimpleNamespace(get_commands=lambda: cmds)) == len(owner)
+    for c in cmds:
+        assert (c.default_permissions is not None and c.default_permissions.administrator) == (c.name in owner), c.name
+
     # /상점: 선수팩을 고르면 몇 장 살지 메뉴가 뜨고 → 고른 장수로 개봉 · 돌아가기
     import cogs.players_market as cpm
     shop = cpm.PlayersMarket.__new__(cpm.PlayersMarket)

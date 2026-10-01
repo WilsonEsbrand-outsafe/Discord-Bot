@@ -1265,8 +1265,13 @@ class EconomyDB:
             return inv, buffs
         return await self._tx(fn)
 
-    async def give_item(self, user_id: int, item: str, qty: int = 1) -> None:
-        await self._tx(lambda con: give_item(con, user_id, item, qty))
+    async def give_item(self, user_id: int, item: str, qty: int = 1) -> int:
+        """아이템 지급 (음수 = 회수, 0 아래로는 안 내려감). 새 보유 수량."""
+        def fn(con):
+            give_item(con, user_id, item, qty)
+            con.execute("UPDATE inventory SET qty = MAX(0, qty) WHERE user_id=? AND item=?", (user_id, item))
+            return int(con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()[0])
+        return await self._tx(fn)
 
     async def use_item(self, user_id: int, item: str, now_ts: int) -> dict:
         """아이템 사용. 실패 reason: none(없음). 성공 시 효과 설명용 값."""
