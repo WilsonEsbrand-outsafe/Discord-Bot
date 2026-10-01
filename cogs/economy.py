@@ -15,7 +15,7 @@ from services.economy_db import (
     TRAIN_MAX_LEVEL,
     TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
-from services.club_db import STEROID_TABLE, ClubDB
+from services.club_db import STEROID_TABLE, ClubDB, hidden_tier
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
 from services import ui
@@ -803,6 +803,7 @@ class Economy(commands.Cog):
     STEROID_TEXT = {   # 결과 → (제목, 확률표 이름)
         "ovr": ("💪 근육이 터질 듯!", "OVR 상승"), "pot": ("🌱 잠재력이 깨어났다!", "잠재력 상승"),
         "awaken": ("⭐ 각성!!", "각성(둘 다)"), "none": ("😐 아무 일도 없었다…", "효과 없음"),
+        "fragile": ("🦴 몸이 약해졌다…", "부상 빈도 증가"),
         "doping": ("🚨 약물 검출!", "약물 검출(OVR 하락)"), "retire": ("⚰️ 부작용으로 은퇴…", "은퇴"),
     }
 
@@ -830,6 +831,7 @@ class Economy(commands.Cog):
             "pot": f"잠재력 **{r['pot0']} → {r['pot']}** ({r['pot_grade']})",
             "awaken": f"OVR **{r['ovr0']} → {r['ovr']}** · 잠재력 **{r['pot0']} → {r['pot']}** ({r['pot_grade']})",
             "none": "주사기만 날렸어요.",
+            "fragile": f"부작용으로 몸이 약해졌어요… 🦴 부상 빈도 **{hidden_tier(r['prone0'])} → {hidden_tier(r['prone'])}**",
             "doping": f"약물 검출로 징계! 후유증으로 OVR **{r['ovr0']} → {r['ovr']}**",
             "retire": "부작용으로 은퇴했어요… 전성기 커리어로 저장됐어요. `/영구결번`으로 등번호를 남길 수 있어요.",
         }[r["kind"]]

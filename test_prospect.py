@@ -94,6 +94,8 @@ def test_assists():
 
 async def _flow():
     eco, pm, clubs = edb.EconomyDB(), pmdb.PlayerMarketDB(), cdb.ClubDB()
+    injury_odds = cdb.INJURY_BASE, cdb.INJURY_PER_PRONE
+    cdb.INJURY_BASE = cdb.INJURY_PER_PRONE = 0          # 부상은 아래 부상 테스트에서만
     now = int(time.time())
     A, B = 701, 702
 
@@ -101,6 +103,8 @@ async def _flow():
     assert (await clubs.create_prospect(A, INFO, now))["reason"] == "balance"
     await eco.add_balance(A, 6_000_000)
     r = await clubs.create_prospect(A, INFO, now, random.Random(1))
+    assert r["confidence"] == 10 and 3 <= r["proneness"] <= 14 and 4 <= r["pro"] <= 17 and not r["injured"]
+    sql("UPDATE prospects SET pro=10 WHERE id=?", r["id"])                       # 프로 의식 10 = 경험치 그대로
     assert r["ok"] and r["balance"] == 1_000_000 and await eco.get_balance(A) == 1_000_000
     assert r["pid"] == f"YP{r['id']}" and r["group"] == "FW" and r["age"] == 17 and 50 <= r["ovr"] <= 58 and 75 <= r["pot"] <= 94
     assert (await clubs.create_prospect(A, INFO, now))["reason"] == "exists"
@@ -174,7 +178,8 @@ async def _flow():
     await cp.Prospect.show.callback(cog, inter, None)
     e = sent[-1]["embed"]
     assert "손흥민 #7" in e.title and "`나이` **17세**" in e.description and "LW 왼쪽 윙어" in e.description
-    assert [f.name for f in e.fields] == ["📊 능력치", "📈 커리어"] and "`골`" in e.fields[1].value
+    assert [f.name for f in e.fields] == ["📊 능력치", "📈 커리어", "🔒 히든 능력치"] and "`골`" in e.fields[1].value
+    assert "`자신감`" in e.fields[2].value and "`프로 의식` 보통" in e.fields[2].value
     club = cc.Club.__new__(cc.Club)
     club.clubs, club.money, club.pm, club._playing = clubs, eco, pm, set()
     real_sleep, cc.asyncio.sleep = cc.asyncio.sleep, (lambda s: real_sleep(0))
@@ -203,6 +208,11 @@ async def _flow():
         p = (await clubs.prospects(A, now))["active"]
         assert s["ok"] and s["kind"] == kind and (p["ovr"], p["pot"]) == (o, pt) == (s["ovr"], s["pot"]), kind
     assert p["peak_ovr"] == max(peak0, 76)                                         # 최고 기록은 떨어져도 남는다
+    sql("UPDATE prospects SET proneness=17 WHERE id=?", r["id"])
+    s = await clubs.use_steroid(A, now, Forced("fragile"))                         # 🦴 부작용: 부상 빈도 +3~5 (최대 20)
+    assert (s["prone0"], s["prone"]) == (17, 20) and (await clubs.prospects(A, now))["active"]["proneness"] == 20
+    assert (s["ovr"], s["pot"]) == (72, 88)
+    assert "부상 빈도 **매우 높음 → 매우 높음**" in Economy._steroid_result(Economy.__new__(Economy), inter.user, s).description
     econ = Economy.__new__(Economy)
     econ.db = eco
     econ.clubs = SimpleNamespace(prospects=clubs.prospects,                         # 화면 테스트는 '효과 없음'으로 고정
@@ -274,6 +284,86 @@ async def _flow():
     await cp.Prospect.delete.callback(cog, di)
     assert sent[-1]["ephemeral"] and "없어요" in sent[-1]["embed"].title
     assert (await clubs.create_prospect(D, INFO, now))["ok"]
+
+    # 히든 능력치: 자신감은 경기 결과로 오르내리고(1~20) 골 · 도움 기회에, 프로 의식은 경험치 배율에
+    E = 705
+    await eco.add_balance(E, 20_000_000)
+    await clubs.create_club(E, "부상 FC", now)
+    await pm.give_amateur_squad(E)
+    await clubs.auto_lineup(E)
+    re_ = await clubs.create_prospect(E, INFO, now)
+    pe = {"player_id": re_["pid"]}
+    await clubs.set_slot(E, lw, re_["pid"])
+    sql("UPDATE prospects SET pro=20, ovr=60, pot=90, xp=0 WHERE id=?", re_["id"])
+    x = (await clubs.record_prospects([([pe], 3, 1)], [{"scorer_id": re_["pid"]}, {"assist_id": re_["pid"]}], now))[0]
+    assert x["xp"] == round((10 + 6 + 4 + 5) * 1.3) and (x["conf0"], x["conf"]) == (10, 13)   # 골 · 도움 · 승 → +3
+    x = (await clubs.record_prospects([([pe], 0, 4)], [], now, [{"player_id": re_["pid"], "kind": "card"}]))[0]
+    assert x["xp"] == 10 - 5 - 5 - 3 and x["conf"] == 13 - 3                     # 감점엔 프로 의식 배율 X · 자신감 -3
+    sql("UPDATE prospects SET confidence=1 WHERE id=?", re_["id"])
+    assert (await clubs.record_prospects([([pe], 0, 4)], [], now))[0]["conf"] == 1      # 1 밑으로는 안 내려간다
+    sql("UPDATE prospects SET confidence=20 WHERE id=?", re_["id"])
+    squad = {p["player_id"]: p for p in await clubs.squad(E)}
+    assert abs(squad[re_["pid"]]["conf_mult"] - 1.4) < 1e-9
+    xi = lambda pre: [{"name": f"{pre}{i}", "pos": "FW", "ovr": 70, "player_id": f"{pre}{i}"} for i in range(4)]  # noqa: E731
+    hot = xi("h")
+    hot[0]["conf_mult"] = 1.4
+    rng = random.Random(3)
+    scored = [g["scorer_id"] for _ in range(400) for g in cc.simulate_match(
+        {"name": "A", "rating": 70, "xi": hot}, {"name": "B", "rating": 70, "xi": xi("b")}, rng)["goals"] if g["side"] == "home"]
+    assert scored.count("h0") > scored.count("h1") * 1.2                          # 자신감 높은 선수가 더 많이 넣는다
+
+    # 부상: 확률(부상 빈도) · 등급 · 결장(의료진 치료능력만큼 단축) · 심각 → OVR/잠재력 하락 · 3번째 부상마다 고질병
+    cdb.INJURY_BASE, cdb.INJURY_PER_PRONE = injury_odds
+    class Hurt:   # 부상 확정 · 정해진 등급 · 범위 최솟값
+        def __init__(self, grade):
+            self.grade = grade
+        def random(self):
+            return 0.0
+        def choices(self, population, weights):
+            return [self.grade]
+        def randint(self, a, b):
+            return a
+        def choice(self, seq):
+            return seq[0]
+    assert (await clubs.hire_medic(E, "doctor"))["ok"]
+    assert (await clubs.hire_medic(E, "doctor"))["reason"] == "same" and (await clubs.hire_medic(999, "intern"))["reason"] == "no_club"
+    sql("UPDATE prospects SET ovr=70, pot=85, injuries=0 WHERE id=?", re_["id"])
+    x = (await clubs.record_prospects([([pe], 1, 1)], [], now, rng=Hurt("minor")))[0]
+    j = x["injury"]
+    assert j["kind"] == "minor" and j["name"] == "발목 염좌" and j["heal"] == 45 and j["until"] == now + round(6 * 3600 * 0.55)
+    assert (j["ovr"], j["pot"], j["chronic"]) == (70, 85, False) and j["hours"] == 3
+    p = (await clubs.prospects(E, now))["active"]
+    assert p["injured"] and p["injuries"] == 1 and p["injury"] == "발목 염좌 (경미)"
+    # 부상 중: 명단엔 자리만 지키고 빈자리(전력 30)로 · 선발에 못 넣는다 · 카드에 복귀 시각
+    team = await clubs.get_team(E)
+    slot = next(s for s in team["lineup"] if s.get("injured"))
+    assert slot["player_id"] is None and slot["injured_id"] == re_["pid"] and re_["pid"] not in {p["player_id"] for p in await clubs.squad(E)}
+    assert "🚑 손흥민(부상)" in cc._team_embed(team, member(E)).description and "의료진` 🩺 스포츠 의학 박사" in cc._team_embed(team, member(E)).description
+    ok, msg = await clubs.set_slot(E, 3, re_["pid"])
+    assert not ok and "부상" in msg
+    assert "🚑 **부상** — 발목 염좌 (경미)" in cp.prospect_embed(p, member(E), now).description
+    assert "🚑 **발목 염좌** (경미) · 3시간 결장 (의료진 -45%)" in cc.Club._star_line(x)
+    sql("UPDATE prospects SET injured_until=? WHERE id=?", now - 1, re_["id"])  # 회복하면 원래 자리로 돌아온다
+    assert re_["pid"] in {s.get("player_id") for s in (await clubs.get_team(E))["lineup"]}
+    # 심각한 부상: OVR -1~3 · 잠재력 -2~5 (최솟값 -1 / -2)
+    j = (await clubs.record_prospects([([pe], 1, 1)], [], now, rng=Hurt("severe")))[0]["injury"]
+    assert (j["ovr0"], j["ovr"], j["pot0"], j["pot"], j["chronic"]) == (70, 69, 85, 83, False) and j["hours"] == 40
+    # 3번째 부상은 가벼워도 고질병: OVR -1 · 잠재력 -2
+    sql("UPDATE prospects SET injured_until=0, xp=0 WHERE id=?", re_["id"])
+    x = (await clubs.record_prospects([([pe], 1, 1)], [], now, rng=Hurt("minor")))[0]
+    j = x["injury"]
+    assert j["chronic"] and (j["ovr"], j["pot"]) == (68, 81) and (await clubs.prospects(E, now))["active"]["injuries"] == 3
+    assert "고질병 OVR 69→68 · 잠재력 83→81" in cc.Club._star_line(x)
+    cdb.INJURY_BASE = cdb.INJURY_PER_PRONE = 0
+    # /의료진 화면: 목록 · 영입
+    club.money = eco
+    ei = SimpleNamespace(user=member(E, "부상러"), response=SimpleNamespace(defer=noop), followup=SimpleNamespace(send=rec))
+    await cc.Club.medic.callback(club, ei, None)
+    assert "✅ 🩺 **스포츠 의학 박사**" in sent[-1]["embed"].description
+    bal = await eco.get_balance(E)
+    await cc.Club.medic.callback(club, ei, "physio")
+    assert "합류" in sent[-1]["embed"].title and await eco.get_balance(E) == bal - cdb.MEDICS["physio"][3]
+    assert (await clubs.get_team(E))["medic"] == "physio"
 
     # 노화: 1살 = 7일 · 30세까지는 그대로 · 31세부터 해마다 -1~3 · 40세에 은퇴
     C = 703

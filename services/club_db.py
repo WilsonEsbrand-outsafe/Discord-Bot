@@ -126,12 +126,13 @@ def simulate_match(home: dict, away: dict, rng: random.Random = random) -> dict:
     for side, team, n in (("home", home, poisson(xg_h)), ("away", away, poisson(xg_a))):
         shooters = [p for p in team["xi"] if weight[p["pos"]]] or team["xi"]
         for _ in range(min(n, 9)):
-            who = rng.choices(shooters, weights=[weight[p["pos"]] * p["ovr"] or 1 for p in shooters])[0] \
-                if shooters else {"name": "자책골"}
+            # conf_mult: 유망주 자신감 — 자신감이 높을수록 골 · 도움 기회를 더 많이 가져간다 (다른 선수는 1)
+            who = rng.choices(shooters, weights=[weight[p["pos"]] * p["ovr"] * p.get("conf_mult", 1) or 1
+                                                 for p in shooters])[0] if shooters else {"name": "자책골"}
             g = {"side": side, "minute": rng.randint(1, 90), "scorer": who["name"], "scorer_id": who.get("player_id")}
             mates = [p for p in team["xi"] if p is not who and assist_w[p["pos"]]]
             if mates and rng.random() < 0.75:   # 골 4개 중 3개 정도에 도움
-                a = rng.choices(mates, weights=[assist_w[p["pos"]] * p["ovr"] for p in mates])[0]
+                a = rng.choices(mates, weights=[assist_w[p["pos"]] * p["ovr"] * p.get("conf_mult", 1) for p in mates])[0]
                 g["assist"], g["assist_id"] = a["name"], a.get("player_id")
             goals.append(g)
     goals.sort(key=lambda g: g["minute"])
@@ -186,6 +187,16 @@ MANAGERS = {
     "wing":    ("🪽", "측면 공격 마니아", "3-4-3",   1, 2, 3_000_000,  "측면을 지배하는 자가 경기를 지배한다"),
     "wall":    ("🧱", "철벽 수비왕",      "5-3-2",   1, 2, 3_000_000,  "무실점이 최고의 공격"),
     "legend":  ("👑", "전설의 명장",      None,      4, 0, 20_000_000, "어떤 전술이든 우승으로 만든다"),
+}
+
+
+# ───────────── 의료진 ─────────────
+# key → (이모지, 이름, 치료능력 %, 영입비, 소개). 치료능력 = 유망주 부상 결장 기간 단축.
+MEDICS = {
+    "intern": ("🩹", "인턴 트레이너",      15, 500_000,    "파스 붙이기는 자신 있어요"),
+    "physio": ("💆", "베테랑 물리치료사",  30, 3_000_000,  "뭉친 근육은 10분이면 풀어 드립니다"),
+    "doctor": ("🩺", "스포츠 의학 박사",   45, 10_000_000, "재활 프로그램의 대가"),
+    "legend": ("🏥", "전설의 메디컬 팀",   60, 30_000_000, "부러진 뼈도 금방 붙입니다"),
 }
 
 
@@ -248,12 +259,34 @@ PROSPECT_ATTRS = {       # 포지션 그룹 → (세부 능력치, OVR 대비 �
     "GK": (("다이빙", 3), ("핸들링", 2), ("킥", -10), ("반응", 4), ("스피드", -25), ("위치선정", 2)),
 }
 
+# 히든 능력치 (1~20, 화면엔 숫자 대신 등급만):
+#   자신감   — 처음 10. 골 · 도움 · 승리면 오르고 패배 · 대패 · 경고 · 찬스 놓침이면 떨어진다. 높을수록 골 · 도움 기회 ↑
+#   부상 빈도 — 처음 3~14. 경기마다 부상 확률 = 0.5% + 부상 빈도 × 0.15%. 스테로이드 부작용으로 오른다
+#   프로 의식 — 처음 4~17. 경기 성장 경험치(+일 때) × (0.7 + 프로 의식 × 0.03) — 10 이면 그대로
+HIDDEN_TIERS = ("매우 낮음", "낮음", "보통", "높음", "매우 높음")
+
+
+def hidden_tier(v: int) -> str:
+    return HIDDEN_TIERS[min(4, max(0, (int(v) - 1) // 4))]
+
+
+# 부상: 등급 → (이름, 확률, 결장 시간(시간) 범위, 부상 이름들). 의료진 치료능력만큼 결장이 줄어든다.
+# 심각한 부상은 OVR -1~3 · 잠재력 -2~5, 그리고 부상이 PROSPECT_CHRONIC 번 쌓일 때마다 고질병 OVR -1 · 잠재력 -2.
+INJURY_BASE, INJURY_PER_PRONE = 0.005, 0.0015
+INJURIES = {
+    "minor":    ("경미", 0.70, (6, 12),   ("발목 염좌", "근육 뭉침", "가벼운 타박상")),
+    "moderate": ("중상", 0.25, (24, 48),  ("햄스트링 부상", "무릎 인대 염좌", "갈비뼈 타박상")),
+    "severe":   ("심각", 0.05, (72, 120), ("십자인대 파열", "발목 골절", "아킬레스건 부상")),
+}
+PROSPECT_CHRONIC = 3
+
 # 스테로이드 주사기(가방 아이템 'steroid') — 2.4부터 유망주에게만: 결과 → 확률
 STEROID_TABLE = {
     "ovr": 0.35,      # 💪 OVR +1~3
     "pot": 0.25,      # 🌱 잠재력 +2~5
     "awaken": 0.03,   # ⭐ 각성: OVR +3 · 잠재력 +3
-    "none": 0.20,     # 😐 효과 없음
+    "none": 0.12,     # 😐 효과 없음
+    "fragile": 0.08,  # 🦴 부작용: 부상 빈도 +3~5
     "doping": 0.12,   # 🚨 약물 검출: 징계 후유증으로 OVR -2~4
     "retire": 0.05,   # ⚰️ 부작용으로 은퇴
 }
@@ -312,7 +345,8 @@ def prospect_input(name: str, nation: str, position: str, number: int, birthday:
 
 _P_COLS = ("id", "user_id", "name", "nation", "position", "number", "birthday", "foot", "height", "ovr", "pot", "xp",
            "aged", "peak_ovr", "peak_age", "apps", "goals", "assists", "day_key", "day_n", "created_ts",
-           "retired_ts", "retire_reason", "retired_number")
+           "retired_ts", "retire_reason", "retired_number",
+           "confidence", "proneness", "pro", "injured_until", "injury", "injuries")
 _P_SELECT = f"SELECT {', '.join(_P_COLS)} FROM prospects"
 
 
@@ -321,6 +355,7 @@ def _prospect(row, now_ts: int) -> dict:
     p = dict(zip(_P_COLS, row))
     p.update(pid=f"{PROSPECT_ID}{p['id']}", group=SLOT_GROUP[p["position"]],
              age=prospect_age(p["created_ts"], p["retired_ts"] or now_ts),
+             injured=not p["retired_ts"] and p["injured_until"] > int(now_ts),
              weight=round(p["height"] ** 2 * 22.5 / 10_000), pot_grade=pot_grade_for_value(p["pot"]))
     return p
 
@@ -351,7 +386,7 @@ class ClubDB:
             )
             for col in (f"formation TEXT NOT NULL DEFAULT '{DEFAULT_FORMATION}'", "captain TEXT",
                         "wins INTEGER NOT NULL DEFAULT 0", "draws INTEGER NOT NULL DEFAULT 0",
-                        "losses INTEGER NOT NULL DEFAULT 0", "manager TEXT"):
+                        "losses INTEGER NOT NULL DEFAULT 0", "manager TEXT", "medic TEXT"):
                 try:
                     con.execute(f"ALTER TABLE clubs ADD COLUMN {col}")
                 except sqlite3.OperationalError:
@@ -403,6 +438,14 @@ class ClubDB:
                 )
                 """
             )
+            # 히든 능력치 · 부상 (2.4 후반 추가 — 그 전에 만든 유망주는 기본값)
+            for col in ("confidence INTEGER NOT NULL DEFAULT 10", "proneness INTEGER NOT NULL DEFAULT 8",
+                        "pro INTEGER NOT NULL DEFAULT 10", "injured_until INTEGER NOT NULL DEFAULT 0", "injury TEXT",
+                        "injuries INTEGER NOT NULL DEFAULT 0"):
+                try:
+                    con.execute(f"ALTER TABLE prospects ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
             # 현역 유망주는 한 명만
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_prospects_active ON prospects(user_id) WHERE retired_ts=0")
             con.execute("INSERT OR IGNORE INTO club_bonus(user_id) SELECT user_id FROM clubs")
@@ -486,7 +529,7 @@ class ClubDB:
     # ───────────── 선수 명단 ─────────────
     @staticmethod
     def _squad(con, user_id: int) -> dict:
-        """경기에 뛸 수 있는 보유 선수 (은퇴 제외) + 현역 유망주 {player_id: {...}}."""
+        """경기에 뛸 수 있는 보유 선수 (은퇴 제외) + 현역 유망주(부상 중이면 제외) {player_id: {...}}."""
         rows = con.execute(
             """
             SELECT p.player_id, p.name, p.position, p.ovr, p.nation
@@ -497,14 +540,16 @@ class ClubDB:
         ).fetchall()
         squad = {r[0]: {"player_id": r[0], "name": r[1], "pos": r[2], "ovr": int(r[3]), "nation": r[4]} for r in rows}
         p = ClubDB._active_prospect(con, user_id, int(time.time()))
-        if p:
+        if p and not p["injured"]:
             squad[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"], "ovr": p["ovr"],
-                               "nation": p["nation"], "number": p["number"], "prospect": True}
+                               "nation": p["nation"], "number": p["number"], "prospect": True,
+                               "conf_mult": 0.6 + p["confidence"] * 0.04}   # 자신감 10 → 1.0
         return squad
 
     @staticmethod
-    def _lineup(con, user_id: int, formation: str, squad: dict) -> list[dict]:
-        """슬롯 11개. 팔거나 은퇴해서 더는 못 뛰는 선수는 명단에서 빼고 빈자리로 둔다."""
+    def _lineup(con, user_id: int, formation: str, squad: dict, injured: Optional[dict] = None) -> list[dict]:
+        """슬롯 11개. 팔거나 은퇴해서 더는 못 뛰는 선수는 명단에서 빼고 빈자리로 둔다.
+        부상 중인 유망주(injured)는 자리를 지키되 회복할 때까지 빈자리로 계산한다."""
         slots = FORMATIONS[formation]
         rows = dict(con.execute("SELECT slot, player_id FROM club_lineup WHERE user_id=?", (int(user_id),)).fetchall())
         out = []
@@ -512,6 +557,8 @@ class ClubDB:
             pid = rows.get(i)
             if pid and pid in squad:
                 out.append({"slot": slot, "index": i, **squad[pid]})
+            elif injured and pid == injured["pid"]:
+                out.append({"slot": slot, "index": i, "player_id": None, "injured": injured["name"], "injured_id": pid})
             else:
                 if pid:
                     con.execute("DELETE FROM club_lineup WHERE user_id=? AND slot=?", (int(user_id), i))
@@ -523,17 +570,20 @@ class ClubDB:
         """구단 + 선발 11명 + 전력. 구단이 없으면 None."""
         def fn(con):
             row = con.execute(
-                "SELECT club_name, created_ts, formation, captain, wins, draws, losses, manager FROM clubs WHERE user_id=?",
-                (int(user_id),),
+                "SELECT club_name, created_ts, formation, captain, wins, draws, losses, manager, medic FROM clubs "
+                "WHERE user_id=?", (int(user_id),),
             ).fetchone()
             if not row:
                 return None
-            club = dict(zip(("name", "created_ts", "formation", "captain", "wins", "draws", "losses", "manager"), row))
+            club = dict(zip(("name", "created_ts", "formation", "captain", "wins", "draws", "losses", "manager", "medic"),
+                            row))
             if club["formation"] not in FORMATIONS:
                 club["formation"] = DEFAULT_FORMATION
             squad = self._squad(con, user_id)
-            lineup = self._lineup(con, user_id, club["formation"], squad)
-            if club["captain"] and club["captain"] not in {s.get("player_id") for s in lineup}:
+            p = self._active_prospect(con, user_id, int(time.time()))
+            lineup = self._lineup(con, user_id, club["formation"], squad, p if p and p["injured"] else None)
+            # 부상 중인 유망주는 주장 완장도 지킨다 (보너스는 복귀해야)
+            if club["captain"] and club["captain"] not in {s.get("player_id") or s.get("injured_id") for s in lineup}:
                 con.execute("UPDATE clubs SET captain=NULL WHERE user_id=?", (int(user_id),))
                 club["captain"] = None
             club["lineup"] = lineup
@@ -584,6 +634,8 @@ class ClubDB:
                 return True, f"**{slots[slot_index]}** 자리를 비웠습니다."
             squad = self._squad(con, user_id)
             if player_id not in squad:
+                if str(player_id).startswith(PROSPECT_ID):
+                    return False, "부상 중이거나 은퇴한 유망주는 넣을 수 없습니다. (부상은 복귀한 뒤에)"
                 return False, "보유 중인 현역 선수만 넣을 수 있습니다."
             con.execute("DELETE FROM club_lineup WHERE user_id=? AND player_id=?", (int(user_id), player_id))
             con.execute("INSERT INTO club_lineup(user_id, slot, player_id) VALUES(?, ?, ?)",
@@ -633,13 +685,18 @@ class ClubDB:
     async def record_match(self, home_id: int, away_id: int, home_goals: int, away_goals: int) -> None:
         await self._tx(lambda con: self._add_record(con, home_id, away_id, home_goals, away_goals))
 
-    # ───────────── 감독 ─────────────
+    # ───────────── 감독 · 의료진 ─────────────
     async def hire_manager(self, user_id: int, key: str) -> dict:
         """감독 영입: 영입비를 내고 감독을 바꾼다. 실패 reason: no_club / same / balance."""
-        fee = MANAGERS[key][5]
+        return await self._hire(user_id, "manager", key, MANAGERS[key][5])
 
+    async def hire_medic(self, user_id: int, key: str) -> dict:
+        """의료진 영입 — 감독과 같은 방식."""
+        return await self._hire(user_id, "medic", key, MEDICS[key][3])
+
+    async def _hire(self, user_id: int, col: str, key: str, fee: int) -> dict:
         def fn(con):
-            row = con.execute("SELECT manager FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
+            row = con.execute(f"SELECT {col} FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
             if not row:
                 return {"ok": False, "reason": "no_club"}
             if row[0] == key:
@@ -649,7 +706,7 @@ class ClubDB:
             if bal < fee:
                 return {"ok": False, "reason": "balance", "balance": bal, "fee": fee}
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (fee, int(user_id)))
-            con.execute("UPDATE clubs SET manager=? WHERE user_id=?", (key, int(user_id)))
+            con.execute(f"UPDATE clubs SET {col}=? WHERE user_id=?", (key, int(user_id)))
             return {"ok": True, "prev": row[0], "fee": fee, "balance": bal - fee}
         return await self._tx(fn)
 
@@ -748,19 +805,22 @@ class ClubDB:
                 return {"ok": False, "reason": "balance", "balance": bal}
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (PROSPECT_PRICE, int(user_id)))
             ovr, pot = rng.randint(50, 58), rng.randint(75, 94)
+            prone, pro = rng.randint(3, 14), rng.randint(4, 17)   # 히든 능력치 (자신감은 10에서 시작)
             cur = con.execute(
                 "INSERT INTO prospects(user_id, name, nation, position, number, birthday, foot, height, ovr, pot, aged, "
-                "peak_ovr, peak_age, created_ts) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "peak_ovr, peak_age, created_ts, proneness, pro) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (int(user_id), info["name"], info["nation"], info["position"], info["number"], info["birthday"],
-                 info["foot"], info["height"], ovr, pot, PROSPECT_START_AGE, ovr, PROSPECT_START_AGE, int(now_ts)))
+                 info["foot"], info["height"], ovr, pot, PROSPECT_START_AGE, ovr, PROSPECT_START_AGE, int(now_ts),
+                 prone, pro))
             return {"ok": True, "balance": bal - PROSPECT_PRICE, **self._prospect_by_id(con, cur.lastrowid, now_ts)}
         return await self._tx(fn)
 
     async def record_prospects(self, sides: list[tuple[list[dict], int, int]], goals: list[dict], now_ts: int,
-                               events: list[dict] = ()) -> list[dict]:
-        """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 그리고 성장 경험치 ± (하루 PROSPECT_DAILY_GROWTH 경기까지,
-        30세까지, 잠재력까지). sides: [(선발 xi, 득점, 실점)] — 양 팀 모두. events: 중계 장면(경고 · 찬스 놓침).
-        뛴 유망주마다 결과 dict (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키)."""
+                               events: list[dict] = (), rng=random) -> list[dict]:
+        """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 성장 경험치 ± (하루 PROSPECT_DAILY_GROWTH 경기까지,
+        30세까지, 잠재력까지, 프로 의식 배율), 자신감 변화, 부상. sides: [(선발 xi, 득점, 실점)] — 양 팀 모두.
+        events: 중계 장면(경고 · 찬스 놓침). 뛴 유망주마다 결과 dict
+        (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키 · injury: 부상 dict | None)."""
         if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, _, _ in sides for s in xi):
             return []
         day = kst_day(now_ts)
@@ -786,6 +846,8 @@ class ClubDB:
                              "card": sum(e.get("player_id") == pid and e.get("kind") == "card" for e in events),
                              "miss": sum(e.get("player_id") == pid and e.get("kind") == "miss" for e in events)}
                     delta = sum(PROSPECT_XP[k] * n for k, n in parts.items())
+                    if delta > 0:   # 프로 의식: 10 이면 그대로, 높을수록 더 많이 (감점에는 안 붙는다)
+                        delta = round(delta * (0.7 + p["pro"] * 0.03))
                     if grew:
                         xp = max(0, xp + delta)
                         while ovr < p["pot"] and xp >= prospect_xp_need(ovr):
@@ -794,15 +856,46 @@ class ClubDB:
                         if ovr >= p["pot"]:
                             xp = 0
                     peak = (ovr, p["age"]) if ovr > p["peak_ovr"] else (p["peak_ovr"], p["peak_age"])
+                    conf = min(20, max(1, p["confidence"] + (g > 0) + (a > 0) + (res == "W") - (res == "L")
+                                       - parts["rout"] - parts["card"] - parts["miss"]))
+                    injury, pot = None, p["pot"]
+                    if rng.random() < INJURY_BASE + p["proneness"] * INJURY_PER_PRONE:
+                        injury = self._injure(con, owner[0], p, ovr, pot, now_ts, rng)
+                        ovr, pot = injury["ovr"], injury["pot"]
                     con.execute(
-                        "UPDATE prospects SET apps=apps+1, goals=goals+?, assists=assists+?, ovr=?, xp=?, "
-                        "peak_ovr=?, peak_age=?, day_key=?, day_n=? WHERE id=?",
-                        (g, a, ovr, xp, *peak, day, played + 1, p["id"]))
+                        "UPDATE prospects SET apps=apps+1, goals=goals+?, assists=assists+?, ovr=?, pot=?, xp=?, "
+                        "peak_ovr=?, peak_age=?, day_key=?, day_n=?, confidence=?, injured_until=?, injury=?, "
+                        "injuries=? WHERE id=?",
+                        (g, a, ovr, pot, xp, *peak, day, played + 1, conf,
+                         injury["until"] if injury else p["injured_until"],
+                         f"{injury['name']} ({injury['grade']})" if injury else p["injury"],
+                         p["injuries"] + bool(injury), p["id"]))
                     out.append({"user_id": owner[0], "name": p["name"], "number": p["number"], "goals": g, "assists": a,
                                 "ovr0": p["ovr"], "ovr": ovr, "grew": grew, "xp": delta if grew else None,
-                                "minus": [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0]})
+                                "minus": [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0],
+                                "conf0": p["confidence"], "conf": conf, "injury": injury})
             return out
         return await self._tx(fn)
+
+    @staticmethod
+    def _injure(con, user_id: int, p: dict, ovr: int, pot: int, now_ts: int, rng) -> dict:
+        """부상 굴림: 등급 · 결장 시간(의료진 치료능력만큼 단축) · 심각하면 OVR/잠재력 하락 ·
+        PROSPECT_CHRONIC 번째 부상마다 고질병(OVR -1 · 잠재력 -2)."""
+        grade = rng.choices(list(INJURIES), weights=[v[1] for v in INJURIES.values()])[0]
+        label, _, (lo, hi), names = INJURIES[grade]
+        medic = con.execute("SELECT medic FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
+        heal = MEDICS[medic[0]][2] if medic and medic[0] in MEDICS else 0
+        secs = round(rng.randint(lo, hi) * 3600 * (100 - heal) / 100)
+        chronic = (p["injuries"] + 1) % PROSPECT_CHRONIC == 0
+        new_ovr, new_pot = ovr, pot
+        if grade == "severe":
+            new_ovr, new_pot = new_ovr - rng.randint(1, 3), new_pot - rng.randint(2, 5)
+        if chronic:
+            new_ovr, new_pot = new_ovr - 1, new_pot - 2
+        new_ovr = max(40, new_ovr)
+        return {"name": rng.choice(names), "grade": label, "kind": grade, "until": int(now_ts) + secs,
+                "hours": max(1, round(secs / 3600)), "heal": heal, "chronic": chronic,
+                "ovr0": ovr, "ovr": new_ovr, "pot0": pot, "pot": max(new_pot, new_ovr)}
 
     async def use_steroid(self, user_id: int, now_ts: int, rng=random) -> dict:
         """가방의 스테로이드 주사기 1개를 내 현역 유망주에게. 결과 kind 는 STEROID_TABLE 의 키.
@@ -825,13 +918,16 @@ class ClubDB:
                 ovr, pot = min(99, ovr + 3), min(99, pot + 3)
             elif kind == "doping":
                 ovr = max(40, ovr - rng.randint(2, 4))
+            prone = min(20, p["proneness"] + rng.randint(3, 5)) if kind == "fragile" else p["proneness"]
             pot = max(pot, ovr)
             peak = (ovr, p["age"]) if ovr > p["peak_ovr"] else (p["peak_ovr"], p["peak_age"])
-            con.execute("UPDATE prospects SET ovr=?, pot=?, peak_ovr=?, peak_age=? WHERE id=?", (ovr, pot, *peak, p["id"]))
+            con.execute("UPDATE prospects SET ovr=?, pot=?, peak_ovr=?, peak_age=?, proneness=? WHERE id=?",
+                        (ovr, pot, *peak, prone, p["id"]))
             if kind == "retire":
                 con.execute("UPDATE prospects SET retired_ts=?, retire_reason='steroid' WHERE id=?", (int(now_ts), p["id"]))
             return {"ok": True, "kind": kind, "name": p["name"], "number": p["number"], "age": p["age"],
-                    "ovr0": p["ovr"], "pot0": p["pot"], "ovr": ovr, "pot": pot, "pot_grade": pot_grade_for_value(pot)}
+                    "ovr0": p["ovr"], "pot0": p["pot"], "ovr": ovr, "pot": pot, "pot_grade": pot_grade_for_value(pot),
+                    "prone0": p["proneness"], "prone": prone}
         return await self._tx(fn)
 
     async def retire_prospect(self, user_id: int, prospect_id: int, now_ts: int, retire_number: bool) -> Optional[dict]:

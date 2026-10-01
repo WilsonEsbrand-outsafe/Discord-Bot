@@ -11,7 +11,7 @@ from discord.ext import commands
 
 from services import ui
 from services.club_db import (
-    CLUB_NAME_MAX, FORMATIONS, MANAGERS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
+    CLUB_NAME_MAX, FORMATIONS, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
     match_highlights, official_odds, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
@@ -23,7 +23,7 @@ _NO_CLUB = "아직 구단이 없습니다. `/구단생성`으로 먼저 만들�
 
 def _slot_text(s: dict, captain: Optional[str]) -> str:
     if not s.get("player_id"):
-        return f"{s['slot']} —"
+        return f"{s['slot']} 🚑 {s['injured']}(부상)" if s.get("injured") else f"{s['slot']} —"
     eff = effective_ovr(s["ovr"], s["pos"], s["slot"])
     power = f"{s['ovr']}" if eff == s["ovr"] else f"{s['ovr']}→{eff}⚠️"
     cap = " ©️" if s["player_id"] == captain else ""
@@ -42,6 +42,8 @@ def _team_embed(team: dict, owner: discord.abc.User) -> discord.Embed:
         f"`전적` {team['wins']}승 {team['draws']}무 {team['losses']}패"
         + (f"\n`감독` {MANAGERS[team['manager']][0]} {MANAGERS[team['manager']][1]} (+{team['manager_bonus']})"
            if team.get("manager") in MANAGERS else "")
+        + (f"\n`의료진` {MEDICS[team['medic']][0]} {MEDICS[team['medic']][1]} (치료 {MEDICS[team['medic']][2]}%)"
+           if team.get("medic") in MEDICS else "")
         + ("\n`영구결번` 🏅 " + " · ".join(f"#{n}" for n in team["retired_numbers"])
            if team.get("retired_numbers") else "")
     )
@@ -52,6 +54,8 @@ def _team_embed(team: dict, owner: discord.abc.User) -> discord.Embed:
     desc = head + "\n\n" + "\n".join(body)
     if team["filled"] == 0:
         desc += "\n\n선발 명단이 비어 있습니다. `/자동편성`으로 바로 채울 수 있어요."
+    if any(s.get("injured") for s in team["lineup"]):
+        desc += "\n\n🚑 부상 중인 유망주는 복귀할 때까지 빈자리로 계산돼요. (자리는 그대로 지켜요)"
     e = ui.card(f"🏟️ {team['name']}", desc, ui.INFO, owner, "🏟️ 구단")
     e.set_thumbnail(url=owner.display_avatar.url)
     return e
@@ -272,12 +276,20 @@ class Club(commands.Cog):
 
     @staticmethod
     def _star_line(x: dict) -> str:
-        """경기 결과 카드의 유망주 줄: 골 · 도움 · 경험치(감점 사유) · OVR 상승."""
+        """경기 결과 카드의 유망주 줄: 골 · 도움 · 경험치(감점 사유) · OVR 상승 · 부상."""
         line = f"\n🌟 **{x['name']}** #{x['number']} · {x['goals']}골 {x['assists']}도움"
         if x["xp"] is not None:
             why = ", ".join(PROSPECT_XP_LABEL[k] for k in x["minus"])
             line += f" · 경험치 **{x['xp']:+d}**" + (f" ({why})" if why else "")
-        return line + (f" · OVR {x['ovr0']} → **{x['ovr']}** ⬆️" if x["ovr"] > x["ovr0"] else "")
+        line += f" · OVR {x['ovr0']} → **{x['ovr']}** ⬆️" if x["ovr"] > x["ovr0"] else ""
+        j = x.get("injury")
+        if j:
+            line += (f"\n　🚑 **{j['name']}** ({j['grade']}) · {j['hours']}시간 결장"
+                     + (f" (의료진 -{j['heal']}%)" if j["heal"] else ""))
+            if j["ovr"] < j["ovr0"] or j["pot"] < j["pot0"]:
+                line += (f" · {'고질병 ' if j['chronic'] else ''}OVR {j['ovr0']}→{j['ovr']} · "
+                         f"잠재력 {j['pot0']}→{j['pot']}")
+        return line
 
     async def _load_sides(self, interaction, user, home_id: int, away_id: int, away_label: str, section: str):
         """두 구단을 불러오고 문제가 있으면 안내 후 None."""
@@ -496,6 +508,36 @@ class Club(commands.Cog):
                 if cur else "`현재 감독` 없음") if team else _NO_CLUB
         e = ui.card("🧑‍💼 감독", head + "\n\n" + "\n".join(lines), ui.INFO, user, "🏟️ 구단")
         e.set_footer(text="/감독 영입:<감독> 으로 영입 · 영입비는 한 번만 · 감독을 바꾸면 새 영입비")
+        await interaction.followup.send(embed=e)
+
+    # ───────────── 의료진 ─────────────
+    @app_commands.command(name="의료진", description="의료진을 영입합니다 — 치료능력만큼 유망주 부상 결장 기간 단축 (비우면 목록)")
+    @app_commands.describe(영입="영입할 의료진 (비우면 현재 의료진과 목록)")
+    @app_commands.choices(영입=[app_commands.Choice(name=f"{e} {n} · 치료 {h}% · {fee // 10_000:,}만원"[:100], value=k)
+                              for k, (e, n, h, fee, _d) in MEDICS.items()])
+    async def medic(self, interaction: discord.Interaction, 영입: Optional[str] = None):
+        await interaction.response.defer()
+        user = interaction.user
+        if 영입:
+            r = await self.clubs.hire_medic(user.id, 영입)
+            e_, n_, heal, fee, desc = MEDICS[영입]
+            if not r["ok"]:
+                msg = {"no_club": _NO_CLUB, "same": f"이미 {e_} {n_}이(가) 함께하고 있어요.",
+                       "balance": f"영입비 **{fee:,}원**이 필요해요. (잔액 {r.get('balance', 0):,}원)"}[r["reason"]]
+                return await interaction.followup.send(embed=ui.card("❌ 의료진 영입 실패", msg, ui.LOSE, user, "🏟️ 구단"))
+            return await interaction.followup.send(embed=ui.card(
+                f"🤝 {e_} {n_} 합류!",
+                f"> 💬 *\"{desc}\"*\n\n`영입비` **-{fee:,}원** · `잔액` **{r['balance']:,}원**\n"
+                f"`치료능력` **{heal}%** — 유망주가 다치면 결장 기간이 {heal}% 줄어요", ui.WIN, user, "🏟️ 구단"))
+
+        team = await self.clubs.get_team(user.id)
+        cur = team and team.get("medic")
+        lines = [f"{'✅' if k == cur else '▫️'} {e_} **{n_}** · {fee:,}원 · 치료 **{heal}%**\n　 *{desc}*"
+                 for k, (e_, n_, heal, fee, desc) in MEDICS.items()]
+        head = (f"`현재 의료진` {MEDICS[cur][0]} **{MEDICS[cur][1]}** · 치료 {MEDICS[cur][2]}%"
+                if cur in MEDICS else "`현재 의료진` 없음") if team else _NO_CLUB
+        e = ui.card("🩺 의료진", head + "\n\n" + "\n".join(lines), ui.INFO, user, "🏟️ 구단")
+        e.set_footer(text="/의료진 영입:<의료진> · 영입비는 한 번만 · 바꾸면 새 영입비 · 부상은 유망주만 당해요")
         await interaction.followup.send(embed=e)
 
 

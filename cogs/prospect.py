@@ -9,8 +9,8 @@ from discord.ext import commands
 from services import ui
 from services.club_db import (
     PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
-    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, ClubDB, kst_day, prospect_attrs, prospect_input,
-    prospect_xp_need,
+    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, ClubDB, hidden_tier, kst_day, prospect_attrs,
+    prospect_input, prospect_xp_need,
 )
 from services.player_market_db import NATIONS
 
@@ -50,7 +50,9 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
         played = p["day_n"] if p["day_key"] == kst_day(now) else 0
         body = (f"`나이` **{p['age']}세** · `OVR` **{p['ovr']}** · `잠재력` **{p['pot']}** ({p['pot_grade']}) · "
                 f"`최고` {p['peak_ovr']}\n{grow}\n"
-                f"`오늘 성장 경기` {min(played, PROSPECT_DAILY_GROWTH)}/{PROSPECT_DAILY_GROWTH}")
+                f"`오늘 성장 경기` {min(played, PROSPECT_DAILY_GROWTH)}/{PROSPECT_DAILY_GROWTH}"
+                + (f"\n🚑 **부상** — {p['injury']} · 복귀 <t:{p['injured_until']}:R> (그때까지 경기에 못 나가요)"
+                   if p["injured"] else ""))
     e = ui.card(title, _profile(p) + "\n\n" + body, ui.GOLD if retired else ui.INFO, owner, SECTION)
     ovr = p["peak_ovr"] if retired else p["ovr"]
     e.add_field(name="📊 능력치" + (" (전성기)" if retired else ""), inline=True,
@@ -60,6 +62,9 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
         f"`출전` **{apps:,}**경기\n`골` **{p['goals']:,}** · `도움` **{p['assists']:,}**\n"
         f"`경기당 공격포인트` {(p['goals'] + p['assists']) / apps:.2f}") if apps
         else "아직 출전 기록이 없어요.\n`/선발`로 내 구단에 넣고\n`/친선경기` `/공식경기`에 내보내 보세요!")
+    e.add_field(name="🔒 히든 능력치", inline=True, value=(
+        f"`자신감` {hidden_tier(p['confidence'])}\n`부상 빈도` {hidden_tier(p['proneness'])}\n"
+        f"`프로 의식` {hidden_tier(p['pro'])}" + (f"\n`부상 이력` {p['injuries']}회" if p["injuries"] else "")))
     e.set_footer(text=RULES)
     return e
 
@@ -237,6 +242,7 @@ class Prospect(commands.Cog):
         e = ui.card(f"🌟 {info['name']} #{info['number']} — 이 선수로 만들까요?",
                     _profile({**info, "weight": round(info["height"] ** 2 * 22.5 / 10_000)}) + "\n\n"
                     f"`비용` **{PROSPECT_PRICE:,}원** · 17세 · OVR 50~58 · 잠재력 75~94 중 랜덤으로 태어나요\n"
+                    "🔒 히든 능력치(자신감 · 부상 빈도 · 프로 의식)도 태어날 때 정해져요\n"
                     "이름 · 등번호 같은 정보는 나중에 바꿀 수 없어요.\n\n"
                     "🔒 이적시장 · 판매 · 트레이드 불가 — 오직 내 구단에서만 뛰어요", ui.INFO, user, SECTION)
         await interaction.response.send_message(embed=e, view=CreateConfirm(self, user, info), ephemeral=True)
