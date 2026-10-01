@@ -24,19 +24,14 @@ def is_owner_command(cmd) -> bool:
     return any(getattr(c, "__name__", "") == "owner_only" for c in getattr(cmd, "checks", []))
 
 
-ADMIN_GROUP = "관리자명령어"
+# /관리자명령어 드롭다운에서 실행할 관리자 명령어 {이름: 명령어}. cog 리로드에도 살아남도록 여기(auth)에 둔다.
+ADMIN_COMMANDS: dict[str, app_commands.Command] = {}
 
 
-def group_owner_commands(tree) -> app_commands.Group:
-    """관리자(owner_only) 명령어를 /관리자명령어 <이름> 하나로 묶는다. 동기화 직전에 부른다.
-    그룹은 서버 관리자에게만 / 목록에 보이고, 하위 명령어 실행은 여전히 봇 주인만 된다.
+def collect_owner_commands(tree) -> int:
+    """관리자(owner_only) 명령어를 / 목록에서 빼서 /관리자명령어 메뉴(ADMIN_COMMANDS)로 옮긴다. 동기화 직전에 부른다.
     cog 를 다시 불러오면 새 명령어가 다시 맨 위에 생기므로, 부를 때마다 옮겨 담는다(같은 이름은 교체)."""
-    group = tree.get_command(ADMIN_GROUP)
-    if group is None:
-        group = app_commands.Group(name=ADMIN_GROUP, description="(봇 주인 전용) 관리자 명령어 모음",
-                                   default_permissions=discord.Permissions(administrator=True), guild_only=True)
-        tree.add_command(group)
     for cmd in [c for c in tree.get_commands() if isinstance(c, app_commands.Command) and is_owner_command(c)]:
         tree.remove_command(cmd.name)
-        group.add_command(cmd, override=True)
-    return group
+        ADMIN_COMMANDS[cmd.name] = cmd
+    return len(ADMIN_COMMANDS)

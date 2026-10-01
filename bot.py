@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from auth import OWNER_ID, group_owner_commands, is_owner_command, owner_only, owner_only_error
+from auth import OWNER_ID, collect_owner_commands, is_owner_command, owner_only, owner_only_error
 
 # ───────────────── 설정 ─────────────────
 BASE_DIR = Path(__file__).resolve().parent
@@ -234,7 +234,7 @@ async def purge_global(interaction: discord.Interaction):
 
     await interaction.followup.send(
         "✅ 글로벌(전체) 슬래시 명령어 삭제 완료.\n"
-        "이제 봇을 재시작한 뒤, /관리자명령어 동기화 를 한 번 실행하세요.",
+        "이제 봇을 재시작한 뒤, /관리자명령어 → 동기화 를 한 번 실행하세요.",
         ephemeral=True,
     )
 
@@ -242,7 +242,7 @@ async def purge_global(interaction: discord.Interaction):
 async def sync_guild(guild: discord.abc.Snowflake):
     gid = getattr(guild, "id", guild)
     try:
-        group_owner_commands(bot.tree)   # 관리자 명령어는 /관리자명령어 하나로 (서버 관리자에게만 보임)
+        collect_owner_commands(bot.tree)   # 관리자 명령어는 / 목록에서 빼고 /관리자명령어 드롭다운으로
         bot.tree.clear_commands(guild=guild)
         bot.tree.copy_global_to(guild=guild)
 
@@ -251,7 +251,7 @@ async def sync_guild(guild: discord.abc.Snowflake):
         print(f"🔗 Synced {len(synced)} cmds to guild {gid}")
 
     except asyncio.TimeoutError:
-        print(f"⚠️ Sync timeout for guild {gid} (60s). 잠시 후 /관리자명령어 동기화 로 재시도 권장")
+        print(f"⚠️ Sync timeout for guild {gid} (60s). 잠시 후 /관리자명령어 → 동기화 로 재시도 권장")
 
     except Exception as e:
         print(f"❌ Sync failed for guild {gid}:", repr(e))
@@ -261,7 +261,7 @@ async def on_ready():
     print(f"🤖 로그인 성공: {bot.user} (ID: {bot.user.id})")
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -403,7 +403,7 @@ async def sync_and_reload(interaction: discord.Interaction):
             print(f"⚠️ {_name} 리로드 실패:", repr(e))
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)
@@ -654,7 +654,7 @@ async def recalc_price_ranges_error(interaction: discord.Interaction, error: app
     await owner_only_error(interaction, error)
 
 # ───────────────── /명령어 자동 생성(드롭다운) ─────────────────
-HIDDEN_COMMANDS: set[str] = {"명령어"}
+HIDDEN_COMMANDS: set[str] = {"명령어", "관리자명령어"}
 
 CATEGORY_ORDER: list[str] = [
     "📅 경기 정보",

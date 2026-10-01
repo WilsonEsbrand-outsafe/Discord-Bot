@@ -232,37 +232,6 @@ async def _item_screens():
     assert "회수" in sent[-1]["embed"].title and "보유 **0개**" in sent[-1]["embed"].description
     assert "watch_skip" not in (await db.inventory(22))[0]
 
-    # 관리자(owner_only) 명령어는 /관리자명령어 하나로 묶인다 (서버 관리자에게만 보임 · 실행은 봇 주인만)
-    from discord import app_commands as ac
-    from auth import ADMIN_GROUP, group_owner_commands, is_owner_command
-
-    class FakeTree:   # CommandTree 에서 쓰는 부분만
-        def __init__(self, cmds):
-            self.c = {c.name: c for c in cmds}
-        def get_command(self, name):
-            return self.c.get(name)
-        def add_command(self, cmd):
-            self.c[cmd.name] = cmd
-        def remove_command(self, name):
-            return self.c.pop(name, None)
-        def get_commands(self):
-            return list(self.c.values())
-
-    def fresh():
-        return [c._copy_with(parent=None, binding=eco) for c in vars(Economy).values() if isinstance(c, ac.Command)]
-    tree = FakeTree(fresh())
-    owner = {c.name for c in tree.get_commands() if is_owner_command(c)}
-    assert {"돈지급", "돈설정", "아이템지급", "유저초기화"} <= owner and "지갑" not in owner
-    group = group_owner_commands(tree)
-    assert {c.name for c in group.commands} == owner and group.default_permissions.administrator and group.guild_only
-    top = {c.name for c in tree.get_commands()}
-    assert ADMIN_GROUP in top and not top & owner and "지갑" in top                 # 목록엔 그룹 하나만
-    assert all(c.parent is group for c in group.commands)
-    for c in fresh():                                                                # cog 리로드 → 새 명령어가 다시 맨 위에
-        tree.add_command(c)
-    assert group_owner_commands(tree) is group and len(group.commands) == len(owner)
-    assert not {c.name for c in tree.get_commands()} & owner
-
     # /상점: 선수팩을 고르면 몇 장 살지 메뉴가 뜨고 → 고른 장수로 개봉 · 돌아가기
     import cogs.players_market as cpm
     shop = cpm.PlayersMarket.__new__(cpm.PlayersMarket)
