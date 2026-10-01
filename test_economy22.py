@@ -11,6 +11,7 @@ import services.player_market_db as pmdb
 
 TMP = Path(tempfile.mkdtemp()) / "t.sqlite3"
 edb.DB_PATH = cdb.DB_PATH = pmdb.DB_PATH = TMP
+edb.ROOKIE_DAYS = 0   # 신인 부스트(×2)는 test_rookie.py 에서 — 여기선 정산 금액을 그대로 본다
 
 from cogs.economy import Economy  # noqa: E402
 from services.sponsor_db import SponsorDB  # noqa: E402

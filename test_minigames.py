@@ -11,6 +11,7 @@ from cogs.economy import Economy
 
 TMP = Path(tempfile.mkdtemp()) / "t.sqlite3"
 edb.DB_PATH = TMP
+edb.ROOKIE_DAYS = 0   # 신인 부스트(×2)는 test_rookie.py 에서
 Q.DB_PATH = TMP
 
 

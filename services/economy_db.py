@@ -81,6 +81,40 @@ ATTEND_BONUS = {7: 50_000, 14: 100_000, 30: 300_000, 50: 500_000, 100: 1_000_000
 
 TRANSFER_DAILY_LIMIT = 100_000_000   # 하루(KST) 보낼 수 있는 송금 총액
 
+# ───────────── 신인 (2.5) ─────────────
+# 신인 부스트: 처음 시작(첫 출석 · 스카우트 · 훈련 · 직관)부터 ROOKIE_DAYS 일 동안 스카우트 · 훈련 · 직관 +보상 ×2,
+# 첫 유망주 생성비 반값(club_db). 2.5 전부터 있던 유저(wallets)는 rookie.start_ts=0 — 신인이 아니다.
+ROOKIE_DAYS = 7
+ROOKIE_GRIND_MULT = 2
+# 루키 미션: (키, 제목, 하는 법, 진행 값 SQL(user_id 하나), 목표, 보상 돈, 보상 아이템). 누구나 한 번씩.
+ROOKIE_MISSIONS = [
+    ("club", "구단 창단", "`/구단생성`", "SELECT COUNT(*) FROM clubs WHERE user_id=?", 1, 200_000, {}),
+    ("match", "첫 경기", "`/친선경기` 또는 `/공식경기`",
+     "SELECT COALESCE(SUM(wins + draws + losses), 0) FROM clubs WHERE user_id=?", 1, 0, {"muffler": 3}),
+    ("attend", "출석 3일", "`/출석`", "SELECT COALESCE(SUM(total_days), 0) FROM daily_claims WHERE user_id=?", 3, 300_000, {}),
+    ("watch", "첫 직관", "`/스카우트` 15회 → `/훈련` 30회 → `/직관`",
+     "SELECT COUNT(*) FROM spectating WHERE user_id=? AND last_play_ts > 0", 1, 0,
+     {"scout_skip": 1, "train_skip": 1, "watch_skip": 1}),
+    ("card", "첫 선수 카드", "`/선수팩상점` 또는 스카우트 발굴",
+     "SELECT COUNT(*) FROM pm_holdings WHERE user_id=? AND qty > 0 AND player_id NOT LIKE 'AMT_%'", 1, 500_000, {}),
+    ("win", "공식경기 첫 승", "`/공식경기`", "SELECT COALESCE(SUM(w), 0) FROM club_official WHERE user_id=?", 1, 1_000_000, {}),
+    ("prospect", "유망주 데뷔", "`/유망주생성`", "SELECT COUNT(*) FROM prospects WHERE user_id=?", 1, 500_000,
+     {"watch_reset": 1}),
+    ("grad", "유망주 10경기 출전", "`/선발`에 넣고 경기", "SELECT COALESCE(MAX(apps), 0) FROM prospects WHERE user_id=?",
+     10, 2_000_000, {}),
+]
+
+
+def rookie_start(con, user_id: int, now_ts: int) -> int:
+    """신인 시작 시각 (처음 부르면 지금으로 기록). 0 이면 2.5 전부터 있던 유저."""
+    con.execute("INSERT OR IGNORE INTO rookie(user_id, start_ts) VALUES(?, ?)", (int(user_id), int(now_ts)))
+    return int(con.execute("SELECT start_ts FROM rookie WHERE user_id=?", (int(user_id),)).fetchone()[0])
+
+
+def rookie_until(start_ts: int) -> int:
+    """신인 부스트가 끝나는 시각 (신인이 아니면 0)."""
+    return start_ts + ROOKIE_DAYS * 86400 if start_ts else 0
+
 # 파산: 잔액이 마이너스일 때만. 스폰서 계약을 강제 해지해 원금으로 갚고, 남은 빚의 30~70% 를 랜덤 탕감.
 BANKRUPT_COOLDOWN = 3600             # 한 시간에 한 번
 BANKRUPT_FORGIVE = (0.3, 0.7)
@@ -220,6 +254,13 @@ class EconomyDB:
             con.execute("CREATE TABLE IF NOT EXISTS shop_daily (user_id INTEGER, item TEXT, day_key INTEGER, cnt INTEGER, "
                         "PRIMARY KEY(user_id, item))")
             con.execute("CREATE TABLE IF NOT EXISTS coupon_used (user_id INTEGER, code TEXT, PRIMARY KEY(user_id, code))")
+            # 신인 (2.5): 시작 시각 · 루키 미션 보상 수령 기록. 처음 한 번, 기존 유저는 start_ts=0(신인 아님)으로.
+            con.execute("CREATE TABLE IF NOT EXISTS rookie (user_id INTEGER PRIMARY KEY, start_ts INTEGER NOT NULL)")
+            con.execute("CREATE TABLE IF NOT EXISTS rookie_claims (user_id INTEGER, mission TEXT, ts INTEGER, "
+                        "PRIMARY KEY(user_id, mission))")
+            con.execute("CREATE TABLE IF NOT EXISTS eco_migrations (name TEXT PRIMARY KEY)")
+            if con.execute("INSERT OR IGNORE INTO eco_migrations(name) VALUES('rookie_veterans')").rowcount:
+                con.execute("INSERT OR IGNORE INTO rookie(user_id, start_ts) SELECT user_id, 0 FROM wallets")
                         # ───────────── 토토 ─────────────
             con.execute(
                 """
@@ -393,6 +434,7 @@ class EconomyDB:
         def fn(con):
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             con.execute("INSERT OR IGNORE INTO daily_claims(user_id, last_claim_ts) VALUES(?, 0)", (user_id,))
+            rookie_start(con, user_id, now_ts)   # 첫 출석부터 신인 기간 시작
             last, total = con.execute("SELECT last_claim_ts, total_days FROM daily_claims WHERE user_id=?",
                                       (user_id,)).fetchone()
             if last and _kst_day(last) == today:
@@ -403,6 +445,44 @@ class EconomyDB:
             con.execute("UPDATE daily_claims SET last_claim_ts=?, total_days=? WHERE user_id=?", (now_ts, total, user_id))
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
             return (True, int(bal), 0, total, bonus)
+        return await self._tx(fn)
+
+    # ───────────── 루키 미션 · 신인 부스트 ─────────────
+    @staticmethod
+    def _rookie_missions(con, user_id: int) -> list[dict]:
+        claimed = {m for (m,) in con.execute("SELECT mission FROM rookie_claims WHERE user_id=?", (user_id,))}
+        out = []
+        for key, title, how, q, goal, money, items in ROOKIE_MISSIONS:
+            try:
+                value = int(con.execute(q, (user_id,)).fetchone()[0] or 0)
+            except sqlite3.OperationalError:   # 그 기능 테이블이 아직 없으면 0
+                value = 0
+            out.append({"key": key, "title": title, "how": how, "value": min(value, goal), "goal": goal,
+                        "done": value >= goal, "claimed": key in claimed, "money": money, "items": items})
+        return out
+
+    async def rookie_status(self, user_id: int, now_ts: int) -> dict:
+        """{"missions": [...], "boost_until": 신인 부스트 끝 시각(아니면 0)}."""
+        def fn(con):
+            return {"missions": self._rookie_missions(con, user_id),
+                    "boost_until": rookie_until(rookie_start(con, user_id, now_ts))}
+        return await self._tx(fn)
+
+    async def claim_rookie(self, user_id: int, now_ts: int) -> dict:
+        """다 깬 · 아직 안 받은 루키 미션 보상을 한 번에. {"claimed": [미션], "money", "items": {아이템: 수}, "balance"}."""
+        def fn(con):
+            got = [m for m in self._rookie_missions(con, user_id) if m["done"] and not m["claimed"]]
+            items: dict[str, int] = {}
+            for m in got:
+                con.execute("INSERT INTO rookie_claims(user_id, mission, ts) VALUES(?, ?, ?)", (user_id, m["key"], now_ts))
+                for k, n in m["items"].items():
+                    give_item(con, user_id, k, n)
+                    items[k] = items.get(k, 0) + n
+            money = sum(m["money"] for m in got)
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (money, user_id))
+            bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
+            return {"claimed": got, "money": money, "items": items, "balance": bal}
         return await self._tx(fn)
 
     async def today_status(self, user_id: int, now_ts: int) -> dict:
@@ -1498,6 +1578,10 @@ class EconomyDB:
                         level, xp, up = grind_add_xp(table, level, xp, xp_gain)
                         leveled += up
                     used += plays
+                    # 신인 부스트: 처음 시작하고 ROOKIE_DAYS 일 동안 +보상 ×2 (손실은 그대로)
+                    boost = total > 0 and now_ts < rookie_until(rookie_start(con, user_id, now_ts))
+                    if boost:
+                        total *= ROOKIE_GRIND_MULT
 
                     con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total, user_id))
                     con.execute(
@@ -1508,7 +1592,8 @@ class EconomyDB:
                     con.execute("COMMIT;")
                     return {"ok": True, "level": level, "xp": xp, "need": grind_xp_need(table, level),
                             "used": used - off, "limit": cap - off, "leveled": leveled, "new_bal": int(new_bal),
-                            "delta": total, "info": infos[-1], "infos": infos, "plays": plays, "xp_gain": gained}
+                            "delta": total, "info": infos[-1], "infos": infos, "plays": plays, "xp_gain": gained,
+                            "boost": boost}
                 except Exception:
                     try:
                         con.execute("ROLLBACK;")

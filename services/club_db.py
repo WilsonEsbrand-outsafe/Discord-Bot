@@ -11,6 +11,7 @@ import zlib
 from pathlib import Path
 from typing import Optional
 
+from services.economy_db import rookie_until
 from services.player_market_db import pot_grade_for_value
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
@@ -801,6 +802,19 @@ class ClubDB:
             return {"active": active, "retired": [_prospect(r, now_ts) for r in rows]}
         return await self._tx(fn)
 
+    @staticmethod
+    def _prospect_price(con, user_id: int, now_ts: int) -> int:
+        """생성비 — 신인 부스트 기간의 첫 유망주는 반값 (2.5)."""
+        try:
+            row = con.execute("SELECT start_ts FROM rookie WHERE user_id=?", (int(user_id),)).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        first = not con.execute("SELECT 1 FROM prospects WHERE user_id=?", (int(user_id),)).fetchone()
+        return PROSPECT_PRICE // 2 if first and row and now_ts < rookie_until(row[0]) else PROSPECT_PRICE
+
+    async def prospect_price(self, user_id: int, now_ts: int) -> int:
+        return await self._tx(lambda con: self._prospect_price(con, user_id, now_ts))
+
     async def create_prospect(self, user_id: int, info: dict, now_ts: int, rng=random) -> dict:
         """유망주 생성 (PROSPECT_PRICE). info 는 prospect_input 이 정리한 값.
         OVR 50~58 · 잠재력 75~94 에서 시작. 실패 reason: exists(현역 유망주 있음) / retired_number / balance."""
@@ -810,11 +824,12 @@ class ClubDB:
             if con.execute("SELECT 1 FROM prospects WHERE user_id=? AND number=? AND retired_number=1",
                            (int(user_id), info["number"])).fetchone():
                 return {"ok": False, "reason": "retired_number"}
+            price = self._prospect_price(con, user_id, now_ts)
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0])
-            if bal < PROSPECT_PRICE:
-                return {"ok": False, "reason": "balance", "balance": bal}
-            con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (PROSPECT_PRICE, int(user_id)))
+            if bal < price:
+                return {"ok": False, "reason": "balance", "balance": bal, "price": price}
+            con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (price, int(user_id)))
             ovr, pot = rng.randint(50, 58), rng.randint(75, 94)
             prone, pro = rng.randint(3, 14), rng.randint(4, 17)   # 히든 능력치 (자신감은 10에서 시작)
             cur = con.execute(
@@ -823,7 +838,7 @@ class ClubDB:
                 (int(user_id), info["name"], info["nation"], info["position"], info["number"], info["birthday"],
                  info["foot"], info["height"], ovr, pot, PROSPECT_START_AGE, ovr, PROSPECT_START_AGE, int(now_ts),
                  prone, pro))
-            return {"ok": True, "balance": bal - PROSPECT_PRICE, **self._prospect_by_id(con, cur.lastrowid, now_ts)}
+            return {"ok": True, "balance": bal - price, "price": price, **self._prospect_by_id(con, cur.lastrowid, now_ts)}
         return await self._tx(fn)
 
     async def record_prospects(self, sides: list[tuple[list[dict], int, int]], goals: list[dict], now_ts: int,

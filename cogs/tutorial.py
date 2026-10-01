@@ -9,7 +9,9 @@ from services import ui
 from services.club_db import (
     PROSPECT_DAILY_GROWTH, PROSPECT_PRICE, PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR,
 )
-from services.economy_db import SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB
+from services.economy_db import (
+    ITEMS, ROOKIE_DAYS, ROOKIE_GRIND_MULT, SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB,
+)
 
 SECTION = "📘 튜토리얼"
 
@@ -121,9 +123,58 @@ async def checklist_embed(db: EconomyDB, user) -> discord.Embed:
     done = sum(line.startswith("✅") for line in lines)
     e = ui.card(f"📋 오늘의 체크리스트 · {done}/{len(lines)}",
                 f"{ui.bar(done, len(lines))}\n\n" + "\n".join(lines)
-                + "\n\n아래 **목차**에서 궁금한 기능으로 바로 이동할 수 있어요.",
+                + "\n\n아래 **목차**에서 궁금한 기능으로 바로 이동할 수 있어요.\n🐣 처음이라면 `/루키미션`으로 보상을 받으며 시작해 보세요!",
                 ui.GOLD if done == len(lines) else ui.INFO, user, SECTION)
     return e
+
+
+# ───────────── 루키 미션 (2.5) ─────────────
+def _reward_text(m: dict) -> str:
+    parts = [f"💰 {m['money']:,}원"] if m["money"] else []
+    parts += [f"{ITEMS[k][0]} {ITEMS[k][1]}" + (f" ×{n}" if n > 1 else "") for k, n in m["items"].items()]
+    return " · ".join(parts)
+
+
+async def rookie_embed(db: EconomyDB, user) -> tuple[discord.Embed, int]:
+    """(루키 미션 화면, 지금 받을 수 있는 보상 수)."""
+    now = int(time.time())
+    s = await db.rookie_status(user.id, now)
+    ms = s["missions"]
+    lines = []
+    for i, m in enumerate(ms, 1):
+        mark = "✅" if m["claimed"] else ("🎁" if m["done"] else "⬜")
+        prog = f" ({m['value']}/{m['goal']})" if m["goal"] > 1 and not m["done"] else ""
+        lines.append(f"{mark} **{i}. {m['title']}**{prog} — {m['how']}\n　 {_reward_text(m)}")
+    claimed = sum(m["claimed"] for m in ms)
+    ready = sum(m["done"] and not m["claimed"] for m in ms)
+    boost = (f"🚀 **신인 부스트** — <t:{s['boost_until']}:R> 끝 · 스카우트 · 훈련 · 직관 보상 ×{ROOKIE_GRIND_MULT} · "
+             "첫 유망주 반값\n\n" if now < s["boost_until"] else "")
+    e = ui.card(f"🐣 루키 미션 · {claimed}/{len(ms)}", f"{ui.bar(claimed, len(ms))}\n\n{boost}" + "\n".join(lines),
+                ui.GOLD if claimed == len(ms) else ui.INFO, user, "🐣 루키")
+    e.set_footer(text=f"✅ 받음 · 🎁 받을 수 있음 · ⬜ 진행 중 — 미션은 한 번씩 · 신인 부스트는 처음 시작하고 {ROOKIE_DAYS}일")
+    return e, ready
+
+
+class RookieView(discord.ui.View):
+    def __init__(self, db: EconomyDB, user, ready: int):
+        super().__init__(timeout=600)
+        self.db, self.user = db, user
+        self.claim.label = f"보상 받기 ({ready}개)" if ready else "받을 보상 없음"
+        self.claim.disabled = not ready
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user.id
+
+    @discord.ui.button(label="보상 받기", emoji="🎁", style=discord.ButtonStyle.success)
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        r = await self.db.claim_rookie(self.user.id, int(time.time()))
+        e, ready = await rookie_embed(self.db, self.user)
+        await interaction.response.edit_message(embed=e, view=RookieView(self.db, self.user, ready))
+        if r["claimed"]:   # 받은 보상은 모두에게
+            got = "\n".join(f"✅ **{m['title']}** — {_reward_text(m)}" for m in r["claimed"])
+            await interaction.followup.send(embed=ui.card(
+                f"🐣 루키 미션 보상 {len(r['claimed'])}개!", f"{got}\n\n`잔액` **{r['balance']:,}원**"
+                + ("\n🎒 아이템은 `/가방`에서 바로 쓸 수 있어요" if r["items"] else ""), ui.WIN, self.user, "🐣 루키"))
 
 
 class TutorialView(discord.ui.View):
@@ -173,6 +224,11 @@ class Tutorial(commands.Cog):
     async def tutorial(self, interaction: discord.Interaction):
         view = TutorialView(self.db, interaction.user)
         await interaction.response.send_message(embed=await view.make_embed(), view=view, ephemeral=True)
+
+    @app_commands.command(name="루키미션", description="처음 시작하는 유저를 위한 단계별 미션 — 깰 때마다 돈 · 아이템 보상 (나만 보기)")
+    async def rookie(self, interaction: discord.Interaction):
+        e, ready = await rookie_embed(self.db, interaction.user)
+        await interaction.response.send_message(embed=e, view=RookieView(self.db, interaction.user, ready), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

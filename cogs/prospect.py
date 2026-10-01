@@ -85,9 +85,10 @@ class _OwnerView(discord.ui.View):
 class CreateConfirm(_OwnerView):
     """생성 확인 (본인에게만) → 입단 소식은 채널에 공개."""
 
-    def __init__(self, cog: "Prospect", user, info: dict):
+    def __init__(self, cog: "Prospect", user, info: dict, price: int = PROSPECT_PRICE):
         super().__init__(timeout=180)
         self.cog, self.user, self.info = cog, user, info
+        self.confirm.label = f"{price // 10_000:,}만원에 생성"
 
     @discord.ui.button(label=f"{PROSPECT_PRICE // 10_000:,}만원에 생성", emoji="✅", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -97,14 +98,16 @@ class CreateConfirm(_OwnerView):
         if not r["ok"]:
             msg = {"exists": "이미 현역 유망주가 있어요. 한 번에 한 명만 키울 수 있어요.",
                    "retired_number": f"**#{self.info['number']}**은(는) 영구결번이에요.",
-                   "balance": f"**{PROSPECT_PRICE:,}원**이 필요해요. (잔액 {r.get('balance', 0):,}원)"}[r["reason"]]
+                   "balance": f"**{r.get('price', PROSPECT_PRICE):,}원**이 필요해요. (잔액 {r.get('balance', 0):,}원)"
+                   }[r["reason"]]
             return await interaction.response.edit_message(
                 embed=ui.card("❌ 유망주 생성 실패", msg, ui.LOSE, self.user, SECTION), view=None)
         await interaction.response.edit_message(
             embed=ui.card("✅ 생성 완료", "입단 소식은 채널에 올라갔어요.", ui.DARK, self.user, SECTION), view=None)
         e = prospect_embed(r, self.user, now)
         e.title = f"🎉 유망주 {r['name']} #{r['number']} 입단!"
-        e.description = f"`비용` **-{PROSPECT_PRICE:,}원** · `잔액` **{r['balance']:,}원**\n\n" + e.description
+        half = " (🚀 신인 반값)" if r["price"] < PROSPECT_PRICE else ""
+        e.description = f"`비용` **-{r['price']:,}원**{half} · `잔액` **{r['balance']:,}원**\n\n" + e.description
         e.color = ui.GOLD
         await interaction.followup.send(embed=e)
 
@@ -239,13 +242,15 @@ class Prospect(commands.Cog):
         if err:
             return await interaction.response.send_message(
                 embed=ui.card("❌ 유망주 생성 불가", err, ui.LOSE, user, SECTION), ephemeral=True)
+        price = await self.clubs.prospect_price(user.id, int(time.time()))
+        half = f" ~~{PROSPECT_PRICE:,}원~~ 🚀 신인 반값" if price < PROSPECT_PRICE else ""
         e = ui.card(f"🌟 {info['name']} #{info['number']} — 이 선수로 만들까요?",
                     _profile({**info, "weight": round(info["height"] ** 2 * 22.5 / 10_000)}) + "\n\n"
-                    f"`비용` **{PROSPECT_PRICE:,}원** · 17세 · OVR 50~58 · 잠재력 75~94 중 랜덤으로 태어나요\n"
+                    f"`비용` **{price:,}원**{half} · 17세 · OVR 50~58 · 잠재력 75~94 중 랜덤으로 태어나요\n"
                     "🔒 히든 능력치(자신감 · 부상 빈도 · 프로 의식)도 태어날 때 정해져요\n"
                     "이름 · 등번호 같은 정보는 나중에 바꿀 수 없어요.\n\n"
                     "🔒 이적시장 · 판매 · 트레이드 불가 — 오직 내 구단에서만 뛰어요", ui.INFO, user, SECTION)
-        await interaction.response.send_message(embed=e, view=CreateConfirm(self, user, info), ephemeral=True)
+        await interaction.response.send_message(embed=e, view=CreateConfirm(self, user, info, price), ephemeral=True)
 
     # ───────────── 은퇴 · 영구결번 ─────────────
     @app_commands.command(name="유망주은퇴", description="내 유망주를 은퇴시킵니다 — 전성기 커리어로 저장 · 등번호 영구결번 가능")

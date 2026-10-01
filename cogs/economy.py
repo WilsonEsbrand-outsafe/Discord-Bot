@@ -13,7 +13,7 @@ from services.economy_db import (
     BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SHOP_PRICES, SKIP_ITEMS,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
-    TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
+    ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
 from services.club_db import STEROID_TABLE, ClubDB, hidden_tier
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
@@ -454,11 +454,13 @@ class Economy(commands.Cog):
         return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "base": base, "mult": mult}
 
     @staticmethod
-    def _settle_line(delta: int, info: dict) -> str:
-        """`정산` 줄 — 레벨 배율이 붙으면 원금(기본 금액)도 함께 보여준다."""
+    def _settle_line(delta: int, info: dict, boost: bool = False) -> str:
+        """`정산` 줄 — 레벨 배율이 붙으면 원금(기본 금액)도, 신인 부스트면 ×2 도 함께 보여준다."""
         line = f"`정산` **{ui.won(delta)}**"
         if info.get("mult", 1) > 1:
             line += f" · 기본 {ui.won(info['base'])} × {info['mult']}배"
+        if boost:
+            line += f" · 🚀 신인 부스트 ×{ROOKIE_GRIND_MULT}"
         return line
 
     @staticmethod
@@ -537,7 +539,7 @@ class Economy(commands.Cog):
             title, color = f"{ev['emoji']} {ev['name']} — 실패…", ui.LOSE
         e = self._train_card(user, title, info["line"], color)
         e.description += (
-            "\n\n" + self._settle_line(r["delta"], info) + "\n"
+            "\n\n" + self._settle_line(r["delta"], info, r.get("boost")) + "\n"
             f"`잔액` **{r['new_bal']:,}원**\n"
             + self._train_status(r, 3 if info["ok"] else -1)
         )
@@ -625,7 +627,7 @@ class Economy(commands.Cog):
                 f"시세 **{found['price']:,}원**"
             )
         e.description += (
-            "\n\n" + self._settle_line(r["delta"], info) + "\n"
+            "\n\n" + self._settle_line(r["delta"], info, r.get("boost")) + "\n"
             f"`잔액` **{r['new_bal']:,}원**\n"
             + self._scout_status(r, 3 if info["ok"] else -1)
         )
@@ -756,7 +758,7 @@ class Economy(commands.Cog):
             emoji, name, desc = ITEMS[item]
             e.description += f"\n\n🎁 **{emoji} {name}** 획득! — {desc} · `/가방`에서 사용\n`잔액` **{r['new_bal']:,}원**\n"
         else:
-            e.description += "\n\n" + self._settle_line(r["delta"], info) + f"\n`잔액` **{r['new_bal']:,}원**\n"
+            e.description += "\n\n" + self._settle_line(r["delta"], info, r.get("boost")) + f"\n`잔액` **{r['new_bal']:,}원**\n"
         e.description += self._watch_status(r, 3 if info["ok"] else -1)
         if r["leveled"]:
             e.description += (f"\n\n🆙 **{self.watch_tier(r['level'])}** 승급! 보상 {self.watch_money_mult(old_lv)}배 → "
@@ -908,7 +910,8 @@ class Economy(commands.Cog):
         kinds = [i.get("kind") or ("성공" if i["ok"] else "실패") for i in infos]
         order = self.WATCH_KINDS if table == "spectating" else ("성공", "실패")
         lines = [f"`자동 완료` **{r['plays']}회** · " + " · ".join(f"{k} {kinds.count(k)}" for k in order),
-                 f"`정산` **{ui.won(r['delta'])}**", f"`잔액` **{r['new_bal']:,}원**", status(r, r["xp_gain"])]
+                 self._settle_line(r["delta"], {}, r.get("boost")), f"`잔액` **{r['new_bal']:,}원**",
+                 status(r, r["xp_gain"])]
         found = [i["found"] for i in infos if i.get("found")]
         if found:
             lines.append("\n💎 **선수 발굴!**\n" + "\n".join(
