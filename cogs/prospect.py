@@ -146,6 +146,29 @@ class RetireConfirm(_OwnerView):
             embed=ui.card("은퇴 취소", f"**{self.p['name']}**은(는) 계속 뜁니다! 💪", ui.EVEN, self.user, SECTION), view=None)
 
 
+class DeleteConfirm(_OwnerView):
+    """유망주 삭제 확인 — 기록 없이 사라진다."""
+
+    def __init__(self, cog: "Prospect", user, p: dict):
+        super().__init__(timeout=60)
+        self.cog, self.user, self.p = cog, user, p
+
+    @discord.ui.button(label="유망주 삭제", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        r = await self.cog.clubs.delete_prospect(self.user.id, self.p["id"], int(time.time()))
+        e = (ui.card(f"🗑️ {r['name']} #{r['number']} 삭제 완료",
+                     "기록 없이 사라졌어요. `/유망주생성`으로 새 유망주를 만들 수 있어요.", ui.EVEN, self.user, SECTION)
+             if r else ui.card("❌ 삭제 불가", "이미 은퇴했거나 삭제된 선수예요.", ui.LOSE, self.user, SECTION))
+        await interaction.response.edit_message(embed=e, view=None)
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(
+            embed=ui.card("유망주 삭제 취소", "아무것도 바뀌지 않았어요.", ui.EVEN, self.user, SECTION), view=None)
+
+
 class Prospect(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -233,6 +256,20 @@ class Prospect(commands.Cog):
         e.description = ("은퇴는 되돌릴 수 없어요. **전성기 커리어**로 명예의 전당에 남고, 새 유망주를 만들 수 있어요.\n\n"
                          + e.description)
         await interaction.response.send_message(embed=e, view=RetireConfirm(self, user, p))
+
+    @app_commands.command(name="유망주삭제", description="내 현역 유망주를 삭제합니다 (기록 · 명예의 전당에 남지 않고 환불 없음)")
+    async def delete(self, interaction: discord.Interaction):
+        user, now = interaction.user, int(time.time())
+        p = (await self.clubs.prospects(user.id, now))["active"]
+        if not p:
+            return await interaction.response.send_message(
+                embed=ui.card("🙅 현역 유망주가 없어요", "삭제할 유망주가 없어요.", ui.LOSE, user, SECTION), ephemeral=True)
+        e = ui.card(f"⚠️ {p['name']} #{p['number']}을(를) 삭제할까요?",
+                    f"`OVR` **{p['ovr']}** · `잠재력` **{p['pot']}** ({p['pot_grade']}) · {p['age']}세 · "
+                    f"{p['apps']:,}경기 {p['goals']:,}골 {p['assists']:,}도움\n\n"
+                    f"삭제하면 **기록이 모두 사라지고** 명예의 전당에도 남지 않아요. 생성비 {PROSPECT_PRICE:,}원은 돌려받지 못해요.\n"
+                    "기록을 남기려면 `/유망주은퇴`를 써 주세요.", ui.DOOM, user, SECTION)
+        await interaction.response.send_message(embed=e, view=DeleteConfirm(self, user, p))
 
     @app_commands.command(name="영구결번", description="은퇴한 내 유망주의 등번호를 영구결번으로 남깁니다 (그 번호는 다시 못 써요)")
     @app_commands.describe(선수="은퇴한 유망주")

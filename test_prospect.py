@@ -237,6 +237,27 @@ async def _flow():
     await cp.Prospect.show.callback(cog, inter, None)
     assert "명예의 전당" in sent[-1]["embed"].fields[-1].name and sent[-1]["embed"].fields[-1].value.count("🏅") == 2
 
+    # 삭제: 확인 → 기록 없이 사라짐 (명예의 전당 X) · 명단에서 빠짐 · 새로 만들 수 있음
+    D = 704
+    await eco.add_balance(D, 10_000_000)
+    await clubs.create_club(D, "삭제 FC", now)
+    rd = await clubs.create_prospect(D, INFO, now)
+    await clubs.set_slot(D, lw, rd["pid"])
+    di = SimpleNamespace(user=member(D, "삭제러"), response=SimpleNamespace(send_message=rec, edit_message=rec))
+    await cp.Prospect.delete.callback(cog, di)
+    assert "삭제할까요" in sent[-1]["embed"].title and "환불" not in sent[-1]["embed"].title
+    await sent[-1]["view"].cancel.callback(di)
+    assert (await clubs.prospects(D, now))["active"]["id"] == rd["id"]                # 취소하면 그대로
+    await cp.Prospect.delete.callback(cog, di)
+    await sent[-1]["view"].confirm.callback(di)
+    assert "삭제 완료" in sent[-1]["embed"].title
+    assert await clubs.prospects(D, now) == {"active": None, "retired": []}
+    assert rd["pid"] not in {s.get("player_id") for s in (await clubs.get_team(D))["lineup"]}
+    assert await clubs.delete_prospect(D, rd["id"], now) is None
+    await cp.Prospect.delete.callback(cog, di)
+    assert sent[-1]["ephemeral"] and "없어요" in sent[-1]["embed"].title
+    assert (await clubs.create_prospect(D, INFO, now))["ok"]
+
     # 노화: 1살 = 7일 · 30세까지는 그대로 · 31세부터 해마다 -1~3 · 40세에 은퇴
     C = 703
     await eco.add_balance(C, 5_000_000)

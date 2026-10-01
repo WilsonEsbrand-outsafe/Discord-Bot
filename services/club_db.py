@@ -830,6 +830,17 @@ class ClubDB:
             return self._prospect_by_id(con, p["id"], now_ts)
         return await self._tx(fn)
 
+    async def delete_prospect(self, user_id: int, prospect_id: int, now_ts: int) -> Optional[dict]:
+        """현역 유망주를 기록 없이 지운다 (명예의 전당에 안 남고 환불도 없다). 이미 없거나 다른 선수면 None.
+        선발 명단 · 주장 자리는 다음 조회 때 _lineup / get_team 이 비운다."""
+        def fn(con):
+            p = self._active_prospect(con, user_id, now_ts)
+            if not p or p["id"] != int(prospect_id):
+                return None
+            con.execute("DELETE FROM prospects WHERE id=?", (p["id"],))
+            return p
+        return await self._tx(fn)
+
     async def retire_number(self, user_id: int, prospect_id: int, now_ts: int) -> dict:
         """은퇴한 내 유망주의 등번호를 영구결번. 실패 reason: none(내 은퇴 선수 아님) / done(이미 영구결번) /
         taken(그 번호는 이미 영구결번) / wearing(현역 유망주가 그 번호를 달고 있음)."""
