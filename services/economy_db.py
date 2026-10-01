@@ -35,13 +35,19 @@ GRIND_RULES = {
 # 아이템: key → (이모지, 이름, 설명)
 ITEMS = {
     "muffler":     ("🧣", "응원 머플러",     "다음 5경기 동안 구단 전력 +3 (친선경기 · 공식경기)"),
-    "scout_reset": ("🧳", "스카우트 리셋권", f"오늘 스카우트 +{SCOUT_DAILY_LIMIT}회"),
-    "train_reset": ("🔄", "훈련 리셋권",     f"오늘 훈련 +{TRAIN_DAILY_LIMIT}회"),
-    "watch_reset": ("🎟️", "직관 리셋권",     f"오늘 직관 +{WATCH_DAILY_LIMIT}회"),
+    "scout_reset": ("🧳", "스카우트 리셋권", f"오늘 스카우트 횟수 리셋 (0/{SCOUT_DAILY_LIMIT}회)"),
+    "train_reset": ("🔄", "훈련 리셋권",     f"오늘 훈련 횟수 리셋 (0/{TRAIN_DAILY_LIMIT}회)"),
+    "watch_reset": ("🎟️", "직관 리셋권",     f"오늘 직관 횟수 리셋 (0/{WATCH_DAILY_LIMIT}회)"),
     "scout_skip":  ("🛫", "스카우트 스킵권", "오늘 남은 스카우트를 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
     "train_skip":  ("⏩", "훈련 스킵권",     "오늘 남은 훈련을 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
     "watch_skip":  ("📺", "직관 스킵권",     "오늘 남은 직관을 한 번에 끝내고 결과(+/-)를 그대로 받아요"),
+    "toto_slip":   ("🧾", "토토 용지",       "길에서 주운 토토 용지 — 가질까, 신고할까?"),
 }
+# 원가. 판매가는 원가의 50% · 여기에 없는 아이템(토토 용지)은 사고팔 수 없다.
+ITEM_PRICES = {"muffler": 50_000, "scout_reset": 300_000, "train_reset": 300_000, "watch_reset": 200_000,
+               "scout_skip": 200_000, "train_skip": 300_000, "watch_skip": 100_000}
+SELL_RATE = 0.5
+SELL_PRICES = {k: int(p * SELL_RATE) for k, p in ITEM_PRICES.items()}
 MUFFLER_USES, MUFFLER_BONUS = 5, 3
 RESET_ITEMS = {"scout_reset": ("scouting", SCOUT_DAILY_LIMIT), "train_reset": ("training", TRAIN_DAILY_LIMIT),
                "watch_reset": ("spectating", WATCH_DAILY_LIMIT)}
@@ -49,8 +55,13 @@ SKIP_ITEMS = {"scout_skip": "scouting", "train_skip": "training", "watch_skip": 
 # 순서: 스카우트 → 훈련 → 직관. 테이블 → (먼저 끝내야 하는 테이블, 횟수)
 GRIND_REQUIRE = {"training": ("scouting", SCOUT_DAILY_LIMIT), "spectating": ("training", TRAIN_DAILY_LIMIT)}
 
-# 아이템 상점: key → 가격 (구매 제한 없음). 리셋권은 팔지 않는다 — 직관 이벤트 · 쿠폰으로만.
-SHOP_PRICES = {"muffler": 200_000}
+# 아이템 상점: key → 가격 (구매 제한 없음). 리셋권 · 스킵권은 상점에서 팔지 않는다.
+SHOP_PRICES = {k: ITEM_PRICES[k] for k in ("muffler",)}
+
+# 토토 용지(직관 이벤트에서 줍는다): 사용할 때 금액이 정해지고, 가진다 / 신고한다 중 고른다.
+TOTO_SLIP_AMOUNT = (10_000, 100_000)
+TOTO_KEEP = (("win", 3, 0.20), ("even", 1, 0.50), ("illegal", -2, 0.30))   # (결과, 금액 배수, 확률)
+TOTO_REPORT_PROB, TOTO_REPORT_RATE, TOTO_REPORT_XP = 0.70, (0.5, 0.8), 30  # 포상 확률 · 금액 대비 포상 비율 · 직관 경험치
 
 # 쿠폰: 코드(대문자) → (지급 아이템 {key: 수량}, 만료 시각)
 COUPONS = {
@@ -85,6 +96,17 @@ def grind_xp_need(table: str, level: int) -> int:
 
 def train_xp_need(level: int) -> int:
     return grind_xp_need("training", level)
+
+
+def grind_add_xp(table: str, level: int, xp: int, gain: int) -> tuple[int, int, int]:
+    """경험치 반영 → (레벨, 경험치, 오른 레벨 수). 레벨 안에서 0 아래로는 안 내려가고(레벨 다운 없음), 만렙이면 0."""
+    max_level = GRIND_RULES[table][0]
+    xp, leveled = max(0, xp + int(gain)), 0
+    while level < max_level and xp >= grind_xp_need(table, level):
+        xp -= grind_xp_need(table, level)
+        level += 1
+        leveled += 1
+    return level, (0 if level >= max_level else xp), leveled
 
 
 class EconomyDB:
@@ -183,9 +205,9 @@ class EconomyDB:
                 )
                 """
             )
-            # 리셋권: 그날(bonus_day) 추가로 할 수 있는 횟수
+            # 리셋권: 그날(bonus_day) 추가로 할 수 있는 횟수 · 마지막 리셋 때까지 한 횟수(bonus_from — 0/15 표시용)
             for t in GRIND_RULES:
-                for col in ("bonus_day", "bonus_count"):
+                for col in ("bonus_day", "bonus_count", "bonus_from"):
                     try:
                         con.execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
                     except sqlite3.OperationalError:
@@ -1289,10 +1311,60 @@ class EconomyDB:
                 return {"ok": True, "uses": int(uses)}
             table, extra = RESET_ITEMS[item]
             con.execute(f"INSERT OR IGNORE INTO {table}(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
-            bday, bcount = con.execute(f"SELECT bonus_day, bonus_count FROM {table} WHERE user_id=?", (user_id,)).fetchone()
+            bday, bcount, day_key, used = con.execute(
+                f"SELECT bonus_day, bonus_count, day_key, day_count FROM {table} WHERE user_id=?", (user_id,)).fetchone()
+            used = int(used) if day_key == day else 0
             total = (int(bcount) if bday == day else 0) + extra
-            con.execute(f"UPDATE {table} SET bonus_day=?, bonus_count=? WHERE user_id=?", (day, total, user_id))
-            return {"ok": True, "extra": total}
+            # 여기까지 한 횟수(bonus_from)를 기억해 두고, 화면엔 그 뒤로 한 횟수만 보여 준다 (15/30 → 0/15)
+            con.execute(f"UPDATE {table} SET bonus_day=?, bonus_count=?, bonus_from=? WHERE user_id=?",
+                        (day, total, used, user_id))
+            return {"ok": True, "extra": total, "left": GRIND_RULES[table][1] + total - used}
+        return await self._tx(fn)
+
+    async def sell_item(self, user_id: int, item: str, qty: int) -> dict:
+        """아이템 판매: 개당 원가의 50%. 실패 reason: unsellable(토토 용지 등) / short(수량 부족)."""
+        if item not in SELL_PRICES:
+            return {"ok": False, "reason": "unsellable"}
+        each = SELL_PRICES[item]
+
+        def fn(con):
+            row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()
+            have = int(row[0]) if row else 0
+            if qty < 1 or have < qty:
+                return {"ok": False, "reason": "short", "have": have}
+            con.execute("UPDATE inventory SET qty = qty - ? WHERE user_id=? AND item=?", (qty, user_id, item))
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (each * qty, user_id))
+            bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
+            return {"ok": True, "qty": qty, "each": each, "gain": each * qty, "left": have - qty, "balance": int(bal)}
+        return await self._tx(fn)
+
+    async def use_toto_slip(self, user_id: int, choice: str, rng=random) -> dict:
+        """토토 용지 사용. choice "keep"(가진다) → win 3배 · even 그대로 · illegal -2배,
+        "report"(신고) → reward(포상금 + 직관 경험치) 또는 nothing. 금액은 이때 정한다. 실패 reason: none."""
+        def fn(con):
+            row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='toto_slip'", (user_id,)).fetchone()
+            if not row or int(row[0]) <= 0:
+                return {"ok": False, "reason": "none"}
+            con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='toto_slip'", (user_id,))
+            amount = round(rng.randint(*TOTO_SLIP_AMOUNT), -3)
+            out = {"ok": True, "choice": choice, "amount": amount, "xp": 0, "leveled": 0}
+            if choice == "keep":
+                kind, mult, _ = rng.choices(TOTO_KEEP, weights=[w for *_, w in TOTO_KEEP])[0]
+                out.update(kind=kind, mult=mult, delta=amount * mult)
+            elif rng.random() < TOTO_REPORT_PROB:
+                out.update(kind="reward", delta=int(round(amount * rng.uniform(*TOTO_REPORT_RATE), -2)), xp=TOTO_REPORT_XP)
+                con.execute("INSERT OR IGNORE INTO spectating(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
+                lv, xp = con.execute("SELECT level, xp FROM spectating WHERE user_id=?", (user_id,)).fetchone()
+                lv, xp, out["leveled"] = grind_add_xp("spectating", int(lv), int(xp), TOTO_REPORT_XP)
+                con.execute("UPDATE spectating SET level=?, xp=? WHERE user_id=?", (lv, xp, user_id))
+                out["level"] = lv
+            else:
+                out.update(kind="nothing", delta=0)
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (out["delta"], user_id))
+            out["balance"] = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
+            return out
         return await self._tx(fn)
 
     async def buy_item(self, user_id: int, item: str) -> dict:
@@ -1347,7 +1419,7 @@ class EconomyDB:
         이때 reason 은 "none"(아이템 없음) / "locked" / "done"(남은 횟수 없음) — 실패하면 아이템은 그대로.
         경험치는 음수가 될 수 있지만 레벨 안에서 0 아래로는 내려가지 않는다(레벨 다운 없음).
         """
-        max_level, limit, _ = GRIND_RULES[table]
+        _, limit, _ = GRIND_RULES[table]
         require = GRIND_REQUIRE.get(table)
         day = (now_ts + 9 * 3600) // 86400  # KST 날짜 키
         async with self._lock:
@@ -1357,15 +1429,18 @@ class EconomyDB:
                     con.execute("BEGIN IMMEDIATE;")
                     con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
                     con.execute(f"INSERT OR IGNORE INTO {table}(user_id, last_play_ts) VALUES(?, 0)", (user_id,))
-                    level, xp, day_key, used, last, bonus_day, bonus = con.execute(
-                        f"SELECT level, xp, day_key, day_count, last_play_ts, bonus_day, bonus_count FROM {table} "
-                        "WHERE user_id=?", (user_id,)
+                    level, xp, day_key, used, last, bonus_day, bonus, bonus_from = con.execute(
+                        f"SELECT level, xp, day_key, day_count, last_play_ts, bonus_day, bonus_count, bonus_from "
+                        f"FROM {table} WHERE user_id=?", (user_id,)
                     ).fetchone()
                     if day_key != day:
                         used = 0
-                    cap = limit + (int(bonus) if bonus_day == day else 0)   # 리셋권으로 늘어난 오늘 횟수
+                    today_bonus = bonus_day == day
+                    cap = limit + (int(bonus) if today_bonus else 0)   # 리셋권으로 늘어난 오늘 횟수
+                    # 화면의 `오늘 N/M` 은 마지막 리셋권 이후 기준 (15/15 에서 리셋 → 0/15)
+                    off = int(bonus_from) if today_bonus else 0
                     base = {"ok": False, "level": level, "xp": xp, "need": grind_xp_need(table, level),
-                            "used": used, "limit": cap}
+                            "used": used - off, "limit": cap - off}
 
                     def fail(**why):
                         con.execute("ROLLBACK;")
@@ -1399,13 +1474,8 @@ class EconomyDB:
                         delta, xp_gain, info = roll(level, con)
                         total, gained = total + int(delta), gained + int(xp_gain)
                         infos.append(info)
-                        xp = max(0, xp + int(xp_gain))
-                        while level < max_level and xp >= grind_xp_need(table, level):
-                            xp -= grind_xp_need(table, level)
-                            level += 1
-                            leveled += 1
-                        if level >= max_level:
-                            xp = 0
+                        level, xp, up = grind_add_xp(table, level, xp, xp_gain)
+                        leveled += up
                     used += plays
 
                     con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total, user_id))
@@ -1416,7 +1486,7 @@ class EconomyDB:
                     new_bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
                     con.execute("COMMIT;")
                     return {"ok": True, "level": level, "xp": xp, "need": grind_xp_need(table, level),
-                            "used": used, "limit": cap, "leveled": leveled, "new_bal": int(new_bal),
+                            "used": used - off, "limit": cap - off, "leveled": leveled, "new_bal": int(new_bal),
                             "delta": total, "info": infos[-1], "infos": infos, "plays": plays, "xp_gain": gained}
                 except Exception:
                     try:

@@ -10,13 +10,15 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SHOP_PRICES, SKIP_ITEMS, EconomyDB, SCOUT_MAX_LEVEL,
+    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SELL_PRICES, SHOP_PRICES, SKIP_ITEMS,
+    TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
 from services import ui
+
 
 def _format_time_left(seconds: int) -> str:
     if seconds < 0:
@@ -78,16 +80,29 @@ class RaceView(discord.ui.View):
 
 
 class BagView(discord.ui.View):
-    """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼. 사용 결과는 채널에 공개로 올린다."""
+    """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼 + 💸 판매 메뉴. 사용 결과는 채널에 공개로 올린다."""
 
     def __init__(self, cog: "Economy", user, inv: dict):
         super().__init__(timeout=180)
         self.cog, self.user = cog, user
+        sell = []
         for key, (emoji, name, _) in ITEMS.items():
-            if inv.get(key, 0) > 0:
-                b = discord.ui.Button(label=f"{name} 사용 ({inv[key]})", emoji=emoji, style=discord.ButtonStyle.primary)
-                b.callback = self._use(key)
-                self.add_item(b)
+            n = inv.get(key, 0)
+            if n <= 0:
+                continue
+            b = discord.ui.Button(label=f"{name} 사용 ({n})", emoji=emoji, style=discord.ButtonStyle.primary)
+            b.callback = self._use(key)
+            self.add_item(b)
+            if key in SELL_PRICES:
+                each = SELL_PRICES[key]
+                sell.append(discord.SelectOption(label=f"{name} 1개 팔기 · +{each:,}원", value=f"{key}:1", emoji=emoji))
+                if n > 1:
+                    sell.append(discord.SelectOption(label=f"{name} 전부({n}개) 팔기 · +{each * n:,}원",
+                                                     value=f"{key}:{n}", emoji=emoji))
+        if sell:
+            self.sell = discord.ui.Select(placeholder="💸 아이템 판매 (원가의 50%)", options=sell[:25], row=4)
+            self.sell.callback = self._sell
+            self.add_item(self.sell)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
@@ -95,13 +110,61 @@ class BagView(discord.ui.View):
             return False
         return True
 
+    async def _refresh(self, interaction: discord.Interaction):
+        bag, inv = await self.cog._bag_embed(self.user)
+        await interaction.response.edit_message(embed=bag, view=BagView(self.cog, self.user, inv))
+
     def _use(self, key: str):
         async def cb(interaction: discord.Interaction):
+            if key == "toto_slip":   # 가진다 / 신고한다 를 먼저 고른다
+                return await interaction.response.send_message(
+                    embed=self.cog._slip_card(self.user), view=TotoSlipView(self.cog, self.user), ephemeral=True)
             result, ok = await self.cog._use_embed(self.user, key)
-            bag, inv = await self.cog._bag_embed(self.user)
-            await interaction.response.edit_message(embed=bag, view=BagView(self.cog, self.user, inv))
+            await self._refresh(interaction)
             await interaction.followup.send(embed=result, ephemeral=not ok)   # 성공은 모두에게, 실패는 나만
         return cb
+
+    async def _sell(self, interaction: discord.Interaction):
+        key, qty = self.sell.values[0].split(":")
+        emoji, name, _ = ITEMS[key]
+        r = await self.cog.db.sell_item(self.user.id, key, int(qty))
+        await self._refresh(interaction)
+        if r["ok"]:
+            e = ui.card(f"💸 {emoji} {name} {r['qty']}개 판매", f"`판매가` 개당 {r['each']:,}원 (원가의 50%)\n"
+                        f"`정산` **+{r['gain']:,}원** · `잔액` **{r['balance']:,}원**\n`남은 수량` {r['left']}개",
+                        ui.WIN, self.user, "🎒 아이템")
+        else:
+            e = ui.card("🙅 판매할 수 없어요", "수량이 부족해요. 가방을 다시 확인해 주세요.", ui.LOSE, self.user, "🎒 아이템")
+        await interaction.followup.send(embed=e, ephemeral=True)
+
+
+class TotoSlipView(discord.ui.View):
+    """🧾 토토 용지 사용 — 가진다 / 신고한다 (본인에게만 보임). 결과는 채널에 공개."""
+
+    def __init__(self, cog: "Economy", user):
+        super().__init__(timeout=180)
+        self.cog, self.user = cog, user
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user.id
+
+    async def _choose(self, interaction: discord.Interaction, choice: str):
+        self.stop()
+        r = await self.cog.db.use_toto_slip(self.user.id, choice)
+        if not r["ok"]:
+            return await interaction.response.edit_message(embed=self.cog._no_item_card(self.user, "toto_slip"), view=None)
+        picked = "💰 가진다" if choice == "keep" else "🚨 신고한다"
+        await interaction.response.edit_message(
+            embed=ui.card(f"🧾 토토 용지 — {picked}", "결과는 채널에 올라갔어요.", ui.DARK, self.user, "🎒 아이템"), view=None)
+        await interaction.followup.send(embed=self.cog._slip_result(self.user, r))
+
+    @discord.ui.button(label="가진다", emoji="💰", style=discord.ButtonStyle.success)
+    async def keep(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._choose(interaction, "keep")
+
+    @discord.ui.button(label="신고한다", emoji="🚨", style=discord.ButtonStyle.danger)
+    async def report(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._choose(interaction, "report")
 
 
 class BankruptConfirm(discord.ui.View):
@@ -580,11 +643,13 @@ class Economy(commands.Cog):
     WATCH_LEVEL_NAMES = ["🎟️ 일반석 관중", "🧣 원정 팬", "📣 서포터즈", "🎫 시즌권자", "👑 레전드 서포터"]
     WATCH_KINDS = ("관람", "이벤트", "실패")
     WATCH_ODDS = (0.80, 0.15, 0.05)
-    WATCH_ITEM_WEIGHTS = {"muffler": 1}   # 이벤트 아이템 비중 — 추후 직관 연계 아이템을 여기에
+    WATCH_ITEM_WEIGHTS = {"muffler": 60, "toto_slip": 40}   # 이벤트 아이템 비중 — 직관 연계 아이템은 여기에
     WATCH_ITEM_EVENTS = {   # 이벤트로 나오는 아이템 → 경기장 이벤트 멘트. 새 아이템은 여기와 WATCH_ITEM_WEIGHTS 에 추가
         "muffler": ("선수가 관중석으로 던진 머플러를 잡았어요!", "옆자리 팬이 우승 기념 머플러를 선물해 줬어요!",
                     "구단 굿즈샵 오픈 기념 선착순 머플러를 받았어요!", "하프타임 경품 추첨에 당첨! 응원 머플러예요!",
                     "전광판 키스캠에 잡혀 기념 머플러를 받았어요!"),
+        "toto_slip": ("경기장 가는 길에 토토 용지를 주웠다!", "길을 가다 바닥에 떨어진 토토 용지를 주웠다!",
+                      "옆자리 아저씨가 두고 간 토토 용지를 주웠다!"),
     }
     _W, _L = (800, 2500), (-600, -200)
     WATCH_EVENTS = [
@@ -696,15 +761,17 @@ class Economy(commands.Cog):
     # ✅ 가방 · 아이템 사용
     async def _bag_embed(self, user) -> tuple[discord.Embed, dict]:
         inv, buffs = await self.db.inventory(user.id)
-        lines = [f"{e} **{n}** × {inv[k]}\n　 *{d}*" for k, (e, n, d) in ITEMS.items() if inv.get(k)]
+        lines = [f"{e} **{n}** × {inv[k]} · "
+                 + (f"판매가 {SELL_PRICES[k]:,}원" if k in SELL_PRICES else "판매 불가") + f"\n　 *{d}*"
+                 for k, (e, n, d) in ITEMS.items() if inv.get(k)]
         e = ui.card("🎒 내 가방", "\n".join(lines) or "가방이 비어 있어요.", ui.INFO, user, "🎒 아이템")
         if buffs.get("muffler"):
             e.add_field(name="✨ 사용 중", value=f"🧣 응원 머플러 — 남은 경기 **{buffs['muffler']}경기** (전력 +{MUFFLER_BONUS})",
                         inline=False)
-        e.set_footer(text="아이템은 /직관 · /상점 · /쿠폰 으로 얻어요 · 아래 버튼으로 바로 사용")
+        e.set_footer(text="아이템은 /직관 · /상점 · /쿠폰 으로 얻어요 · 버튼으로 바로 사용 · 아래 메뉴로 판매(원가의 50%)")
         return e, inv
 
-    @app_commands.command(name="가방", description="보유 아이템과 사용 중인 효과를 확인하고 바로 사용합니다 (나만 보기)")
+    @app_commands.command(name="가방", description="보유 아이템 확인 · 사용 · 판매 (나만 보기)")
     async def bag(self, interaction: discord.Interaction):
         e, inv = await self._bag_embed(interaction.user)
         await interaction.response.send_message(embed=e, view=BagView(self, interaction.user, inv), ephemeral=True)
@@ -713,8 +780,45 @@ class Economy(commands.Cog):
     @app_commands.describe(아이템="사용할 아이템")
     @app_commands.choices(아이템=[app_commands.Choice(name=f"{e} {n} — {d}"[:100], value=k) for k, (e, n, d) in ITEMS.items()])
     async def use(self, interaction: discord.Interaction, 아이템: str):
-        e, ok = await self._use_embed(interaction.user, 아이템)
+        user = interaction.user
+        if 아이템 == "toto_slip":
+            if not (await self.db.inventory(user.id))[0].get("toto_slip"):
+                return await interaction.response.send_message(embed=self._no_item_card(user, 아이템), ephemeral=True)
+            return await interaction.response.send_message(embed=self._slip_card(user), view=TotoSlipView(self, user),
+                                                           ephemeral=True)
+        e, ok = await self._use_embed(user, 아이템)
         await interaction.response.send_message(embed=e, ephemeral=not ok)
+
+    # ✅ 토토 용지: 가진다(3배 · 그대로 · 불법 -2배) / 신고한다(포상금 + 직관 경험치 · 또는 아무것도)
+    @staticmethod
+    def _slip_card(user) -> discord.Embed:
+        (_, win, pw), (_, even, pe), (_, bad, pb) = TOTO_KEEP
+        e = ui.card("🧾 길에서 주운 토토 용지… 어떻게 할까요?",
+                    "용지에 적힌 금액은 고른 뒤에 확인돼요.\n\n"
+                    f"💰 **가진다** — 적중한 토토면 **{win}배** · 덜 맞혔으면 **그대로** · 불법 토토면 **{-bad}배 손실**\n"
+                    f"🚨 **신고한다** — 포상금(금액보다 조금 적게) + 직관 경험치 **+{TOTO_REPORT_XP}** · 가끔은 아무것도 없어요",
+                    ui.INFO, user, "🎒 아이템")
+        e.set_thumbnail(url=ui.emoji_url("🧾"))
+        return e
+
+    def _slip_result(self, user, r: dict) -> discord.Embed:
+        amount, delta = r["amount"], r["delta"]
+        head = {
+            "win": ("🎉 적중한 토토였다!!", f"용지에 적힌 **{amount:,}원**의 **3배**를 받았어요!", ui.GOLD),
+            "even": ("😅 아깝게 덜 맞혔네요", f"정확하게는 못 맞혀서 적힌 금액 **{amount:,}원** 그대로예요.", ui.WIN),
+            "illegal": ("🚨 불법 토토였다…", f"적힌 금액 **{amount:,}원**의 **2배**를 벌금으로 냈어요.", ui.DOOM),
+            "reward": ("🚔 신고 완료 — 포상금!", f"용지 금액 {amount:,}원 · 경찰이 포상금을 줬어요.", ui.WIN),
+            "nothing": ("🚔 신고 완료", "경찰이 고맙다고만 했어요… 아무것도 받지 못했어요.", ui.EVEN),
+        }[r["kind"]]
+        title, line, color = head
+        desc = f"> *{line}*\n\n`정산` **{ui.won(delta)}** · `잔액` **{r['balance']:,}원**"
+        if r["xp"]:
+            desc += f"\n`직관 경험치` **+{r['xp']}**"
+            if r["leveled"]:
+                desc += f" · 🆙 **{self.watch_tier(r['level'])}** 승급!"
+        e = ui.card(f"🧾 토토 용지 — {title}", desc, color, user, "🎒 아이템")
+        e.set_thumbnail(url=ui.emoji_url("🧾"))
+        return e
 
     GRIND_NAMES = {"scouting": "스카우트", "training": "훈련", "spectating": "직관"}
 
@@ -730,15 +834,15 @@ class Economy(commands.Cog):
             msg = f"다음 **{r['uses']}경기** 동안 구단 전력 **+{MUFFLER_BONUS}** (친선경기 · 공식경기)"
         else:
             what = self.GRIND_NAMES[RESET_ITEMS[item][0]]
-            msg = f"오늘 {what} **+{r['extra']}회** 추가! 지금 바로 `/{what}` 하러 가세요."
+            msg = f"오늘 {what} 횟수가 **0/{r['left']}회**로 리셋됐어요! 지금 바로 `/{what}` 하러 가세요."
         return ui.card(f"{emoji} {name} 사용!", msg, ui.GOLD, user, "🎒 아이템"), True
 
-    @staticmethod
-    def _no_item_card(user, item: str) -> discord.Embed:
+    def _no_item_card(self, user, item: str) -> discord.Embed:
         emoji, name, _ = ITEMS[item]
-        return ui.card(f"🙅 {emoji} {name}이(가) 없어요",
-                       "`/상점`에서 살 수 있어요." if item in SHOP_PRICES else "지금은 `/쿠폰` 같은 이벤트로 얻을 수 있어요.",
-                       ui.LOSE, user, "🎒 아이템")
+        where = ("`/상점`에서 살 수 있어요." if item in SHOP_PRICES else
+                 "`/직관` 경기장 이벤트에서 얻을 수 있어요." if item in self.WATCH_ITEM_WEIGHTS else
+                 "지금은 `/쿠폰` 같은 이벤트로 얻을 수 있어요.")
+        return ui.card(f"🙅 {emoji} {name}이(가) 없어요", where, ui.LOSE, user, "🎒 아이템")
 
     async def _skip_embed(self, user, item: str) -> tuple[discord.Embed, bool]:
         """스킵권: 오늘 남은 횟수를 한 번에 — 원래 받았을 결과(+/-)를 합쳐서 보여준다."""

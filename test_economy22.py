@@ -143,17 +143,25 @@ async def _items():
     assert inv == got
     await db._tx(lambda con: con.execute("DELETE FROM inventory WHERE user_id=?", (X,)))   # 아래 테스트를 위해 비운다
 
-    # 직관 리셋권 → 오늘 직관 +100회
+    # 직관 리셋권 → 오늘 직관 +100회 · 화면은 100/200 이 아니라 0/100 부터
     await db.give_item(X, "watch_reset")
-    assert (await db.use_item(X, "watch_reset", T))["extra"] == edb.WATCH_DAILY_LIMIT
-    assert (await db.play_watch(X, T + 8000, lambda lv, con: (0, 0, None), cooldown_sec=10))["limit"] == 200
+    r = await db.use_item(X, "watch_reset", T)
+    assert r["extra"] == edb.WATCH_DAILY_LIMIT and r["left"] == edb.WATCH_DAILY_LIMIT
+    r = await db.play_watch(X, T + 8000, lambda lv, con: (0, 0, None), cooldown_sec=10)
+    assert (r["used"], r["limit"]) == (1, edb.WATCH_DAILY_LIMIT)
+    assert (await db.today_status(X, T))["spectating"] == edb.WATCH_DAILY_LIMIT + 1   # 실제 횟수는 그대로 센다
 
-    # 리셋권: 오늘 횟수 추가 (훈련 잠금은 유지되지 않고 풀린 상태 그대로)
+    # 리셋권: 15/15 에서 쓰면 0/15 (훈련 잠금은 풀린 상태 그대로)
     await db.give_item(X, "train_reset")
     await db.give_item(X, "scout_reset")
-    assert (await db.use_item(X, "train_reset", T))["extra"] == edb.TRAIN_DAILY_LIMIT
+    assert (await db.use_item(X, "train_reset", T))["left"] == edb.TRAIN_DAILY_LIMIT
     r = await db.play_training(X, T + 9000, lambda lv, con: (0, 0, None))
-    assert r["ok"] and r["limit"] == edb.TRAIN_DAILY_LIMIT * 2
+    assert r["ok"] and (r["used"], r["limit"]) == (1, edb.TRAIN_DAILY_LIMIT)
+    # 하던 중에 쓰면 남은 횟수 전부가 새 묶음: 1/30 에서 리셋 → 0/59
+    await db.give_item(X, "train_reset")
+    assert (await db.use_item(X, "train_reset", T))["left"] == edb.TRAIN_DAILY_LIMIT * 2 - 1
+    r = await db.play_training(X, T + 9050, lambda lv, con: (0, 0, None))
+    assert (r["used"], r["limit"]) == (1, edb.TRAIN_DAILY_LIMIT * 2 - 1)
     assert (await db.use_item(X, "scout_reset", T))["ok"]
     assert (await db.play_scout(X, T + 9100, lambda lv, con: (0, 0, None)))["ok"]
     while (await db.use_item(X, "scout_reset", T))["ok"]:                 # 직관에서 더 얻었을 수도 있다
@@ -184,7 +192,37 @@ async def _items():
         r = await db.buy_item(Z, "muffler")
         assert r["ok"] and r["balance"] == price * (3 - n) and r["qty"] == n
     assert (await db.buy_item(Z, "muffler"))["reason"] == "balance"
+    assert price == 50_000                                                    # 머플러 가격 인하 (20만 → 5만)
+
+    # 판매: 원가의 50% · 수량 부족 · 토토 용지는 판매 불가
+    r = await db.sell_item(Z, "muffler", 2)
+    assert r["ok"] and r["gain"] == price and r["each"] == price // 2 and r["left"] == 1 and r["balance"] == price
+    assert (await db.sell_item(Z, "muffler", 2))["reason"] == "short"
+    assert "toto_slip" not in edb.ITEM_PRICES and (await db.sell_item(Z, "toto_slip", 1))["reason"] == "unsellable"
+    assert set(edb.SELL_PRICES) == set(edb.ITEMS) - {"toto_slip"}
     await db._tx(lambda con: con.execute("DELETE FROM inventory WHERE user_id=?", (Z,)))
+
+    # 토토 용지: 가진다 → 3배 / 그대로 / -2배 · 신고 → 포상금(금액보다 적게) + 직관 경험치 / 아무것도
+    import random as _r
+    W = 14
+    assert (await db.use_toto_slip(W, "keep"))["reason"] == "none"
+    seen = {}
+    for i in range(400):
+        await db.give_item(W, "toto_slip")
+        bal0 = await db.get_balance(W)
+        r = await db.use_toto_slip(W, "keep" if i % 2 else "report", _r.Random(i))
+        lo, hi = edb.TOTO_SLIP_AMOUNT
+        assert r["ok"] and lo <= r["amount"] <= hi and await db.get_balance(W) - bal0 == r["delta"]
+        want = {"win": 3 * r["amount"], "even": r["amount"], "illegal": -2 * r["amount"], "nothing": 0}
+        if r["kind"] == "reward":
+            assert 0 < r["delta"] < r["amount"] and type(r["delta"]) is int and r["xp"] == edb.TOTO_REPORT_XP
+        else:
+            assert r["delta"] == want[r["kind"]] and r["xp"] == 0
+        seen[r["kind"]] = seen.get(r["kind"], 0) + 1
+    assert set(seen) == {"win", "even", "illegal", "reward", "nothing"}, seen
+    assert (await db.inventory(W))[0] == {}                                    # 쓸 때마다 1장씩 사라진다
+    lv, xp = (await db._tx(lambda con: con.execute("SELECT level, xp FROM spectating WHERE user_id=?", (W,)).fetchone()))
+    assert lv > 1 or xp > 0                                                    # 신고 경험치가 직관에 쌓였다
 
     # 쿠폰: 코드 대소문자 무시 · 계정당 한 번 · 없는 코드 · 만료
     items, expires = edb.COUPONS["PATCH22"]
@@ -215,13 +253,37 @@ async def _item_screens():
     await Economy.bag.callback(eco, inter)
     view = sent[-1]["view"]
     assert sent[-1]["ephemeral"]                                              # 가방은 나만 보인다
-    assert "× 1" in sent[-1]["embed"].description and len(view.children) == 1
+    assert "× 1" in sent[-1]["embed"].description and "판매가 25,000원" in sent[-1]["embed"].description
+    assert [type(c).__name__ for c in view.children] == ["Button", "Select"]   # [사용] + 💸 판매 메뉴
     assert "리셋권" not in sent[-1]["embed"].description                       # 없는 아이템은 안 보인다
     await view.children[0].callback(inter)                                    # [응원 머플러 사용]
     bag, result = sent[-2], sent[-1]
     assert bag["embed"].title == "🎒 내 가방" and "5경기" in bag["embed"].fields[0].value   # 내 가방은 새로고침
     assert "사용" in result["embed"].title and result["ephemeral"] is False            # 사용 결과는 모두에게
     await Economy.use.callback(eco, inter, "train_reset")                    # 없는 아이템 → 나만
+    assert "없어요" in sent[-1]["embed"].title and sent[-1]["ephemeral"]
+
+    # 가방에서 판매: 1개 / 전부 · 결과는 나만 · 가방 새로고침
+    await db.give_item(user.id, "muffler", 3)
+    await Economy.bag.callback(eco, inter)
+    sell = sent[-1]["view"].sell
+    assert [o.value for o in sell.options] == ["muffler:1", "muffler:3"] and "+75,000원" in sell.options[1].label
+    bal0 = await db.get_balance(user.id)
+    sell._values = ["muffler:3"]
+    await sent[-1]["view"]._sell(inter)
+    assert "3개 판매" in sent[-1]["embed"].title and sent[-1]["ephemeral"] and "가방이 비어" in sent[-2]["embed"].description
+    assert await db.get_balance(user.id) - bal0 == 75_000
+
+    # 토토 용지: [사용] → 가진다 / 신고한다 (나만) → 결과는 모두에게 · 판매 메뉴에는 없음
+    await db.give_item(user.id, "toto_slip")
+    await Economy.bag.callback(eco, inter)
+    assert "판매 불가" in sent[-1]["embed"].description and not hasattr(sent[-1]["view"], "sell")
+    await sent[-1]["view"].children[0].callback(inter)
+    slip = sent[-1]["view"]
+    assert sent[-1]["ephemeral"] and "가질까요" not in sent[-1]["embed"].title and "어떻게" in sent[-1]["embed"].title
+    await slip.report.callback(inter)
+    assert sent[-1].get("ephemeral") is None and "토토 용지" in sent[-1]["embed"].title   # 결과는 공개
+    await Economy.use.callback(eco, inter, "toto_slip")                       # 다 썼으면 /사용 도 안내만
     assert "없어요" in sent[-1]["embed"].title and sent[-1]["ephemeral"]
 
     # 관리자: /아이템지급 (음수=회수, 0 아래로는 안 내려감)
