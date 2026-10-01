@@ -649,7 +649,8 @@ class Economy(commands.Cog):
     WATCH_KINDS = ("관람", "이벤트", "실패")
     WATCH_ODDS = (0.80, 0.05, 0.15)
     # 이벤트 안에서 나오는 아이템 비중(%) — 직관 연계 아이템은 여기와 WATCH_ITEM_EVENTS 에
-    WATCH_ITEM_WEIGHTS = {"muffler": 92, "toto_slip": 5, "steroid": 3}
+    # 토토 용지 20% → 하루 100회면 이벤트 5번 중 1번꼴 (하루 1장)
+    WATCH_ITEM_WEIGHTS = {"muffler": 77, "toto_slip": 20, "steroid": 3}
     WATCH_ITEM_EVENTS = {   # 이벤트로 나오는 아이템 → 경기장 이벤트 멘트. 새 아이템은 여기와 WATCH_ITEM_WEIGHTS 에 추가
         "muffler": ("선수가 관중석으로 던진 머플러를 잡았어요!", "옆자리 팬이 우승 기념 머플러를 선물해 줬어요!",
                     "구단 굿즈샵 오픈 기념 선착순 머플러를 받았어요!", "하프타임 경품 추첨에 당첨! 응원 머플러예요!",
