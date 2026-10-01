@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from auth import OWNER_ID, hide_owner_commands, is_owner_command, owner_only, owner_only_error
+from auth import OWNER_ID, group_owner_commands, is_owner_command, owner_only, owner_only_error
 
 # ───────────────── 설정 ─────────────────
 BASE_DIR = Path(__file__).resolve().parent
@@ -234,7 +234,7 @@ async def purge_global(interaction: discord.Interaction):
 
     await interaction.followup.send(
         "✅ 글로벌(전체) 슬래시 명령어 삭제 완료.\n"
-        "이제 봇을 재시작한 뒤, /동기화 를 한 번 실행하세요.",
+        "이제 봇을 재시작한 뒤, /관리자명령어 동기화 를 한 번 실행하세요.",
         ephemeral=True,
     )
 
@@ -242,7 +242,7 @@ async def purge_global(interaction: discord.Interaction):
 async def sync_guild(guild: discord.abc.Snowflake):
     gid = getattr(guild, "id", guild)
     try:
-        hide_owner_commands(bot.tree)   # 관리자 명령어는 일반 유저의 / 목록에서 숨김
+        group_owner_commands(bot.tree)   # 관리자 명령어는 /관리자명령어 하나로 (서버 관리자에게만 보임)
         bot.tree.clear_commands(guild=guild)
         bot.tree.copy_global_to(guild=guild)
 
@@ -251,7 +251,7 @@ async def sync_guild(guild: discord.abc.Snowflake):
         print(f"🔗 Synced {len(synced)} cmds to guild {gid}")
 
     except asyncio.TimeoutError:
-        print(f"⚠️ Sync timeout for guild {gid} (60s). 잠시 후 /동기화 로 재시도 권장")
+        print(f"⚠️ Sync timeout for guild {gid} (60s). 잠시 후 /관리자명령어 동기화 로 재시도 권장")
 
     except Exception as e:
         print(f"❌ Sync failed for guild {gid}:", repr(e))
