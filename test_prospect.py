@@ -387,6 +387,24 @@ def test_flow():
     asyncio.run(_flow())
 
 
+def test_hidden_migration():
+    """히든 능력치 전에 만든 유망주(기본값 8 · 10)는 한 번만 랜덤으로 · 스테로이드로 오른 부상 빈도는 얹는다."""
+    cdb.ClubDB()
+    old = cdb.HIDDEN_SINCE - 3600
+    cols = "user_id, name, nation, position, number, birthday, foot, height, ovr, pot, aged, peak_ovr, peak_age, created_ts"
+    for uid, prone in ((801, 8), (802, 11), (803, 8)):
+        sql(f"INSERT INTO prospects({cols}, proneness, pro) VALUES(?, 'x', 'y', 'ST', 9, '01-01', '오른발', 180, 55, 80, 17, 55, 17, ?, ?, 10)",
+            uid, old if uid != 803 else cdb.HIDDEN_SINCE + 60, prone)
+    sql("DELETE FROM club_migrations WHERE name='prospect_hidden_random'")
+    cdb.ClubDB()
+    got = {u: (pr, p) for u, pr, p in sql("SELECT user_id, proneness, pro FROM prospects WHERE user_id IN (801, 802, 803)")}
+    assert 3 <= got[801][0] <= 14 and 6 <= got[802][0] <= 17 and all(4 <= got[u][1] <= 17 for u in (801, 802))
+    assert got[803] == (8, 10)                                                    # 배포 뒤에 만든 유망주는 그대로
+    sql("UPDATE prospects SET proneness=8, pro=10 WHERE user_id=801")
+    cdb.ClubDB()                                                                  # 두 번째 부팅부터는 안 건드린다
+    assert sql("SELECT proneness, pro FROM prospects WHERE user_id=801") == [(8, 10)]
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

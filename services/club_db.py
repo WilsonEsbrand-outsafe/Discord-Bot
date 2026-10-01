@@ -264,6 +264,7 @@ PROSPECT_ATTRS = {       # 포지션 그룹 → (세부 능력치, OVR 대비 �
 #   부상 빈도 — 처음 3~14. 경기마다 부상 확률 = 0.5% + 부상 빈도 × 0.15%. 스테로이드 부작용으로 오른다
 #   프로 의식 — 처음 4~17. 경기 성장 경험치(+일 때) × (0.7 + 프로 의식 × 0.03) — 10 이면 그대로
 HIDDEN_TIERS = ("매우 낮음", "낮음", "보통", "높음", "매우 높음")
+HIDDEN_SINCE = 1790830067   # 2026-10-01 04:47:47 UTC — 히든 능력치 배포(재시작) 시각. 이전 유망주는 기본값이었다
 
 
 def hidden_tier(v: int) -> str:
@@ -446,6 +447,14 @@ class ClubDB:
                     con.execute(f"ALTER TABLE prospects ADD COLUMN {col}")
                 except sqlite3.OperationalError:
                     pass
+            # 히든 능력치 전에 만든 유망주는 기본값(부상 빈도 8 · 프로 의식 10)이었다 → 한 번만 새 유망주처럼 랜덤으로.
+            # 그 뒤 스테로이드 부작용으로 오른 부상 빈도(8 초과분)는 그대로 얹는다.
+            con.execute("CREATE TABLE IF NOT EXISTS club_migrations (name TEXT PRIMARY KEY)")
+            if con.execute("INSERT OR IGNORE INTO club_migrations(name) VALUES('prospect_hidden_random')").rowcount:
+                for pid, prone in con.execute("SELECT id, proneness FROM prospects WHERE created_ts < ?",
+                                              (HIDDEN_SINCE,)).fetchall():
+                    con.execute("UPDATE prospects SET proneness=?, pro=? WHERE id=?",
+                                (min(20, random.randint(3, 14) + max(0, prone - 8)), random.randint(4, 17), pid))
             # 현역 유망주는 한 명만
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_prospects_active ON prospects(user_id) WHERE retired_ts=0")
             con.execute("INSERT OR IGNORE INTO club_bonus(user_id) SELECT user_id FROM clubs")
