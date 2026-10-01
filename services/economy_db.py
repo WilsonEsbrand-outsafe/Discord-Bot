@@ -45,7 +45,8 @@ ITEMS = {
     "steroid":     ("💉", "스테로이드 주사기", "내 선수에게 주사 — OVR · 잠재력 상승? 약물 검출 · 은퇴?"),
 }
 # 원가 = 상점 가격. 판매가는 원가의 50% · 원가가 없는 아이템(리셋권 · 스킵권 · 토토 용지)은 사고팔 수 없다.
-ITEM_PRICES = {"muffler": 50_000}
+ITEM_PRICES = {"muffler": 50_000, "steroid": 30_000_000}
+SHOP_DAILY_LIMITS = {"steroid": 3}   # 하루(KST) 구매 한도가 있는 아이템
 SELL_RATE = 0.5
 SELL_PRICES = {k: int(p * SELL_RATE) for k, p in ITEM_PRICES.items()}
 MUFFLER_USES, MUFFLER_BONUS = 5, 3
@@ -215,7 +216,9 @@ class EconomyDB:
             # 아이템: 가방(보유 수량)과 사용 중인 효과(남은 횟수)
             con.execute("CREATE TABLE IF NOT EXISTS inventory (user_id INTEGER, item TEXT, qty INTEGER, PRIMARY KEY(user_id, item))")
             con.execute("CREATE TABLE IF NOT EXISTS buffs (user_id INTEGER, item TEXT, uses INTEGER, PRIMARY KEY(user_id, item))")
-            # 쿠폰 사용 기록
+            # 상점 하루 구매 수 (SHOP_DAILY_LIMITS) · 쿠폰 사용 기록
+            con.execute("CREATE TABLE IF NOT EXISTS shop_daily (user_id INTEGER, item TEXT, day_key INTEGER, cnt INTEGER, "
+                        "PRIMARY KEY(user_id, item))")
             con.execute("CREATE TABLE IF NOT EXISTS coupon_used (user_id INTEGER, code TEXT, PRIMARY KEY(user_id, code))")
                         # ───────────── 토토 ─────────────
             con.execute(
@@ -1233,6 +1236,7 @@ class EconomyDB:
                         ("spectating",            "user_id"),
                         ("inventory",             "user_id"),
                         ("buffs",                 "user_id"),
+                        ("shop_daily",            "user_id"),
                         ("coupon_used",           "user_id"),
                         ("clubs",                 "user_id"),
                         ("club_lineup",           "user_id"),
@@ -1367,19 +1371,35 @@ class EconomyDB:
             return out
         return await self._tx(fn)
 
-    async def buy_item(self, user_id: int, item: str) -> dict:
-        """상점 구매: 돈을 내고 가방에 1개. 실패 reason: balance."""
-        price = SHOP_PRICES[item]
+    async def shop_bought_today(self, user_id: int, now_ts: int) -> dict[str, int]:
+        """오늘(KST) 산 개수 {아이템: 개수} — 하루 한도가 있는 아이템만 센다."""
+        day = _kst_day(now_ts)
+        return await self._tx(lambda con: {i: int(c) for i, c in con.execute(
+            "SELECT item, cnt FROM shop_daily WHERE user_id=? AND day_key=?", (user_id, day))})
+
+    async def buy_item(self, user_id: int, item: str, now_ts: int) -> dict:
+        """상점 구매: 돈을 내고 가방에 1개. 실패 reason: daily(오늘 한도 — SHOP_DAILY_LIMITS) / balance."""
+        price, day, cap = SHOP_PRICES[item], _kst_day(now_ts), SHOP_DAILY_LIMITS.get(item)
 
         def fn(con):
+            bought = 0
+            if cap:
+                row = con.execute("SELECT day_key, cnt FROM shop_daily WHERE user_id=? AND item=?", (user_id, item)).fetchone()
+                bought = int(row[1]) if row and row[0] == day else 0
+                if bought >= cap:
+                    return {"ok": False, "reason": "daily", "limit": cap}
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
             if bal < price:
                 return {"ok": False, "reason": "balance", "balance": bal}
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (price, user_id))
+            if cap:
+                con.execute("INSERT OR REPLACE INTO shop_daily(user_id, item, day_key, cnt) VALUES(?,?,?,?)",
+                            (user_id, item, day, bought + 1))
             give_item(con, user_id, item)
             qty = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()[0]
-            return {"ok": True, "price": price, "balance": bal - price, "qty": int(qty)}
+            return {"ok": True, "price": price, "balance": bal - price, "qty": int(qty),
+                    "bought": bought + 1, "limit": cap}
         return await self._tx(fn)
 
     async def redeem_coupon(self, user_id: int, code: str, now_ts: int) -> dict:

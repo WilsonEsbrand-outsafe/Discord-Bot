@@ -242,7 +242,7 @@ class ClubDB:
             )
             # 구단 생성 보너스는 평생 한 번 — 삭제 후 재생성으로 보너스를 반복해 받지 못하게 한다.
             con.execute("CREATE TABLE IF NOT EXISTS club_bonus (user_id INTEGER PRIMARY KEY)")
-            # 공식경기: 월 시즌별 기록 (공식경기를 건 쪽만 기록된다)
+            # 공식경기: 월 시즌별 기록 (건 쪽과 상대 모두)
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS club_official (
@@ -469,12 +469,15 @@ class ClubDB:
             return True, f"**{row[0]}**을(를) 주장으로 임명했습니다. (전력 +1)"
         return await self._tx(fn)
 
+    @staticmethod
+    def _add_record(con, home_id: int, away_id: int, home_goals: int, away_goals: int) -> None:
+        """/구단 전적(승 · 무 · 패)을 두 구단 모두에 반영한다."""
+        for uid, gf, ga in ((home_id, home_goals, away_goals), (away_id, away_goals, home_goals)):
+            col = "wins" if gf > ga else ("draws" if gf == ga else "losses")
+            con.execute(f"UPDATE clubs SET {col}={col}+1 WHERE user_id=?", (int(uid),))
+
     async def record_match(self, home_id: int, away_id: int, home_goals: int, away_goals: int) -> None:
-        def fn(con):
-            for uid, gf, ga in ((home_id, home_goals, away_goals), (away_id, away_goals, home_goals)):
-                col = "wins" if gf > ga else ("draws" if gf == ga else "losses")
-                con.execute(f"UPDATE clubs SET {col}={col}+1 WHERE user_id=?", (int(uid),))
-        await self._tx(fn)
+        await self._tx(lambda con: self._add_record(con, home_id, away_id, home_goals, away_goals))
 
     # ───────────── 감독 ─────────────
     async def hire_manager(self, user_id: int, key: str) -> dict:
@@ -505,18 +508,23 @@ class ClubDB:
                 (int(user_id),))]
         return await self._tx(fn)
 
-    async def record_official(self, user_id: int, gf: int, ga: int, now_ts: int,
+    async def record_official(self, user_id: int, opp_id: int, gf: int, ga: int, now_ts: int,
                               amount: int, pick: str, odds: float) -> dict:
-        """공식경기 결과 기록 + 베팅 정산. 예측(pick)이 맞으면 순이익 = 베팅 × (배당 - 1), 틀리면 베팅금을 잃는다."""
+        """공식경기 결과 기록 + 베팅 정산. 예측(pick)이 맞으면 순이익 = 베팅 × (배당 - 1), 틀리면 베팅금을 잃는다.
+        승점 · 득실(/공식순위)과 /구단 전적은 건 쪽과 상대 모두에 기록한다 (돈은 건 쪽만)."""
         season = season_key(now_ts)
         res = "W" if gf > ga else ("D" if gf == ga else "L")
         delta = round(amount * (odds - 1)) if pick == res else -amount
 
         def fn(con):
-            con.execute("INSERT OR IGNORE INTO club_official(user_id, season) VALUES(?, ?)", (int(user_id), season))
-            con.execute(
-                "UPDATE club_official SET points=points+?, w=w+?, d=d+?, l=l+?, gf=gf+?, ga=ga+? WHERE user_id=? AND season=?",
-                ({"W": 3, "D": 1, "L": 0}[res], res == "W", res == "D", res == "L", gf, ga, int(user_id), season))
+            for uid, f, a in ((user_id, gf, ga), (opp_id, ga, gf)):
+                r = "W" if f > a else ("D" if f == a else "L")
+                con.execute("INSERT OR IGNORE INTO club_official(user_id, season) VALUES(?, ?)", (int(uid), season))
+                con.execute(
+                    "UPDATE club_official SET points=points+?, w=w+?, d=d+?, l=l+?, gf=gf+?, ga=ga+? "
+                    "WHERE user_id=? AND season=?",
+                    ({"W": 3, "D": 1, "L": 0}[r], r == "W", r == "D", r == "L", f, a, int(uid), season))
+            self._add_record(con, user_id, opp_id, gf, ga)
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (delta, int(user_id)))
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0]

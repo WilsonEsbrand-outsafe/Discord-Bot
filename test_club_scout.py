@@ -240,15 +240,22 @@ async def _club22():
     assert 0.9 < sum(1 / o for o in even.values()) * cdb.OFFICIAL_MARGIN < 1.1
 
     # 공식경기 정산: 예측 적중 → 베팅 × (배당 - 1), 빗나감 → 베팅금 손실 · 횟수 제한 없음 · 승점 · 순위
-    bal0 = await eco.get_balance(A)
+    # 승점 · 득실 · /구단 전적은 건 쪽(A)과 상대(B) 모두 기록, 돈은 A 만
+    bal0, bal_b = await eco.get_balance(A), await eco.get_balance(B)
+    club_a0, club_b0 = await clubs.get_club(A), await clubs.get_club(B)
     net = 0
     for gf, ga in ((2, 0), (1, 1), (0, 3), (4, 1), (2, 2), (1, 0), (3, 0)):     # 하루 5경기 제한 없음
-        r = await clubs.record_official(A, gf, ga, NOW, 10_000, "W", 2.5)
+        r = await clubs.record_official(A, B, gf, ga, NOW, 10_000, "W", 2.5)
         net += 15_000 if gf > ga else -10_000
         assert r["delta"] == (15_000 if gf > ga else -10_000) and r["balance"] == bal0 + net
-    assert await eco.get_balance(A) - bal0 == 4 * 15_000 - 3 * 10_000
-    table = await clubs.official_table(NOW)
-    assert table[0]["user_id"] == A and table[0]["points"] == 14 and table[0]["gf"] - table[0]["ga"] == 6
+    assert await eco.get_balance(A) - bal0 == 4 * 15_000 - 3 * 10_000 and await eco.get_balance(B) == bal_b
+    table = {row["user_id"]: row for row in await clubs.official_table(NOW)}
+    assert table[A]["points"] == 14 and table[A]["gf"] - table[A]["ga"] == 6
+    assert (table[B]["w"], table[B]["d"], table[B]["l"]) == (1, 2, 4) and table[B]["points"] == 5   # 상대도 기록
+    assert table[B]["gf"] - table[B]["ga"] == -6
+    club_a, club_b = await clubs.get_club(A), await clubs.get_club(B)
+    assert (club_a["wins"] - club_a0["wins"], club_a["draws"] - club_a0["draws"], club_a["losses"] - club_a0["losses"]) == (4, 2, 1)
+    assert (club_b["wins"] - club_b0["wins"], club_b["draws"] - club_b0["draws"], club_b["losses"] - club_b0["losses"]) == (1, 2, 4)
     assert await clubs.official_opponents(A) == [B] or B in await clubs.official_opponents(A)
 
     # 친선경기 화면: 머플러 1회 소모 · 90분 중계 장면 · 다시 붙기 버튼
@@ -273,10 +280,12 @@ async def _club22():
         assert isinstance(edits[-1]["view"], cc.RematchView)
         _, buffs = await eco.inventory(A)
         assert buffs["muffler"] == 4
-        w0 = (await clubs.get_club(A))
+        w0, b0 = await clubs.get_club(A), await clubs.get_club(B)
         await edits[-1]["view"].again.callback(inter)                            # 🔁 다시 붙기 — 대기 없이 바로
-        w1 = (await clubs.get_club(A))
+        w1, b1 = await clubs.get_club(A), await clubs.get_club(B)
         assert w1["wins"] + w1["draws"] + w1["losses"] == w0["wins"] + w0["draws"] + w0["losses"] + 1
+        assert (b1["wins"] - b0["wins"], b1["draws"] - b0["draws"], b1["losses"] - b0["losses"]) == \
+            (w1["losses"] - w0["losses"], w1["draws"] - w0["draws"], w1["wins"] - w0["wins"])   # 상대는 반대로 기록
 
         # 공식경기 명령: 자동 매칭 / 상대 지정 → 킥오프에 배당 → 중계 → 예측대로 정산
         for pick, target in (("W", None), ("D", opp), ("L", opp)):

@@ -17,7 +17,7 @@ matplotlib.rcParams["font.family"] = "NanumGothic"
 matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
 from services import ui
-from services.economy_db import ITEMS, SELL_PRICES, SHOP_PRICES, EconomyDB
+from services.economy_db import ITEMS, SELL_PRICES, SHOP_DAILY_LIMITS, SHOP_PRICES, EconomyDB
 from services.player_market_db import PlayerMarketDB, PACKS, PACK_MAX_PULLS, JACKPOT_PROB, JACKPOT_RANGE, player_profile
 
 PACK_EMOJI = {
@@ -205,7 +205,8 @@ class ShopView(_ShopOwnerView):
                                      emoji=PACK_EMOJI.get(k, "🎁"), description=f"선수 카드 1~{PACK_MAX_PULLS}장")
                 for k, p in PACKS.items()]
         opts += [discord.SelectOption(label=f"{ITEMS[k][1]} · {price:,}원", value=f"item:{k}", emoji=ITEMS[k][0],
-                                      description=ITEMS[k][2][:100])
+                                      description=(ITEMS[k][2] + (f" · 하루 {SHOP_DAILY_LIMITS[k]}개" if k in SHOP_DAILY_LIMITS
+                                                                  else ""))[:100])
                  for k, price in SHOP_PRICES.items()]
         self.menu = discord.ui.Select(placeholder="🛒 살 상품을 고르세요", options=opts[:25])
         self.menu.callback = self._buy
@@ -234,10 +235,14 @@ class ShopView(_ShopOwnerView):
         if kind == "pack":
             return await interaction.response.edit_message(view=PackQtyView(self.cog, self.user, key))
         emoji, name, desc = ITEMS[key]
-        r = await self.cog.money.buy_item(self.user.id, key)
+        r = await self.cog.money.buy_item(self.user.id, key, int(time.time()))
         if r["ok"]:
+            today = f" · `오늘` {r['bought']}/{r['limit']}개" if r["limit"] else ""
             e = ui.card(f"🛒 {emoji} {name} 구매!", f"{desc}\n\n`가격` **-{r['price']:,}원** · `잔액` **{r['balance']:,}원**\n"
-                        f"`보유` **{r['qty']}개** · `/가방`에서 바로 사용", ui.WIN, self.user, "🛒 상점")
+                        f"`보유` **{r['qty']}개**{today} · `/가방`에서 바로 사용", ui.WIN, self.user, "🛒 상점")
+        elif r["reason"] == "daily":
+            e = ui.card("🙅 오늘은 더 살 수 없어요", f"{emoji} {name}은(는) 하루 **{r['limit']}개**까지예요. 내일 00:00에 다시 열려요!",
+                        ui.EVEN, self.user, "🛒 상점")
         else:
             e = ui.card("🙅 잔액이 부족해요", f"`가격` **{SHOP_PRICES[key]:,}원**\n`잔액` **{r['balance']:,}원**",
                         ui.LOSE, self.user, "🛒 상점")
@@ -780,9 +785,11 @@ class PlayersMarket(commands.Cog):
     async def _shop_screen(self, user) -> tuple[discord.Embed, ShopView]:
         """상점 화면: 잔액 · 살 것(선수팩 · 아이템) · 팔 것(가진 아이템) + 메뉴."""
         inv, _ = await self.money.inventory(user.id)
+        bought = await self.money.shop_bought_today(user.id, int(time.time()))
         packs = "\n".join(f"{PACK_EMOJI.get(k, '🎁')} **{k}팩** · {p['price']:,}원" for k, p in PACKS.items())
-        items = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** · {price:,}원\n　 *{ITEMS[k][2]}*"
-                          for k, price in SHOP_PRICES.items())
+        items = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** · {price:,}원"
+                          + (f" · 오늘 {bought.get(k, 0)}/{SHOP_DAILY_LIMITS[k]}" if k in SHOP_DAILY_LIMITS else "")
+                          + f"\n　 *{ITEMS[k][2]}*" for k, price in SHOP_PRICES.items())
         sell = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** × {inv[k]} · 개당 +{each:,}원"
                          for k, each in SELL_PRICES.items() if inv.get(k))
         e = ui.card("🛒 상점", f"`잔액` **{await self.money.get_balance(user.id):,}원**", ui.INFO, user, "🛒 상점")

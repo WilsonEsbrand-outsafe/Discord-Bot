@@ -420,7 +420,8 @@ class Club(commands.Cog):
         note = f"\n`배당` {board}\n`베팅` **{amount:,}원** · 적중하면 **{ui.won(round(amount * (odds[pick] - 1)))}**"
 
         async def record(result):
-            r = await self.clubs.record_official(user.id, result["home"], result["away"], now, amount, pick, odds[pick])
+            r = await self.clubs.record_official(user.id, opp_id, result["home"], result["away"], now, amount, pick,
+                                                 odds[pick])
             mark = {"W": "승리", "D": "무승부", "L": "패배"}[r["result"]]
             hit = "🎯 적중!" if r["result"] == pick else "❌ 빗나감"
             return (f"\n\n`예측` **{self.PICKS[pick]}** @ {odds[pick]:.2f}배 · `결과` **{mark}** → {hit}\n"
@@ -441,7 +442,7 @@ class Club(commands.Cog):
         e = ui.card(f"🏆 {season // 100}년 {season % 100}월 공식경기 순위",
                     "\n".join(lines) or "아직 이번 시즌 공식경기가 없어요. `/공식경기`로 첫 경기를 치러 보세요!",
                     ui.GOLD, interaction.user, "🏆 공식경기")
-        e.set_footer(text="승 3점 · 무 1점 · 공식경기를 건 구단만 기록 · 매달 1일 새 시즌")
+        e.set_footer(text="승 3점 · 무 1점 · 건 쪽과 상대 모두 기록 · 매달 1일 새 시즌")
         await interaction.followup.send(embed=e)
 
     # ───────────── 감독 ─────────────

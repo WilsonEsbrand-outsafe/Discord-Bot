@@ -115,7 +115,7 @@ async def _items():
     # 이벤트는 돈 대신 아이템(같은 트랜잭션에서 가방으로) · 리셋권 · 스킵권은 나오지 않는다
     assert edb.WATCH_DAILY_LIMIT == 100 and Economy.WATCH_COOLDOWN == 10
     assert dict(zip(Economy.WATCH_KINDS, Economy.WATCH_ODDS)) == {"관람": 0.80, "이벤트": 0.05, "실패": 0.15}
-    assert Economy.WATCH_ITEM_WEIGHTS == {"muffler": 96, "toto_slip": 2.5, "steroid": 1.5}
+    assert Economy.WATCH_ITEM_WEIGHTS == {"muffler": 92, "toto_slip": 5, "steroid": 3}
     assert not set(Economy.WATCH_ITEM_WEIGHTS) & (set(edb.RESET_ITEMS) | set(edb.SKIP_ITEMS))
     assert set(Economy.WATCH_ITEM_WEIGHTS) <= set(Economy.WATCH_ITEM_EVENTS)
     import random as _r
@@ -140,7 +140,7 @@ async def _items():
         assert abs(rolled.count(k) / n - p) < 0.015, (k, rolled.count(k) / n)
     items = [eco._watch_roll(1, mem, 1)[2]["item"] for _ in range(n)]           # 이벤트 안에서 아이템 비중
     events = [i for i in items if i]
-    assert abs(events.count("muffler") / len(events) - 0.96) < 0.03 and set(events) <= set(Economy.WATCH_ITEM_WEIGHTS)
+    assert abs(events.count("muffler") / len(events) - 0.92) < 0.03 and set(events) <= set(Economy.WATCH_ITEM_WEIGHTS)
     r = await db.play_watch(X, T + 6000 + 100 * 10, lambda lv, con: (0, 0, None), cooldown_sec=10)
     assert r["reason"] == "limit"
     inv, _ = await db.inventory(X)
@@ -186,17 +186,29 @@ async def _items():
     inv, buffs = await db.inventory(X)
     assert "muffler" not in inv and "muffler" not in buffs
 
-    # 상점: 리셋권은 팔지 않는다 · 돈을 내고 가방에 · 구매 제한 없음 · 잔액 부족
+    # 상점: 리셋권은 팔지 않는다 · 돈을 내고 가방에 · 머플러는 구매 제한 없음 · 잔액 부족
     Z = 13
     assert not set(edb.SHOP_PRICES) & set(edb.RESET_ITEMS)
     price = edb.SHOP_PRICES["muffler"]
-    assert (await db.buy_item(Z, "muffler"))["reason"] == "balance"
+    assert (await db.buy_item(Z, "muffler", T))["reason"] == "balance"
     await db.add_balance(Z, price * 3)
     for n in (1, 2, 3):
-        r = await db.buy_item(Z, "muffler")
-        assert r["ok"] and r["balance"] == price * (3 - n) and r["qty"] == n
-    assert (await db.buy_item(Z, "muffler"))["reason"] == "balance"
+        r = await db.buy_item(Z, "muffler", T)
+        assert r["ok"] and r["balance"] == price * (3 - n) and r["qty"] == n and r["limit"] is None
+    assert (await db.buy_item(Z, "muffler", T))["reason"] == "balance"
     assert price == 50_000                                                    # 머플러 가격 인하 (20만 → 5만)
+
+    # 스테로이드: 3,000만원 · 하루 3개 · 다음 날 다시
+    Q = 15
+    assert edb.SHOP_PRICES["steroid"] == 30_000_000 and edb.SHOP_DAILY_LIMITS == {"steroid": 3}
+    await db.add_balance(Q, 30_000_000 * 5)
+    for n in (1, 2, 3):
+        r = await db.buy_item(Q, "steroid", T)
+        assert r["ok"] and (r["bought"], r["limit"], r["qty"]) == (n, 3, n)
+    r = await db.buy_item(Q, "steroid", T + 60)
+    assert r["reason"] == "daily" and r["limit"] == 3 and await db.get_balance(Q) == 30_000_000 * 2   # 돈은 안 빠진다
+    assert await db.shop_bought_today(Q, T) == {"steroid": 3}
+    assert (await db.buy_item(Q, "steroid", T + D))["bought"] == 1
 
     # 판매: 원가의 50% · 수량 부족 · 토토 용지는 판매 불가
     r = await db.sell_item(Z, "muffler", 2)
@@ -204,7 +216,8 @@ async def _items():
     assert (await db.sell_item(Z, "muffler", 2))["reason"] == "short"
     for k in ("toto_slip", "scout_reset", "train_skip"):                      # 원가 없는 아이템은 못 판다
         assert (await db.sell_item(Z, k, 1))["reason"] == "unsellable"
-    assert set(edb.SELL_PRICES) == set(edb.SHOP_PRICES) == {"muffler"}
+    assert set(edb.SELL_PRICES) == set(edb.SHOP_PRICES) == {"muffler", "steroid"}
+    assert edb.SELL_PRICES["steroid"] == 15_000_000                           # 산 아이템은 원가의 50%로 판다
     assert edb.TOTO_SLIP_AMOUNT == (200_000, 1_000_000)
     await db._tx(lambda con: con.execute("DELETE FROM inventory WHERE user_id=?", (Z,)))
 
@@ -306,6 +319,8 @@ async def _item_screens():
     await cpm.PlayersMarket.shop.callback(shop, inter)
     view = sent[-1]["view"]
     assert not any(o.value.startswith("item:") and o.value[5:] in edb.RESET_ITEMS for o in view.menu.options)
+    assert "30,000,000원 · 오늘 0/3" in sent[-1]["embed"].fields[1].value                 # 스테로이드 하루 한도 표시
+    assert "하루 3개" in next(o for o in view.menu.options if o.value == "item:steroid").description
     view.menu._values = ["pack:골드"]
     await view._buy(inter)
     qty = sent[-1]["view"]
