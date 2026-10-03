@@ -568,7 +568,7 @@ class ClubDB:
                 n = con.execute("UPDATE clubs SET wins=0, draws=0, losses=0").rowcount
                 m = con.execute("DELETE FROM club_official").rowcount
                 con.execute("DELETE FROM prospect_vs")
-                print(f"[구단] 친선 · 공식경기 기록 초기화 — 구단 {n}개 · 공식 기록 {m}줄 (백업 *_bak_20261003)")
+                print(f"[구단] 친선 · 공식경기 기록 초기화: 구단 {n}개 · 공식 기록 {m}줄 (백업 *_bak_20261003)")
             # 시설 (구단을 지웠다 다시 만들어도 남는다) · 명문 구단
             con.execute("CREATE TABLE IF NOT EXISTS club_facilities (user_id INTEGER PRIMARY KEY, "
                         + ", ".join(f"{k} INTEGER NOT NULL DEFAULT 0" for k in FACILITIES) + ")")
