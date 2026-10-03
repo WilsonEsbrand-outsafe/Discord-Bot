@@ -290,7 +290,8 @@ class Club(commands.Cog):
             line += "\n-# 경험치 " + " · ".join(x["mods"])
         j = x.get("injury")
         if j:
-            line += (f"\n　🚑 **{j['name']}** ({j['grade']}) · {j['hours']}시간 결장"
+            out_for = f"공식경기 {j['games']}경기" if j.get("games") else f"{j['hours']}시간"
+            line += (f"\n　🚑 **{j['name']}** ({j['grade']}) · {out_for} 결장"
                      + (f" (의료진 -{j['heal']}%)" if j["heal"] else ""))
             if j["ovr"] < j["ovr0"] or j["pot"] < j["pot0"]:
                 line += (f" · {'고질병 ' if j['chronic'] else ''}OVR {j['ovr0']}→{j['ovr']} · "
@@ -349,7 +350,7 @@ class Club(commands.Cog):
         gap = round(h["rating"] - a["rating"])
         stars = await self.clubs.record_prospects(
             [(h["xi"], hg, ag, a["uid"], gap), (a["xi"], ag, hg, h["uid"], -gap)], result["goals"], int(time.time()),
-            highlights, friendly=friendly, antifarm=release.preview(interaction.guild_id))
+            highlights, friendly=friendly, v26=release.preview(interaction.guild_id))
         if stars:
             extra = "\n" + "".join(self._star_line(x) for x in stars) + extra
 
@@ -481,7 +482,10 @@ class Club(commands.Cog):
             return (f"\n\n`예측` **{self.PICKS[pick]}** @ {odds[pick]:.2f}배 · `결과` **{mark}** → {hit}\n"
                     f"`정산` **{ui.won(r['delta'])}** · `잔액` **{r['balance']:,}원**\n"
                     f"`이번 시즌` {r['points']}점 · {r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d} · "
-                    "순위는 `/공식순위`")
+                    "순위는 `/공식순위`"
+                    + ((f"\n🩹 **{r['rehab']['name']}** 부상 복귀!" if r["rehab"]["left"] <= 0 else
+                        f"\n🚑 **{r['rehab']['name']}** 복귀까지 공식경기 **{r['rehab']['left']}경기**")
+                       if r.get("rehab") else ""))
         await self._play_match(interaction, user, h, a, sec, "🏆", after=record, note=note)
 
     @app_commands.command(name="공식순위", description="이번 달 공식경기 시즌 순위")

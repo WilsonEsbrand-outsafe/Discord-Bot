@@ -38,7 +38,7 @@ async def _flow():
 
     async def play(gf, ga, opp, gap, goals=(), friendly=False):
         out = await clubs.record_prospects([([me], gf, ga, opp, gap)], list(goals), now, rng=NoHurt,
-                                           friendly=friendly, antifarm=True)
+                                           friendly=friendly, v26=True)
         return out[0]
 
     # 기준: 출전 10 + 승 5 + 골 6 = 21 · 출전 10 + 무 2 = 12
@@ -55,9 +55,29 @@ async def _flow():
     # 같은 상대: 1~3번째 그대로 · 4~6번째 ×0.5 · 7번째부터 ×0
     got = [(await play(0, 0, 108, 0))["xp"] for _ in range(7)]
     assert got == [12, 12, 12, 6, 6, 6, 0], got
-    # antifarm 이 꺼진 서버는 예전 그대로
+    # 2.6 전 서버는 예전 그대로
     out = await clubs.record_prospects([([me], 1, 0, 109, 45)], goal, now, rng=NoHurt)
     assert out[0]["xp"] == 21 and out[0]["mods"] == []
+
+    # 부상 결장은 공식경기 판수 (2.6) — 내 구단이 공식경기를 치를 때마다(건 쪽 · 상대 쪽) 1경기씩
+    import random
+
+    class Hurt(random.Random):
+        def random(self):
+            return 0.0   # 부상 확률 통과 · 등급은 첫 번째(경미)
+    x = (await clubs.record_prospects([([me], 1, 0, 110, 0)], [], now, rng=Hurt(1), v26=True))[0]
+    games = x["injury"]["games"]
+    assert x["injury"]["grade"] == "경미" and 2 <= games <= 4 and x["injury"]["until"] == 0
+    p = (await clubs.prospects(U, now + 10 ** 6))["active"]                     # 시간이 아무리 지나도
+    assert p["injured"] and p["injury_games"] == games
+    r = await clubs.record_official(999, U, 0, 1, now, 1_000, "W", 2.0)        # 상대로 뛴 공식경기도 센다
+    assert r["rehab"] is None                                                   # (건 쪽 999 는 부상 없음)
+    for left in range(games - 2, -1, -1):
+        r = await clubs.record_official(U, 999, 1, 0, now, 1_000, "W", 2.0)
+        assert r["rehab"] == {"name": "파머", "left": left}
+    p = (await clubs.prospects(U, now))["active"]
+    assert not p["injured"] and p["injury_games"] == 0
+    assert (await clubs.record_official(U, 999, 1, 0, now, 1_000, "W", 2.0))["rehab"] is None
 
     # 명문 구단 강화판: 이름은 같고 능력치 · 케미 · 주장
     for k in cdb.ELITE_CLUBS:

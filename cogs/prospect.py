@@ -51,7 +51,9 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
         body = (f"`나이` **{p['age']}세** · `OVR` **{p['ovr']}** · `잠재력` **{p['pot']}** ({p['pot_grade']}) · "
                 f"`최고` {p['peak_ovr']}\n{grow}\n"
                 f"`오늘 성장 경기` {min(played, PROSPECT_DAILY_GROWTH)}/{PROSPECT_DAILY_GROWTH}"
-                + (f"\n🚑 **부상** — {p['injury']} · 복귀 <t:{p['injured_until']}:R> (그때까지 경기에 못 나가요)"
+                + (f"\n🚑 **부상** — {p['injury']} · "
+                   + (f"복귀까지 공식경기 **{p['injury_games']}경기** (내 구단이 공식경기를 치를 때마다 1경기씩)"
+                      if p["injury_games"] else f"복귀 <t:{p['injured_until']}:R> (그때까지 경기에 못 나가요)")
                    if p["injured"] else ""))
     e = ui.card(title, _profile(p) + "\n\n" + body, ui.GOLD if retired else ui.INFO, owner, SECTION)
     ovr = p["peak_ovr"] if retired else p["ovr"]
