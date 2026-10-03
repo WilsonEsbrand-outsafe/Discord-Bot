@@ -686,8 +686,9 @@ class ClubDB:
         con.execute("DELETE FROM club_lineup WHERE user_id=? AND slot>=?", (int(user_id), len(slots)))
         return out
 
-    async def get_team(self, user_id: int) -> Optional[dict]:
-        """구단 + 선발 11명 + 전력. 구단이 없으면 None."""
+    async def get_team(self, user_id: int, fill_injured: bool = False) -> Optional[dict]:
+        """구단 + 선발 11명 + 전력. 구단이 없으면 None.
+        fill_injured(2.6 경기용): 부상 유망주 자리를 이번 경기만 벤치 최고 선수로 채운다 (선발 명단은 그대로)."""
         def fn(con):
             row = con.execute(
                 "SELECT club_name, created_ts, formation, captain, wins, draws, losses, manager, medic, emblem, stadium, "
@@ -708,6 +709,15 @@ class ClubDB:
             if club["captain"] and club["captain"] not in {s.get("player_id") or s.get("injured_id") for s in lineup}:
                 con.execute("UPDATE clubs SET captain=NULL WHERE user_id=?", (int(user_id),))
                 club["captain"] = None
+            if fill_injured:
+                used = {s.get("player_id") for s in lineup}
+                for i, s in enumerate(lineup):
+                    bench = [b for pid, b in squad.items() if pid not in used]
+                    if s.get("injured") and bench:
+                        best = max(bench, key=lambda b: (effective_ovr(b["ovr"], b["pos"], s["slot"]), b["ovr"]))
+                        lineup[i] = {"slot": s["slot"], "index": s["index"], **best,
+                                     "sub_for": s["injured"], "injured_id": s["injured_id"]}
+                        used.add(best["player_id"])
             club["lineup"] = lineup
             club["squad_size"] = len(squad)
             club["retired_numbers"] = [n for (n,) in con.execute(
@@ -719,12 +729,12 @@ class ClubDB:
             return club
         return await self._tx(fn)
 
-    async def match_team(self, user_id: int, strong: bool = False) -> Optional[dict]:
+    async def match_team(self, user_id: int, v26: bool = False) -> Optional[dict]:
         """경기에 나갈 팀: 스쿼드 B(명문 구단)를 골랐고 아직 주인이면 그 구단, 아니면 내 구단(스쿼드 A).
-        strong: 명문 구단 2.6 강화판."""
-        team = await self.get_team(user_id)
+        v26: 명문 구단 강화판 · 부상 유망주 자리는 벤치 최고 선수가 대신 뛴다."""
+        team = await self.get_team(user_id, fill_injured=v26)
         if team and team["squad_b"] and team["elite"]:
-            b = elite_team(team["elite"], strong)
+            b = elite_team(team["elite"], v26)
             b["stadium"] = team["stadium"]
             return b
         return team

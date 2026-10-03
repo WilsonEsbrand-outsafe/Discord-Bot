@@ -79,6 +79,29 @@ async def _flow():
     assert not p["injured"] and p["injury_games"] == 0
     assert (await clubs.record_official(U, 999, 1, 0, now, 1_000, "W", 2.0))["rehab"] is None
 
+    # 부상 유망주 자리는 경기 때만 벤치 최고 선수가 대신 (선발 명단 · 주장은 그대로)
+    await clubs.create_club(U, "파머 FC", now)
+    await pmdb.PlayerMarketDB().give_amateur_squad(U)
+    await clubs.auto_lineup(U)
+    team = await clubs.get_team(U)
+    slot = next((s["index"] for s in team["lineup"] if s.get("player_id") == pid), None)
+    if slot is None:   # 자동편성에 안 뽑혔으면 공격수 자리에
+        slot = next(s["index"] for s in team["lineup"] if s["pos"] == "FW")
+        assert (await clubs.set_slot(U, slot, pid))[0]
+    await clubs.set_captain(U, pid)
+    con = sqlite3.connect(TMP)
+    con.execute("UPDATE prospects SET injury_games=3, injury='발목 염좌 (경미)' WHERE user_id=?", (U,))
+    con.commit(); con.close()
+    plain = await clubs.get_team(U)
+    assert plain["filled"] == 10 and plain["lineup"][slot]["injured"] == "파머"
+    m = await clubs.match_team(U, True)
+    s = m["lineup"][slot]
+    assert m["filled"] == 11 and s["sub_for"] == "파머" and s["player_id"] not in {x["player_id"] for x in plain["lineup"]}
+    assert m["rating"] > plain["rating"]
+    again = await clubs.get_team(U)
+    assert again["lineup"][slot].get("injured") == "파머" and again["captain"] == pid      # 저장은 안 바뀐다
+    assert (await clubs.match_team(U))["filled"] == 10                                     # 2.6 전 서버는 빈자리
+
     # 명문 구단 강화판: 이름은 같고 능력치 · 케미 · 주장
     for k in cdb.ELITE_CLUBS:
         old, new = cdb.elite_team(k), cdb.elite_team(k, True)

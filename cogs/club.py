@@ -308,7 +308,7 @@ class Club(commands.Cog):
         if not full or not team["filled"]:
             return f"{who} 선발 명단이 비어 있습니다. `/자동편성`을 먼저 해 주세요."
         return (f"{who} 선발이 **{team['filled']}/11명**이에요. 11명이 꽉 차야 경기할 수 있어요.\n"
-                "`/자동편성`으로 채워 주세요. (부상 중인 유망주 자리는 빈자리예요)")
+                "`/자동편성`으로 채워 주세요.")
 
     async def _load_sides(self, interaction, user, home_id: int, away_id: int, away_label: str, section: str):
         """두 구단을 불러오고 문제가 있으면 안내 후 None."""
@@ -366,6 +366,9 @@ class Club(commands.Cog):
                     sum(g["side"] == "away" and g["minute"] <= minute for g in result["goals"]))
 
         venue = f"🏟️ **{h['stadium']}**\n" if h.get("stadium") else ""
+        subs = [f"🔄 {s['name']} ← 🚑 {s['sub_for']}" for s in h["xi"] + a["xi"] if s.get("sub_for")]
+        if subs:   # 2.6 부상 유망주 자리를 이번 경기만 벤치 선수가 대신
+            note += "\n" + " · ".join(subs) + " (부상 대신 출전)"
         kickoff = ui.card(f"{title_tag} {h['name']} vs {a['name']}",
                           f"{venue}> 🎙️ *\"전력 {h['rating']} 대 {a['rating']}! 주심의 휘슬과 함께 킥오프!\"*\n\n"
                           f"`예상 승률` {h['name']} **{pw:.0%}** · 무 **{pd:.0%}** · {a['name']} **{pl:.0%}**" + note,
