@@ -102,6 +102,34 @@ async def _flow():
     assert again["lineup"][slot].get("injured") == "파머" and again["captain"] == pid      # 저장은 안 바뀐다
     assert (await clubs.match_team(U))["filled"] == 10                                     # 2.6 전 서버는 빈자리
 
+    # 신규 보호: 2.5 뒤 새 유저는 7일 · 공식경기 10판까지 (기존 유저는 없음 · 시작 기록 없는 새 유저는 보호)
+    VET, NEW, BLANK = 201, 202, 203
+    con = sqlite3.connect(TMP)
+    con.execute("INSERT INTO rookie(user_id, start_ts) VALUES(?, 0), (?, ?)", (VET, NEW, now))
+    con.commit(); con.close()
+    D = 86400
+    assert not await clubs.protected(VET, now) and await clubs.protected(BLANK, now)
+    assert await clubs.protected(NEW, now) and await clubs.protected(NEW, now + 8 * D)       # 7일 지나도 10판 전
+    for _ in range(cdb.NEWBIE_OFFICIAL):
+        await clubs.record_official(NEW, VET, 1, 0, now, 1_000, "W", 2.0)
+    assert await clubs.protected(NEW, now) and not await clubs.protected(NEW, now + 8 * D)
+
+    from types import SimpleNamespace
+    sent = []
+
+    async def rec(*a, **k):
+        sent.append((a, k))
+    cog = Club.__new__(Club)
+    cog.clubs = clubs
+    member = lambda i: SimpleNamespace(id=i, display_name=f"u{i}")                              # noqa: E731
+    inter = lambda g: SimpleNamespace(guild_id=g, response=SimpleNamespace(send_message=rec))   # noqa: E731
+    import release
+    T = release.TEST_GUILD
+    assert await cog._shielded(inter(T), member(VET), member(BLANK)) and "신규 보호" in sent[-1][0][0]
+    assert not await cog._shielded(inter(T), member(BLANK), member(VET))          # 신규가 먼저 거는 건 된다
+    assert not await cog._shielded(inter(T), member(NEW), member(BLANK))          # 신규끼리는 된다
+    assert not await cog._shielded(inter(None), member(VET), member(BLANK))       # 2.6 전 서버는 그대로
+
     # 명문 구단 강화판: 이름은 같고 능력치 · 케미 · 주장
     for k in cdb.ELITE_CLUBS:
         old, new = cdb.elite_team(k), cdb.elite_team(k, True)

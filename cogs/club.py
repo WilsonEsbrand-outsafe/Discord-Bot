@@ -12,7 +12,7 @@ from discord.ext import commands
 import release
 from services import ui
 from services.club_db import (
-    CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
+    CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, NEWBIE_GAP, NEWBIE_OFFICIAL, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
     match_highlights, official_odds, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
@@ -400,10 +400,23 @@ class Club(commands.Cog):
             return await interaction.response.send_message("다른 유저의 구단을 골라 주세요.", ephemeral=True)
         await self._friendly(interaction, user, 상대)
 
+    async def _shielded(self, interaction, user, opp) -> bool:
+        """2.6 신규 보호: 상대가 신규 보호 중이고 나는 아니면 안내하고 True (신규 유저가 먼저 거는 건 된다)."""
+        now = int(time.time())
+        if (not release.preview(interaction.guild_id) or not await self.clubs.protected(opp.id, now)
+                or await self.clubs.protected(user.id, now)):
+            return False
+        await interaction.response.send_message(
+            f"🛡️ **{opp.display_name}**님은 신규 보호 중이에요. (가입 7일 · 공식경기 {NEWBIE_OFFICIAL}판까지)\n"
+            "신규 유저가 먼저 거는 경기만 할 수 있어요.", ephemeral=True)
+        return True
+
     async def _friendly(self, interaction, user, opp):
         if user.id in self._playing:
             return await interaction.response.send_message("⏳ 지금 경기가 진행 중이에요. 끝나면 바로 다시 붙을 수 있어요!",
                                                            ephemeral=True)
+        if await self._shielded(interaction, user, opp):
+            return
         await interaction.response.defer()
         self._playing.add(user.id)
         try:
@@ -435,6 +448,8 @@ class Club(commands.Cog):
             return await interaction.response.send_message("다른 유저의 구단을 골라 주세요.", ephemeral=True)
         if user.id in self._playing:
             return await interaction.response.send_message("⏳ 지금 경기가 진행 중이에요.", ephemeral=True)
+        if 상대 is not None and await self._shielded(interaction, user, 상대):
+            return
         await interaction.response.defer()
         self._playing.add(user.id)
         try:
@@ -461,8 +476,13 @@ class Club(commands.Cog):
                     "❌ 경기 불가", _NO_CLUB if not me else self._not_ready_msg(me, v26, "내"), ui.LOSE, user, sec))
             # 상대: 선발이 있는 다른 유저 구단 중 전력이 가장 비슷한 5팀에서 무작위
             pool = []
+            me_new = v26 and await self.clubs.protected(user.id, now)
             for uid in await self.clubs.official_opponents(user.id):
                 t = await self.clubs.match_team(uid, v26)
+                # 신규 보호: 내가 신규가 아니면, 보호 중인 구단은 나보다 NEWBIE_GAP 넘게 약할 때 빼고 뽑는다
+                if (t and v26 and not me_new and me["rating"] - t["rating"] > NEWBIE_GAP
+                        and await self.clubs.protected(uid, now)):
+                    continue
                 if t and self._ready(t, v26):
                     pool.append((abs(t["rating"] - me["rating"]), uid, t))
             if not pool:

@@ -241,6 +241,9 @@ ELITE_CLUBS = {   # key → (엠블럼, 이름, 규모)
     "ruhr": ("🐝", "루르 옐로우", "미드"), "ideal": ("❌", "암스테르담 아이디얼", "미드"),
 }
 ELITE_TAKEOVER = 1.5
+# 신규 보호 (2.6): 다른 유저가 상대로 지정할 수 없다 (신규끼리는 가능) · 자동 매칭은 전력이 NEWBIE_GAP 이하로 강할 때만
+NEWBIE_OFFICIAL = 10
+NEWBIE_GAP = 5
 ELITE_FORMATION = "4-3-3"
 ELITE_ID = "EL:"
 _EL_FIRST = ("루카스", "마르코", "다니엘", "알렉스", "라파엘", "안드레", "세르히오", "니콜라스", "에밀", "파블로",
@@ -986,6 +989,25 @@ class ClubDB:
         return await self._tx(fn)
 
     # ───────────── 공식경기 ─────────────
+    # ───────────── 신규 보호 (2.6) ─────────────
+    @staticmethod
+    def _protected(con, user_id: int, now_ts: int) -> bool:
+        """신규 보호 중인가: 2.5 뒤에 온 유저가 신인 기간(ROOKIE_DAYS)이거나 공식경기 NEWBIE_OFFICIAL 판 전.
+        2.5 전부터 있던 유저(rookie.start_ts=0)는 보호 없음. 아직 시작 기록이 없는 새 유저는 보호."""
+        try:
+            row = con.execute("SELECT start_ts FROM rookie WHERE user_id=?", (int(user_id),)).fetchone()
+        except sqlite3.OperationalError:
+            return False
+        if row and not row[0]:
+            return False
+        if not row or now_ts < rookie_until(row[0]):
+            return True
+        n = con.execute("SELECT COALESCE(SUM(w + d + l), 0) FROM club_official WHERE user_id=?", (int(user_id),)).fetchone()
+        return int(n[0]) < NEWBIE_OFFICIAL
+
+    async def protected(self, user_id: int, now_ts: int) -> bool:
+        return await self._tx(lambda con: self._protected(con, user_id, now_ts))
+
     async def official_opponents(self, user_id: int) -> list[int]:
         """선발이 있는 다른 유저 구단 목록 (공식경기 상대 후보)."""
         def fn(con):
