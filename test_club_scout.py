@@ -270,7 +270,7 @@ async def _club22():
         edits.append(k)
         return SimpleNamespace(edit=rec)
     async def noop(*a, **k): pass
-    inter = SimpleNamespace(user=user, response=SimpleNamespace(defer=noop, send_message=rec),
+    inter = SimpleNamespace(guild_id=None, user=user, response=SimpleNamespace(defer=noop, send_message=rec),
                             followup=SimpleNamespace(send=rec))
     real_sleep, cc.asyncio.sleep = cc.asyncio.sleep, (lambda s: real_sleep(0))
     try:

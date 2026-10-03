@@ -1363,21 +1363,20 @@ class EconomyDB:
             return await self._run(work)
 
     # ✅ 훈련: 하루 횟수 제한 + 레벨(성공률·보상 증가)
-    # rookie=False: 신인 부스트가 아직 열리지 않은 서버 (release.preview)
-    async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30, rookie: bool = True) -> dict:
+    async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30) -> dict:
         """훈련은 그날 스카우트를 전부(15회) 마쳐야 열린다."""
-        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec, rookie=rookie)
+        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec)
 
-    async def play_scout(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60, rookie: bool = True) -> dict:
-        return await self._play_grind("scouting", user_id, now_ts, roll, cooldown_sec, rookie=rookie)
+    async def play_scout(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
+        return await self._play_grind("scouting", user_id, now_ts, roll, cooldown_sec)
 
-    async def play_watch(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60, rookie: bool = True) -> dict:
+    async def play_watch(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
         """직관은 그날 훈련을 전부(30회) 마쳐야 열린다 (훈련은 스카우트 15회 뒤) — 스카우트 → 훈련 → 직관."""
-        return await self._play_grind("spectating", user_id, now_ts, roll, cooldown_sec, rookie=rookie)
+        return await self._play_grind("spectating", user_id, now_ts, roll, cooldown_sec)
 
-    async def use_skip(self, user_id: int, item: str, now_ts: int, roll, rookie: bool = True) -> dict:
+    async def use_skip(self, user_id: int, item: str, now_ts: int, roll) -> dict:
         """스킵권: 오늘 남은 횟수를 쿨타임 없이 한 번에 돌려 결과(돈 · 경험치 · 선수 · 아이템)를 그대로 받는다."""
-        return await self._play_grind(SKIP_ITEMS[item], user_id, now_ts, roll, 0, skip_item=item, rookie=rookie)
+        return await self._play_grind(SKIP_ITEMS[item], user_id, now_ts, roll, 0, skip_item=item)
 
     # ───────────── 아이템 ─────────────
     async def inventory(self, user_id: int) -> tuple[dict[str, int], dict[str, int]]:
@@ -1558,7 +1557,7 @@ class EconomyDB:
         return await self._tx(fn)
 
     async def _play_grind(self, table: str, user_id: int, now_ts: int, roll, cooldown_sec: int,
-                          skip_item: str | None = None, rookie: bool = True) -> dict:
+                          skip_item: str | None = None) -> dict:
         """
         레벨·경험치·일일 횟수가 있는 반복 콘텐츠(스카우트·훈련·직관) 공용.
         roll(level, con) -> (delta, xp_gain, info) 를 트랜잭션 안에서 호출해 결과를 반영한다.
@@ -1629,7 +1628,7 @@ class EconomyDB:
                         leveled += up
                     used += plays
                     # 신인 부스트: 처음 시작하고 ROOKIE_DAYS 일 동안 +보상 ×2 (손실은 그대로)
-                    boost = rookie and total > 0 and now_ts < rookie_until(rookie_start(con, user_id, now_ts))
+                    boost = total > 0 and now_ts < rookie_until(rookie_start(con, user_id, now_ts))
                     if boost:
                         total *= ROOKIE_GRIND_MULT
 

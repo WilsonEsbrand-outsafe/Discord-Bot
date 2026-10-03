@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
@@ -285,6 +286,8 @@ class Club(commands.Cog):
             why = ", ".join(PROSPECT_XP_LABEL[k] for k in x["minus"])
             line += f" · 경험치 **{x['xp']:+d}**" + (f" ({why})" if why else "")
         line += f" · OVR {x['ovr0']} → **{x['ovr']}** ⬆️" if x["ovr"] > x["ovr0"] else ""
+        if x["xp"] is not None and x.get("mods"):   # 2.6 경험치 배율 (친선 · 전력 차 · 같은 상대)
+            line += "\n-# 경험치 " + " · ".join(x["mods"])
         j = x.get("injury")
         if j:
             line += (f"\n　🚑 **{j['name']}** ({j['grade']}) · {j['hours']}시간 결장"
@@ -294,18 +297,31 @@ class Club(commands.Cog):
                          f"잠재력 {j['pot0']}→{j['pot']}")
         return line
 
+    @staticmethod
+    def _ready(team: dict, full: bool) -> bool:
+        """경기에 나갈 수 있나 — 2.6 부터(full) 선발 11명이 꽉 차야 한다 (부상 유망주 자리는 빈자리)."""
+        return team["filled"] == 11 if full else team["filled"] > 0
+
+    @staticmethod
+    def _not_ready_msg(team: dict, full: bool, who: str) -> str:
+        if not full or not team["filled"]:
+            return f"{who} 선발 명단이 비어 있습니다. `/자동편성`을 먼저 해 주세요."
+        return (f"{who} 선발이 **{team['filled']}/11명**이에요. 11명이 꽉 차야 경기할 수 있어요.\n"
+                "`/자동편성`으로 채워 주세요. (부상 중인 유망주 자리는 빈자리예요)")
+
     async def _load_sides(self, interaction, user, home_id: int, away_id: int, away_label: str, section: str):
         """두 구단을 불러오고 문제가 있으면 안내 후 None."""
-        home, away = await self.clubs.match_team(home_id), await self.clubs.match_team(away_id)
+        v26 = release.preview(interaction.guild_id)
+        home, away = await self.clubs.match_team(home_id, v26), await self.clubs.match_team(away_id, v26)
         if not home or not away:
             who = "내" if not home else f"{away_label}의"
             await interaction.followup.send(embed=ui.card("❌ 경기 불가", f"{who} 구단이 없습니다.", ui.LOSE, user, section))
             return None
-        if not home["filled"] or not away["filled"]:
-            who = "내" if not home["filled"] else f"{away_label}의"
-            await interaction.followup.send(embed=ui.card(
-                "❌ 경기 불가", f"{who} 선발 명단이 비어 있습니다. `/자동편성`을 먼저 해 주세요.", ui.LOSE, user, section))
-            return None
+        for team, who in ((home, "내"), (away, f"{away_label}의")):
+            if not self._ready(team, v26):
+                await interaction.followup.send(embed=ui.card(
+                    "❌ 경기 불가", self._not_ready_msg(team, v26, who), ui.LOSE, user, section))
+                return None
         return home, away
 
     async def _sides(self, home_id: int, away_id: int, home: dict, away: dict) -> list[dict]:
@@ -315,12 +331,13 @@ class Club(commands.Cog):
             muffler = team.get("squad") != "B" and await self.money.consume_buff(uid, "muffler")
             rating = team["rating"] + (MUFFLER_BONUS if muffler else 0)
             name = (f"{team['emblem']} " if team.get("emblem") else "") + team["name"]
-            sides.append({"name": name + (" 🧣" if muffler else ""), "rating": rating, "stadium": team.get("stadium"),
+            sides.append({"uid": uid, "name": name + (" 🧣" if muffler else ""), "rating": rating,
+                          "stadium": team.get("stadium"),
                           "xi": [s for s in team["lineup"] if s.get("player_id")]})
         return sides
 
     async def _play_match(self, interaction, user, h: dict, a: dict, section: str, title_tag: str,
-                          after=None, view=None, note: str = "") -> dict:
+                          after=None, view=None, note: str = "", friendly: bool = False) -> dict:
         """경기 시뮬레이션 → 90분 하이라이트 문자중계. after(result) 가 돌려준 문자열을 결과 카드에,
         note 는 킥오프 카드에 붙인다."""
         result = simulate_match(h, a)
@@ -328,9 +345,11 @@ class Club(commands.Cog):
         highlights = match_highlights(result, h, a)
         pw, pd, pl = win_probs(h["rating"], a["rating"])
         extra = await after(result) if after else ""
-        # 양 팀 유망주 기록(출전 · 골 · 도움) + 성장
-        stars = await self.clubs.record_prospects([(h["xi"], hg, ag), (a["xi"], ag, hg)], result["goals"],
-                                                  int(time.time()), highlights)
+        # 양 팀 유망주 기록(출전 · 골 · 도움) + 성장 (2.6: 친선 · 전력 차 · 같은 상대 반복이면 경험치 ↓)
+        gap = round(h["rating"] - a["rating"])
+        stars = await self.clubs.record_prospects(
+            [(h["xi"], hg, ag, a["uid"], gap), (a["xi"], ag, hg, h["uid"], -gap)], result["goals"], int(time.time()),
+            highlights, friendly=friendly, antifarm=release.preview(interaction.guild_id))
         if stars:
             extra = "\n" + "".join(self._star_line(x) for x in stars) + extra
 
@@ -393,7 +412,7 @@ class Club(commands.Cog):
                 await self.clubs.record_match(user.id, opp.id, result["home"], result["away"])
                 return ""
             await self._play_match(interaction, user, h, a, "🎙️ 친선경기 중계", "🤝",
-                                   after=record, view=RematchView(self, user, opp))
+                                   after=record, view=RematchView(self, user, opp), friendly=True)
         finally:
             self._playing.discard(user.id)
 
@@ -431,16 +450,16 @@ class Club(commands.Cog):
                 return
             (me, opp), opp_id = sides, opp_user.id
         else:
-            me = await self.clubs.match_team(user.id)
-            if not me or not me["filled"]:
+            v26 = release.preview(interaction.guild_id)
+            me = await self.clubs.match_team(user.id, v26)
+            if not me or not self._ready(me, v26):
                 return await interaction.followup.send(embed=ui.card(
-                    "❌ 경기 불가", _NO_CLUB if not me else "선발 명단이 비어 있습니다. `/자동편성`을 먼저 해 주세요.",
-                    ui.LOSE, user, sec))
+                    "❌ 경기 불가", _NO_CLUB if not me else self._not_ready_msg(me, v26, "내"), ui.LOSE, user, sec))
             # 상대: 선발이 있는 다른 유저 구단 중 전력이 가장 비슷한 5팀에서 무작위
             pool = []
             for uid in await self.clubs.official_opponents(user.id):
-                t = await self.clubs.match_team(uid)
-                if t and t["filled"]:
+                t = await self.clubs.match_team(uid, v26)
+                if t and self._ready(t, v26):
                     pool.append((abs(t["rating"] - me["rating"]), uid, t))
             if not pool:
                 return await interaction.followup.send(embed=ui.card(

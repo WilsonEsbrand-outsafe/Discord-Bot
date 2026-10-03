@@ -287,8 +287,7 @@ async def _item_screens():
     bag, result = sent[-2], sent[-1]
     assert bag["embed"].title == "🎒 내 가방" and "5경기" in bag["embed"].fields[0].value   # 내 가방은 새로고침
     assert "사용" in result["embed"].title and result["ephemeral"] is False            # 사용 결과는 모두에게
-    import release
-    assert "사용" in release.LEGACY_ONLY                                       # /사용은 2.5 서버 목록에서 빠진다 (/가방 버튼으로)
+    assert not hasattr(Economy, "use")                                         # /사용 삭제 — 사용은 /가방 버튼으로
     e, ok = await eco._use_embed(user, "train_reset")                         # 없는 아이템 → 실패 (나만 보기)
     assert not ok and "없어요" in e.title
 

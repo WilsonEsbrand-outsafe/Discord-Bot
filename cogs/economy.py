@@ -7,7 +7,6 @@ from fractions import Fraction
 import discord
 from discord import app_commands
 from discord.ext import commands
-import release
 from auth import owner_only
 
 from services.economy_db import (
@@ -111,7 +110,7 @@ class BagView(discord.ui.View):
                 return await self.cog._steroid_prompt(interaction, self.user)
             if key == "box":         # 카드 고르는 화면부터 모두에게
                 return await self.cog._box_prompt(interaction, self.user)
-            result, ok = await self.cog._use_embed(self.user, key, rookie=release.preview(interaction.guild_id))
+            result, ok = await self.cog._use_embed(self.user, key)
             await self._refresh(interaction)
             await interaction.followup.send(embed=result, ephemeral=not ok)   # 성공은 모두에게, 실패는 나만
         return cb
@@ -425,7 +424,7 @@ class Economy(commands.Cog):
     async def transfer(self, interaction: discord.Interaction, to_user: discord.Member, amount: int):
         await interaction.response.defer()
         user, amount, now_ts = interaction.user, int(amount), int(time.time())
-        locks = await self.db.transfer_locks(user.id) if release.preview(interaction.guild_id) else []
+        locks = await self.db.transfer_locks(user.id)
         if locks:   # 2.5 신규 유저: 조건을 다 채워야 송금이 열린다
             lines = "\n".join(f"⬜ {l['name']} ({l['value']}/{l['goal']})" for l in locks)
             return await interaction.followup.send(embed=ui.card(
@@ -551,8 +550,7 @@ class Economy(commands.Cog):
         user = interaction.user
         now_ts = int(time.time())
         try:
-            r = await self.db.play_training(user.id, now_ts, self._train_roll, cooldown_sec=self.TRAIN_COOLDOWN,
-                                            rookie=release.preview(interaction.guild_id))
+            r = await self.db.play_training(user.id, now_ts, self._train_roll, cooldown_sec=self.TRAIN_COOLDOWN)
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
 
@@ -636,7 +634,7 @@ class Economy(commands.Cog):
         now_ts = int(time.time())
         try:
             r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._scout_roll(lv, con, user.id),
-                                         cooldown_sec=self.SCOUT_COOLDOWN, rookie=release.preview(interaction.guild_id))
+                                         cooldown_sec=self.SCOUT_COOLDOWN)
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
 
@@ -766,7 +764,7 @@ class Economy(commands.Cog):
         user, now_ts = interaction.user, int(time.time())
         try:
             r = await self.db.play_watch(user.id, now_ts, lambda lv, con: self._watch_roll(lv, con, user.id),
-                                         cooldown_sec=self.WATCH_COOLDOWN, rookie=release.preview(interaction.guild_id))
+                                         cooldown_sec=self.WATCH_COOLDOWN)
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
 
@@ -822,21 +820,6 @@ class Economy(commands.Cog):
     async def bag(self, interaction: discord.Interaction):
         e, inv = await self._bag_embed(interaction.user)
         await interaction.response.send_message(embed=e, view=BagView(self, interaction.user, inv), ephemeral=True)
-
-    @app_commands.command(name="사용", description="아이템을 사용합니다")
-    @app_commands.describe(아이템="사용할 아이템")
-    @app_commands.choices(아이템=[app_commands.Choice(name=f"{e} {n} — {d}"[:100], value=k) for k, (e, n, d) in ITEMS.items()])
-    async def use(self, interaction: discord.Interaction, 아이템: str):
-        """2.5 공개 전 서버에만 남는다 (release.LEGACY_ONLY) — 2.5 부터는 /가방 버튼으로."""
-        user = interaction.user
-        if 아이템 == "toto_slip":
-            return await self._slip_prompt(interaction, user)
-        if 아이템 == "steroid":
-            return await self._steroid_prompt(interaction, user)
-        if 아이템 == "box":
-            return await self._box_prompt(interaction, user)
-        e, ok = await self._use_embed(user, 아이템, rookie=release.preview(interaction.guild_id))
-        await interaction.response.send_message(embed=e, ephemeral=not ok)
 
     # ✅ 점검 보상 상자: 뒤집힌 6종 카드 중 한 장 → 그 스킵권 · 리셋권 1장
     async def _box_prompt(self, interaction: discord.Interaction, user):
@@ -930,11 +913,11 @@ class Economy(commands.Cog):
 
     GRIND_NAMES = {"scouting": "스카우트", "training": "훈련", "spectating": "직관"}
 
-    async def _use_embed(self, user, item: str, rookie: bool = True) -> tuple[discord.Embed, bool]:
+    async def _use_embed(self, user, item: str) -> tuple[discord.Embed, bool]:
         """아이템 사용 → (결과 카드, 성공 여부)."""
         emoji, name, desc = ITEMS[item]
         if item in SKIP_ITEMS:
-            return await self._skip_embed(user, item, rookie)
+            return await self._skip_embed(user, item)
         r = await self.db.use_item(user.id, item, int(time.time()))
         if not r["ok"]:
             return self._no_item_card(user, item), False
@@ -952,7 +935,7 @@ class Economy(commands.Cog):
                  "지금은 `/쿠폰` 같은 이벤트로 얻을 수 있어요.")
         return ui.card(f"🙅 {emoji} {name}이(가) 없어요", where, ui.LOSE, user, "🎒 아이템")
 
-    async def _skip_embed(self, user, item: str, rookie: bool = True) -> tuple[discord.Embed, bool]:
+    async def _skip_embed(self, user, item: str) -> tuple[discord.Embed, bool]:
         """스킵권: 오늘 남은 횟수를 한 번에 — 원래 받았을 결과(+/-)를 합쳐서 보여준다."""
         emoji, name, _ = ITEMS[item]
         table = SKIP_ITEMS[item]
@@ -961,7 +944,7 @@ class Economy(commands.Cog):
                 "training": self._train_roll,
                 "spectating": lambda lv, con: self._watch_roll(lv, con, user.id)}[table]
         status = {"scouting": self._scout_status, "training": self._train_status, "spectating": self._watch_status}[table]
-        r = await self.db.use_skip(user.id, item, int(time.time()), roll, rookie=rookie)
+        r = await self.db.use_skip(user.id, item, int(time.time()), roll)
         if not r["ok"]:
             if r["reason"] == "none":
                 return self._no_item_card(user, item), False

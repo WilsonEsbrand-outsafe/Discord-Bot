@@ -176,7 +176,7 @@ async def _flow():
     sent, rec, noop = recorder()
     cog = cp.Prospect.__new__(cp.Prospect)
     cog.clubs = clubs
-    inter = SimpleNamespace(guild_id=1374213619793006704, user=member(A, "흥민맘"), response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
+    inter = SimpleNamespace(guild_id=None, user=member(A, "흥민맘"), response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
                             followup=SimpleNamespace(send=rec))
     await cp.Prospect.show.callback(cog, inter, None)
     e = sent[-1]["embed"]

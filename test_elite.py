@@ -91,8 +91,8 @@ async def _flow():
     class R(random.Random):
         def randint(self, a, b):
             return b if (a, b) == (75, 94) else a
-    p = await clubs.create_prospect(A, info, now, rng=R(), rookie=False)
-    assert p["ok"] and p["pot"] == 99 and p["price"] == cdb.PROSPECT_PRICE     # 94 + 5 · rookie=False 면 반값 없음
+    p = await clubs.create_prospect(A, info, now, rng=R())
+    assert p["ok"] and p["pot"] == 99                                         # 94 + 유스 5
     # 경기장: 적중 상금 +4% / Lv
     await db.add_balance(B, cdb.FACILITY_COSTS[0])
     await clubs.upgrade_facility(B, "stadium")
@@ -128,18 +128,16 @@ async def _flow():
     assert inv.get("box", 0) == 0 and inv[item] >= qty
     assert (await db.open_box(A, 0))["reason"] == "none"
 
-    # 신인 부스트는 rookie=False 서버에서 꺼진다
-    win = lambda lv, con: (1000, 1, {"ok": True})                                 # noqa: E731
-    assert (await db.play_scout(B, now, win, rookie=False))["delta"] == 1000
-    assert (await db.play_scout(B, now + 120, win))["delta"] == 2000
-
-
 def test_flow():
     asyncio.run(_flow())
 
 
 def test_release():
     T, other = release.TEST_GUILD, 757761125403066419
+    if release.RELEASE_TS is None:   # 공개 시각 미정: 테스트 서버만 · 점검 없음
+        assert release.preview(T) and not release.preview(other) and not release.maintenance()
+        ts = 2_000_000_000
+        release.RELEASE_TS, release.MAINTENANCE = ts, (ts - 300, ts + 300)
     before, after = release.RELEASE_TS - 1000, release.RELEASE_TS + 1000
     assert release.preview(T, before) and not release.preview(other, before) and release.preview(other, after)
     assert release.hidden_commands(other, before) == release.PREVIEW_ONLY

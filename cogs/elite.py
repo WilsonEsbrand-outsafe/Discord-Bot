@@ -6,6 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import release
 from services import ui
 from services.club_db import (
     ELITE_CLUBS, ELITE_SIZES, ELITE_TAKEOVER, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS, FACILITY_MAX,
@@ -73,6 +74,22 @@ class Elite(commands.Cog):
     async def income_loop(self):
         for x in await self.clubs.settle_elite_income(int(time.time())):
             print(f"[명문] {x['key']} → {x['owner_id']} +{x['amount']:,} ({x['days']}일)")
+            await self._income_dm(x)
+
+    async def _income_dm(self, x: dict):
+        """하루 수입 DM — 알림 설정과 상관없이 꼭 보낸다 (2.6). 공개 전엔 테스트 서버 멤버에게만."""
+        test = self.bot.get_guild(release.TEST_GUILD)
+        if not (release.released() or (test and test.get_member(x["owner_id"]))):
+            return
+        emblem, name, size = ELITE_CLUBS[x["key"]]
+        days = f" ({x['days']}일치)" if x["days"] > 1 else ""
+        e = ui.card(f"{emblem} {name} 하루 수입", f"`수입` **+{x['amount']:,}원**{days}\n`규모` {size}",
+                    ui.WIN, None, "🏰 명문 구단")
+        try:
+            user = self.bot.get_user(x["owner_id"]) or await self.bot.fetch_user(x["owner_id"])
+            await user.send(embed=e)
+        except discord.HTTPException:   # DM 막힘 · 없는 유저 — 돈은 이미 들어갔다
+            pass
 
     @income_loop.before_loop
     async def _before(self):
@@ -84,7 +101,8 @@ class Elite(commands.Cog):
     @app_commands.choices(구단=[app_commands.Choice(name=f"{e} {n} ({s})", value=k) for k, (e, n, s) in ELITE_CLUBS.items()])
     async def elite(self, interaction: discord.Interaction, 구단: Optional[str] = None):
         user = interaction.user
-        clubs = await self.clubs.elite_list()
+        strong = release.preview(interaction.guild_id)
+        clubs = await self.clubs.elite_list(strong)
         if not 구단:
             lines = []
             for c in clubs:
@@ -97,7 +115,7 @@ class Elite(commands.Cog):
             return await interaction.response.send_message(embed=e)
 
         c = next(x for x in clubs if x["key"] == 구단)
-        team = elite_team(구단)
+        team = elite_team(구단, strong)
         rows = []
         for group, label in (("FW", "⚽ 공격"), ("MF", "🎯 미드필드"), ("DF", "🛡️ 수비"), ("GK", "🧤 골키퍼")):
             ps = [f"{s['name']} {s['ovr']}" for s in team["lineup"] if SLOT_GROUP[s["slot"]] == group]
@@ -130,7 +148,7 @@ class Elite(commands.Cog):
         use_b = a["squad_b"] and a["elite"]
         lines = [f"{'▶️' if not use_b else '▫️'} **A** {a.get('emblem') or '🏟️'} {a['name']} · 전력 **{a['rating']}**"]
         if a["elite"]:
-            b = elite_team(a["elite"])
+            b = elite_team(a["elite"], release.preview(interaction.guild_id))
             lines.append(f"{'▶️' if use_b else '▫️'} **B** {b['emblem']} {b['name']} · 전력 **{b['rating']}**")
         else:
             lines.append("▫️ **B** 없음 — `/명문구단`에서 인수하면 생겨요")

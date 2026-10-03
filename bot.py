@@ -287,8 +287,7 @@ async def _tree_check(interaction: discord.Interaction) -> bool:
             f"🔧 정기점검 중입니다. (<t:{start}:t> ~ <t:{end}:t>) 점검이 끝나면 다시 이용해 주세요.", ephemeral=True)
         return False
     name = (interaction.command.qualified_name if interaction.command else "").split(" ")[0]
-    if (release.preview(interaction.guild_id) and name not in SIGNUP_FREE
-            and not await asyncio.to_thread(_signed_up, interaction.user.id)):
+    if name not in SIGNUP_FREE and not await asyncio.to_thread(_signed_up, interaction.user.id):
         await interaction.response.send_message(
             "🏟️ 처음 오셨네요! `/구단생성`으로 구단을 만들어야 다른 명령어를 쓸 수 있어요.\n"
             "구단 이름은 비워 두면 '닉네임 FC'로 만들어져요.", ephemeral=True)
@@ -300,9 +299,9 @@ bot.tree.interaction_check = _tree_check
 
 async def _release_sync():
     """공개 시각(RELEASE_TS)이 되면 모든 서버의 / 목록을 새 패치로 다시 동기화한다."""
-    wait = release.RELEASE_TS - time.time()
-    if wait <= 0:
+    if release.RELEASE_TS is None or release.released():
         return
+    wait = release.RELEASE_TS - time.time()
     await asyncio.sleep(wait + 1)
     print("🚀 [릴리스] 공개 시각 — 모든 서버 명령어 다시 동기화")
     for guild in bot.guilds:

@@ -6,7 +6,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import release
 from services import ui
 from services.club_db import (
     PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
@@ -95,8 +94,7 @@ class CreateConfirm(_OwnerView):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         now = int(time.time())
-        r = await self.cog.clubs.create_prospect(self.user.id, self.info, now,
-                                                 rookie=release.preview(interaction.guild_id))
+        r = await self.cog.clubs.create_prospect(self.user.id, self.info, now)
         if not r["ok"]:
             msg = {"exists": "이미 현역 유망주가 있어요. 한 번에 한 명만 키울 수 있어요.",
                    "retired_number": f"**#{self.info['number']}**은(는) 영구결번이에요.",
@@ -244,7 +242,7 @@ class Prospect(commands.Cog):
         if err:
             return await interaction.response.send_message(
                 embed=ui.card("❌ 유망주 생성 불가", err, ui.LOSE, user, SECTION), ephemeral=True)
-        price = await self.clubs.prospect_price(user.id, int(time.time()), release.preview(interaction.guild_id))
+        price = await self.clubs.prospect_price(user.id, int(time.time()))
         half = f" ~~{PROSPECT_PRICE:,}원~~ 🚀 신인 반값" if price < PROSPECT_PRICE else ""
         e = ui.card(f"🌟 {info['name']} #{info['number']} — 이 선수로 만들까요?",
                     _profile({**info, "weight": round(info["height"] ** 2 * 22.5 / 10_000)}) + "\n\n"

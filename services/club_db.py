@@ -255,8 +255,13 @@ def elite_price(key: str, owner: Optional[int], price: int) -> int:
     return round(price * ELITE_TAKEOVER) if owner else price
 
 
-def elite_team(key: str) -> dict:
-    """명문 구단의 고정 선발 11명과 전력. get_team 과 같은 모양 (경기에 그대로 쓴다)."""
+# 2.6 선수 강화: 규모별 평균 OVR (±2) · 세 나라 출신으로 케미 +3 · 주장(공격수) +1
+ELITE_STRONG_OVR = {"메가": 92, "빅": 88, "미드": 84}
+
+
+def elite_team(key: str, strong: bool = False) -> dict:
+    """명문 구단의 고정 선발 11명과 전력. get_team 과 같은 모양 (경기에 그대로 쓴다).
+    strong: 2.6 강화판 (release.preview 서버). 이름은 그대로, 능력치 · 국적 · 주장만 바뀐다."""
     emblem, name, size = ELITE_CLUBS[key]
     avg = ELITE_SIZES[size][2]
     rng = random.Random(f"elite-{key}")   # 시드 고정 — 몇 번을 만들어도 같은 선수
@@ -265,9 +270,16 @@ def elite_team(key: str) -> dict:
         lineup.append({"slot": slot, "index": i, "player_id": f"{ELITE_ID}{key}:{i}",
                        "name": f"{rng.choice(_EL_FIRST)} {rng.choice(_EL_LAST)}", "pos": SLOT_GROUP[slot],
                        "ovr": avg + rng.randint(-4, 4), "nation": rng.choice(_EL_NATIONS)})
-    team = {"key": key, "name": name, "emblem": emblem, "size": size, "formation": ELITE_FORMATION, "captain": None,
+    captain = None
+    if strong:
+        r2 = random.Random(f"elite26-{key}")
+        nations = r2.sample(_EL_NATIONS, 3)
+        for i, s in enumerate(lineup):
+            s["ovr"], s["nation"] = ELITE_STRONG_OVR[size] + r2.randint(-2, 2), nations[i % 3]
+        captain = max((s for s in lineup if s["pos"] == "FW"), key=lambda s: s["ovr"])["player_id"]
+    team = {"key": key, "name": name, "emblem": emblem, "size": size, "formation": ELITE_FORMATION, "captain": captain,
             "lineup": lineup, "manager": None, "medic": None, "manager_bonus": 0, "squad": "B", "stadium": None}
-    team.update(team_rating(lineup, None))
+    team.update(team_rating(lineup, captain))
     return team
 
 
@@ -314,7 +326,21 @@ PROSPECT_DAILY_GROWTH = 20       # 하루(KST)에 성장 경험치가 쌓이는 
 # 경기당 성장 경험치. 음수는 감점 — 경험치는 0 밑으로 내려가지 않는다 (OVR 은 안 떨어진다).
 # rout = 3골 차 이상 대패(패배 -5 에 더해서) · card = 옐로카드 · miss = 1대1 찬스 놓침 (중계 장면 그대로)
 PROSPECT_XP = {"app": 10, "goal": 6, "assist": 4, "W": 5, "D": 2, "L": -5, "rout": -5, "card": -3, "miss": -2}
-PROSPECT_XP_LABEL = {"L": "패배", "rout": "대패", "card": "경고", "miss": "찬스 놓침"}
+PROSPECT_XP_LABEL = {"L": "패배", "rout": "대패", "card": "경고", "miss": "찬스 놓침", "poor": "약팀 상대 부진"}
+# 2.6 경험치 악용 방지 (+경험치에만 곱한다 · 감점은 그대로)
+# 전력 차(내 팀 - 상대): (이상, 배율) 큰 쪽부터 — 상대가 10 이상 강하면 ×1.2
+XP_GAP_MULT = ((40, 0.0), (30, 0.1), (20, 0.4), (10, 0.7), (-9, 1.0), (-10 ** 9, 1.2))
+XP_POOR_PENALTY = ((40, -10), (30, -5))   # 이만큼 약한 상대에게 부진하면 (이기지 못함 · 공격수/미드 공격 포인트 없음 · 수비/골키퍼 실점)
+XP_REPEAT = ((3, 1.0), (6, 0.5), (10 ** 9, 0.0))   # 같은 상대와 오늘 N번째 경기까지 배율
+XP_FRIENDLY = 0.5
+
+
+def xp_gap_mult(gap: int) -> float:
+    return next(m for lo, m in XP_GAP_MULT if gap >= lo)
+
+
+def xp_repeat_mult(n: int) -> float:
+    return next(m for hi, m in XP_REPEAT if n <= hi)
 PROSPECT_NAME_MAX = 12
 PROSPECT_FEET = ("오른발", "왼발", "양발")
 PROSPECT_HEIGHT = (150, 210)
@@ -529,6 +555,9 @@ class ClubDB:
                                 (min(20, random.randint(3, 14) + max(0, prone - 8)), random.randint(4, 17), pid))
             # 현역 유망주는 한 명만
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_prospects_active ON prospects(user_id) WHERE retired_ts=0")
+            # 2.6 같은 상대와 오늘 몇 번 뛰었나 (유망주 경험치 감소)
+            con.execute("CREATE TABLE IF NOT EXISTS prospect_vs (user_id INTEGER, opp_id INTEGER, day_key INTEGER, "
+                        "n INTEGER NOT NULL, PRIMARY KEY(user_id, opp_id, day_key))")
             # 시설 (구단을 지웠다 다시 만들어도 남는다) · 명문 구단
             con.execute("CREATE TABLE IF NOT EXISTS club_facilities (user_id INTEGER PRIMARY KEY, "
                         + ", ".join(f"{k} INTEGER NOT NULL DEFAULT 0" for k in FACILITIES) + ")")
@@ -688,11 +717,12 @@ class ClubDB:
             return club
         return await self._tx(fn)
 
-    async def match_team(self, user_id: int) -> Optional[dict]:
-        """경기에 나갈 팀: 스쿼드 B(명문 구단)를 골랐고 아직 주인이면 그 구단, 아니면 내 구단(스쿼드 A)."""
+    async def match_team(self, user_id: int, strong: bool = False) -> Optional[dict]:
+        """경기에 나갈 팀: 스쿼드 B(명문 구단)를 골랐고 아직 주인이면 그 구단, 아니면 내 구단(스쿼드 A).
+        strong: 명문 구단 2.6 강화판."""
         team = await self.get_team(user_id)
         if team and team["squad_b"] and team["elite"]:
-            b = elite_team(team["elite"])
+            b = elite_team(team["elite"], strong)
             b["stadium"] = team["stadium"]
             return b
         return team
@@ -763,7 +793,7 @@ class ClubDB:
         return await self._tx(fn)
 
     # ───────────── 명문 구단 ─────────────
-    async def elite_list(self) -> list[dict]:
+    async def elite_list(self, strong: bool = False) -> list[dict]:
         def fn(con):
             rows = con.execute("SELECT key, owner_id, price, bought_ts FROM elite_clubs").fetchall()
             out = []
@@ -773,7 +803,7 @@ class ClubDB:
                 emblem, name, size = ELITE_CLUBS[key]
                 out.append({"key": key, "emblem": emblem, "name": name, "size": size, "owner_id": owner,
                             "price": int(price), "cost": elite_price(key, owner, int(price)), "bought_ts": bought,
-                            "income": ELITE_SIZES[size][1], "rating": elite_team(key)["rating"]})
+                            "income": ELITE_SIZES[size][1], "rating": elite_team(key, strong)["rating"]})
             order = list(ELITE_CLUBS)
             return sorted(out, key=lambda c: order.index(c["key"]))
         return await self._tx(fn)
@@ -1018,10 +1048,8 @@ class ClubDB:
         return await self._tx(fn)
 
     @staticmethod
-    def _prospect_price(con, user_id: int, now_ts: int, rookie: bool = True) -> int:
-        """생성비 — 신인 부스트 기간의 첫 유망주는 반값 (2.5). rookie=False 면 (아직 2.5 전인 서버) 반값 없음."""
-        if not rookie:
-            return PROSPECT_PRICE
+    def _prospect_price(con, user_id: int, now_ts: int) -> int:
+        """생성비 — 신인 부스트 기간의 첫 유망주는 반값 (2.5)."""
         try:
             row = con.execute("SELECT start_ts FROM rookie WHERE user_id=?", (int(user_id),)).fetchone()
         except sqlite3.OperationalError:
@@ -1029,10 +1057,10 @@ class ClubDB:
         first = not con.execute("SELECT 1 FROM prospects WHERE user_id=?", (int(user_id),)).fetchone()
         return PROSPECT_PRICE // 2 if first and row and now_ts < rookie_until(row[0]) else PROSPECT_PRICE
 
-    async def prospect_price(self, user_id: int, now_ts: int, rookie: bool = True) -> int:
-        return await self._tx(lambda con: self._prospect_price(con, user_id, now_ts, rookie))
+    async def prospect_price(self, user_id: int, now_ts: int) -> int:
+        return await self._tx(lambda con: self._prospect_price(con, user_id, now_ts))
 
-    async def create_prospect(self, user_id: int, info: dict, now_ts: int, rng=random, rookie: bool = True) -> dict:
+    async def create_prospect(self, user_id: int, info: dict, now_ts: int, rng=random) -> dict:
         """유망주 생성 (PROSPECT_PRICE). info 는 prospect_input 이 정리한 값.
         OVR 50~58 · 잠재력 75~94 에서 시작. 실패 reason: exists(현역 유망주 있음) / retired_number / balance."""
         def fn(con):
@@ -1041,7 +1069,7 @@ class ClubDB:
             if con.execute("SELECT 1 FROM prospects WHERE user_id=? AND number=? AND retired_number=1",
                            (int(user_id), info["number"])).fetchone():
                 return {"ok": False, "reason": "retired_number"}
-            price = self._prospect_price(con, user_id, now_ts, rookie)
+            price = self._prospect_price(con, user_id, now_ts)
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0])
             if bal < price:
@@ -1058,19 +1086,23 @@ class ClubDB:
             return {"ok": True, "balance": bal - price, "price": price, **self._prospect_by_id(con, cur.lastrowid, now_ts)}
         return await self._tx(fn)
 
-    async def record_prospects(self, sides: list[tuple[list[dict], int, int]], goals: list[dict], now_ts: int,
-                               events: list[dict] = (), rng=random) -> list[dict]:
+    async def record_prospects(self, sides: list[tuple], goals: list[dict], now_ts: int,
+                               events: list[dict] = (), rng=random, friendly: bool = False,
+                               antifarm: bool = False) -> list[dict]:
         """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 성장 경험치 ± (하루 PROSPECT_DAILY_GROWTH 경기까지,
-        30세까지, 잠재력까지, 프로 의식 배율), 자신감 변화, 부상. sides: [(선발 xi, 득점, 실점)] — 양 팀 모두.
-        events: 중계 장면(경고 · 찬스 놓침). 뛴 유망주마다 결과 dict
-        (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키 · injury: 부상 dict | None)."""
-        if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, _, _ in sides for s in xi):
+        30세까지, 잠재력까지, 프로 의식 배율), 자신감 변화, 부상. sides: [(선발 xi, 득점, 실점[, 상대 id, 전력 차])]
+        — 양 팀 모두. events: 중계 장면(경고 · 찬스 놓침).
+        antifarm(2.6): +경험치 × 친선 0.5 · 전력 차 배율 · 같은 상대 반복 배율, 훨씬 약한 상대에게 부진하면 감점.
+        뛴 유망주마다 결과 dict (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키 ·
+        mods: 경험치 배율 설명 · injury: 부상 dict | None)."""
+        if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, *_ in sides for s in xi):
             return []
         day = kst_day(now_ts)
 
         def fn(con):
             out = []
-            for xi, gf, ga in sides:
+            for xi, gf, ga, *ctx in sides:
+                opp_id, gap = ctx if ctx else (None, 0)
                 res = "W" if gf > ga else ("D" if gf == ga else "L")
                 for s in xi:
                     pid = str(s.get("player_id") or "")
@@ -1089,9 +1121,36 @@ class ClubDB:
                              "card": sum(e.get("player_id") == pid and e.get("kind") == "card" for e in events),
                              "miss": sum(e.get("player_id") == pid and e.get("kind") == "miss" for e in events)}
                     delta = sum(PROSPECT_XP[k] * n for k, n in parts.items())
+                    mods, minus = [], [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0]
+                    mult = 1.0
+                    if antifarm:
+                        if friendly:
+                            mult *= XP_FRIENDLY
+                            mods.append(f"친선 ×{XP_FRIENDLY:g}")
+                        m = xp_gap_mult(gap)
+                        if m != 1:
+                            mult *= m
+                            mods.append(f"전력 차 {gap:+d} ×{m:g}")
+                        if opp_id is not None:
+                            con.execute("INSERT INTO prospect_vs(user_id, opp_id, day_key, n) VALUES(?, ?, ?, 1) "
+                                        "ON CONFLICT(user_id, opp_id, day_key) DO UPDATE SET n = n + 1",
+                                        (owner[0], int(opp_id), day))
+                            n = con.execute("SELECT n FROM prospect_vs WHERE user_id=? AND opp_id=? AND day_key=?",
+                                            (owner[0], int(opp_id), day)).fetchone()[0]
+                            m = xp_repeat_mult(n)
+                            if m != 1:
+                                mult *= m
+                                mods.append(f"같은 상대 오늘 {n}번째 ×{m:g}")
                     if delta > 0:   # 프로 의식: 10 이면 그대로, 높을수록 더 많이 (감점에는 안 붙는다)
-                        delta = round(delta * (0.7 + p["pro"] * 0.03)
+                        delta = round(delta * (0.7 + p["pro"] * 0.03) * mult
                                       * (1 + self._facility(con, owner[0], "training") * FACILITIES["training"][3] / 100))
+                    if antifarm:   # 훨씬 약한 상대에게 부진 → 감점
+                        attack = p["group"] in ("FW", "MF")
+                        poor = res != "W" or (g + a == 0 if attack else ga > 0)
+                        pen = next((v for lo, v in XP_POOR_PENALTY if gap >= lo), 0)
+                        if poor and pen:
+                            delta += pen
+                            minus.append("poor")
                     if grew:
                         xp = max(0, xp + delta)
                         while ovr < p["pot"] and xp >= prospect_xp_need(ovr):
@@ -1117,7 +1176,7 @@ class ClubDB:
                          p["injuries"] + bool(injury), p["id"]))
                     out.append({"user_id": owner[0], "name": p["name"], "number": p["number"], "goals": g, "assists": a,
                                 "ovr0": p["ovr"], "ovr": ovr, "grew": grew, "xp": delta if grew else None,
-                                "minus": [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0],
+                                "minus": minus, "mods": mods,
                                 "conf0": p["confidence"], "conf": conf, "injury": injury})
             return out
         return await self._tx(fn)
