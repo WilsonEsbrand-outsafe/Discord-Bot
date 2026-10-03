@@ -1,13 +1,13 @@
 # release.py — 단계 배포: 새 패치는 테스트 서버에 먼저, 다른 서버는 RELEASE_TS(정기점검)에 한꺼번에.
 # 다음 패치 때: PREVIEW_ONLY(새 명령어) · LEGACY_ONLY(없어질 명령어) · RELEASE_TS 를 바꾼다.
-# 지금: 2.6 (공개 시각 미정 — 정해지면 RELEASE_TS 에 넣는다. 2.5 는 2026-10-02 00:00 KST 공개 완료)
-import calendar  # noqa: F401  — RELEASE_TS = calendar.timegm((년, 월, 일, 시(UTC), 분, 0))
+# 지금: 2.6 — 2026-10-03 12:00 KST 공개 (2.5 는 2026-10-02 00:00 KST 공개 완료)
+import calendar  # RELEASE_TS = calendar.timegm((년, 월, 일, 시(UTC), 분, 0)) · None = 아직 테스트 서버에만
 import time
 from typing import Optional
 
 TEST_GUILD = 1374213619793006704
-RELEASE_TS: Optional[int] = None                             # None = 아직 테스트 서버에만
-MAINTENANCE = (RELEASE_TS - 300, RELEASE_TS + 300) if RELEASE_TS else None   # 정기점검 — 명령어 막음
+RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 3, 3, 0, 0))   # 2026-10-03 12:00 KST
+MAINTENANCE = (RELEASE_TS - 300, RELEASE_TS + 300) if RELEASE_TS else None   # 정기점검 11:55 ~ 12:05 KST — 명령어 막음
 
 PREVIEW_ONLY: set[str] = set()   # 공개 전엔 테스트 서버에만 보이는 명령어
 LEGACY_ONLY: set[str] = set()    # 공개 전까지만 다른 서버에 남는 명령어
