@@ -560,6 +560,15 @@ class ClubDB:
             # 2.6 같은 상대와 오늘 몇 번 뛰었나 (유망주 경험치 감소)
             con.execute("CREATE TABLE IF NOT EXISTS prospect_vs (user_id INTEGER, opp_id INTEGER, day_key INTEGER, "
                         "n INTEGER NOT NULL, PRIMARY KEY(user_id, opp_id, day_key))")
+            # 2026-10-03 친선 · 공식경기 기록 초기화 (한 번만) — 지우기 전 값은 *_bak_20261003 테이블에 남긴다
+            if con.execute("INSERT OR IGNORE INTO club_migrations(name) VALUES('reset_records_20261003')").rowcount:
+                con.execute("CREATE TABLE IF NOT EXISTS clubs_record_bak_20261003 AS "
+                            "SELECT user_id, wins, draws, losses FROM clubs")
+                con.execute("CREATE TABLE IF NOT EXISTS club_official_bak_20261003 AS SELECT * FROM club_official")
+                n = con.execute("UPDATE clubs SET wins=0, draws=0, losses=0").rowcount
+                m = con.execute("DELETE FROM club_official").rowcount
+                con.execute("DELETE FROM prospect_vs")
+                print(f"[구단] 친선 · 공식경기 기록 초기화 — 구단 {n}개 · 공식 기록 {m}줄 (백업 *_bak_20261003)")
             # 시설 (구단을 지웠다 다시 만들어도 남는다) · 명문 구단
             con.execute("CREATE TABLE IF NOT EXISTS club_facilities (user_id INTEGER PRIMARY KEY, "
                         + ", ".join(f"{k} INTEGER NOT NULL DEFAULT 0" for k in FACILITIES) + ")")
