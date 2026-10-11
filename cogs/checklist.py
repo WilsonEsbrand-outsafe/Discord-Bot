@@ -141,8 +141,8 @@ def render_png(w: dict, final: bool = False) -> bytes:
     rows.append(("병", cells, f"요청 {w['fix_req']} · 완료 {w['fix_done']}"
                  + (f"\n대기 {w['pending']}" if w["pending"] else ""), w["pending"] == 0))
 
-    widths = [0.7] + [1.0] * 7 + [1.9]
-    fig, ax = plt.subplots(figsize=(sum(widths) * 0.95, 3.1), dpi=150)
+    widths = [0.8] + [1.0] * 7 + [2.7]
+    fig, ax = plt.subplots(figsize=(sum(widths) * 0.95, 3.8), dpi=150)
     fig.patch.set_facecolor(_BG)
     ax.set_facecolor(_BG)
     ax.set_xlim(0, sum(widths))
@@ -150,7 +150,7 @@ def render_png(w: dict, final: bool = False) -> bytes:
     ax.axis("off")
     xs = [sum(widths[:i]) for i in range(len(widths))]
 
-    def cell(ci, ri, text, color=None, bold=False, fg=_FG, size=11):
+    def cell(ci, ri, text, color=None, bold=False, fg=_FG, size=17):
         x, y = xs[ci], 3 - ri
         ax.add_patch(plt.Rectangle((x + 0.04, y + 0.06), widths[ci] - 0.08, 0.88, color=color or _GRID,
                                    alpha=1 if color else 0.35, lw=0))
@@ -159,12 +159,12 @@ def render_png(w: dict, final: bool = False) -> bytes:
 
     for ci, c in enumerate(cols):
         is_today = 1 <= ci <= 7 and week + ci - 1 == today and not final
-        cell(ci, 0, c, _TODAY if is_today else None, bold=True, size=10)
+        cell(ci, 0, c, _TODAY if is_today else None, bold=True, size=15)
     for ri, (p, cs, total, ok) in enumerate(rows, start=1):
-        cell(0, ri, p, None, bold=True, size=13)
+        cell(0, ri, p, None, bold=True, size=21)
         for ci, (text, color) in enumerate(cs, start=1):
             cell(ci, ri, text, color)
-        cell(8, ri, total + ("\n미달" if final and not ok else ""), _ON if ok else (_OFF if final else None), size=10)
+        cell(8, ri, total + ("\n미달" if final and not ok else ""), _ON if ok else (_OFF if final else None), size=15)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor=_BG, bbox_inches="tight", pad_inches=0.12)
     plt.close(fig)
