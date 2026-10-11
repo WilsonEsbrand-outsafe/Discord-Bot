@@ -187,6 +187,8 @@ async def _flow():
     club.clubs, club.money, club.pm, club._playing = clubs, eco, pm, set()
     real_sleep, cc.asyncio.sleep = cc.asyncio.sleep, (lambda s: real_sleep(0))
     try:
+        await clubs.auto_lineup(A)   # 선발 11명이 꽉 차야 경기 (2.6)
+        await clubs.auto_lineup(B)
         await cc.Club.friendly.callback(club, inter, member(B, "상대"))
     finally:
         cc.asyncio.sleep = real_sleep
@@ -333,8 +335,8 @@ async def _flow():
     sql("UPDATE prospects SET ovr=70, pot=85, injuries=0 WHERE id=?", re_["id"])
     x = (await clubs.record_prospects([([pe], 1, 1)], [], now, rng=Hurt("minor")))[0]
     j = x["injury"]
-    assert j["kind"] == "minor" and j["name"] == "발목 염좌" and j["heal"] == 45 and j["until"] == now + round(6 * 3600 * 0.55)
-    assert (j["ovr"], j["pot"], j["chronic"]) == (70, 85, False) and j["hours"] == 3
+    assert j["kind"] == "minor" and j["name"] == "발목 염좌" and j["heal"] == 45 and j["games"] == 2   # 2경기 × 0.55 → 올림
+    assert (j["ovr"], j["pot"], j["chronic"]) == (70, 85, False)
     p = (await clubs.prospects(E, now))["active"]
     assert p["injured"] and p["injuries"] == 1 and p["injury"] == "발목 염좌 (경미)"
     # 부상 중: 명단엔 자리만 지키고 빈자리(전력 30)로 · 선발에 못 넣는다 · 카드에 복귀 시각
@@ -345,14 +347,14 @@ async def _flow():
     ok, msg = await clubs.set_slot(E, 3, re_["pid"])
     assert not ok and "부상" in msg
     assert "🚑 **부상** — 발목 염좌 (경미)" in cp.prospect_embed(p, member(E), now).description
-    assert "🚑 **발목 염좌** (경미) · 3시간 결장 (의료진 -45%)" in cc.Club._star_line(x)
-    sql("UPDATE prospects SET injured_until=? WHERE id=?", now - 1, re_["id"])  # 회복하면 원래 자리로 돌아온다
+    assert "🚑 **발목 염좌** (경미) · 공식경기 2경기 결장 (의료진 -45%)" in cc.Club._star_line(x)
+    sql("UPDATE prospects SET injury_games=0 WHERE id=?", re_["id"])  # 회복하면 원래 자리로 돌아온다
     assert re_["pid"] in {s.get("player_id") for s in (await clubs.get_team(E))["lineup"]}
     # 심각한 부상: OVR -1~3 · 잠재력 -2~5 (최솟값 -1 / -2)
     j = (await clubs.record_prospects([([pe], 1, 1)], [], now, rng=Hurt("severe")))[0]["injury"]
-    assert (j["ovr0"], j["ovr"], j["pot0"], j["pot"], j["chronic"]) == (70, 69, 85, 83, False) and j["hours"] == 40
+    assert (j["ovr0"], j["ovr"], j["pot0"], j["pot"], j["chronic"]) == (70, 69, 85, 83, False) and j["games"] == 9
     # 3번째 부상은 가벼워도 고질병: OVR -1 · 잠재력 -2
-    sql("UPDATE prospects SET injured_until=0, xp=0 WHERE id=?", re_["id"])
+    sql("UPDATE prospects SET injury_games=0, xp=0 WHERE id=?", re_["id"])
     x = (await clubs.record_prospects([([pe], 1, 1)], [], now, rng=Hurt("minor")))[0]
     j = x["injury"]
     assert j["chronic"] and (j["ovr"], j["pot"]) == (68, 81) and (await clubs.prospects(E, now))["active"]["injuries"] == 3

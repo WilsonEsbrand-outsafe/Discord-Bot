@@ -230,9 +230,9 @@ STADIUM_NAME_MAX = 20
 # ───────────── 명문 구단 (2.5) ─────────────
 # 인수하면 스쿼드 B 로 경기에 쓸 수 있다. 선수는 가상 선수이고 능력치는 영원히 고정 (구단 key 로 시드를 고정해 만든다).
 # 주인이 없으면 표시 가격, 주인이 있으면 지금 가격의 1.5배를 내고 빼앗는다 (낸 돈은 전 주인에게). 한 사람에 한 구단.
-# 규모 → (기본 가격, 하루 수입, 평균 OVR)
-ELITE_SIZES = {"메가": (1_000_000_000, 100_000_000, 84), "빅": (500_000_000, 40_000_000, 80),
-               "미드": (200_000_000, 10_000_000, 76)}
+# 규모 → (기본 가격, 하루 수입, 평균 OVR — 2.6 강화: 선수마다 ±2 · 세 나라 출신으로 케미 +3 · 주장(공격수) +1)
+ELITE_SIZES = {"메가": (1_000_000_000, 100_000_000, 92), "빅": (500_000_000, 40_000_000, 88),
+               "미드": (200_000_000, 10_000_000, 84)}
 ELITE_CLUBS = {   # key → (엠블럼, 이름, 규모)
     "royal": ("🦁", "로열 런던", "메가"), "blancos": ("👑", "마드리드 블랑코스", "메가"),
     "redstar": ("🔴", "뮌헨 레드스타", "빅"), "diavoli": ("😈", "밀라노 디아볼리", "빅"),
@@ -258,28 +258,20 @@ def elite_price(key: str, owner: Optional[int], price: int) -> int:
     return round(price * ELITE_TAKEOVER) if owner else price
 
 
-# 2.6 선수 강화: 규모별 평균 OVR (±2) · 세 나라 출신으로 케미 +3 · 주장(공격수) +1
-ELITE_STRONG_OVR = {"메가": 92, "빅": 88, "미드": 84}
-
-
-def elite_team(key: str, strong: bool = False) -> dict:
-    """명문 구단의 고정 선발 11명과 전력. get_team 과 같은 모양 (경기에 그대로 쓴다).
-    strong: 2.6 강화판 (release.preview 서버). 이름은 그대로, 능력치 · 국적 · 주장만 바뀐다."""
+def elite_team(key: str) -> dict:
+    """명문 구단의 고정 선발 11명과 전력. get_team 과 같은 모양 (경기에 그대로 쓴다)."""
     emblem, name, size = ELITE_CLUBS[key]
-    avg = ELITE_SIZES[size][2]
     rng = random.Random(f"elite-{key}")   # 시드 고정 — 몇 번을 만들어도 같은 선수
+    r2 = random.Random(f"elite26-{key}")  # 2.6 능력치 · 국적
+    nations = r2.sample(_EL_NATIONS, 3)
     lineup = []
     for i, slot in enumerate(FORMATIONS[ELITE_FORMATION]):
-        lineup.append({"slot": slot, "index": i, "player_id": f"{ELITE_ID}{key}:{i}",
-                       "name": f"{rng.choice(_EL_FIRST)} {rng.choice(_EL_LAST)}", "pos": SLOT_GROUP[slot],
-                       "ovr": avg + rng.randint(-4, 4), "nation": rng.choice(_EL_NATIONS)})
-    captain = None
-    if strong:
-        r2 = random.Random(f"elite26-{key}")
-        nations = r2.sample(_EL_NATIONS, 3)
-        for i, s in enumerate(lineup):
-            s["ovr"], s["nation"] = ELITE_STRONG_OVR[size] + r2.randint(-2, 2), nations[i % 3]
-        captain = max((s for s in lineup if s["pos"] == "FW"), key=lambda s: s["ovr"])["player_id"]
+        name_ = f"{rng.choice(_EL_FIRST)} {rng.choice(_EL_LAST)}"
+        rng.randint(-4, 4), rng.choice(_EL_NATIONS)   # 2.5 때 뽑던 능력치 · 국적 — 순서를 지켜야 이름이 안 바뀐다
+        lineup.append({"slot": slot, "index": i, "player_id": f"{ELITE_ID}{key}:{i}", "name": name_,
+                       "pos": SLOT_GROUP[slot], "ovr": ELITE_SIZES[size][2] + r2.randint(-2, 2),
+                       "nation": nations[i % 3]})
+    captain = max((s for s in lineup if s["pos"] == "FW"), key=lambda s: s["ovr"])["player_id"]
     team = {"key": key, "name": name, "emblem": emblem, "size": size, "formation": ELITE_FORMATION, "captain": captain,
             "lineup": lineup, "manager": None, "medic": None, "manager_bonus": 0, "squad": "B", "stadium": None}
     team.update(team_rating(lineup, captain))
@@ -371,17 +363,16 @@ def hidden_tier(v: int) -> str:
     return HIDDEN_TIERS[min(4, max(0, (int(v) - 1) // 4))]
 
 
-# 부상: 등급 → (이름, 확률, 결장 시간(시간) 범위, 부상 이름들). 의료진 치료능력만큼 결장이 줄어든다.
+# 부상: 등급 → (이름, 확률, 결장 공식경기 판수 범위, 부상 이름들). 의료진 치료능력만큼 결장이 줄어든다.
+# 결장은 내 구단이 공식경기를 치를 때마다(건 쪽 · 상대 쪽) 1경기씩 줄어든다 (2.6).
 # 심각한 부상은 OVR -1~3 · 잠재력 -2~5, 그리고 부상이 PROSPECT_CHRONIC 번 쌓일 때마다 고질병 OVR -1 · 잠재력 -2.
 INJURY_BASE, INJURY_PER_PRONE = 0.005, 0.0015
 INJURIES = {
-    "minor":    ("경미", 0.70, (6, 12),   ("발목 염좌", "근육 뭉침", "가벼운 타박상")),
-    "moderate": ("중상", 0.25, (24, 48),  ("햄스트링 부상", "무릎 인대 염좌", "갈비뼈 타박상")),
-    "severe":   ("심각", 0.05, (72, 120), ("십자인대 파열", "발목 골절", "아킬레스건 부상")),
+    "minor":    ("경미", 0.70, (2, 4),   ("발목 염좌", "근육 뭉침", "가벼운 타박상")),
+    "moderate": ("중상", 0.25, (6, 10),  ("햄스트링 부상", "무릎 인대 염좌", "갈비뼈 타박상")),
+    "severe":   ("심각", 0.05, (15, 25), ("십자인대 파열", "발목 골절", "아킬레스건 부상")),
 }
 PROSPECT_CHRONIC = 3
-# 2.6 결장은 공식경기 판수로: 등급 → (최소, 최대) 경기. 내 구단이 공식경기를 치를 때마다(건 쪽 · 상대 쪽) 1경기씩 줄어든다.
-INJURY_GAMES = {"minor": (2, 4), "moderate": (6, 10), "severe": (15, 25)}
 
 # 스테로이드 주사기(가방 아이템 'steroid') — 2.4부터 유망주에게만: 결과 → 확률
 STEROID_TABLE = {
@@ -700,7 +691,7 @@ class ClubDB:
 
     async def get_team(self, user_id: int, fill_injured: bool = False) -> Optional[dict]:
         """구단 + 선발 11명 + 전력. 구단이 없으면 None.
-        fill_injured(2.6 경기용): 부상 유망주 자리를 이번 경기만 벤치 최고 선수로 채운다 (선발 명단은 그대로)."""
+        fill_injured(경기용): 부상 유망주 자리를 이번 경기만 벤치 최고 선수로 채운다 (선발 명단은 그대로)."""
         def fn(con):
             row = con.execute(
                 "SELECT club_name, created_ts, formation, captain, wins, draws, losses, manager, medic, emblem, stadium, "
@@ -741,12 +732,12 @@ class ClubDB:
             return club
         return await self._tx(fn)
 
-    async def match_team(self, user_id: int, v26: bool = False) -> Optional[dict]:
+    async def match_team(self, user_id: int) -> Optional[dict]:
         """경기에 나갈 팀: 스쿼드 B(명문 구단)를 골랐고 아직 주인이면 그 구단, 아니면 내 구단(스쿼드 A).
-        v26: 명문 구단 강화판 · 부상 유망주 자리는 벤치 최고 선수가 대신 뛴다."""
-        team = await self.get_team(user_id, fill_injured=v26)
+        부상 유망주 자리는 벤치 최고 선수가 대신 뛴다."""
+        team = await self.get_team(user_id, fill_injured=True)
         if team and team["squad_b"] and team["elite"]:
-            b = elite_team(team["elite"], v26)
+            b = elite_team(team["elite"])
             b["stadium"] = team["stadium"]
             return b
         return team
@@ -817,7 +808,7 @@ class ClubDB:
         return await self._tx(fn)
 
     # ───────────── 명문 구단 ─────────────
-    async def elite_list(self, strong: bool = False) -> list[dict]:
+    async def elite_list(self) -> list[dict]:
         def fn(con):
             rows = con.execute("SELECT key, owner_id, price, bought_ts FROM elite_clubs").fetchall()
             out = []
@@ -827,7 +818,7 @@ class ClubDB:
                 emblem, name, size = ELITE_CLUBS[key]
                 out.append({"key": key, "emblem": emblem, "name": name, "size": size, "owner_id": owner,
                             "price": int(price), "cost": elite_price(key, owner, int(price)), "bought_ts": bought,
-                            "income": ELITE_SIZES[size][1], "rating": elite_team(key, strong)["rating"]})
+                            "income": ELITE_SIZES[size][1], "rating": elite_team(key)["rating"]})
             order = list(ELITE_CLUBS)
             return sorted(out, key=lambda c: order.index(c["key"]))
         return await self._tx(fn)
@@ -1136,13 +1127,11 @@ class ClubDB:
         return await self._tx(fn)
 
     async def record_prospects(self, sides: list[tuple], goals: list[dict], now_ts: int,
-                               events: list[dict] = (), rng=random, friendly: bool = False,
-                               v26: bool = False) -> list[dict]:
+                               events: list[dict] = (), rng=random, friendly: bool = False) -> list[dict]:
         """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 성장 경험치 ± (하루 PROSPECT_DAILY_GROWTH 경기까지,
         30세까지, 잠재력까지, 프로 의식 배율), 자신감 변화, 부상. sides: [(선발 xi, 득점, 실점[, 상대 id, 전력 차])]
         — 양 팀 모두. events: 중계 장면(경고 · 찬스 놓침).
-        v26: +경험치 × 친선 0.5 · 전력 차 배율 · 같은 상대 반복 배율, 훨씬 약한 상대에게 부진하면 감점 ·
-        부상 결장은 공식경기 판수(INJURY_GAMES).
+        경험치 악용 방지(2.6): +경험치 × 친선 0.5 · 전력 차 배율 · 같은 상대 반복 배율, 훨씬 약한 상대에게 부진하면 감점.
         뛴 유망주마다 결과 dict (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키 ·
         mods: 경험치 배율 설명 · injury: 부상 dict | None)."""
         if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, *_ in sides for s in xi):
@@ -1173,34 +1162,33 @@ class ClubDB:
                     delta = sum(PROSPECT_XP[k] * n for k, n in parts.items())
                     mods, minus = [], [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0]
                     mult = 1.0
-                    if v26:
-                        if friendly:
-                            mult *= XP_FRIENDLY
-                            mods.append(f"친선 ×{XP_FRIENDLY:g}")
-                        m = xp_gap_mult(gap)
+                    if friendly:
+                        mult *= XP_FRIENDLY
+                        mods.append(f"친선 ×{XP_FRIENDLY:g}")
+                    m = xp_gap_mult(gap)
+                    if m != 1:
+                        mult *= m
+                        mods.append(f"전력 차 {gap:+d} ×{m:g}")
+                    if opp_id is not None:
+                        con.execute("INSERT INTO prospect_vs(user_id, opp_id, day_key, n) VALUES(?, ?, ?, 1) "
+                                    "ON CONFLICT(user_id, opp_id, day_key) DO UPDATE SET n = n + 1",
+                                    (owner[0], int(opp_id), day))
+                        n = con.execute("SELECT n FROM prospect_vs WHERE user_id=? AND opp_id=? AND day_key=?",
+                                        (owner[0], int(opp_id), day)).fetchone()[0]
+                        m = xp_repeat_mult(n)
                         if m != 1:
                             mult *= m
-                            mods.append(f"전력 차 {gap:+d} ×{m:g}")
-                        if opp_id is not None:
-                            con.execute("INSERT INTO prospect_vs(user_id, opp_id, day_key, n) VALUES(?, ?, ?, 1) "
-                                        "ON CONFLICT(user_id, opp_id, day_key) DO UPDATE SET n = n + 1",
-                                        (owner[0], int(opp_id), day))
-                            n = con.execute("SELECT n FROM prospect_vs WHERE user_id=? AND opp_id=? AND day_key=?",
-                                            (owner[0], int(opp_id), day)).fetchone()[0]
-                            m = xp_repeat_mult(n)
-                            if m != 1:
-                                mult *= m
-                                mods.append(f"같은 상대 오늘 {n}번째 ×{m:g}")
+                            mods.append(f"같은 상대 오늘 {n}번째 ×{m:g}")
                     if delta > 0:   # 프로 의식: 10 이면 그대로, 높을수록 더 많이 (감점에는 안 붙는다)
                         delta = round(delta * (0.7 + p["pro"] * 0.03) * mult
                                       * (1 + self._facility(con, owner[0], "training") * FACILITIES["training"][3] / 100))
-                    if v26:   # 훨씬 약한 상대에게 부진 → 감점
-                        attack = p["group"] in ("FW", "MF")
-                        poor = res != "W" or (g + a == 0 if attack else ga > 0)
-                        pen = next((v for lo, v in XP_POOR_PENALTY if gap >= lo), 0)
-                        if poor and pen:
-                            delta += pen
-                            minus.append("poor")
+                    # 훨씬 약한 상대에게 부진 → 감점
+                    attack = p["group"] in ("FW", "MF")
+                    poor = res != "W" or (g + a == 0 if attack else ga > 0)
+                    pen = next((v for lo, v in XP_POOR_PENALTY if gap >= lo), 0)
+                    if poor and pen:
+                        delta += pen
+                        minus.append("poor")
                     if grew:
                         xp = max(0, xp + delta)
                         while ovr < p["pot"] and xp >= prospect_xp_need(ovr):
@@ -1214,14 +1202,14 @@ class ClubDB:
                     injury, pot = None, p["pot"]
                     medical = 1 - self._facility(con, owner[0], "medical") * FACILITIES["medical"][3] / 100
                     if rng.random() < (INJURY_BASE + p["proneness"] * INJURY_PER_PRONE) * medical:
-                        injury = self._injure(con, owner[0], p, ovr, pot, now_ts, rng, by_games=v26)
+                        injury = self._injure(con, owner[0], p, ovr, pot, rng)
                         ovr, pot = injury["ovr"], injury["pot"]
                     con.execute(
                         "UPDATE prospects SET apps=apps+1, goals=goals+?, assists=assists+?, ovr=?, pot=?, xp=?, "
                         "peak_ovr=?, peak_age=?, day_key=?, day_n=?, confidence=?, injured_until=?, injury=?, "
                         "injuries=?, injury_games=? WHERE id=?",
                         (g, a, ovr, pot, xp, *peak, day, played + 1, conf,
-                         injury["until"] if injury else p["injured_until"],
+                         p["injured_until"],
                          f"{injury['name']} ({injury['grade']})" if injury else p["injury"],
                          p["injuries"] + bool(injury), injury["games"] if injury else p["injury_games"], p["id"]))
                     out.append({"user_id": owner[0], "name": p["name"], "number": p["number"], "goals": g, "assists": a,
@@ -1232,16 +1220,14 @@ class ClubDB:
         return await self._tx(fn)
 
     @staticmethod
-    def _injure(con, user_id: int, p: dict, ovr: int, pot: int, now_ts: int, rng, by_games: bool = False) -> dict:
-        """부상 굴림: 등급 · 결장(의료진 치료능력만큼 단축) · 심각하면 OVR/잠재력 하락 ·
-        PROSPECT_CHRONIC 번째 부상마다 고질병(OVR -1 · 잠재력 -2).
-        by_games(2.6): 결장을 시간 대신 공식경기 판수로 (games). 아니면 시간 (until · hours)."""
+    def _injure(con, user_id: int, p: dict, ovr: int, pot: int, rng) -> dict:
+        """부상 굴림: 등급 · 결장 공식경기 판수(의료진 치료능력만큼 단축) · 심각하면 OVR/잠재력 하락 ·
+        PROSPECT_CHRONIC 번째 부상마다 고질병(OVR -1 · 잠재력 -2)."""
         grade = rng.choices(list(INJURIES), weights=[v[1] for v in INJURIES.values()])[0]
         label, _, (lo, hi), names = INJURIES[grade]
         medic = con.execute("SELECT medic FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
         heal = MEDICS[medic[0]][2] if medic and medic[0] in MEDICS else 0
-        games = max(1, math.ceil(rng.randint(*INJURY_GAMES[grade]) * (100 - heal) / 100)) if by_games else 0
-        secs = 0 if by_games else round(rng.randint(lo, hi) * 3600 * (100 - heal) / 100)
+        games = max(1, math.ceil(rng.randint(lo, hi) * (100 - heal) / 100))
         chronic = (p["injuries"] + 1) % PROSPECT_CHRONIC == 0
         new_ovr, new_pot = ovr, pot
         if grade == "severe":
@@ -1249,8 +1235,7 @@ class ClubDB:
         if chronic:
             new_ovr, new_pot = new_ovr - 1, new_pot - 2
         new_ovr = max(40, new_ovr)
-        return {"name": rng.choice(names), "grade": label, "kind": grade, "until": int(now_ts) + secs if secs else 0,
-                "hours": max(1, round(secs / 3600)), "games": games, "heal": heal, "chronic": chronic,
+        return {"name": rng.choice(names), "grade": label, "kind": grade, "games": games, "heal": heal, "chronic": chronic,
                 "ovr0": ovr, "ovr": new_ovr, "pot0": pot, "pot": max(new_pot, new_ovr)}
 
     async def use_steroid(self, user_id: int, now_ts: int, rng=random) -> dict:

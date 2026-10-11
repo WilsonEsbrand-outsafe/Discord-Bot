@@ -119,8 +119,9 @@ async def _flow():
     assert await db.transfer_locks(A) == []
 
     # 쿠폰 → 상자 → 카드 하나
-    assert (await db.redeem_coupon(A, "patch25", now))["items"] == {"box": 1}
-    assert (await db.redeem_coupon(A, "PATCH25", now))["reason"] == "used"
+    t = edb.COUPONS["PATCH25"][1] - 86400   # 쿠폰 기한 안 (10/8까지)
+    assert (await db.redeem_coupon(A, "patch25", t))["items"] == {"box": 1}
+    assert (await db.redeem_coupon(A, "PATCH25", t))["reason"] == "used"
     r = await db.open_box(A, 1, rng=random.Random(3))
     item, qty = r["cards"][1]
     assert r["ok"] and sorted(k for k, _ in r["cards"]) == sorted(edb.BOX_REWARDS) and qty == 1
