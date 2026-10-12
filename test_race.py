@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import discord
+
 import services.economy_db as edb
 
 edb.DB_PATH = Path(tempfile.mkdtemp()) / "t.sqlite3"
@@ -171,12 +173,12 @@ def test_emoji_and_ready():
             pass
 
         async def fetch():
-            return [SimpleNamespace(name="f1_mer", id=1)]
+            return [discord.PartialEmoji(name="f1_mer", id=1)]
 
         async def create(name, image):
             assert image[:4] == b"\x89PNG"
             created.append(name)
-            return SimpleNamespace(name=name, id=len(created) + 1)
+            return discord.PartialEmoji(name=name, id=len(created) + 1)
         cog = R.Race.__new__(R.Race)
         cog.bot = SimpleNamespace(wait_until_ready=ready, fetch_application_emojis=fetch, create_application_emoji=create)
         cog.team_emoji, cog.f1_ready, cog._filling = {}, [], None
@@ -186,8 +188,14 @@ def test_emoji_and_ready():
 
         race = await cog._prepare_f1()
         assert set(race) == {"gp", "rain", "grid", "odds", "png"} and race["png"][:4] == b"\x89PNG"
-        card = cog._f1_card(SimpleNamespace(display_name="a", display_avatar=SimpleNamespace(url="https://x/a.png")), 1000, race)
-        assert "f1_mer" in str(card.fields) or any(R.DRIVERS[d][3] != "MER" for d in race["grid"][:1])
+        user = SimpleNamespace(id=5, display_name="a", display_avatar=SimpleNamespace(url="https://x/a.png"))
+        card = cog._f1_card(user, 1000, race)
+        fields = " ".join(f.value for f in card.fields)
+        assert "<:f1_mer:1>" in fields and R.TEAMS["FER"][1] in fields                    # 배당표: 로고 이모지 (없는 팀은 색)
+        opts = R.PickView(cog, "f1", user, 1000, race).children[0].options
+        team = {o.value: R.DRIVERS[int(o.value)][3] for o in opts}
+        assert all((o.emoji.id == cog.team_emoji[team[o.value]].id) if team[o.value] in cog.team_emoji
+                   else str(o.emoji) == R.TEAMS[team[o.value]][1] for o in opts)          # 드롭다운도 로고
         cog._refill()                                                                       # 뒤에서 2개 채운다
         await cog._filling
         assert len(cog.f1_ready) == R.F1_READY

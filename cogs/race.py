@@ -684,7 +684,7 @@ class PickView(discord.ui.View):
         self.done = False
         if game == "f1":
             opts = [discord.SelectOption(label=f"P{p + 1} {DRIVERS[d][0]} {DRIVERS[d][1]}", value=str(d),
-                                         emoji=TEAMS[DRIVERS[d][3]][1],
+                                         emoji=cog.temoji(DRIVERS[d][3]),
                                          description=f"{TEAMS[DRIVERS[d][3]][0]} · 우승 +{race['odds'][d][0]:g}배 · "
                                                      f"포디움 +{race['odds'][d][1]:g}배")
                     for p, d in enumerate(race["grid"])]
