@@ -282,6 +282,7 @@ F1_SIMS = 6000
 F1_RULE = "우승 = 표시 배수 · 포디움(2~3위) = 그 40% · 4~10위 본전 · 11위 이하 1배 손실 · 💥 리타이어 2배 손실"
 F1_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/F1.svg/330px-F1.svg.png"   # 공식 로고 (상표)
 F1_SECTION = "🎙️ F1 중계"
+F1_SCENE_SEC = (2.8, 3.5)   # 중계 장면 하나 보여 주는 시간 (보통 · 막판 두 장면) — 그림 보고 순위표 읽을 시간
 LAP_SEC = 88.0       # 그림에서 간격(초) → 트랙 위 거리로 바꿀 때 쓰는 한 랩 시간
 FONT = ["NanumGothic", "Malgun Gothic", "DejaVu Sans"]
 BG, PANEL = "#15151E", "#1F1F2B"
@@ -1026,12 +1027,12 @@ class Race(commands.Cog):
             prev = snap["order"]
         pngs = await asyncio.to_thread(lambda: [f1_render(*s[2]) for s in scenes])   # 그림은 미리 다 그려 둔다
         for k, ((stage, text, _, color), png) in enumerate(zip(scenes, pngs)):
-            await asyncio.sleep(1.8 if k >= len(scenes) - 2 else 1.4)   # 막판은 한 박자 늦게
+            await asyncio.sleep(F1_SCENE_SEC[1] if k >= len(scenes) - 2 else F1_SCENE_SEC[0])   # 막판은 한 박자 늦게
             try:
                 await self._show(interaction, card(stage, text, color), png)
             except discord.HTTPException:
                 pass
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(F1_SCENE_SEC[1])
 
         g = grid.index(me) + 1
         if rank is None:
