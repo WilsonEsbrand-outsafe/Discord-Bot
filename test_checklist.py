@@ -69,6 +69,53 @@ def test_flow():
     assert "마감" in ck.make_embed(w, True).title
 
 
+def test_ledger():
+    import time
+    cog = ck.Checklist.__new__(ck.Checklist)
+    gap = 1146659618790051960
+    # 금액 읽기 · 지분 나누기 (자투리는 갑)
+    assert ck.parse_amount("1,500,000") == 1_500_000 and ck.parse_amount("150만원") == 1_500_000
+    assert ck.parse_amount("12.5만") == 125_000 and ck.parse_amount("abc") is None and ck.parse_amount("0") is None
+    assert ck.split(1_000_000, "egg", "갑") == {"갑": 450_000, "을": 250_000, "병": 300_000}
+    assert ck.split(1_000_000, "egg", "을") == {"갑": 300_000, "을": 400_000, "병": 300_000}
+    assert ck.split(1_001, "commission", "갑") == {"갑": 501, "을": 250, "병": 250}
+
+    # 매크로 알 보고 · 직접 등록 · 의뢰 +1 → 장부
+    assert cog._egg("알|갑|A34|1", time.time()) and cog._egg("알|을|A90|1", time.time())
+    assert not cog._egg("알|병|X|1", time.time()) and not cog._egg("가동|갑|A34|1|0", time.time())
+    assert cog.record_event("commission", gap) == ""
+    d = cog.ledger()
+    egg_g, egg_e, com = d["rows"][-3:]
+    assert (egg_g["kind"], egg_g["source"], egg_e["source"], com["kind"]) == ("egg", "갑", "을", "commission")
+    # 금액 등록 뒤엔 의뢰 체크 취소 불가 → 장부에서 삭제하면 주간 의뢰 수도 빠진다
+    assert cog.ledger_set_amount(com["id"], 300_000)
+    assert "기록 삭제" in cog.record_event("undo", gap)
+    week = ck.week_of(ck.kst_day(time.time()))
+    con = ck.connect()
+    n0 = ck.week_data(con, week, time.time())["commissions"]
+    con.close()
+    assert cog.ledger_delete(com["id"]) and not cog.ledger_delete(com["id"])
+    con = ck.connect()
+    assert ck.week_data(con, week, time.time())["commissions"] == n0 - 1
+    con.close()
+    # 금액 등록 전 의뢰는 체크 취소로 장부에서도 빠진다
+    n_com = sum(e["kind"] == "commission" for e in cog.ledger()["rows"])
+    assert cog.record_event("commission", gap) == "" and cog.record_event("undo", gap) == ""
+    assert sum(e["kind"] == "commission" for e in cog.ledger()["rows"]) == n_com
+
+    # 정산: 금액 있는 것만 · 나머지는 다음으로
+    assert cog.ledger_set_amount(egg_g["id"], 2_000_000) and cog.ledger_set_amount(egg_e["id"], 1_000_000)
+    d = cog.ledger()
+    assert d["owed"]["을"] == 500_000 + 400_000 and d["owed"]["병"] == 600_000 + 300_000
+    emb = ck.ledger_embed(d)
+    assert "정산하면" in emb.description and "갑 → 을 **900,000원**" in emb.description
+    r = cog.ledger_settle(gap)
+    assert r["count"] >= 2 and r["owed"]["을"] == 900_000 and cog.ledger_settle(gap) is None
+    assert not cog.ledger_set_amount(egg_g["id"], 1) and not cog.ledger_delete(egg_g["id"])   # 정산된 건 못 고친다
+    assert "마지막 정산" in ck.ledger_embed(cog.ledger()).footer.text
+
+
 if __name__ == "__main__":
     test_flow()
+    test_ledger()
     print("OK: checklist")
