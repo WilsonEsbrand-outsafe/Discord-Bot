@@ -4,7 +4,7 @@
 #   끝까지 열심히 저으면 상대와 똑같은 조건(기대값 0), 덜 저을수록 불리하다. 목표 이상 연타는 더 빨라지지 않는다(매크로 방지).
 # F1 은 2026 실제 드라이버 · 팀 · 서킷. 머신 · 드라이버 전력, 예선 그리드, 서킷 성격(추월 난이도 · 세이프티카 · 비)이
 #   결과에 반영되고, 배당은 드라이버마다 시뮬레이션으로 재서 기대값이 0 밑이 되게 정한다.
-#   중계는 실제 서킷 모양 위를 차들이 도는 그림 + 옆에 순위표 (서킷 좌표: assets/f1_circuits.json, MIT).
+#   중계는 실제 서킷 모양 위를 차들이 도는 그림 + 옆에 순위표 (서킷 좌표: assets/f1_circuits.json, MIT · 팀 로고: assets/teams, 커먼스).
 # 베팅금은 출전표를 띄울 때 먼저 빠진다 — 60초 안에 안 고르면(안 출발하면) 잃는다 (경마와 같음).
 import asyncio
 import io
@@ -19,6 +19,7 @@ from discord.ext import commands
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
+import matplotlib.image as mpimg
 import matplotlib.patheffects as pe
 
 from services.economy_db import EconomyDB
@@ -253,8 +254,10 @@ CIRCUITS = (   # (국기, 이름, 랩, 그리드 영향 0~1, 세이프티카 %, 
     ("🇶🇦", "카타르 GP · 루사일", 57, 0.55, 30, 0, False, "야간 고속 서킷, 체력 싸움"),
     ("🇦🇪", "아부다비 GP · 야스 마리나", 58, 0.6, 25, 0, False, "황혼에 끝나는 시즌 피날레"),
 )
-TRACKS = json.loads((Path(__file__).resolve().parent.parent / "assets" / "f1_circuits.json")
-                    .read_text(encoding="utf-8"))["circuits"]
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
+TRACKS = json.loads((ASSETS / "f1_circuits.json").read_text(encoding="utf-8"))["circuits"]
+TEAM_LOGO = {k: mpimg.imread(ASSETS / "teams" / f"{k}.png") for k in TEAMS if (ASSETS / "teams" / f"{k}.png").exists()}
+TEAM_TAG = {"FER": "FERRARI", "RB": "RACING\nBULLS", "AMR": "ASTON\nMARTIN"}   # 자유 이용 로고가 없는 팀 (assets/teams/SOURCES.md)
 STRENGTH = [0.65 * TEAMS[d[3]][3] + 0.35 * d[4] for d in DRIVERS]
 S_MAX = max(STRENGTH)
 F1_TEMP = 2.4        # 예선: 전력 차이가 그리드에 미치는 정도 (작을수록 강팀 독식)
@@ -516,6 +519,24 @@ def _track_xy(pts: list, frac: float) -> tuple[float, float]:
     return x0 + u * (x1 - x0), y0 + u * (y1 - y0)
 
 
+def _team_badge(ax, team: str, cx: float, cy: float, w: float, h: float, px: tuple[float, float]):
+    """팀 로고 배지 (흰 바탕 + 로고, 비율 유지). 쓸 수 있는 로고가 없는 팀은 팀 색 바탕에 이름.
+    ax 는 y 축이 아래로 커지는 축, px = (x 1칸, y 1칸) 이 몇 픽셀인지."""
+    logo = TEAM_LOGO.get(team)
+    color = TEAMS[team][2]
+    ax.add_patch(Rectangle((cx - w / 2, cy - h / 2), w, h, facecolor="#F4F4F7" if logo is not None else color,
+                           edgecolor="none", zorder=3))
+    if logo is None:
+        ax.text(cx, cy, TEAM_TAG[team], color=_ink(color), fontsize=8, fontweight="bold", ha="center", va="center",
+                linespacing=1.0, zorder=4, fontfamily=FONT)
+        return
+    ih, iw = logo.shape[:2]
+    s = min(w * px[0] * 0.9 / iw, h * px[1] * 0.85 / ih)
+    dx, dy = iw * s / px[0], ih * s / px[1]
+    ax.imshow(logo, extent=(cx - dx / 2, cx + dx / 2, cy + dy / 2, cy - dy / 2), aspect="auto", zorder=4,
+              interpolation="antialiased")
+
+
 def _ink(hex_color: str) -> str:
     """팀 색 위에 올릴 글자색 (밝은 색이면 검정)."""
     r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
@@ -561,6 +582,16 @@ def f1_render(gp: tuple, head: str, snap: dict, me: int, prev: list[int] | None 
             ax.annotate(f"▼ {DRIVERS[d][0]}", (x, y), xytext=(0, 24), textcoords="offset points", ha="center",
                         color="#FFD43B", fontsize=19, fontweight="bold", fontfamily=FONT, zorder=11, path_effects=stroke)
 
+    if me >= 0:                                                                                # 왼쪽 아래: 내 드라이버 팀 로고
+        badge = fig.add_axes((0.015, 0.025, 0.15, 0.1))
+        badge.set_xlim(0, 1)
+        badge.set_ylim(1, 0)
+        badge.set_autoscale_on(False)
+        badge.axis("off")
+        _team_badge(badge, DRIVERS[me][3], 0.5, 0.5, 1.0, 1.0, (fig.bbox.width * 0.15, fig.bbox.height * 0.1))
+        fig.text(0.175, 0.075, f"내 드라이버\n{DRIVERS[me][0]} {DRIVERS[me][1]}", color="#FFD43B", fontsize=16,
+                 fontweight="bold", va="center", fontfamily=FONT, linespacing=1.3)
+
     fig.text(0.015, 0.935, gp[1], color="white", fontsize=27, fontweight="bold", fontfamily=FONT)
     tags = [(head, "#E10600", "white")]
     if flag:
@@ -581,7 +612,9 @@ def f1_render(gp: tuple, head: str, snap: dict, me: int, prev: list[int] | None 
     tw = fig.add_axes((0.6, 0.015, 0.39, 0.97))
     tw.set_xlim(0, 1)
     tw.set_ylim(13.4, 0)
+    tw.set_autoscale_on(False)
     tw.axis("off")
+    px = (fig.bbox.width * 0.39, fig.bbox.height * 0.97 / 13.4)    # 순위표 칸 1 = 몇 픽셀 (로고 비율 맞추기)
     tw.add_patch(Rectangle((0, 0), 1, 13.4, facecolor=PANEL, edgecolor="none"))
     tw.text(0.5, 0.55, "출발 그리드 · 우승 배당" if odds else ("최종 순위" if final else "실시간 순위"),
             color="#B8B8CC", fontsize=17, fontweight="bold", ha="center", va="center", fontfamily=FONT)
@@ -595,17 +628,17 @@ def f1_render(gp: tuple, head: str, snap: dict, me: int, prev: list[int] | None 
         p = order.index(d) if not out else None
         if d == me:
             tw.add_patch(Rectangle((0.01, y - 0.48), 0.98, 0.96, facecolor="#5A1A1A" if out else "#B3161B", edgecolor="none"))
-        tw.text(0.075, y, "OUT" if out else str(p + 1), fontsize=15 if out else 20, fontweight="bold", ha="center",
+        tw.text(0.06, y, "OUT" if out else str(p + 1), fontsize=14 if out else 20, fontweight="bold", ha="center",
                 va="center", fontfamily=FONT, color="#FF6B6B" if out else (medal.get(p, "white") if final else "white"))
-        tw.add_patch(Rectangle((0.155, y - 0.38), 0.022, 0.76, facecolor=TEAMS[DRIVERS[d][3]][2], edgecolor="none"))
-        tw.text(0.205, y, DRIVERS[d][0], color="white", fontsize=21, fontweight="bold", va="center", fontfamily=FONT)
+        _team_badge(tw, DRIVERS[d][3], 0.205, y, 0.165, 0.8, px)
+        tw.text(0.31, y, DRIVERS[d][0], color="white", fontsize=21, fontweight="bold", va="center", fontfamily=FONT)
         if not out and not odds and d in snap.get("tyre", {}):
             t = snap["tyre"][d]
-            tw.scatter([0.47], [y], s=520, facecolor=BG, edgecolors=TYRE_COLOR[t], linewidths=3, zorder=3)
-            tw.text(0.47, y, t, color=TYRE_COLOR[t], fontsize=12, fontweight="bold", ha="center", va="center", fontfamily=FONT)
+            tw.scatter([0.53], [y], s=520, facecolor=BG, edgecolors=TYRE_COLOR[t], linewidths=3, zorder=3)
+            tw.text(0.53, y, t, color=TYRE_COLOR[t], fontsize=12, fontweight="bold", ha="center", va="center", fontfamily=FONT)
         a = 0 if out or odds else _arrow(prev or [], order, d)
         if a:
-            tw.text(0.6, y, f"▲{a}" if a > 0 else f"▼{-a}", color="#2ECC71" if a > 0 else "#FF5A5A", fontsize=16,
+            tw.text(0.66, y, f"▲{a}" if a > 0 else f"▼{-a}", color="#2ECC71" if a > 0 else "#FF5A5A", fontsize=16,
                     fontweight="bold", ha="center", va="center", fontfamily=FONT)
         if out:
             right = "리타이어"

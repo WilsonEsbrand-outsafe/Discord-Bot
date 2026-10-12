@@ -157,6 +157,7 @@ def test_f1_render():
         for s in (snaps[0], snaps[3], snaps[-1]):
             assert R.f1_render(gp, "LAP 9/50", s, grid[15], grid, None, s["frac"] >= 1)[:4] == b"\x89PNG"
     assert R.F1_LOGO.startswith("https://") and R.F1_LOGO.endswith(".png")
+    assert len(R.TEAM_LOGO) == 8 and all(t in R.TEAM_LOGO or t in R.TEAM_TAG for t in R.TEAMS)   # 팀마다 로고 또는 이름 배지
 
 
 def _inter(user, sent, views):
