@@ -157,7 +157,43 @@ def test_f1_render():
         for s in (snaps[0], snaps[3], snaps[-1]):
             assert R.f1_render(gp, "LAP 9/50", s, grid[15], grid, None, s["frac"] >= 1)[:4] == b"\x89PNG"
     assert R.F1_LOGO.startswith("https://") and R.F1_LOGO.endswith(".png")
-    assert len(R.TEAM_LOGO) == 8 and all(t in R.TEAM_LOGO or t in R.TEAM_TAG for t in R.TEAMS)   # 팀마다 로고 또는 이름 배지
+    assert len(R.TEAM_LOGO) == len(R.TEAM_ICON) == 8 and all(t in R.TEAM_LOGO or t in R.TEAM_TAG for t in R.TEAMS)   # 팀마다 로고 또는 이름
+    assert all(img.shape[0] == 64 and img.shape[2] == 4 for img in R.TEAM_LOGO.values())   # 미리 줄여 둔 투명 배경 로고
+    assert sorted(f.stem for f in R.EMOJI_DIR.glob("*.png")) == sorted(R.TEAM_LOGO)
+
+
+def test_emoji_and_ready():
+    """팀 로고 앱 이모지: 없는 것만 올리고, 출전표 · 드라이버 목록에 쓴다. 경주는 미리 만들어 둔 걸 꺼내 쓴다."""
+    created = []
+
+    async def flow():
+        async def ready():
+            pass
+
+        async def fetch():
+            return [SimpleNamespace(name="f1_mer", id=1)]
+
+        async def create(name, image):
+            assert image[:4] == b"\x89PNG"
+            created.append(name)
+            return SimpleNamespace(name=name, id=len(created) + 1)
+        cog = R.Race.__new__(R.Race)
+        cog.bot = SimpleNamespace(wait_until_ready=ready, fetch_application_emojis=fetch, create_application_emoji=create)
+        cog.team_emoji, cog.f1_ready, cog._filling = {}, [], None
+        await cog._sync_emoji()
+        assert len(cog.team_emoji) == 8 and "f1_mer" not in created and len(created) == 7     # 이미 있는 건 다시 안 올린다
+        assert cog.temoji("MER").id == 1 and cog.temoji("FER") == R.TEAMS["FER"][1]          # 로고 없는 팀은 팀 색
+
+        race = await cog._prepare_f1()
+        assert set(race) == {"gp", "rain", "grid", "odds", "png"} and race["png"][:4] == b"\x89PNG"
+        card = cog._f1_card(SimpleNamespace(display_name="a", display_avatar=SimpleNamespace(url="https://x/a.png")), 1000, race)
+        assert "f1_mer" in str(card.fields) or any(R.DRIVERS[d][3] != "MER" for d in race["grid"][:1])
+        cog._refill()                                                                       # 뒤에서 2개 채운다
+        await cog._filling
+        assert len(cog.f1_ready) == R.F1_READY
+        cog._refill()
+        assert cog._filling.done() and len(cog.f1_ready) == R.F1_READY                        # 다 차 있으면 더 안 만든다
+    asyncio.run(flow())
 
 
 def _inter(user, sent, views):
@@ -175,6 +211,8 @@ def _inter(user, sent, views):
 def test_flows():
     cog = R.Race.__new__(R.Race)
     cog.db = edb.EconomyDB()
+    cog.team_emoji, cog.f1_ready, cog._filling = {}, [], None
+    cog._refill = lambda: None                      # 테스트에선 뒤에서 미리 만들지 않는다
     user = SimpleNamespace(id=77, display_name="기수", display_avatar=SimpleNamespace(url="https://x/a.png"))
 
     async def flow():
@@ -268,5 +306,6 @@ if __name__ == "__main__":
     test_f1_model()
     test_f1_odds_ev()
     test_f1_render()
+    test_emoji_and_ready()
     test_flows()
     print("OK: race")

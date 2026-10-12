@@ -16,11 +16,12 @@ from pathlib import Path
 import discord
 from discord import app_commands
 from discord.ext import commands
+import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
-import matplotlib.image as mpimg
 import matplotlib.patheffects as pe
+from PIL import Image
 
 from services.economy_db import EconomyDB
 from services import ui
@@ -256,7 +257,17 @@ CIRCUITS = (   # (국기, 이름, 랩, 그리드 영향 0~1, 세이프티카 %, 
 )
 ASSETS = Path(__file__).resolve().parent.parent / "assets"
 TRACKS = json.loads((ASSETS / "f1_circuits.json").read_text(encoding="utf-8"))["circuits"]
-TEAM_LOGO = {k: mpimg.imread(ASSETS / "teams" / f"{k}.png") for k in TEAMS if (ASSETS / "teams" / f"{k}.png").exists()}
+LOGO_DIR, EMOJI_DIR = ASSETS / "teams" / "dark", ASSETS / "teams" / "emoji"   # 다크 화면용 로고 · 이모지용 정사각 (원본: assets/teams)
+def _load_logo(path: Path, height: int = 64):
+    """그릴 크기 근처로 미리 줄여 둔다 — 큰 그림을 매번 줄이면 느리다."""
+    im = Image.open(path).convert("RGBA")
+    im = im.crop(im.getbbox())
+    im = im.resize((max(1, round(im.width * height / im.height)), height), Image.LANCZOS)
+    return np.asarray(im)
+
+
+TEAM_LOGO = {k: _load_logo(LOGO_DIR / f"{k}.png") for k in TEAMS if (LOGO_DIR / f"{k}.png").exists()}
+TEAM_ICON = {k: _load_logo(EMOJI_DIR / f"{k}.png") for k in TEAM_LOGO}   # 엠블럼만 — 순위표 작은 칸용
 TEAM_TAG = {"FER": "FERRARI", "RB": "RACING\nBULLS", "AMR": "ASTON\nMARTIN"}   # 자유 이용 로고가 없는 팀 (assets/teams/SOURCES.md)
 STRENGTH = [0.65 * TEAMS[d[3]][3] + 0.35 * d[4] for d in DRIVERS]
 S_MAX = max(STRENGTH)
@@ -282,6 +293,7 @@ F1_SIMS = 6000
 F1_RULE = "우승 = 표시 배수 · 포디움(2~3위) = 그 40% · 4~10위 본전 · 11위 이하 1배 손실 · 💥 리타이어 2배 손실"
 F1_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/F1.svg/330px-F1.svg.png"   # 공식 로고 (상표)
 F1_SECTION = "🎙️ F1 중계"
+F1_READY = 2          # 미리 만들어 두는 F1 경주 수 (명령어 치면 바로 뜨게)
 F1_SCENE_SEC = (2.8, 3.5)   # 중계 장면 하나 보여 주는 시간 (보통 · 막판 두 장면) — 그림 보고 순위표 읽을 시간
 LAP_SEC = 88.0       # 그림에서 간격(초) → 트랙 위 거리로 바꿀 때 쓰는 한 랩 시간
 FONT = ["NanumGothic", "Malgun Gothic", "DejaVu Sans"]
@@ -520,19 +532,17 @@ def _track_xy(pts: list, frac: float) -> tuple[float, float]:
     return x0 + u * (x1 - x0), y0 + u * (y1 - y0)
 
 
-def _team_badge(ax, team: str, cx: float, cy: float, w: float, h: float, px: tuple[float, float]):
-    """팀 로고 배지 (흰 바탕 + 로고, 비율 유지). 쓸 수 있는 로고가 없는 팀은 팀 색 바탕에 이름.
+def _team_badge(ax, team: str, cx: float, cy: float, w: float, h: float, px: tuple[float, float], size: int = 10,
+                icon: bool = False):
+    """팀 로고 (흰 바탕 없이 — 다크 화면용으로 어두운 부분을 밝힌 것, 비율 유지). 쓸 수 있는 로고가 없는 팀은 팀 색 글자.
     ax 는 y 축이 아래로 커지는 축, px = (x 1칸, y 1칸) 이 몇 픽셀인지."""
-    logo = TEAM_LOGO.get(team)
-    color = TEAMS[team][2]
-    ax.add_patch(Rectangle((cx - w / 2, cy - h / 2), w, h, facecolor="#F4F4F7" if logo is not None else color,
-                           edgecolor="none", zorder=3))
+    logo = (TEAM_ICON if icon else TEAM_LOGO).get(team)
     if logo is None:
-        ax.text(cx, cy, TEAM_TAG[team], color=_ink(color), fontsize=8, fontweight="bold", ha="center", va="center",
+        ax.text(cx, cy, TEAM_TAG[team], color=TEAMS[team][2], fontsize=size, fontweight="bold", ha="center", va="center",
                 linespacing=1.0, zorder=4, fontfamily=FONT)
         return
     ih, iw = logo.shape[:2]
-    s = min(w * px[0] * 0.9 / iw, h * px[1] * 0.85 / ih)
+    s = min(w * px[0] / iw, h * px[1] / ih)
     dx, dy = iw * s / px[0], ih * s / px[1]
     ax.imshow(logo, extent=(cx - dx / 2, cx + dx / 2, cy + dy / 2, cy - dy / 2), aspect="auto", zorder=4,
               interpolation="antialiased")
@@ -545,16 +555,16 @@ def _ink(hex_color: str) -> str:
 
 
 def f1_render(gp: tuple, head: str, snap: dict, me: int, prev: list[int] | None = None, odds=None, final: bool = False) -> bytes:
-    """왼쪽: 실제 서킷 위를 도는 차들(동그라미 안 숫자 = 지금 순위) · 오른쪽: 10위까지 + 내 차 + 리타이어 순위표.
+    """왼쪽: 실제 서킷 위를 도는 차들(동그라미 안 숫자 = 지금 순위) · 오른쪽: 22명 전원 순위표(달리는 차 → 리타이어).
     글씨를 크게 — 디스코드 임베드는 그림을 작게 줄여 보여 준다."""
-    fig = Figure(figsize=(12, 7.5), dpi=100, facecolor=BG)
+    fig = Figure(figsize=(12, 10), dpi=100, facecolor=BG)
     FigureCanvasAgg(fig)
     pts = TRACKS[gp[1]]["pts"]
     order, gap = snap["order"], snap["gap"]
     flag = snap.get("flag")
     stroke = [pe.withStroke(linewidth=4, foreground=BG)]
 
-    ax = fig.add_axes((0.005, 0.0, 0.585, 0.86))
+    ax = fig.add_axes((0.005, 0.1, 0.585, 0.78))
     ax.set_xlim(-0.05, 1.05)
     ax.set_ylim(-0.05, 1.05)
     ax.set_aspect("equal")
@@ -584,16 +594,16 @@ def f1_render(gp: tuple, head: str, snap: dict, me: int, prev: list[int] | None 
                         color="#FFD43B", fontsize=19, fontweight="bold", fontfamily=FONT, zorder=11, path_effects=stroke)
 
     if me >= 0:                                                                                # 왼쪽 아래: 내 드라이버 팀 로고
-        badge = fig.add_axes((0.015, 0.025, 0.15, 0.1))
+        badge = fig.add_axes((0.015, 0.02, 0.17, 0.07))
         badge.set_xlim(0, 1)
         badge.set_ylim(1, 0)
         badge.set_autoscale_on(False)
         badge.axis("off")
-        _team_badge(badge, DRIVERS[me][3], 0.5, 0.5, 1.0, 1.0, (fig.bbox.width * 0.15, fig.bbox.height * 0.1))
-        fig.text(0.175, 0.075, f"내 드라이버\n{DRIVERS[me][0]} {DRIVERS[me][1]}", color="#FFD43B", fontsize=16,
+        _team_badge(badge, DRIVERS[me][3], 0.5, 0.5, 1.0, 1.0, (fig.bbox.width * 0.17, fig.bbox.height * 0.07), 14)
+        fig.text(0.195, 0.055, f"내 드라이버\n{DRIVERS[me][0]} {DRIVERS[me][1]}", color="#FFD43B", fontsize=17,
                  fontweight="bold", va="center", fontfamily=FONT, linespacing=1.3)
 
-    fig.text(0.015, 0.935, gp[1], color="white", fontsize=27, fontweight="bold", fontfamily=FONT)
+    fig.text(0.015, 0.955, gp[1], color="white", fontsize=27, fontweight="bold", fontfamily=FONT)
     tags = [(head, "#E10600", "white")]
     if flag:
         tags.append(({"SC": "SAFETY CAR", "VSC": "VIRTUAL SC", "RED": "RED FLAG"}[flag],
@@ -602,44 +612,40 @@ def f1_render(gp: tuple, head: str, snap: dict, me: int, prev: list[int] | None 
         tags.append(("RAIN", "#3B82F6", "white"))
     x, renderer = 0.015, fig.canvas.get_renderer()
     for t, bg, fg in tags:
-        txt = fig.text(x, 0.87, t, color=fg, fontsize=17, fontweight="bold", fontfamily=FONT,
+        txt = fig.text(x, 0.905, t, color=fg, fontsize=17, fontweight="bold", fontfamily=FONT,
                        bbox={"boxstyle": "round,pad=0.35", "facecolor": bg, "edgecolor": "none"})
         x += txt.get_window_extent(renderer).width / fig.bbox.width + 0.02
 
-    rows = [("run", d) for d in order[:10]]
-    if me in order[10:]:
-        rows += [("dots", None), ("run", me)]
-    rows += [("out", d) for d in snap.get("out", [])][:13 - len(rows)]
-    tw = fig.add_axes((0.6, 0.015, 0.39, 0.97))
+    rows = [(d, False) for d in order] + [(d, True) for d in snap.get("out", [])]          # 22명 전원
+    span = len(rows) + 1.4
+    tw = fig.add_axes((0.6, 0.008, 0.392, 0.984))
     tw.set_xlim(0, 1)
-    tw.set_ylim(13.4, 0)
+    tw.set_ylim(span, 0)
     tw.set_autoscale_on(False)
     tw.axis("off")
-    px = (fig.bbox.width * 0.39, fig.bbox.height * 0.97 / 13.4)    # 순위표 칸 1 = 몇 픽셀 (로고 비율 맞추기)
-    tw.add_patch(Rectangle((0, 0), 1, 13.4, facecolor=PANEL, edgecolor="none"))
-    tw.text(0.5, 0.55, "출발 그리드 · 우승 배당" if odds else ("최종 순위" if final else "실시간 순위"),
-            color="#B8B8CC", fontsize=17, fontweight="bold", ha="center", va="center", fontfamily=FONT)
+    px = (fig.bbox.width * 0.392, fig.bbox.height * 0.984 / span)    # 순위표 칸 1 = 몇 픽셀 (로고 비율 맞추기)
+    tw.add_patch(Rectangle((0, 0), 1, span, facecolor=PANEL, edgecolor="none"))
+    tw.text(0.5, 0.6, "출발 그리드 · 우승 배당" if odds else ("최종 순위" if final else "실시간 순위"),
+            color="#B8B8CC", fontsize=16, fontweight="bold", ha="center", va="center", fontfamily=FONT)
     medal = {0: "#FFD43B", 1: "#D9D9D9", 2: "#E3A869"}
-    for i, (kind, d) in enumerate(rows):
-        y = i + 1.6
-        if kind == "dots":
-            tw.text(0.5, y, "⋮", color="#8888A0", fontsize=18, ha="center", va="center")
-            continue
-        out = kind == "out"
-        p = order.index(d) if not out else None
+    for i, (d, out) in enumerate(rows):
+        y = i + 1.55
+        p = None if out else i
         if d == me:
             tw.add_patch(Rectangle((0.01, y - 0.48), 0.98, 0.96, facecolor="#5A1A1A" if out else "#B3161B", edgecolor="none"))
-        tw.text(0.06, y, "OUT" if out else str(p + 1), fontsize=14 if out else 20, fontweight="bold", ha="center",
+        elif i % 2:
+            tw.add_patch(Rectangle((0.01, y - 0.48), 0.98, 0.96, facecolor="#262634", edgecolor="none"))   # 줄 구분
+        tw.text(0.06, y, "OUT" if out else str(p + 1), fontsize=12 if out else 17, fontweight="bold", ha="center",
                 va="center", fontfamily=FONT, color="#FF6B6B" if out else (medal.get(p, "white") if final else "white"))
-        _team_badge(tw, DRIVERS[d][3], 0.205, y, 0.165, 0.8, px)
-        tw.text(0.31, y, DRIVERS[d][0], color="white", fontsize=21, fontweight="bold", va="center", fontfamily=FONT)
+        _team_badge(tw, DRIVERS[d][3], 0.2, y, 0.17, 0.8, px, icon=True)
+        tw.text(0.31, y, DRIVERS[d][0], color="white", fontsize=18, fontweight="bold", va="center", fontfamily=FONT)
         if not out and not odds and d in snap.get("tyre", {}):
             t = snap["tyre"][d]
-            tw.scatter([0.53], [y], s=520, facecolor=BG, edgecolors=TYRE_COLOR[t], linewidths=3, zorder=3)
-            tw.text(0.53, y, t, color=TYRE_COLOR[t], fontsize=12, fontweight="bold", ha="center", va="center", fontfamily=FONT)
+            tw.scatter([0.52], [y], s=330, facecolor=BG, edgecolors=TYRE_COLOR[t], linewidths=2.5, zorder=3)
+            tw.text(0.52, y, t, color=TYRE_COLOR[t], fontsize=10, fontweight="bold", ha="center", va="center", fontfamily=FONT)
         a = 0 if out or odds else _arrow(prev or [], order, d)
         if a:
-            tw.text(0.66, y, f"▲{a}" if a > 0 else f"▼{-a}", color="#2ECC71" if a > 0 else "#FF5A5A", fontsize=16,
+            tw.text(0.65, y, f"▲{a}" if a > 0 else f"▼{-a}", color="#2ECC71" if a > 0 else "#FF5A5A", fontsize=14,
                     fontweight="bold", ha="center", va="center", fontfamily=FONT)
         if out:
             right = "리타이어"
@@ -648,7 +654,7 @@ def f1_render(gp: tuple, head: str, snap: dict, me: int, prev: list[int] | None 
         else:
             g = gap.get(d, 0.0)
             right = "선두" if p == 0 else (f"+{int(g // LAP_SEC)}랩" if g >= LAP_SEC else f"+{g:.1f}")
-        tw.text(0.965, y, right, color="#FF6B6B" if out else "white", fontsize=19, fontweight="bold" if d == me else "normal",
+        tw.text(0.965, y, right, color="#FF6B6B" if out else "white", fontsize=16, fontweight="bold" if d == me else "normal",
                 ha="right", va="center", fontfamily=FONT)
 
     buf = io.BytesIO()
@@ -775,6 +781,13 @@ class Race(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = EconomyDB()
+        self.team_emoji: dict = {}
+        self.f1_ready: list[dict] = []    # 미리 만들어 둔 F1 경주 (명령어 치면 바로 뜨게)
+        self._filling = None
+
+    async def cog_load(self):
+        self._refill()
+        self._emoji_task = asyncio.create_task(self._sync_emoji())
 
     async def _bet(self, interaction: discord.Interaction, amount: int, section: str, build):
         """잔액 확인 → 출전표 만들기 → 베팅금 차감 → 출전표 + 버튼. 못 띄우면 환불.
@@ -957,8 +970,46 @@ class Race(commands.Cog):
 
     # ───────────── 🏎️ F1 ─────────────
 
+    def temoji(self, team: str):
+        """팀 로고 이모지 (봇 앱 이모지). 아직 없거나 로고 없는 팀이면 팀 색 이모지."""
+        return getattr(self, "team_emoji", {}).get(team) or TEAMS[team][1]
+
+    async def _sync_emoji(self):
+        """assets/teams/emoji/*.png 를 봇 앱 이모지(f1_mer …)로 올려 둔다 — 한 번 올리면 다음부턴 있는 걸 쓴다."""
+        await self.bot.wait_until_ready()
+        try:
+            have = {e.name: e for e in await self.bot.fetch_application_emojis()}
+            for f in sorted(EMOJI_DIR.glob("*.png")):
+                name = f"f1_{f.stem.lower()}"
+                self.team_emoji[f.stem] = have.get(name) or await self.bot.create_application_emoji(name=name, image=f.read_bytes())
+            print(f"🏎️ F1 팀 로고 이모지 {len(self.team_emoji)}개 준비")
+        except Exception as ex:   # 실패해도 팀 색 이모지로 계속
+            print(f"[F1] 팀 로고 이모지 준비 실패: {type(ex).__name__}: {ex}")
+
     @staticmethod
-    def _f1_card(user, amount: int, race: dict) -> discord.Embed:
+    async def _prepare_f1() -> dict:
+        """경주 하나 준비: 서킷 · 날씨 · 예선 · 배당(시뮬레이션) · 출발 그리드 그림 — 무거워서 미리 만들어 둔다."""
+        gp = random.choice(CIRCUITS)
+        rain = random.random() < gp[5] / 100
+        grid = f1_qualify(rain)
+
+        def work():
+            odds = f1_odds(grid, gp, rain)
+            return odds, f1_render(gp, "출발 그리드", dict(f1_grid_snap(grid), wet=rain), -1, None, odds)
+        odds, png = await asyncio.to_thread(work)
+        return {"gp": gp, "rain": rain, "grid": grid, "odds": odds, "png": png}
+
+    def _refill(self):
+        """준비된 경주가 F1_READY 개가 되게 뒤에서 채운다 (이미 채우는 중이면 그대로)."""
+        if len(self.f1_ready) >= F1_READY or (self._filling and not self._filling.done()):
+            return
+
+        async def fill():
+            while len(self.f1_ready) < F1_READY:
+                self.f1_ready.append(await self._prepare_f1())
+        self._filling = asyncio.create_task(fill())
+
+    def _f1_card(self, user, amount: int, race: dict) -> discord.Embed:
         flag, name, laps, grip, sc_pct, rain_pct, street, note = race["gp"]
         weather = "🌧️ 비" if race["rain"] else (f"☁️ 경기 중 비 {rain_pct // 2}%" if rain_pct else "☀️ 맑음")
         overtake = "어려움" if grip >= 0.7 else ("보통" if grip >= 0.5 else "쉬움")
@@ -969,7 +1020,7 @@ class Race(commands.Cog):
         grid, odds = race["grid"], race["odds"]
         for lo, hi in ((0, 11), (11, 22)):
             e.add_field(name=f"우승 배당 · P{lo + 1}~P{hi}", inline=True, value="\n".join(
-                f"`P{p + 1:<2}` {TEAMS[DRIVERS[d][3]][1]} {DRIVERS[d][0]} **+{odds[d][0]:g}**" for p, d in enumerate(grid[lo:hi], lo)))
+                f"`P{p + 1:<2}` {self.temoji(DRIVERS[d][3])} {DRIVERS[d][0]} **+{odds[d][0]:g}**" for p, d in enumerate(grid[lo:hi], lo)))
         e.set_thumbnail(url=F1_LOGO)
         e.set_image(url="attachment://f1.png")
         e.set_footer(text="아래 목록에서 드라이버를 고르세요 · 60초 안에 안 고르면 실격")
@@ -982,14 +1033,9 @@ class Race(commands.Cog):
         user, amount = interaction.user, int(amount)
 
         async def build():
-            gp = random.choice(CIRCUITS)
-            rain = random.random() < gp[5] / 100
-            grid = f1_qualify(rain)
-            odds = await asyncio.to_thread(f1_odds, grid, gp, rain)
-            snap = dict(f1_grid_snap(grid), wet=rain)
-            png = await asyncio.to_thread(f1_render, gp, "출발 그리드", snap, -1, None, odds)
-            race = {"gp": gp, "rain": rain, "grid": grid, "odds": odds}
-            return (lambda: PickView(self, "f1", user, amount, race)), self._f1_card(user, amount, race), png
+            race = self.f1_ready.pop(0) if self.f1_ready else await self._prepare_f1()   # 보통은 미리 만들어 둔 경주
+            self._refill()
+            return (lambda: PickView(self, "f1", user, amount, race)), self._f1_card(user, amount, race), race["png"]
         await self._bet(interaction, amount, F1_SECTION, build)
 
     async def _run_f1(self, interaction: discord.Interaction, view: PickView, me: int):
@@ -1025,8 +1071,13 @@ class Race(commands.Cog):
             base = grid if final else prev   # 체커기 장면의 ▲▼ 는 출발 그리드 대비
             scenes.append((stage, f'> 🎙️ *"{text}"*\n\n{f1_status(snap, base, me)}', (gp, head, snap, me, base, None, final), color))
             prev = snap["order"]
-        pngs = await asyncio.to_thread(lambda: [f1_render(*s[2]) for s in scenes])   # 그림은 미리 다 그려 둔다
-        for k, ((stage, text, _, color), png) in enumerate(zip(scenes, pngs)):
+        def draw(s):   # 장면을 보여 주는 동안 다음 장면 그림을 그린다
+            return asyncio.create_task(asyncio.to_thread(f1_render, *s[2]))
+        nxt = draw(scenes[0])
+        for k, (stage, text, _, color) in enumerate(scenes):
+            png = await nxt
+            if k + 1 < len(scenes):
+                nxt = draw(scenes[k + 1])
             await asyncio.sleep(F1_SCENE_SEC[1] if k >= len(scenes) - 2 else F1_SCENE_SEC[0])   # 막판은 한 박자 늦게
             try:
                 await self._show(interaction, card(stage, text, color), png)

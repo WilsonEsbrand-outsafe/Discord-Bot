@@ -10,3 +10,5 @@
 - CAD.png — [Cadillac Formula 1 Team logo.png](https://commons.wikimedia.org/wiki/File:Cadillac_Formula_1_Team_logo.png) · CC0 · TedNauru
 
 페라리 · 레이싱 불스 · 애스턴 마틴은 커먼스에 자유 이용 가능한 로고가 없어 팀 색 배지로 표시합니다.
+
+변형: dark/ 는 흰 바탕을 지우고 어두운 부분을 밝게 바꾼 다크 화면용, emoji/ 는 엠블럼 · 워드마크 부분만 잘라 128×128 투명 정사각으로 만든 디스코드 이모지용입니다 (원본은 이 폴더의 KEY.png).
