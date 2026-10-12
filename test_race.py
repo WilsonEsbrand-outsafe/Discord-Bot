@@ -159,7 +159,7 @@ def test_f1_render():
         for s in (snaps[0], snaps[3], snaps[-1]):
             assert R.f1_render(gp, "LAP 9/50", s, grid[15], grid, None, s["frac"] >= 1)[:4] == b"\x89PNG"
     assert R.F1_LOGO.startswith("https://") and R.F1_LOGO.endswith(".png")
-    assert len(R.TEAM_LOGO) == len(R.TEAM_ICON) == 8 and all(t in R.TEAM_LOGO or t in R.TEAM_TAG for t in R.TEAMS)   # 팀마다 로고 또는 이름
+    assert len(R.TEAM_LOGO) == len(R.TEAM_ICON) == 10 and all(t in R.TEAM_LOGO or t in R.TEAM_TAG for t in R.TEAMS)   # 팀마다 로고 또는 이름
     assert all(img.shape[0] == 64 and img.shape[2] == 4 for img in R.TEAM_LOGO.values())   # 미리 줄여 둔 투명 배경 로고
     assert sorted(f.stem for f in R.EMOJI_DIR.glob("*.png")) == sorted(R.TEAM_LOGO)
 
@@ -183,15 +183,15 @@ def test_emoji_and_ready():
         cog.bot = SimpleNamespace(wait_until_ready=ready, fetch_application_emojis=fetch, create_application_emoji=create)
         cog.team_emoji, cog.f1_ready, cog._filling = {}, [], None
         await cog._sync_emoji()
-        assert len(cog.team_emoji) == 8 and "f1_mer" not in created and len(created) == 7     # 이미 있는 건 다시 안 올린다
-        assert cog.temoji("MER").id == 1 and cog.temoji("FER") == R.TEAMS["FER"][1]          # 로고 없는 팀은 팀 색
+        assert len(cog.team_emoji) == 10 and "f1_mer" not in created and len(created) == 9     # 이미 있는 건 다시 안 올린다
+        assert cog.temoji("MER").id == 1 and cog.temoji("RB") == R.TEAMS["RB"][1]          # 로고 없는 팀은 팀 색
 
         race = await cog._prepare_f1()
         assert set(race) == {"gp", "rain", "grid", "odds", "png"} and race["png"][:4] == b"\x89PNG"
         user = SimpleNamespace(id=5, display_name="a", display_avatar=SimpleNamespace(url="https://x/a.png"))
         card = cog._f1_card(user, 1000, race)
         fields = " ".join(f.value for f in card.fields)
-        assert "<:f1_mer:1>" in fields and R.TEAMS["FER"][1] in fields                    # 배당표: 로고 이모지 (없는 팀은 색)
+        assert "<:f1_mer:1>" in fields and R.TEAMS["RB"][1] in fields                    # 배당표: 로고 이모지 (없는 팀은 색)
         opts = R.PickView(cog, "f1", user, 1000, race).children[0].options
         team = {o.value: R.DRIVERS[int(o.value)][3] for o in opts}
         assert all((o.emoji.id == cog.team_emoji[team[o.value]].id) if team[o.value] in cog.team_emoji

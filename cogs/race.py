@@ -268,7 +268,7 @@ def _load_logo(path: Path, height: int = 64):
 
 TEAM_LOGO = {k: _load_logo(LOGO_DIR / f"{k}.png") for k in TEAMS if (LOGO_DIR / f"{k}.png").exists()}
 TEAM_ICON = {k: _load_logo(EMOJI_DIR / f"{k}.png") for k in TEAM_LOGO}   # 엠블럼만 — 순위표 작은 칸용
-TEAM_TAG = {"FER": "FERRARI", "RB": "RACING\nBULLS", "AMR": "ASTON\nMARTIN"}   # 자유 이용 로고가 없는 팀 (assets/teams/SOURCES.md)
+TEAM_TAG = {"RB": "RACING\nBULLS"}   # 자유 이용 로고가 없는 팀 (assets/teams/SOURCES.md)
 STRENGTH = [0.65 * TEAMS[d[3]][3] + 0.35 * d[4] for d in DRIVERS]
 S_MAX = max(STRENGTH)
 F1_TEMP = 2.4        # 예선: 전력 차이가 그리드에 미치는 정도 (작을수록 강팀 독식)
