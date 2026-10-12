@@ -256,13 +256,26 @@ CIRCUITS = (   # (국기, 이름, 랩, 그리드 영향 0~1, 세이프티카 %, 
 TRACKS = json.loads((Path(__file__).resolve().parent.parent / "assets" / "f1_circuits.json")
                     .read_text(encoding="utf-8"))["circuits"]
 STRENGTH = [0.65 * TEAMS[d[3]][3] + 0.35 * d[4] for d in DRIVERS]
-F1_TEMP = 2.4        # 전력 차이가 결과에 미치는 정도 (작을수록 강팀 독주)
-GRID_W = 0.8         # 그리드 한 칸의 값 × 서킷 그리드 영향
+S_MAX = max(STRENGTH)
+F1_TEMP = 2.4        # 예선: 전력 차이가 그리드에 미치는 정도 (작을수록 강팀 독식)
+# 결승은 구간마다 랩 수만큼 시간을 쌓아 가며 실제로 굴린다 (초, 작을수록 앞) — 중계 장면의 순위 · 간격이 그대로 결과가 된다.
+F1_CHECKS = (0.016, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.0)   # 중계 장면 = 레이스 진행률
+PACE_A = 0.05        # 전력 1 차이 = 랩당 0.05초 (비 오면 0.7배 — 머신 차이가 줄어든다)
+LAP_SIGMA = 0.4      # 랩당 운 (초) — 비 오면 1.8배
+GRID_SEC = 0.35      # 그리드 한 칸 = (0.35 + 서킷 추월 난이도) 초
+STUCK = (0.25, 0.65)  # 바로 앞차를 근소하게 따라잡으면 막힐 확률 = 0.25 + 0.65 × 추월 난이도 (모나코 0.9 · 몬차 0.48)
+PIT_LOSS = 21.0      # 피트스톱 한 번 (초)
+TYRE_PACE = {"S": -0.35, "M": 0.0, "H": 0.25, "I": 0.0}     # 랩당 (초)
+TYRE_COLOR = {"S": "#E8002D", "M": "#FFD12E", "H": "#F0F0F0", "I": "#39B54A"}
+LAP1_CRASH = 0.2     # 1랩 사고 (+시가지 0.15, +비 0.1)
+SLOW_PIT = 0.07      # 피트스톱 실수
+CRASH_P = 0.0025     # 구간마다 차 한 대가 사고 낼 확률 (+비 0.004) — 터지면 60%는 세이프티카
+PENALTY_P = 0.08     # 구간마다 누군가 페널티
+VSC_P, RED_P = 0.15, 0.03
 POD_SHARE = 0.4      # 포디움(2~3위) 배수 = 우승 배수의 40%
 F1_EDGE = 0.95       # 배당을 손익분기의 95%로
 F1_CAP = 100.0
-F1_SIMS = 12000
-F1_STAGES = (0.02, 0.3, 0.55, 0.75, 0.98, 1.0)
+F1_SIMS = 6000
 F1_RULE = "우승 = 표시 배수 · 포디움(2~3위) = 그 40% · 4~10위 본전 · 11위 이하 1배 손실 · 💥 리타이어 2배 손실"
 F1_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/F1.svg/330px-F1.svg.png"   # 공식 로고 (상표)
 F1_SECTION = "🎙️ F1 중계"
@@ -282,19 +295,119 @@ def f1_qualify(rain: bool, rng=random) -> list[int]:
                                  reverse=True)]
 
 
-def f1_race(grid: list[int], gp: tuple, rain: bool, sc: bool, rng=random) -> tuple[list[int], dict[int, float]]:
-    """결승 → (완주 순위, {리타이어한 드라이버: 리타이어 시점 0~1})."""
-    grip, street = gp[3], gp[6]
-    noise = 1.0 + (0.5 if rain else 0.0) + (0.25 if sc else 0.0)
-    p_out = 0.025 + (0.02 if street else 0.0) + (0.02 if rain else 0.0)
-    n, out, scored = len(grid), {}, []
-    for p, d in enumerate(grid):
-        if rng.random() < p_out:
-            out[d] = rng.uniform(0.05, 0.95)
-        else:
-            scored.append((STRENGTH[d] / F1_TEMP + grip * GRID_W * (n - 1 - p) + noise * _gumbel(rng), d))
-    scored.sort(reverse=True)
-    return [d for _, d in scored], out
+def _strategy(rain: bool, rng, one_stop: bool = False) -> list[tuple[str, float]]:
+    """타이어 전략 [(컴파운드, 이 스틴트가 끝나는 진행률)]. 1스톱(M→H · H→M) 과 2스톱(S→M→S) 은 평균 비슷, 운은 다르다.
+    추월이 어려운 서킷(one_stop)은 다들 1스톱 — 자리를 지키는 게 먼저다."""
+    if rain:
+        return [("I", rng.uniform(0.4, 0.7)), ("I", 1.0)]
+    r = rng.random()
+    if r < 0.45 or (one_stop and r < 0.7):
+        return [("M", rng.uniform(0.35, 0.6)), ("H", 1.0)]
+    if r < 0.65 or one_stop:
+        return [("H", rng.uniform(0.45, 0.7)), ("M", 1.0)]
+    return [("S", rng.uniform(0.2, 0.35)), ("M", rng.uniform(0.6, 0.75)), ("S", 1.0)]
+
+
+def f1_sim(grid: list[int], gp: tuple, rain: bool, rng=random, record: bool = False):
+    """결승을 장면(F1_CHECKS)마다 굴린다 → (완주 순위, {리타이어: 시점 0~1}, 장면 기록).
+    변수: 머신 · 드라이버 전력, 그리드(서킷 추월 난이도), 랩마다 운, 타이어 전략 · 피트스톱(실수), 1랩 사고,
+    머신 고장, 크래시, 세이프티카(간격 압축 + 싼 피트인), VSC, 레드 플래그, 경기 중 비, 페널티."""
+    laps, grip, sc_pct, rain_pct, street = gp[2], gp[3], gp[4], gp[5], gp[6]
+    last = len(F1_CHECKS) - 1
+    wet = rain
+    pace, sigma = PACE_A * (0.7 if wet else 1.0), LAP_SIGMA * (1.8 if wet else 1.0)
+    T = {d: p * (GRID_SEC + grip) for p, d in enumerate(grid)}
+    strat = {d: _strategy(rain, rng, one_stop=grip >= 0.75) for d in grid}
+    stint = dict.fromkeys(grid, 0)
+    tyre = {d: strat[d][0][0] for d in grid}
+    out: dict[int, float] = {}
+    p_dnf = 0.02 + (0.012 if street else 0) + (0.012 if rain else 0)
+    mech = {d: rng.randrange(1, last + 1) for d in grid if rng.random() < p_dnf}
+    sc_at = rng.randrange(1, last) if rng.random() < sc_pct / 100 else None
+    vsc_at = rng.randrange(1, last) if rng.random() < VSC_P else None
+    red_at = rng.randrange(2, last - 1) if rng.random() < RED_P else None
+    shower = rng.randrange(2, last - 1) if not rain and rng.random() < rain_pct / 200 else None
+    snaps, prev, order_prev = [], 0.0, list(grid)
+    for j, c in enumerate(F1_CHECKS):
+        L = (c - prev) * laps
+        ev = []
+        if j == 0 and rng.random() < LAP1_CRASH + (0.15 if street else 0) + (0.1 if rain else 0):
+            mid = sorted(grid, key=T.get)[4:18]
+            hit = rng.sample(mid, rng.randint(1, 3))
+            for d in hit:
+                if rng.random() < 0.45:
+                    out[d] = c
+                else:
+                    T[d] += rng.uniform(12, 35)          # 부서진 앞날개 갈러 피트로
+            ev.append(("crash1", hit))
+        if j == shower:                                   # 경기 중 비: 인터미디어로 갈아타는 타이밍이 갈린다
+            wet, pace, sigma = True, PACE_A * 0.7, LAP_SIGMA * 1.8
+            for d in grid:
+                if d not in out:
+                    T[d] += PIT_LOSS + rng.uniform(0, 14)
+                    strat[d], stint[d], tyre[d] = [("I", 1.0)], 0, "I"
+            ev.append(("shower", []))
+        pitted = []
+        for d in grid:
+            if d in out:
+                continue
+            if mech.get(d) == j:
+                out[d] = rng.uniform(prev, c)
+                ev.append(("dnf", [d]))
+                continue
+            T[d] += L * (pace * (S_MAX - STRENGTH[d]) + TYRE_PACE[tyre[d]]) + rng.gauss(0, sigma * math.sqrt(max(L, 0.5)))
+            st = strat[d]
+            while stint[d] < len(st) - 1 and st[stint[d]][1] <= c:
+                T[d] += PIT_LOSS
+                if rng.random() < SLOW_PIT:
+                    slow = rng.uniform(2.5, 9.0)
+                    T[d] += slow
+                    ev.append(("slowpit", [d], slow))
+                stint[d] += 1
+                tyre[d] = st[stint[d]][0]
+                pitted.append(d)
+            if j and rng.random() < CRASH_P + (0.004 if wet else 0):
+                out[d] = rng.uniform(prev, c)
+                ev.append(("crash", [d]))
+                if sc_at is None and j < last and rng.random() < 0.6:
+                    sc_at = j
+        if pitted:
+            ev.append(("pit", pitted))
+        run = [d for d in grid if d not in out]
+        before = [d for d in order_prev if d not in out]
+        for a, b in zip(before, before[1:]):              # 추월이 어려운 서킷일수록 바로 앞차에 막힌다 (더러운 공기)
+            if 0 < T[a] - T[b] < 1.0 + 6 * grip and rng.random() < STUCK[0] + STUCK[1] * grip:
+                T[b] = T[a] + rng.uniform(0.2, 0.8)
+        if run and rng.random() < PENALTY_P:
+            d, sec = rng.choice(run), (10 if rng.random() < 0.25 else 5)
+            T[d] += sec
+            ev.append(("pen", [d], sec))
+        flag = None
+        if j < last and j in (sc_at, red_at):            # 세이프티카 · 레드 플래그: 간격이 사라지고, 남은 피트스톱을 싸게
+            flag = "RED" if j == red_at else "SC"
+            order = sorted(run, key=T.get)
+            for r, d in enumerate(order):
+                T[d] = T[order[0]] + 0.6 * r
+            cheap = []
+            for d in order:
+                if stint[d] < len(strat[d]) - 1 and (flag == "RED" or rng.random() < 0.5):
+                    stint[d] += 1
+                    tyre[d] = strat[d][stint[d]][0]
+                    T[d] += 0 if flag == "RED" else PIT_LOSS * 0.45
+                    cheap.append(d)
+            ev.append(("red" if flag == "RED" else "sc", cheap))
+        elif j < last and j == vsc_at:
+            flag = "VSC"
+            lead = min(T[d] for d in run)
+            for d in run:
+                T[d] = lead + (T[d] - lead) * 0.6
+            ev.append(("vsc", []))
+        order_prev = sorted(run, key=T.get)
+        if record:
+            snaps.append({"frac": c, "order": order_prev, "gap": {d: T[d] - T[order_prev[0]] for d in order_prev},
+                          "tyre": dict(tyre), "out": sorted(out, key=out.get), "ev": ev, "flag": flag, "wet": wet})
+        prev = c
+    return sorted((d for d in grid if d not in out), key=T.get), out, snaps
 
 
 def f1_odds(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=None) -> list[tuple[float, float]]:
@@ -304,7 +417,7 @@ def f1_odds(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=Non
     rng = rng or random.Random()
     c = [[0, 0, 0, 0] for _ in DRIVERS]          # 우승 · 포디움 · 11위 이하 · 리타이어
     for _ in range(sims):
-        fin, out = f1_race(grid, gp, rain, rng.random() < gp[4] / 100, rng)
+        fin, out, _ = f1_sim(grid, gp, rain, rng)
         for r, d in enumerate(fin):
             if r == 0:
                 c[d][0] += 1
@@ -335,38 +448,65 @@ def f1_mult(odds: tuple[float, float], rank: int | None) -> float:
     return 0 if rank < 10 else -1
 
 
-def f1_frames(grid: list[int], finish: list[int], out: dict[int, float], comeback: int | None, rng=random) -> list[list[int]]:
-    """장면마다 달리는 순서. 그리드에서 출발해 갈수록 완주 순위로 모이고, 리타이어한 차는 그 시점부터 빠진다.
-    comeback = 막판 두 장면에서 선두로 보이다 마지막에 추월당하는 차."""
-    gpos = {d: p for p, d in enumerate(grid)}
-    fpos = {d: p for p, d in enumerate(finish)}
-    res = []
-    for k, f in enumerate(F1_STAGES):
-        if f >= 1:
-            res.append(list(finish))
-            continue
-        alive = [d for d in grid if out.get(d, 2.0) > f]
-        key = {d: (1 - f) * gpos[d] + f * fpos.get(d, gpos[d]) + rng.gauss(0, 1.5) * (1 - f) for d in alive}
-        order = sorted(alive, key=key.get)
-        if comeback is not None and k >= len(F1_STAGES) - 3:
-            order.remove(comeback)
-            order.insert(0, comeback)
-        res.append(order)
-    return res
+def _nm(d: int) -> str:
+    return DRIVERS[d][1]
 
 
-def f1_gaps(n: int, sc: bool = False, rng=random) -> list[float]:
-    """선두와의 간격(초). 세이프티카 장면은 다닥다닥 붙는다."""
-    gaps = [0.0]
-    for _ in range(n - 1):
-        gaps.append(gaps[-1] + (rng.uniform(0.15, 0.5) if sc else rng.uniform(0.4, 2.4)))
-    return gaps
+def f1_call(snap: dict, prev: list[int], me: int, laps: int) -> tuple[str, str]:
+    """장면 소제목 + 캐스터 멘트 (내 드라이버 일 → 깃발 · 사고 → 선두 변화 → 크게 오른 차 순으로 세 마디까지)."""
+    lap = max(1, round(snap["frac"] * laps))
+    order, ev = snap["order"], snap["ev"]
+    lines = []
+    for kind, ds, *x in ev:
+        names = ", ".join(_nm(d) for d in ds)
+        line = {
+            "crash1": f"💥 1랩 사고! {names} 충돌!",
+            "dnf": f"💥 {names}, 머신 고장으로 멈춰 섭니다!",
+            "crash": f"💥 {names} 크래시! 벽에 부딪혔습니다!",
+            "slowpit": f"🔧 {names} 피트스톱 실수! {x[0]:.1f}초 손해!" if x else "",
+            "pen": f"⚠️ {names} {x[0]}초 페널티!" if x else "",
+            "sc": "🟡 세이프티카 출동! 간격이 전부 사라집니다" + (f" — {len(ds)}대가 그 틈에 피트인!" if ds else "!"),
+            "vsc": "🟡 버추얼 세이프티카! 간격이 줄어듭니다!",
+            "red": "🔴 레드 플래그! 레이스 중단 — 전원 줄 서서 재출발!",
+            "shower": "🌧️ 비가 쏟아집니다! 전원 인터미디어 타이어로 — 타이밍 싸움!",
+            "pit": f"🔧 피트스톱! {len(ds)}대가 타이어 교체" if len(ds) >= 3 else "",
+        }[kind]
+        if line:
+            lines.append((0 if me in ds else 1, line))
+    if order and prev and order[0] != prev[0]:
+        lines.append((2, f"🔄 {_nm(order[0])} 선두로!"))
+    gain = max(((prev.index(d) - p, d) for p, d in enumerate(order) if d in prev), default=(0, None))
+    if gain[0] >= 3:
+        lines.append((3, f"↗️ {_nm(gain[1])} {gain[0]}계단 점프!"))
+    if not lines and order:
+        lines.append((4, f"{_nm(order[0])} 선두, {_nm(order[1])} 추격!" if len(order) > 1 else f"{_nm(order[0])} 선두!"))
+    text = " ".join(s for _, s in sorted(lines, key=lambda t: t[0])[:3])
+    if snap["frac"] >= 1:
+        stage = "🏁 체커기"
+    elif snap["flag"] == "RED":
+        stage = f"🔴 레드 플래그 · 랩 {lap}/{laps}"
+    elif snap["flag"]:
+        stage = f"🟡 {'세이프티카' if snap['flag'] == 'SC' else 'VSC'} · 랩 {lap}/{laps}"
+    elif snap["frac"] < 0.05:
+        stage = f"🟢 오프닝 랩 · 랩 {lap}/{laps}"
+    else:
+        stage = f"랩 {lap}/{laps}"
+    return stage, text
 
 
-def _drv(d: int, me: int) -> str:
-    code, name, flag, team, _ = DRIVERS[d]
-    s = f"{TEAMS[team][1]} {flag} {code} {name}"
-    return f"**{s}** 👈" if d == me else s
+def _arrow(prev: list[int], order: list[int], d: int) -> int:
+    return prev.index(d) - order.index(d) if prev and d in prev and d in order else 0
+
+
+def f1_status(snap: dict, prev: list[int], me: int) -> str:
+    code = f"{DRIVERS[me][0]} {DRIVERS[me][1]}"
+    if me not in snap["order"]:
+        return f"💥 **{code}** 리타이어"
+    p = snap["order"].index(me)
+    a = _arrow(prev, snap["order"], me)
+    move = f" (▲{a})" if a > 0 else (f" (▼{-a})" if a < 0 else "")
+    gap = "선두!!" if p == 0 else f"+{snap['gap'][me]:.1f}초"
+    return f"👈 **{code}** 지금 **P{p + 1}**{move} · {gap} · 타이어 {snap['tyre'][me]}"
 
 
 def _track_xy(pts: list, frac: float) -> tuple[float, float]:
@@ -376,79 +516,116 @@ def _track_xy(pts: list, frac: float) -> tuple[float, float]:
     return x0 + u * (x1 - x0), y0 + u * (y1 - y0)
 
 
-def f1_render(gp: tuple, head: str, order: list[int], gaps: list[float], gone: list[int], me: int, lead: float,
-              sc: bool = False, rain: bool = False, odds=None, final: bool = False) -> bytes:
-    """왼쪽: 실제 서킷 위를 도는 차들 · 오른쪽: 순위표(간격, 출발 그리드면 우승 배당). lead = 선두의 랩 위치(0~1)."""
-    fig = Figure(figsize=(12, 6.6), dpi=90, facecolor=BG)
+def _ink(hex_color: str) -> str:
+    """팀 색 위에 올릴 글자색 (밝은 색이면 검정)."""
+    r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    return "black" if 0.299 * r + 0.587 * g + 0.114 * b > 0.6 else "white"
+
+
+def f1_render(gp: tuple, head: str, snap: dict, me: int, prev: list[int] | None = None, odds=None, final: bool = False) -> bytes:
+    """왼쪽: 실제 서킷 위를 도는 차들(동그라미 안 숫자 = 지금 순위) · 오른쪽: 10위까지 + 내 차 + 리타이어 순위표.
+    글씨를 크게 — 디스코드 임베드는 그림을 작게 줄여 보여 준다."""
+    fig = Figure(figsize=(12, 7.5), dpi=100, facecolor=BG)
     FigureCanvasAgg(fig)
     pts = TRACKS[gp[1]]["pts"]
-    stroke = [pe.withStroke(linewidth=3, foreground=BG)]
+    order, gap = snap["order"], snap["gap"]
+    flag = snap.get("flag")
+    stroke = [pe.withStroke(linewidth=4, foreground=BG)]
 
-    ax = fig.add_axes((0.02, 0.03, 0.57, 0.80))
-    ax.set_xlim(-0.06, 1.06)
-    ax.set_ylim(-0.06, 1.06)
+    ax = fig.add_axes((0.005, 0.0, 0.585, 0.86))
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.05, 1.05)
     ax.set_aspect("equal")
     ax.axis("off")
     xs, ys = [p[0] for p in pts] + [pts[0][0]], [p[1] for p in pts] + [pts[0][1]]
-    ax.plot(xs, ys, color="#0B0B10", lw=17, solid_capstyle="round", solid_joinstyle="round", zorder=1)
-    ax.plot(xs, ys, color="#FFD43B" if sc else "#4A4A5C", lw=10, solid_capstyle="round", solid_joinstyle="round", zorder=2)
+    track = {"SC": "#E0B000", "VSC": "#E0B000", "RED": "#C0392B"}.get(flag, "#5A5A70")
+    ax.plot(xs, ys, color="#0A0A0F", lw=26, solid_capstyle="round", solid_joinstyle="round", zorder=1)
+    ax.plot(xs, ys, color=track, lw=16, solid_capstyle="round", solid_joinstyle="round", zorder=2)
     (x0, y0), (x1, y1) = pts[0], pts[1]
     nx, ny = y0 - y1, x1 - x0
     norm = math.hypot(nx, ny) or 1
-    nx, ny = nx / norm * 0.035, ny / norm * 0.035
-    ax.plot([x0 - nx, x0 + nx], [y0 - ny, y0 + ny], color="white", lw=4, zorder=3)     # 출발 · 결승선
-    for p, d in reversed(list(enumerate(order))):                                        # 선두가 맨 위에 그려지게
-        x, y = _track_xy(pts, lead - gaps[p] / LAP_SEC)
-        mine = d == me
-        ax.scatter([x], [y], s=330 if mine else 150, color=TEAMS[DRIVERS[d][3]][2], zorder=7 if mine else 5,
-                   edgecolors="white" if mine else BG, linewidths=3 if mine else 1.2)
-        if mine or p == 0:   # 이름표는 선두와 내 차만 (붙어 있으면 겹친다)
-            ax.annotate(f"P{p + 1} {DRIVERS[d][0]}", (x, y), xytext=(0, 13), textcoords="offset points", ha="center",
-                        color="#FFD43B" if mine else "white", fontsize=12 if mine else 10, fontweight="bold",
-                        fontfamily=FONT, zorder=8, path_effects=stroke)
+    nx, ny = nx / norm * 0.045, ny / norm * 0.045
+    ax.plot([x0 - nx, x0 + nx], [y0 - ny, y0 + ny], color="white", lw=6, zorder=3)          # 출발 · 결승선
+    ax.annotate("", xy=(x0 + (x1 - x0) * 6, y0 + (y1 - y0) * 6), xytext=(x0, y0), zorder=3,     # 달리는 방향
+                arrowprops={"arrowstyle": "-|>", "color": "white", "lw": 2.5, "mutation_scale": 22})
+    lead = 0.0 if final else (snap["frac"] * gp[2]) % 1.0
+    for p in reversed(range(len(order))):                                                     # 선두가 맨 위에 그려지게
+        d = order[p]
+        x, y = _track_xy(pts, lead - gap.get(d, 0.0) / LAP_SEC)
+        color, mine = TEAMS[DRIVERS[d][3]][2], d == me
+        ax.scatter([x], [y], s=1100 if mine else 560, color=color, zorder=9 if mine else 5 + (p == 0),
+                   edgecolors="white" if mine else ("#FFD43B" if p == 0 else BG), linewidths=4 if mine else 2)
+        ax.text(x, y, str(p + 1), color=_ink(color), fontsize=15 if mine else 12, fontweight="bold", ha="center",
+                va="center", zorder=10 if mine else 6 + (p == 0), fontfamily=FONT)
+        if mine:
+            ax.annotate(f"▼ {DRIVERS[d][0]}", (x, y), xytext=(0, 24), textcoords="offset points", ha="center",
+                        color="#FFD43B", fontsize=19, fontweight="bold", fontfamily=FONT, zorder=11, path_effects=stroke)
 
-    fig.text(0.02, 0.935, f"{gp[1]}", color="white", fontsize=21, fontweight="bold", fontfamily=FONT)
-    tags = [head] + (["SAFETY CAR"] if sc else []) + (["RAIN"] if rain else [])
-    x, renderer = 0.02, fig.canvas.get_renderer()
-    for t in tags:
-        color = {"SAFETY CAR": ("#FFD43B", "black"), "RAIN": ("#3B82F6", "white")}.get(t, ("#E10600", "white"))
-        txt = fig.text(x, 0.875, t, color=color[1], fontsize=12, fontweight="bold", fontfamily=FONT,
-                       bbox={"boxstyle": "round,pad=0.35", "facecolor": color[0], "edgecolor": "none"})
+    fig.text(0.015, 0.935, gp[1], color="white", fontsize=27, fontweight="bold", fontfamily=FONT)
+    tags = [(head, "#E10600", "white")]
+    if flag:
+        tags.append(({"SC": "SAFETY CAR", "VSC": "VIRTUAL SC", "RED": "RED FLAG"}[flag],
+                     "#C0392B" if flag == "RED" else "#FFD43B", "white" if flag == "RED" else "black"))
+    if snap.get("wet"):
+        tags.append(("RAIN", "#3B82F6", "white"))
+    x, renderer = 0.015, fig.canvas.get_renderer()
+    for t, bg, fg in tags:
+        txt = fig.text(x, 0.87, t, color=fg, fontsize=17, fontweight="bold", fontfamily=FONT,
+                       bbox={"boxstyle": "round,pad=0.35", "facecolor": bg, "edgecolor": "none"})
         x += txt.get_window_extent(renderer).width / fig.bbox.width + 0.02
 
-    rows = list(order) + list(gone)
-    tw = fig.add_axes((0.615, 0.02, 0.37, 0.96))
+    rows = [("run", d) for d in order[:10]]
+    if me in order[10:]:
+        rows += [("dots", None), ("run", me)]
+    rows += [("out", d) for d in snap.get("out", [])][:13 - len(rows)]
+    tw = fig.add_axes((0.6, 0.015, 0.39, 0.97))
     tw.set_xlim(0, 1)
-    tw.set_ylim(len(rows) + 1.2, 0)
+    tw.set_ylim(13.4, 0)
     tw.axis("off")
-    tw.add_patch(Rectangle((0, 0), 1, len(rows) + 1.2, facecolor=PANEL, edgecolor="none"))
-    tw.text(0.04, 0.75, "POS", color="#9A9AB0", fontsize=10, fontweight="bold", va="center", fontfamily=FONT)
-    tw.text(0.2, 0.75, "DRIVER", color="#9A9AB0", fontsize=10, fontweight="bold", va="center", fontfamily=FONT)
-    tw.text(0.96, 0.75, "우승 배당" if odds else "GAP", color="#9A9AB0", fontsize=10, fontweight="bold", va="center",
-            ha="right", fontfamily=FONT)
+    tw.add_patch(Rectangle((0, 0), 1, 13.4, facecolor=PANEL, edgecolor="none"))
+    tw.text(0.5, 0.55, "출발 그리드 · 우승 배당" if odds else ("최종 순위" if final else "실시간 순위"),
+            color="#B8B8CC", fontsize=17, fontweight="bold", ha="center", va="center", fontfamily=FONT)
     medal = {0: "#FFD43B", 1: "#D9D9D9", 2: "#E3A869"}
-    for i, d in enumerate(rows):
-        y = i + 1.75
-        out = i >= len(order)
+    for i, (kind, d) in enumerate(rows):
+        y = i + 1.6
+        if kind == "dots":
+            tw.text(0.5, y, "⋮", color="#8888A0", fontsize=18, ha="center", va="center")
+            continue
+        out = kind == "out"
+        p = order.index(d) if not out else None
         if d == me:
-            tw.add_patch(Rectangle((0.005, y - 0.5), 0.99, 1, facecolor="#E10600" if not out else "#5A1A1A", alpha=0.55,
-                                   edgecolor="none"))
-        tw.text(0.06, y, "OUT" if out else str(i + 1), color="#FF6B6B" if out else (medal.get(i, "white") if final else "white"),
-                fontsize=11, fontweight="bold", va="center", ha="center", fontfamily=FONT)
-        tw.add_patch(Rectangle((0.13, y - 0.36), 0.018, 0.72, facecolor=TEAMS[DRIVERS[d][3]][2], edgecolor="none"))
-        tw.text(0.17, y, DRIVERS[d][0], color="white", fontsize=12, fontweight="bold", va="center", fontfamily=FONT)
-        tw.text(0.33, y, DRIVERS[d][1], color="#C8C8D8", fontsize=10, va="center", fontfamily=FONT)
+            tw.add_patch(Rectangle((0.01, y - 0.48), 0.98, 0.96, facecolor="#5A1A1A" if out else "#B3161B", edgecolor="none"))
+        tw.text(0.075, y, "OUT" if out else str(p + 1), fontsize=15 if out else 20, fontweight="bold", ha="center",
+                va="center", fontfamily=FONT, color="#FF6B6B" if out else (medal.get(p, "white") if final else "white"))
+        tw.add_patch(Rectangle((0.155, y - 0.38), 0.022, 0.76, facecolor=TEAMS[DRIVERS[d][3]][2], edgecolor="none"))
+        tw.text(0.205, y, DRIVERS[d][0], color="white", fontsize=21, fontweight="bold", va="center", fontfamily=FONT)
+        if not out and not odds and d in snap.get("tyre", {}):
+            t = snap["tyre"][d]
+            tw.scatter([0.47], [y], s=520, facecolor=BG, edgecolors=TYRE_COLOR[t], linewidths=3, zorder=3)
+            tw.text(0.47, y, t, color=TYRE_COLOR[t], fontsize=12, fontweight="bold", ha="center", va="center", fontfamily=FONT)
+        a = 0 if out or odds else _arrow(prev or [], order, d)
+        if a:
+            tw.text(0.6, y, f"▲{a}" if a > 0 else f"▼{-a}", color="#2ECC71" if a > 0 else "#FF5A5A", fontsize=16,
+                    fontweight="bold", ha="center", va="center", fontfamily=FONT)
         if out:
             right = "리타이어"
         elif odds:
             right = f"+{odds[d][0]:g}배"
         else:
-            right = "선두" if i == 0 else f"+{gaps[i]:.3f}"
-        tw.text(0.96, y, right, color="#FF6B6B" if out else "white", fontsize=11, va="center", ha="right", fontfamily=FONT)
+            g = gap.get(d, 0.0)
+            right = "선두" if p == 0 else (f"+{int(g // LAP_SEC)}랩" if g >= LAP_SEC else f"+{g:.1f}")
+        tw.text(0.965, y, right, color="#FF6B6B" if out else "white", fontsize=19, fontweight="bold" if d == me else "normal",
+                ha="right", va="center", fontfamily=FONT)
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor=BG)
     return buf.getvalue()
+
+
+def f1_grid_snap(grid: list[int]) -> dict:
+    """출발 그리드 그림용 장면 — 줄 서 있는 차들."""
+    return {"frac": 0.0, "order": list(grid), "gap": {d: 0.35 * p for p, d in enumerate(grid)}, "tyre": {}, "out": [],
+            "ev": [], "flag": None, "wet": False}
 
 
 def f1_file(png: bytes) -> discord.File:
@@ -746,7 +923,25 @@ class Race(commands.Cog):
 
     # ───────────── 🏎️ F1 ─────────────
 
-    @app_commands.command(name="f1", description="2026 F1 그리드에서 드라이버를 골라 베팅! 실제 서킷 · 전력 반영, 배당은 드라이버마다 (최소 1,000원)")
+    @staticmethod
+    def _f1_card(user, amount: int, race: dict) -> discord.Embed:
+        flag, name, laps, grip, sc_pct, rain_pct, street, note = race["gp"]
+        weather = "🌧️ 비" if race["rain"] else (f"☁️ 경기 중 비 {rain_pct // 2}%" if rain_pct else "☀️ 맑음")
+        overtake = "어려움" if grip >= 0.7 else ("보통" if grip >= 0.5 else "쉬움")
+        e = ui.card(f"🏎️ {flag} {name} — 출발 그리드",
+                    f'> 🎙️ *"{note}! {laps}랩 레이스가 곧 시작됩니다. 누구에게 거시겠어요?"*\n'
+                    f"{weather} · 🟡 세이프티카 {sc_pct}% · {'🏙️ 시가지' if street else '🏁 상설 서킷'} · 추월 {overtake}"
+                    f"\n\n`베팅` **{amount:,}원**\n-# {F1_RULE}", ui.INFO, user, F1_SECTION)
+        grid, odds = race["grid"], race["odds"]
+        for lo, hi in ((0, 11), (11, 22)):
+            e.add_field(name=f"우승 배당 · P{lo + 1}~P{hi}", inline=True, value="\n".join(
+                f"`P{p + 1:<2}` {TEAMS[DRIVERS[d][3]][1]} {DRIVERS[d][0]} **+{odds[d][0]:g}**" for p, d in enumerate(grid[lo:hi], lo)))
+        e.set_thumbnail(url=F1_LOGO)
+        e.set_image(url="attachment://f1.png")
+        e.set_footer(text="아래 목록에서 드라이버를 고르세요 · 60초 안에 안 고르면 실격")
+        return e
+
+    @app_commands.command(name="f1", description="2026 F1 그리드에서 드라이버를 골라 베팅! 실제 서킷 · 전력 · 타이어 전략 · 사고 반영 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def f1(self, interaction: discord.Interaction, amount: app_commands.Range[int, MIN_BET]):
@@ -757,26 +952,17 @@ class Race(commands.Cog):
             rain = random.random() < gp[5] / 100
             grid = f1_qualify(rain)
             odds = await asyncio.to_thread(f1_odds, grid, gp, rain)
-            png = await asyncio.to_thread(f1_render, gp, "출발 그리드", grid, f1_gaps(len(grid), True), [], -1, 0.0,
-                                          False, rain, odds)
+            snap = dict(f1_grid_snap(grid), wet=rain)
+            png = await asyncio.to_thread(f1_render, gp, "출발 그리드", snap, -1, None, odds)
             race = {"gp": gp, "rain": rain, "grid": grid, "odds": odds}
-            flag, name, laps, _, _, _, _, note = gp
-            weather = "🌧️ 빗속" if rain else "☀️ 맑은 날씨"
-            e = ui.card(f"🏎️ {flag} {name} — 출발 그리드",
-                        f'> 🎙️ *"{note}! {weather}에 {laps}랩 레이스가 곧 시작됩니다. 누구에게 거시겠어요?"*\n\n'
-                        f"`베팅` **{amount:,}원**\n-# {F1_RULE}", ui.INFO, user, F1_SECTION)
-            e.set_thumbnail(url=F1_LOGO)
-            e.set_image(url="attachment://f1.png")
-            e.set_footer(text="아래 목록에서 드라이버를 고르세요 · 60초 안에 안 고르면 실격")
-            return (lambda: PickView(self, "f1", user, amount, race)), e, png
+            return (lambda: PickView(self, "f1", user, amount, race)), self._f1_card(user, amount, race), png
         await self._bet(interaction, amount, F1_SECTION, build)
 
     async def _run_f1(self, interaction: discord.Interaction, view: PickView, me: int):
         race, amount, user, sec = view.race, view.amount, view.user, F1_SECTION
         gp, grid = race["gp"], race["grid"]
         flag, gp_name, laps = gp[:3]
-        sc = random.random() < gp[4] / 100
-        finish, out = f1_race(grid, gp, race["rain"], sc)
+        finish, out, snaps = f1_sim(grid, gp, race["rain"], random, record=True)
         rank = finish.index(me) if me in finish else None
         mult = f1_mult(race["odds"][me], rank)
         delta = math.floor(amount * mult)
@@ -790,79 +976,55 @@ class Race(commands.Cog):
         formation = card("포메이션 랩", f'> 🎙️ *"{name}에 {amount:,}원! 그리드 P{grid.index(me) + 1}에서 출발합니다…"*')
         formation.set_image(url="attachment://f1.png")
         await interaction.response.edit_message(embed=formation, view=None)
+        # 결과를 먼저 저장하고 연출한다 (연출이 실패해도 돈은 정확하다).
         try:
             new_bal = await self.db.add_balance(user.id, amount + delta)
         except Exception as ex:
             return await interaction.followup.send(f"❌ DB 오류: {type(ex).__name__}")
 
-        comeback = random.choice(finish[1:3]) if len(finish) >= 3 and random.random() < COMEBACK_PROB else None
-        fr = f1_frames(grid, finish, out, comeback)
-        nm = lambda d: DRIVERS[d][1]   # noqa: E731
-        scenes, prev = [], 0.0
-        for k, (f, order) in enumerate(zip(F1_STAGES, fr)):
-            lap = max(1, round(f * laps))
-            sc_now = k == 3 and sc
-            gone = [d for d, t in sorted(out.items(), key=lambda x: x[1]) if t <= f]
-            new_out = [d for d, t in out.items() if prev < t <= f]
-            prev = f
-            a, b = nm(order[0]), nm(order[1])
-            if k == 0:
-                stage, text = "🟢 소등!", f"소등! {a}, 깔끔한 스타트! {b}가 뒤를 바짝!"
-            elif k == 1:
-                stage, text = f"랩 {lap}/{laps}", f"{a} 선두를 지킵니다! {b}, DRS 거리 안!"
-            elif k == 2:
-                stage, text = f"랩 {lap}/{laps} · 피트스톱", f"피트스톱 러시! {a}, {random.uniform(1.9, 3.2):.1f}초 만에 타이어 교체!"
-            elif sc_now:
-                stage, text = f"🟡 세이프티카 · 랩 {lap}/{laps}", "세이프티카 출동! 간격이 전부 사라집니다… 재출발이 승부처!"
-            elif k == 3:
-                stage, text = f"랩 {lap}/{laps}", f"{a} 선두, {b} 바짝 추격!"
-            elif k == 4:
-                stage, text = f"🏁 파이널 랩 · 랩 {laps}/{laps}", f"파이널 랩!! {a}, 이대로 체커기를 받나요?!"
-            elif comeback is not None:
-                stage, text = "🔥 마지막 코너 대역전!!", f"마지막 코너!!! {a}, {nm(comeback)}를 제치고 역전 우승!!!"
-            else:
-                stage, text = "🏁 체커기", f"{a}, 체커기!! 우승!!"
-            for d in new_out:
-                text += f" 💥 {'내 드라이버 ' if d == me else ''}{nm(d)} 리타이어!"
-            gaps = f1_gaps(len(order), sc_now)
-            if me in order:
-                p = order.index(me)
-                status = f"👈 **{name}** 지금 **P{p + 1}**" + (" · 선두!!" if p == 0 else f" · +{gaps[p]:.3f}")
-            else:
-                status = f"💥 **{name}** 리타이어"
-            head = "체커기" if f >= 1 else ("포메이션" if k == 0 else f"LAP {lap}/{laps}")
-            lead = 0.0 if f >= 1 else (f * laps) % 1.0
-            scenes.append((stage, f'> 🎙️ *"{text}"*\n\n{status}', (gp, head, order, gaps, gone, me, lead, sc_now, race["rain"],
-                                                                  None, f >= 1),
-                           ui.GOLD if (f >= 1 and comeback is not None) else ui.DARK))
+        scenes, prev = [], list(grid)
+        for snap in snaps:
+            stage, text = f1_call(snap, prev, me, laps)
+            final = snap["frac"] >= 1
+            head = "체커기" if final else f"LAP {max(1, round(snap['frac'] * laps))}/{laps}"
+            color = (ui.GOLD if rank == 0 else ui.tone(delta)) if final else ui.DARK
+            base = grid if final else prev   # 체커기 장면의 ▲▼ 는 출발 그리드 대비
+            scenes.append((stage, f'> 🎙️ *"{text}"*\n\n{f1_status(snap, base, me)}', (gp, head, snap, me, base, None, final), color))
+            prev = snap["order"]
         pngs = await asyncio.to_thread(lambda: [f1_render(*s[2]) for s in scenes])   # 그림은 미리 다 그려 둔다
-        try:
-            for k, ((stage, text, _, color), png) in enumerate(zip(scenes, pngs)):
-                await asyncio.sleep(1.8 if k >= len(scenes) - 2 else 1.3)
+        for k, ((stage, text, _, color), png) in enumerate(zip(scenes, pngs)):
+            await asyncio.sleep(1.8 if k >= len(scenes) - 2 else 1.4)   # 막판은 한 박자 늦게
+            try:
                 await self._show(interaction, card(stage, text, color), png)
-            await asyncio.sleep(1.5)
-        except discord.HTTPException:
-            pass
+            except discord.HTTPException:
+                pass
+        await asyncio.sleep(1.5)
 
+        g = grid.index(me) + 1
         if rank is None:
             emoji, head, caster = "💥", "리타이어…", "머신이 멈춰 섰습니다… 리타이어. 2배 손실이에요."
         elif rank == 0:
             emoji, head, caster = "🏆", "우승!!", "체커기를 가장 먼저 받습니다! 탁월한 안목이에요!"
-            if comeback is not None:
-                head, caster = "역전 우승!!!", "마지막 코너에서 뒤집었습니다!! 이게 F1이죠!!"
+            if g >= 4:
+                head, caster = "역전 우승!!!", f"P{g}에서 출발해 우승까지!! 이게 F1이죠!!"
         elif rank < 3:
             emoji, head, caster = "🍾", f"P{rank + 1} 포디움!", "포디움! 샴페인 파티입니다!"
-            if me == comeback:
-                caster = "다 잡은 우승을 마지막 코너에서 놓쳤습니다… 그래도 포디움!"
         elif rank < 10:
             emoji, head, caster = "🏁", f"P{rank + 1} 완주", "포인트권 완주 — 본전입니다."
         else:
             emoji, head, caster = "😶", f"P{rank + 1} 완주", "포인트권 밖… 1배 손실이에요."
-        fl = random.choice(finish[:6])
+        move = "" if rank is None else f" (그리드 P{g} → P{rank + 1})"
         podium = " · ".join(f"{PLACES[i]} {DRIVERS[d][0]}" for i, d in enumerate(finish[:3]))
+        star = max(finish, key=lambda d: grid.index(d) - finish.index(d))
+        jump = grid.index(star) - finish.index(star)
+        lines = [podium]
+        if jump >= 3:
+            lines.append(f"🚀 오늘의 드라이버: {DRIVERS[star][0]} {_nm(star)} (P{grid.index(star) + 1} → P{finish.index(star) + 1})")
+        if out:
+            lines.append("💥 리타이어: " + ", ".join(DRIVERS[d][0] for d in sorted(out, key=out.get)))
         e = ui.card(f"{emoji} {name} {head}",
-                    f'> 🎙️ *"{caster}"*\n\n{podium}\n⚡ 패스티스트 랩: {DRIVERS[fl][0]} {nm(fl)}\n\n'
-                    f"`정산` **{ui.won(delta)}** · {label(mult)}\n`잔액` **{new_bal:,}원**",
+                    f'> 🎙️ *"{caster}"*{move}\n\n' + "\n".join(lines)
+                    + f"\n\n`정산` **{ui.won(delta)}** · {label(mult)}\n`잔액` **{new_bal:,}원**",
                     ui.GOLD if rank == 0 else ui.tone(delta), user, sec)
         e.set_thumbnail(url=F1_LOGO)
         e.set_image(url="attachment://f1.png")   # 마지막 장면(체커기 순위표)을 그대로 둔다
@@ -870,7 +1032,6 @@ class Race(commands.Cog):
             await interaction.edit_original_response(embed=e)
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Race(bot))

@@ -87,48 +87,58 @@ def test_f1_model():
     assert all(c[1] in R.TRACKS and len(R.TRACKS[c[1]]["pts"]) == 200 for c in R.CIRCUITS)   # 서킷마다 실제 모양
     assert all(0 <= v <= 1 for t in R.TRACKS.values() for p in t["pts"] for v in p)
     rng = random.Random(7)
-    for _ in range(200):
+    kinds, moved, leads = set(), 0, 0
+    for _ in range(400):
         gp = rng.choice(R.CIRCUITS)
-        grid = R.f1_qualify(rng.random() < 0.3, rng)
+        rain = rng.random() < 0.3
+        grid = R.f1_qualify(rain, rng)
         assert sorted(grid) == list(range(22))
-        fin, out = R.f1_race(grid, gp, False, rng.random() < 0.5, rng)
-        assert sorted(fin + list(out)) == list(range(22)) and all(0 < t < 1 for t in out.values())
-        cb = fin[1] if rng.random() < 0.5 else None
-        fr = R.f1_frames(grid, fin, out, cb, rng)
-        assert len(fr) == len(R.F1_STAGES) and fr[-1] == fin
-        for k, (f, order) in enumerate(zip(R.F1_STAGES, fr[:-1])):
-            assert set(order) == {d for d in range(22) if out.get(d, 2) > f}          # 리타이어한 차는 그 시점부터 빠진다
-            if cb is not None and k >= len(R.F1_STAGES) - 3:
-                assert order[0] == cb                                                # 막판 가짜 선두
+        fin, out, snaps = R.f1_sim(grid, gp, rain, rng, record=True)
+        assert sorted(fin + list(out)) == list(range(22)) and all(0 <= t <= 1 for t in out.values())
+        assert len(snaps) == len(R.F1_CHECKS) and snaps[-1]["order"] == fin                # 중계 마지막 장면 = 결과
+        prev = grid
+        for s in snaps:
+            o = s["order"]
+            assert set(o) | set(s["out"]) == set(range(22)) and not set(o) & set(s["out"])  # 리타이어한 차는 빠진다
+            assert [s["gap"][d] for d in o] == sorted(s["gap"][d] for d in o) and s["gap"][o[0]] == 0
+            assert all(s["tyre"][d] in R.TYRE_PACE for d in o)
+            if s["flag"] in ("SC", "RED"):                                               # 세이프티카 = 간격 압축 (그 틈에 피트인한 차만 뒤로)
+                cheap = next(e[1] for e in s["ev"] if e[0] in ("sc", "red"))
+                assert all(s["gap"][d] <= 0.6 * (len(o) - 1) + 1e-9 for d in o if d not in cheap)
+            kinds |= {e[0] for e in s["ev"]}
+            moved += sum(abs(prev.index(d) - o.index(d)) for d in o if d in prev)
+            leads += o[0] != prev[0]
+            stage, text = R.f1_call(s, prev, grid[3], gp[2])
+            assert stage and text and R.f1_status(s, prev, grid[3])
+            prev = o
+    assert kinds >= {"crash1", "dnf", "crash", "pit", "slowpit", "pen", "sc", "vsc", "red", "shower"}   # 변수가 다 나온다
+    assert leads / 400 > 1.5 and moved / (400 * len(R.F1_CHECKS) * 20) > 1               # 순위가 장면마다 출렁인다
     o = (1.5, 0.6)
     assert [R.f1_mult(o, r) for r in (0, 1, 2, 3, 9, 10, 21, None)] == [1.5, 0.6, 0.6, 0, 0, -1, -1, -2]
-    g = R.f1_gaps(22, False, rng)
-    s = R.f1_gaps(22, True, rng)
-    assert g[0] == 0 and g == sorted(g) and s[-1] < g[-1]                            # 세이프티카 땐 다닥다닥
 
     def pole_win(name):
         gp = next(c for c in R.CIRCUITS if c[1] == name)
         wins = 0
-        for _ in range(2000):
+        for _ in range(1500):
             grid = R.f1_qualify(False, rng)
-            fin, _ = R.f1_race(grid, gp, False, False, rng)
+            fin, _, _ = R.f1_sim(grid, gp, False, rng)
             wins += bool(fin) and fin[0] == grid[0]
-        return wins / 2000
-    assert pole_win("모나코 GP") > pole_win("이탈리아 GP · 몬차") + 0.1                 # 그리드가 결과에 반영된다
+        return wins / 1500
+    assert pole_win("모나코 GP") > pole_win("이탈리아 GP · 몬차") + 0.1                 # 추월 어려운 서킷은 그리드가 더 중요
 
 
 def test_f1_odds_ev():
     """배당표를 따로 크게 돌린 시뮬레이션으로 검산 — 어느 드라이버에 걸어도 기대값이 0을 넘지 않는다."""
     rng = random.Random(11)
-    for _ in range(4):
+    for _ in range(3):
         gp = rng.choice(R.CIRCUITS)
         rain = rng.random() < 0.3
         grid = R.f1_qualify(rain, rng)
         odds = R.f1_odds(grid, gp, rain, rng=random.Random(rng.random()))
         assert all(0.01 <= w <= R.F1_CAP and 0 <= p <= w for w, p in odds)
-        ev, sims = [0.0] * 22, 30000
+        ev, sims = [0.0] * 22, 20000
         for _ in range(sims):
-            fin, out = R.f1_race(grid, gp, rain, rng.random() < gp[4] / 100, rng)
+            fin, out, _ = R.f1_sim(grid, gp, rain, rng)
             for r, d in enumerate(fin):
                 ev[d] += R.f1_mult(odds[d], r)
             for d in out:
@@ -141,11 +151,11 @@ def test_f1_render():
     rng = random.Random(2)
     for gp in R.CIRCUITS[::6]:
         grid = R.f1_qualify(False, rng)
-        odds = [(1.0, 0.4)] * 22
-        png = R.f1_render(gp, "출발 그리드", grid, R.f1_gaps(22, True, rng), [], -1, 0.0, False, True, odds)
+        png = R.f1_render(gp, "출발 그리드", R.f1_grid_snap(grid), -1, None, [(1.0, 0.4)] * 22)
         assert png[:4] == b"\x89PNG" and len(png) < 400_000
-        png = R.f1_render(gp, "LAP 9/50", grid[:20], R.f1_gaps(20, False, rng), grid[20:], grid[3], 0.37, True, False, None, True)
-        assert png[:4] == b"\x89PNG"
+        _, _, snaps = R.f1_sim(grid, gp, True, rng, record=True)
+        for s in (snaps[0], snaps[3], snaps[-1]):
+            assert R.f1_render(gp, "LAP 9/50", s, grid[15], grid, None, s["frac"] >= 1)[:4] == b"\x89PNG"
     assert R.F1_LOGO.startswith("https://") and R.F1_LOGO.endswith(".png")
 
 
@@ -219,12 +229,14 @@ def test_flows():
             await R.Race.f1.callback(cog, inter, 10_000)
             view = views[-1]
             sel = view.children[0]
-            assert len(sel.options) == 22 and "출발 그리드" in sent[-1].title and sent[-1].thumbnail.url == R.F1_LOGO
+            card = sent[-1]
+            assert len(sel.options) == 22 and "출발 그리드" in card.title and card.thumbnail.url == R.F1_LOGO
+            assert len(card.fields) == 2 and "P22" in card.fields[1].value and "세이프티카" in card.description
             me = view.race["grid"][5]
             sel._values = [str(me)]
             n = len(sent)
             await sel.callback(inter)
-            assert len(sent) - n == 1 + len(R.F1_STAGES) + 1 and "잔액" in sent[-1].description
+            assert len(sent) - n == 1 + len(R.F1_CHECKS) + 1 and "잔액" in sent[-1].description
             assert all(e.image.url == "attachment://f1.png" for e in sent[n:])
             played = await cog.db.get_balance(user.id) - bal
             allowed = {int(10_000 * R.f1_mult(view.race["odds"][me], r)) for r in (0, 1, 3, 10, None)}
