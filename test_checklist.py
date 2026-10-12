@@ -51,7 +51,9 @@ def test_flow():
     gap, byung = 1146659618790051960, 1194489261693612043
     assert ck.who(gap) == {"갑"} and ck.who(byung) == {"병"} and ck.who(1) == set()
     assert cog.record_event("fix_done", byung) == "대기 중인 수정 요청이 없어요."
-    for k, u in (("commission", gap), ("commission", gap), ("fix_req", gap), ("fix_req", gap), ("fix_done", byung)):
+    cog.record_commission(gap, "손님1", None, None, None)
+    cog.record_commission(gap, "손님2", None, None, None)
+    for k, u in (("fix_req", gap), ("fix_req", gap), ("fix_done", byung)):
         assert cog.record_event(k, u) == ""
     assert cog.record_event("undo", gap) == ""                                       # 마지막 수정 요청 취소
     con2 = ck.connect()
@@ -83,12 +85,16 @@ def test_ledger():
     # 매크로 알 보고 · 직접 등록 · 의뢰 +1 → 장부
     assert cog._egg("알|갑|A34|1", time.time()) and cog._egg("알|을|A90|1", time.time())
     assert not cog._egg("알|병|X|1", time.time()) and not cog._egg("가동|갑|A34|1|0", time.time())
-    assert cog.record_event("commission", gap) == ""
+    cid = cog.record_commission(gap, "홍길동", "캐릭터 육성\n3일 안에", None, "디코 DM으로 연락")
     d = cog.ledger()
     egg_g, egg_e, com = d["rows"][-3:]
     assert (egg_g["kind"], egg_g["source"], egg_e["source"], com["kind"]) == ("egg", "갑", "을", "commission")
+    assert com["id"] == cid and (com["buyer"], com["amount"]) == ("홍길동", None)
+    desc = ck.ledger_embed(d).description
+    assert "구매자 **홍길동**" in desc and "캐릭터 육성 3일 안에" in desc and "메모 디코 DM으로 연락" in desc
     # 금액 등록 뒤엔 의뢰 체크 취소 불가 → 장부에서 삭제하면 주간 의뢰 수도 빠진다
-    assert cog.ledger_set_amount(com["id"], 300_000)
+    assert cog.ledger_update(com["id"], "홍길동", "캐릭터 육성", 300_000, None)
+    assert cog.ledger()["rows"][-1]["amount"] == 300_000
     assert "기록 삭제" in cog.record_event("undo", gap)
     week = ck.week_of(ck.kst_day(time.time()))
     con = ck.connect()
@@ -100,22 +106,64 @@ def test_ledger():
     con.close()
     # 금액 등록 전 의뢰는 체크 취소로 장부에서도 빠진다
     n_com = sum(e["kind"] == "commission" for e in cog.ledger()["rows"])
-    assert cog.record_event("commission", gap) == "" and cog.record_event("undo", gap) == ""
+    cog.record_commission(gap, "임시", None, None, None)
+    assert cog.record_event("undo", gap) == ""
     assert sum(e["kind"] == "commission" for e in cog.ledger()["rows"]) == n_com
 
     # 정산: 금액 있는 것만 · 나머지는 다음으로
-    assert cog.ledger_set_amount(egg_g["id"], 2_000_000) and cog.ledger_set_amount(egg_e["id"], 1_000_000)
+    assert cog.ledger_update(egg_g["id"], "알손님", None, 2_000_000, None) and cog.ledger_update(egg_e["id"], None, None, 1_000_000, None)
     d = cog.ledger()
     assert d["owed"]["을"] == 500_000 + 400_000 and d["owed"]["병"] == 600_000 + 300_000
     emb = ck.ledger_embed(d)
     assert "정산하면" in emb.description and "갑 → 을 **900,000원**" in emb.description
     r = cog.ledger_settle(gap)
     assert r["count"] >= 2 and r["owed"]["을"] == 900_000 and cog.ledger_settle(gap) is None
-    assert not cog.ledger_set_amount(egg_g["id"], 1) and not cog.ledger_delete(egg_g["id"])   # 정산된 건 못 고친다
+    assert not cog.ledger_update(egg_g["id"], None, None, 1, None) and not cog.ledger_delete(egg_g["id"])   # 정산된 건 못 고친다
     assert "마지막 정산" in ck.ledger_embed(cog.ledger()).footer.text
+
+
+def test_modal():
+    """[의뢰 +1] 입력 창 → 장부 · [금액 · 내용] 으로 고치기."""
+    import asyncio
+    from types import SimpleNamespace
+
+    async def run():
+        cog = ck.Checklist.__new__(ck.Checklist)
+        sent = []
+
+        async def rec(*a, **k):
+            sent.append(a[0] if a else k)
+
+        async def noop(*a, **k):
+            pass
+        cog.refresh = cog.refresh_ledger = noop
+        inter = SimpleNamespace(user=SimpleNamespace(id=1146659618790051960), response=SimpleNamespace(send_message=rec))
+        m = ck.EntryModal(cog, "commission")
+        assert [i.label for i in m.children] == ["구매자 (이름 · 닉네임)", "의뢰 내용", "받은 금액 (나중에 등록해도 돼요)", "메모"]
+        assert all(len(i.label) <= 45 for i in m.children) and m.buyer.required and not m.amount.required
+        m.buyer._value, m.detail._value, m.amount._value, m.note._value = "김손님", "던전 클리어 대리", "", ""
+        await m.on_submit(inter)
+        e = cog.ledger()["rows"][-1]
+        assert (e["kind"], e["buyer"], e["detail"], e["amount"]) == ("commission", "김손님", "던전 클리어 대리", None)
+        assert "장부에 적었어요" in sent[-1]
+        # 금액이 이상하면 안내만
+        m = ck.EntryModal(cog, "commission")
+        m.buyer._value, m.detail._value, m.amount._value, m.note._value = "x", "", "삼만원", ""
+        await m.on_submit(inter)
+        assert "숫자로" in sent[-1] and cog.ledger()["rows"][-1]["id"] == e["id"]
+        # 고치기: 기존 값이 미리 채워진다 · 알은 금액이 필수
+        m = ck.EntryModal(cog, "commission", e)
+        assert m.buyer.default == "김손님" and m.detail.default == "던전 클리어 대리"
+        m.buyer._value, m.detail._value, m.amount._value, m.note._value = "김손님", "던전 클리어 대리", "30만", "선입금"
+        await m.on_submit(inter)
+        assert cog.ledger()["rows"][-1]["amount"] == 300_000 and "고쳤어요" in sent[-1]
+        egg = ck.EntryModal(cog, "egg", {"id": 999, "buyer": None, "detail": None, "amount": None, "note": None})
+        assert [i.label for i in egg.children] == ["받은 금액", "구매자 (이름 · 닉네임)", "메모"] and egg.amount.required
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
     test_flow()
     test_ledger()
+    test_modal()
     print("OK: checklist")

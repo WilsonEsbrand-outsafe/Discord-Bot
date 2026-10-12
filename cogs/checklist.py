@@ -62,6 +62,11 @@ def connect():
     # 장부: kind egg(source 갑/을 기기) · commission(event_id = 의뢰 +1 체크). amount 는 갑이 등록, settle_id 는 정산 번호
     con.execute("CREATE TABLE IF NOT EXISTS chk_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, "
                 "source TEXT, event_id INTEGER, amount INTEGER, amount_ts INTEGER, settle_id INTEGER, note TEXT)")
+    for col in ("buyer TEXT", "detail TEXT"):   # 대리 의뢰 · 알 판매: 구매자 · 의뢰 내용 (note = 메모)
+        try:
+            con.execute(f"ALTER TABLE chk_ledger ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     con.execute("CREATE TABLE IF NOT EXISTS chk_settlements (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, "
                 "user_id INTEGER, total INTEGER, gap INTEGER, eul INTEGER, byung INTEGER)")
     con.execute("CREATE TABLE IF NOT EXISTS chk_kv (key TEXT PRIMARY KEY, value INTEGER)")
@@ -225,8 +230,18 @@ def entry_label(e: dict) -> str:
     return f"#{e['id']} {what} · {when}"
 
 
+def entry_text(e: dict) -> str:
+    """장부 한 항목: 번호 · 종류 · 시각 + 구매자 · 의뢰 내용 · 메모."""
+    out = f"`{entry_label(e)}`" + (f" · 구매자 **{e['buyer']}**" if e.get("buyer") else "")
+    if e.get("detail"):
+        out += "\n　" + e["detail"].replace("\n", " ")[:120]
+    if e.get("note"):
+        out += "\n　-# 메모 " + e["note"].replace("\n", " ")[:80]
+    return out
+
+
 def ledger_data(con) -> dict:
-    cols = ("id", "ts", "kind", "source", "event_id", "amount", "note")
+    cols = ("id", "ts", "kind", "source", "event_id", "amount", "note", "buyer", "detail")
     rows = [dict(zip(cols, r)) for r in con.execute(
         f"SELECT {', '.join(cols)} FROM chk_ledger WHERE settle_id IS NULL ORDER BY id")]
     owed = {"갑": 0, "을": 0, "병": 0}
@@ -267,15 +282,15 @@ def ledger_embed(d: dict) -> discord.Embed:
     paid = [e for e in rows if e["amount"] is not None]
     o = d["owed"]
     parts = [
-        block("🥚 판매 대기 (금액 미등록)", eggs, lambda e: f"`{entry_label(e)}`" + (" · 직접 등록" if e["note"] else "")),
-        block("📥 대리 의뢰 (금액 미등록)", coms, lambda e: f"`{entry_label(e)}`"),
-        block("💰 정산 대기", paid, lambda e: f"`{entry_label(e)}` **{e['amount']:,}원**\n"
-              f"　갑 {e['split']['갑']:,} · 을 {e['split']['을']:,} · 병 {e['split']['병']:,}"),
+        block("🥚 판매 대기 (금액 미등록)", eggs, entry_text),
+        block("📥 대리 의뢰 (금액 미등록)", coms, entry_text),
+        block("💰 정산 대기", paid, lambda e: entry_text(e) + f"\n　**{e['amount']:,}원** → "
+              f"갑 {e['split']['갑']:,} · 을 {e['split']['을']:,} · 병 {e['split']['병']:,}"),
     ]
     if paid:
         parts.append(f"**정산하면** 갑 → 을 **{o['을']:,}원** · 갑 → 병 **{o['병']:,}원** (갑 몫 {o['갑']:,}원)")
-    e = discord.Embed(title="📒 장부", description="\n\n".join(p for p in parts if p) or "아직 기록이 없어요.",
-                      color=0xF1C40F)
+    desc = "\n\n".join(p for p in parts if p) or "아직 기록이 없어요."
+    e = discord.Embed(title="📒 장부", description=desc[:4000] + ("\n…" if len(desc) > 4000 else ""), color=0xF1C40F)
     last = d["last"]
     e.set_footer(text="지분 (갑·을·병) — 갑 기기 알 45·25·30 · 을 기기 알 30·40·30 · 대리 50·25·25"
                       + (f" · 마지막 정산 #{last[0]} {time.strftime('%m/%d', time.gmtime(last[1] + KST))}" if last else ""))
@@ -286,20 +301,49 @@ def _gap_or_owner(uid: int) -> bool:
     return uid == OWNER_ID or "갑" in who(uid)
 
 
-class AmountModal(discord.ui.Modal, title="장부 금액 등록"):
-    amount = discord.ui.TextInput(label="받은 금액 (예: 1500000 · 150만)", max_length=20)
+class EntryModal(discord.ui.Modal):
+    """장부 항목 입력 — 대리 의뢰(구매자 · 의뢰 내용 · 금액 · 메모) / 볼바 알(금액 · 구매자 · 메모).
+    entry 가 없으면 새 대리 의뢰([의뢰 +1]), 있으면 그 항목 고치기."""
 
-    def __init__(self, cog: "Checklist", entry_id: int):
-        super().__init__()
-        self.cog, self.entry_id = cog, entry_id
+    def __init__(self, cog: "Checklist", kind: str, entry: Optional[dict] = None):
+        new = entry is None
+        super().__init__(title="데삭작 대리 의뢰" if kind == "commission" else "볼바 알 판매")
+        self.cog, self.kind, self.entry = cog, kind, entry
+        e = entry or {}
+        self.buyer = discord.ui.TextInput(label="구매자 (이름 · 닉네임)", max_length=50,
+                                          required=kind == "commission", default=e.get("buyer"))
+        self.detail = discord.ui.TextInput(label="의뢰 내용", style=discord.TextStyle.paragraph, max_length=500,
+                                           required=False, default=e.get("detail"),
+                                           placeholder="캐릭터 · 작업 범위 · 기한 등")
+        amount = e.get("amount")
+        self.amount = discord.ui.TextInput(
+            label="받은 금액" + (" (나중에 등록해도 돼요)" if kind == "commission" else ""), max_length=20,
+            required=kind == "egg", default=str(amount) if amount is not None else None, placeholder="예: 300000 · 30만")
+        self.note = discord.ui.TextInput(label="메모", style=discord.TextStyle.paragraph, max_length=300,
+                                         required=False, default=e.get("note"))
+        items = ([self.buyer, self.detail, self.amount, self.note] if kind == "commission"
+                 else [self.amount, self.buyer, self.note])
+        for it in items:
+            self.add_item(it)
+        self.new = new
 
     async def on_submit(self, interaction: discord.Interaction):
-        v = parse_amount(str(self.amount.value))
-        if v is None:
-            return await interaction.response.send_message("금액을 숫자로 적어 주세요. (예: 1500000 · 150만)", ephemeral=True)
-        ok = await asyncio.to_thread(self.cog.ledger_set_amount, self.entry_id, v)
-        await interaction.response.send_message(
-            f"`#{self.entry_id}` **{v:,}원** 등록했어요." if ok else "이미 정산됐거나 없는 항목이에요.", ephemeral=True)
+        raw = str(self.amount.value).strip()
+        amount = parse_amount(raw) if raw else None
+        if raw and amount is None:
+            return await interaction.response.send_message("금액을 숫자로 적어 주세요. (예: 300000 · 30만)", ephemeral=True)
+        fields = {"buyer": str(self.buyer.value).strip() or None, "amount": amount,
+                  "detail": (str(self.detail.value).strip() or None) if self.kind == "commission" else self.entry.get("detail"),
+                  "note": str(self.note.value).strip() or None}
+        if self.new:
+            eid = await asyncio.to_thread(self.cog.record_commission, interaction.user.id, **fields)
+            msg = f"`#{eid}` 데삭작 대리 의뢰를 장부에 적었어요." + ("" if amount else " 금액은 장부의 [금액 · 내용]으로 나중에 등록해 주세요.")
+        else:
+            ok = await asyncio.to_thread(self.cog.ledger_update, self.entry["id"], **fields)
+            msg = f"`#{self.entry['id']}` 고쳤어요." if ok else "이미 정산됐거나 없는 항목이에요."
+        await interaction.response.send_message(msg, ephemeral=True)
+        if self.new:
+            await self.cog.refresh()   # 이번 주 의뢰 수
         await self.cog.refresh_ledger()
 
 
@@ -309,9 +353,11 @@ class EntryPick(discord.ui.View):
     def __init__(self, cog: "Checklist", entries: list[dict], mode: str):
         super().__init__(timeout=180)
         self.cog, self.mode = cog, mode
+        self.entries = {e["id"]: e for e in entries}
         sel = discord.ui.Select(placeholder="항목을 골라 주세요", options=[
-            discord.SelectOption(label=entry_label(e)[:100], value=str(e["id"]),
-                                 description=(f"{e['amount']:,}원" if e["amount"] is not None else "금액 미등록"))
+            discord.SelectOption(label=entry_label(e)[:100], value=str(e["id"]), description=(
+                (e["buyer"] or "구매자 미등록") + " · "
+                + (f"{e['amount']:,}원" if e["amount"] is not None else "금액 미등록"))[:100])
             for e in reversed(entries[-25:])])
         sel.callback = self._pick
         self.sel = sel
@@ -320,7 +366,8 @@ class EntryPick(discord.ui.View):
     async def _pick(self, interaction: discord.Interaction):
         eid = int(self.sel.values[0])
         if self.mode == "amount":
-            return await interaction.response.send_modal(AmountModal(self.cog, eid))
+            e = self.entries[eid]
+            return await interaction.response.send_modal(EntryModal(self.cog, e["kind"], e))
         ok = await asyncio.to_thread(self.cog.ledger_delete, eid)
         await interaction.response.edit_message(
             content=f"`#{eid}` 삭제했어요." if ok else "이미 정산됐거나 없는 항목이에요.", view=None)
@@ -334,7 +381,7 @@ class EggSource(discord.ui.View):
         self.cog = cog
 
     async def _add(self, interaction: discord.Interaction, source: str):
-        eid = await asyncio.to_thread(self.cog.ledger_add_egg, source, time.time(), "직접 등록")
+        eid = await asyncio.to_thread(self.cog.ledger_add_egg, source, time.time(), "직접 등록 (매크로가 놓침)")
         await interaction.response.edit_message(content=f"`#{eid}` 볼바 알 ({source} 기기) 등록했어요.", view=None)
         await self.cog.refresh_ledger()
 
@@ -387,11 +434,11 @@ class LedgerView(discord.ui.View):
             await interaction.response.send_message("미정산 항목이 없어요.", ephemeral=True)
         return rows
 
-    @discord.ui.button(label="금액 등록", emoji="💰", style=discord.ButtonStyle.success, custom_id="led:amount")
+    @discord.ui.button(label="금액 · 내용", emoji="💰", style=discord.ButtonStyle.success, custom_id="led:amount")
     async def amount(self, interaction: discord.Interaction, _):
         rows = await self._entries(interaction)
         if rows:
-            await interaction.response.send_message("금액을 등록(또는 고칠) 항목을 골라 주세요.",
+            await interaction.response.send_message("금액 · 구매자 · 내용을 적을(또는 고칠) 항목을 골라 주세요.",
                                                     view=EntryPick(self.cog, rows, "amount"), ephemeral=True)
 
     @discord.ui.button(label="알 직접 등록", emoji="🥚", style=discord.ButtonStyle.secondary, custom_id="led:egg")
@@ -435,7 +482,9 @@ class ChecklistView(discord.ui.View):
 
     @discord.ui.button(label="의뢰 +1", emoji="📥", style=discord.ButtonStyle.primary, custom_id="chk:commission")
     async def commission(self, interaction: discord.Interaction, _):
-        await self._act(interaction, "commission", {"갑"}, "갑만 누를 수 있어요.")
+        if not _gap_or_owner(interaction.user.id):
+            return await interaction.response.send_message("갑만 누를 수 있어요.", ephemeral=True)
+        await interaction.response.send_modal(EntryModal(self.cog, "commission"))   # 구매자 · 의뢰 내용 → 장부
 
     @discord.ui.button(label="수정 요청", emoji="🛠️", style=discord.ButtonStyle.secondary, custom_id="chk:fix_req")
     async def fix_req(self, interaction: discord.Interaction, _):
@@ -493,10 +542,7 @@ class Checklist(commands.Cog):
                     done = con.execute("SELECT COUNT(*) FROM chk_events WHERE kind='fix_done'").fetchone()[0]
                     if done >= req:
                         return "대기 중인 수정 요청이 없어요."
-                cur = con.execute("INSERT INTO chk_events(ts, kind, user_id) VALUES(?, ?, ?)", (int(now), kind, uid))
-                if kind == "commission":   # 데삭작 대리 → 장부 (금액은 나중에)
-                    con.execute("INSERT INTO chk_ledger(ts, kind, source, event_id) VALUES(?, 'commission', '갑', ?)",
-                                (int(now), cur.lastrowid))
+                con.execute("INSERT INTO chk_events(ts, kind, user_id) VALUES(?, ?, ?)", (int(now), kind, uid))
             con.commit()
             return ""
         finally:
@@ -518,10 +564,25 @@ class Checklist(commands.Cog):
         return self._db(lambda con: con.execute(
             "INSERT INTO chk_ledger(ts, kind, source, note) VALUES(?, 'egg', ?, ?)", (int(ts), source, note)).lastrowid)
 
-    def ledger_set_amount(self, eid: int, amount: int) -> bool:
+    def record_commission(self, uid: int, buyer: Optional[str], detail: Optional[str], amount: Optional[int],
+                          note: Optional[str]) -> int:
+        """데삭작 대리 의뢰: 이번 주 의뢰 수(체크) + 장부 항목 → 장부 번호."""
+        now = int(time.time())
+
+        def fn(con):
+            ev = con.execute("INSERT INTO chk_events(ts, kind, user_id) VALUES(?, 'commission', ?)", (now, uid)).lastrowid
+            return con.execute(
+                "INSERT INTO chk_ledger(ts, kind, source, event_id, buyer, detail, amount, amount_ts, note) "
+                "VALUES(?, 'commission', '갑', ?, ?, ?, ?, ?, ?)",
+                (now, ev, buyer, detail, amount, now if amount else None, note)).lastrowid
+        return self._db(fn)
+
+    def ledger_update(self, eid: int, buyer: Optional[str], detail: Optional[str], amount: Optional[int],
+                      note: Optional[str]) -> bool:
+        """미정산 항목의 구매자 · 의뢰 내용 · 금액 · 메모를 고친다."""
         return self._db(lambda con: con.execute(
-            "UPDATE chk_ledger SET amount=?, amount_ts=? WHERE id=? AND settle_id IS NULL",
-            (amount, int(time.time()), eid)).rowcount > 0)
+            "UPDATE chk_ledger SET buyer=?, detail=?, amount=?, amount_ts=?, note=? WHERE id=? AND settle_id IS NULL",
+            (buyer, detail, amount, int(time.time()) if amount else None, note, eid)).rowcount > 0)
 
     def ledger_delete(self, eid: int) -> bool:
         """미정산 항목 삭제 — 대리 의뢰면 그 체크(주간 의뢰 수)도 같이 지운다."""
