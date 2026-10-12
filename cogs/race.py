@@ -268,7 +268,7 @@ def _load_logo(path: Path, height: int = 64):
 
 TEAM_LOGO = {k: _load_logo(LOGO_DIR / f"{k}.png") for k in TEAMS if (LOGO_DIR / f"{k}.png").exists()}
 TEAM_ICON = {k: _load_logo(EMOJI_DIR / f"{k}.png") for k in TEAM_LOGO}   # 엠블럼만 — 순위표 작은 칸용
-TEAM_TAG = {"RB": "RACING\nBULLS"}   # 자유 이용 로고가 없는 팀 (assets/teams/SOURCES.md)
+TEAM_TAG: dict[str, str] = {}   # 로고 파일이 없는 팀은 여기 이름(없으면 팀 이름)을 팀 색 글자로 — 지금은 11팀 모두 로고
 STRENGTH = [0.65 * TEAMS[d[3]][3] + 0.35 * d[4] for d in DRIVERS]
 S_MAX = max(STRENGTH)
 F1_TEMP = 2.4        # 예선: 전력 차이가 그리드에 미치는 정도 (작을수록 강팀 독식)
@@ -538,7 +538,7 @@ def _team_badge(ax, team: str, cx: float, cy: float, w: float, h: float, px: tup
     ax 는 y 축이 아래로 커지는 축, px = (x 1칸, y 1칸) 이 몇 픽셀인지."""
     logo = (TEAM_ICON if icon else TEAM_LOGO).get(team)
     if logo is None:
-        ax.text(cx, cy, TEAM_TAG[team], color=TEAMS[team][2], fontsize=size, fontweight="bold", ha="center", va="center",
+        ax.text(cx, cy, TEAM_TAG.get(team, TEAMS[team][0]), color=TEAMS[team][2], fontsize=size, fontweight="bold", ha="center", va="center",
                 linespacing=1.0, zorder=4, fontfamily=FONT)
         return
     ih, iw = logo.shape[:2]
