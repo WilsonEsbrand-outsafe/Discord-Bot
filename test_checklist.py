@@ -232,6 +232,11 @@ def test_bump():
         await cog.on_message(msg(webhook=ck.WEBHOOK_ID, name=f"알|갑|A34|{int(time.time())}"))
         await cog._bumper
         assert len(cog.ledger()["rows"]) == before + 1 and th.bottom() == ["표", "장부"]
+        th.log.append(SimpleNamespace(kind="채팅", deleted=False, id=-1))   # 봇이 꺼져 있던 동안 올라온 채팅
+        again = ck.Checklist(SimpleNamespace(user=SimpleNamespace(id=999)))   # 재시작(배포)
+        again._thread = thread
+        await again.refresh()
+        assert th.bottom() == ["표", "장부"] and sum(m.kind == "표" and not m.deleted for m in th.log) == 1
     asyncio.run(run())
 
 

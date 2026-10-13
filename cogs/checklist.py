@@ -713,9 +713,10 @@ class Checklist(commands.Cog):
                     con.close()
             for old in await asyncio.to_thread(unfinished):
                 await self._post_or_edit(old, final=True)
-            created = await self._post_or_edit(week, final=False)
-            if created or self._rendered_day is None:   # 새 주 표 아래로 장부를 옮긴다 · 봇이 켜질 때 한 번
-                await self._ledger(repost=created)
+            startup = self._rendered_day is None          # 봇이 켜질 때(배포 · 재시작) 표 · 장부를 맨 아래로
+            created = await self._post_or_edit(week, final=False, repost=startup)
+            if created or startup:                         # 새 주 표 아래로 장부를 옮긴다
+                await self._ledger(repost=True)
             self._rendered_day = kst_day(now)
 
     async def bump(self):
@@ -723,6 +724,7 @@ class Checklist(commands.Cog):
         async with self._lock:
             await self._post_or_edit(week_of(kst_day(time.time())), final=False, repost=True)
             await self._ledger(repost=True)
+        print("📌 [체크리스트] 표 · 장부를 맨 아래로 옮김")
 
     def bump_soon(self):
         """새 메시지가 오면 BUMP_QUIET 초 조용해질 때 한 번만 맨 아래로 (연달아 오는 채팅마다 다시 올리지 않게)."""
