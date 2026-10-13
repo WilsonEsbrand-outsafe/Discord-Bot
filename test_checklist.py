@@ -162,8 +162,82 @@ def test_modal():
     asyncio.run(run())
 
 
+def test_bump():
+    """스레드에 새 메시지가 남으면 표 · 장부가 맨 아래로 (연달아 와도 한 번) · 봇 자신 · 가동 보고는 안 옮긴다."""
+    import asyncio
+    import time
+    from types import SimpleNamespace
+    import discord
+
+    class Msg:
+        def __init__(self, th, kind):
+            self.th, self.kind, self.id, self.deleted = th, kind, len(th.log) + 1, False
+
+        async def delete(self):
+            self.deleted = True
+
+        async def edit(self, **k):
+            pass
+
+    class Thread:
+        def __init__(self):
+            self.log = []
+
+        async def send(self, embed=None, file=None, view=None):
+            m = Msg(self, "표" if file else ("장부" if isinstance(view, ck.LedgerView) else "기타"))
+            self.log.append(m)
+            return m
+
+        async def fetch_message(self, mid):
+            m = next((m for m in self.log if m.id == mid and not m.deleted), None)
+            if m is None:
+                raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "없음")
+            return m
+
+        def bottom(self):
+            return [m.kind for m in self.log if not m.deleted][-2:]
+
+    async def run():
+        ck.BUMP_QUIET = 0.05
+        th = Thread()
+        cog = ck.Checklist(SimpleNamespace(user=SimpleNamespace(id=999)))
+
+        async def thread():
+            return th
+        cog._thread = thread
+        await cog.refresh()
+        assert th.bottom() == ["표", "장부"]
+
+        def msg(author=5, webhook=None, name="사람"):
+            async def delete():
+                th.log.append(SimpleNamespace(kind="삭제됨", deleted=True, id=-1))
+            return SimpleNamespace(channel=SimpleNamespace(id=ck.THREAD_ID), author=SimpleNamespace(id=author, name=name),
+                                   webhook_id=webhook, delete=delete)
+        for _ in range(3):                                         # 채팅 3개가 연달아
+            th.log.append(SimpleNamespace(kind="채팅", deleted=False, id=-1))
+            await cog.on_message(msg())
+        assert th.bottom() == ["채팅", "채팅"] and not cog._bumper.done()   # 아직 조용해지기 전
+        await cog._bumper
+        assert th.bottom() == ["표", "장부"] and sum(m.kind == "표" and not m.deleted for m in th.log) == 1
+        n = len(th.log)
+        await cog.on_message(msg(author=999))                     # 봇 자신은 무시
+        await cog.on_message(SimpleNamespace(channel=SimpleNamespace(id=1), author=SimpleNamespace(id=5)))   # 다른 채널도
+        assert len(th.log) == n and cog._bumper.done()
+        sid = int(time.time()) - 60                               # 가동 보고: 지우고 표만 고친다 (안 옮김)
+        await cog.on_message(msg(webhook=ck.WEBHOOK_ID, name=f"가동|을|A90|{sid}|60"))
+        assert th.bottom() == ["장부", "삭제됨"] or th.bottom() == ["표", "장부"]
+        assert cog._bumper.done()
+        th.log.append(SimpleNamespace(kind="알 사진", deleted=False, id=-1))   # 알 보고: 장부에 적고 맨 아래로
+        before = len(cog.ledger()["rows"])
+        await cog.on_message(msg(webhook=ck.WEBHOOK_ID, name=f"알|갑|A34|{int(time.time())}"))
+        await cog._bumper
+        assert len(cog.ledger()["rows"]) == before + 1 and th.bottom() == ["표", "장부"]
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_flow()
     test_ledger()
     test_modal()
+    test_bump()
     print("OK: checklist")

@@ -31,6 +31,7 @@ MEMBERS = {
 }
 GAP_WEEKDAY_H, GAP_COMMISSIONS, EUL_WEEK_H = 30, 4, 80
 SLACK = 120          # 보고 간격 오차 허용(초) — 실제로 흐른 시간보다 많이 늘어난 가동 시간은 인정하지 않는다
+BUMP_QUIET = 5       # 스레드에 새 메시지가 오고 이만큼(초) 조용해지면 표 · 장부를 맨 아래로 다시 올린다
 DAYS = "월화수목금토일"
 KST = 9 * 3600
 
@@ -412,7 +413,7 @@ class SettleConfirm(discord.ui.View):
             description=f"{r['count']}건 · 합계 **{r['total']:,}원**\n"
                         f"갑 → 을 **{o['을']:,}원** · 갑 → 병 **{o['병']:,}원** (갑 몫 {o['갑']:,}원)\n"
                         f"-# 정산한 사람 {interaction.user.mention}", color=0x2ECC71))
-        await self.cog.refresh_ledger(repost=True)
+        await self.cog.bump()   # 정산 기록 아래로 표 · 장부를 다시
 
 
 class LedgerView(discord.ui.View):
@@ -504,6 +505,7 @@ class Checklist(commands.Cog):
         self.bot = bot
         self._lock = asyncio.Lock()
         self._rendered_day = None
+        self._bump_at, self._bumper = 0.0, None
         con = connect()
         if con.execute("INSERT OR IGNORE INTO chk_kv(key, value) VALUES('manual_20261012', 1)").rowcount:
             day = kst_day(calendar.timegm((2026, 10, 12, 3, 0, 0)))   # 2026-10-12 (월) KST
@@ -657,8 +659,8 @@ class Checklist(commands.Cog):
         async with self._lock:
             await self._ledger(repost)
 
-    async def _post_or_edit(self, week: int, final: bool) -> bool:
-        """표를 고치거나 올린다 → 새로 올렸으면 True."""
+    async def _post_or_edit(self, week: int, final: bool, repost: bool = False) -> bool:
+        """표를 고치거나 올린다 (repost 면 지우고 맨 아래에 새로) → 새로 올렸으면 True."""
         def load():
             con = connect()
             try:
@@ -675,7 +677,11 @@ class Checklist(commands.Cog):
         if row:
             try:
                 msg = await th.fetch_message(row[0])
-                await msg.edit(embed=make_embed(w, final), attachments=[file], view=view)
+                if repost:
+                    await msg.delete()
+                    msg = None
+                else:
+                    await msg.edit(embed=make_embed(w, final), attachments=[file], view=view)
             except discord.NotFound:
                 msg = None
         created = msg is None
@@ -712,6 +718,26 @@ class Checklist(commands.Cog):
                 await self._ledger(repost=created)
             self._rendered_day = kst_day(now)
 
+    async def bump(self):
+        """이번 주 표 · 장부를 스레드 맨 아래로 (지우고 다시 올린다)."""
+        async with self._lock:
+            await self._post_or_edit(week_of(kst_day(time.time())), final=False, repost=True)
+            await self._ledger(repost=True)
+
+    def bump_soon(self):
+        """새 메시지가 오면 BUMP_QUIET 초 조용해질 때 한 번만 맨 아래로 (연달아 오는 채팅마다 다시 올리지 않게)."""
+        self._bump_at = time.monotonic() + BUMP_QUIET
+        if self._bumper is None or self._bumper.done():
+            self._bumper = asyncio.create_task(self._bump_later())
+
+    async def _bump_later(self):
+        while (left := self._bump_at - time.monotonic()) > 0:
+            await asyncio.sleep(left)
+        try:
+            await self.bump()
+        except Exception as e:
+            print("❌ [체크리스트] 맨 아래로 옮기기 실패:", repr(e))
+
     @tasks.loop(minutes=1)
     async def tick(self):
         if self._rendered_day != kst_day(time.time()):   # 처음 · 날이 바뀌면 (오늘 칸 · 주 바뀜)
@@ -726,16 +752,19 @@ class Checklist(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.webhook_id != WEBHOOK_ID or message.channel.id != THREAD_ID:
+        """스레드에 새 메시지(채팅 · 알 보고 · 정산 등)가 남으면 표 · 장부를 맨 아래로 옮긴다.
+        봇이 직접 올린 표 · 장부는 무시하고, 가동 보고는 바로 지우니 옮길 필요가 없다."""
+        if message.channel.id != THREAD_ID or message.author.id == self.bot.user.id:
             return
-        if await asyncio.to_thread(self._report, message.author.name, time.time()):
-            try:
-                await message.delete()
-            except discord.HTTPException:
-                pass
-            await self.refresh()
-        elif await asyncio.to_thread(self._egg, message.author.name, time.time()):
-            await self.refresh_ledger()   # 알 보고는 사진이 있어 증거로 남겨 둔다
+        if message.webhook_id == WEBHOOK_ID:
+            if await asyncio.to_thread(self._report, message.author.name, time.time()):
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+                return await self.refresh()
+            await asyncio.to_thread(self._egg, message.author.name, time.time())   # 알 보고는 사진이 있어 증거로 남겨 둔다
+        self.bump_soon()
 
 
 async def setup(bot: commands.Bot):
