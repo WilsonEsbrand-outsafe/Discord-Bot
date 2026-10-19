@@ -123,7 +123,7 @@ def test_ledger():
 
 
 def test_modal():
-    """[의뢰 +1] 입력 창 → 장부 · [금액 · 내용] 으로 고치기."""
+    """[대리 등록] 입력 창 → 장부 · [금액 · 내용] 으로 고치기 · 의뢰 수만큼 주간 의뢰 수."""
     import asyncio
     from types import SimpleNamespace
 
@@ -136,27 +136,39 @@ def test_modal():
 
         async def noop(*a, **k):
             pass
-        cog.refresh = cog.refresh_ledger = noop
+        cog.refresh = cog.refresh_ledger = cog.refresh_week = noop
         inter = SimpleNamespace(user=SimpleNamespace(id=1146659618790051960), response=SimpleNamespace(send_message=rec))
         m = ck.EntryModal(cog, "commission")
-        assert [i.label for i in m.children] == ["구매자 (이름 · 닉네임)", "의뢰 내용", "받은 금액 (나중에 등록해도 돼요)", "메모"]
+        assert [i.label for i in m.children] == ["구매자 (이름 · 닉네임)", "의뢰 내용", "의뢰 수 (이 대리에 든 의뢰 건수)",
+                                                "받은 금액 (나중에 등록해도 돼요)", "메모"]
         assert all(len(i.label) <= 45 for i in m.children) and m.buyer.required and not m.amount.required
-        m.buyer._value, m.detail._value, m.amount._value, m.note._value = "김손님", "던전 클리어 대리", "", ""
+        import time
+        week = ck.week_of(ck.kst_day(time.time()))
+        count = lambda: ck.week_data(ck.connect(), week, time.time())["commissions"]   # noqa: E731
+        n0 = count()
+        assert m.qty.default == "1"
+        m.buyer._value, m.detail._value, m.qty._value, m.amount._value, m.note._value = "김손님", "던전 클리어 대리", "3", "", ""
         await m.on_submit(inter)
         e = cog.ledger()["rows"][-1]
-        assert (e["kind"], e["buyer"], e["detail"], e["amount"]) == ("commission", "김손님", "던전 클리어 대리", None)
-        assert "장부에 적었어요" in sent[-1]
+        assert (e["kind"], e["buyer"], e["detail"], e["amount"], e["qty"]) == ("commission", "김손님", "던전 클리어 대리", None, 3)
+        assert "의뢰 3건" in sent[-1] and "의뢰 3건" in ck.entry_label(e) and count() == n0 + 3
+        # 의뢰 수가 이상하면 안내만
+        m = ck.EntryModal(cog, "commission")
+        m.buyer._value, m.detail._value, m.qty._value, m.amount._value, m.note._value = "x", "", "0", "", ""
+        await m.on_submit(inter)
+        assert "의뢰 수" in sent[-1] and cog.ledger()["rows"][-1]["id"] == e["id"]
         # 금액이 이상하면 안내만
         m = ck.EntryModal(cog, "commission")
-        m.buyer._value, m.detail._value, m.amount._value, m.note._value = "x", "", "삼만원", ""
+        m.buyer._value, m.detail._value, m.qty._value, m.amount._value, m.note._value = "x", "", "1", "삼만원", ""
         await m.on_submit(inter)
         assert "숫자로" in sent[-1] and cog.ledger()["rows"][-1]["id"] == e["id"]
         # 고치기: 기존 값이 미리 채워진다 · 알은 금액이 필수
         m = ck.EntryModal(cog, "commission", e)
-        assert m.buyer.default == "김손님" and m.detail.default == "던전 클리어 대리"
-        m.buyer._value, m.detail._value, m.amount._value, m.note._value = "김손님", "던전 클리어 대리", "30만", "선입금"
+        assert m.buyer.default == "김손님" and m.detail.default == "던전 클리어 대리" and m.qty.default == "3"
+        m.buyer._value, m.detail._value, m.qty._value, m.amount._value, m.note._value = "김손님", "던전 클리어 대리", "4", "30만", "선입금"
         await m.on_submit(inter)
-        assert cog.ledger()["rows"][-1]["amount"] == 300_000 and "고쳤어요" in sent[-1]
+        e = cog.ledger()["rows"][-1]
+        assert e["amount"] == 300_000 and e["qty"] == 4 and "고쳤어요" in sent[-1] and count() == n0 + 4
         egg = ck.EntryModal(cog, "egg", {"id": 999, "buyer": None, "detail": None, "amount": None, "note": None})
         assert [i.label for i in egg.children] == ["받은 금액", "구매자 (이름 · 닉네임)", "메모"] and egg.amount.required
     asyncio.run(run())
@@ -240,9 +252,26 @@ def test_bump():
     asyncio.run(run())
 
 
+def test_gap_pass():
+    """지난주(10/12 주) 갑 달성 처리 — 시간 · 의뢰가 모자라도 달성, 다른 주는 그대로."""
+    from types import SimpleNamespace
+    week = ck.week_of(ck.kst_day(kst(2026, 10, 12, 12)))
+    con = ck.connect()
+    con.execute("INSERT OR REPLACE INTO chk_messages(week, message_id, final) VALUES(?, 1, 1)", (week,))
+    con.execute("DELETE FROM chk_kv WHERE key='manual_20261019'")
+    con.commit()
+    ck.Checklist(SimpleNamespace())
+    ck.Checklist(SimpleNamespace())                                     # 두 번 켜져도 한 번만
+    w = ck.week_data(con, week, kst(2026, 10, 19, 12))
+    assert w["gap_pass"] and not ck.week_data(con, week + 7, kst(2026, 10, 19, 12))["gap_pass"]
+    assert con.execute("SELECT final FROM chk_messages WHERE week=?", (week,)).fetchone()[0] == 0   # 다시 마감 표로 그린다
+    ck.render_png(w, final=True)
+
+
 if __name__ == "__main__":
     test_flow()
     test_ledger()
     test_modal()
     test_bump()
+    test_gap_pass()
     print("OK: checklist")

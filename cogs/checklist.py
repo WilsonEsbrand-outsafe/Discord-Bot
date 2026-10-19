@@ -2,7 +2,7 @@
 # 봇이 정해진 스레드에 주마다 표 하나를 올리고 계속 고쳐 쓴다.
 #   갑 · 을: 매크로(dev-mac volva-*.py)가 웹후크로 5분마다 가동 시간을 보고 → 그날 가동 시간에 더한다.
 #            보고 값은 웹후크 보낸 사람 이름에 넣는다("가동|을|A90|시작ts|경과초") — 이름은 메시지 내용 권한 없이도 읽힌다.
-#   갑: 대리 의뢰 수는 [의뢰 +1] 버튼 · 병: [수정 요청] → [수정 완료] 버튼.
+#   갑: 대리 의뢰 수는 [대리 등록] 버튼(대리 한 건에 의뢰 여러 건) · 병: [수정 요청] → [수정 완료] 버튼.
 import asyncio
 import calendar
 import io
@@ -58,9 +58,13 @@ def connect():
                 "PRIMARY KEY(person, sid))")
     con.execute("CREATE TABLE IF NOT EXISTS chk_events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, "
                 "user_id INTEGER)")   # kind: commission(갑 의뢰) · fix_req · fix_done
+    try:   # 대리 한 건에 든 의뢰 수 (주간 의뢰 수는 이 합)
+        con.execute("ALTER TABLE chk_events ADD COLUMN qty INTEGER NOT NULL DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
     con.execute("CREATE TABLE IF NOT EXISTS chk_messages (week INTEGER PRIMARY KEY, message_id INTEGER, "
                 "final INTEGER NOT NULL DEFAULT 0)")
-    # 장부: kind egg(source 갑/을 기기) · commission(event_id = 의뢰 +1 체크). amount 는 갑이 등록, settle_id 는 정산 번호
+    # 장부: kind egg(source 갑/을 기기) · commission(event_id = 대리 등록 체크, 의뢰 수는 chk_events.qty). amount 는 갑이 등록, settle_id 는 정산 번호
     con.execute("CREATE TABLE IF NOT EXISTS chk_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, "
                 "source TEXT, event_id INTEGER, amount INTEGER, amount_ts INTEGER, settle_id INTEGER, note TEXT)")
     for col in ("buyer TEXT", "detail TEXT"):   # 대리 의뢰 · 알 판매: 구매자 · 의뢰 내용 (note = 메모)
@@ -103,7 +107,8 @@ def week_data(con, week: int, now: float) -> dict:
     for p, d, s in con.execute("SELECT person, day, secs FROM chk_hours WHERE day BETWEEN ? AND ?", (week, week + 6)):
         if p in hours:
             hours[p][d - week] = s / 3600
-    ev = con.execute("SELECT ts, kind FROM chk_events ORDER BY ts").fetchall()
+    rows = con.execute("SELECT ts, kind, qty FROM chk_events ORDER BY ts").fetchall()
+    ev = [(ts, k) for ts, k, _ in rows]
     in_week = [(kst_day(ts), k) for ts, k in ev if week <= kst_day(ts) <= week + 6]
     fix = []   # 병 칸: 그날 요청/완료가 있었으면 그날 끝 기준 대기 0 → done, 남음 → pending
     for d in days:
@@ -117,7 +122,8 @@ def week_data(con, week: int, now: float) -> dict:
     done_all = sum(k == "fix_done" for _, k in ev)
     return {"week": week, "today": kst_day(now), "hours": hours,
             "gap_weekday": sum(hours["갑"][:5]), "eul_week": sum(hours["을"]),
-            "commissions": sum(k == "commission" for _, k in in_week),
+            "commissions": sum(q for ts, k, q in rows if k == "commission" and week <= kst_day(ts) <= week + 6),
+            "gap_pass": con.execute("SELECT 1 FROM chk_kv WHERE key=?", (f"gap_pass_{week}",)).fetchone() is not None,
             "fix_req": sum(k == "fix_req" for _, k in in_week), "fix_done": sum(k == "fix_done" for _, k in in_week),
             "pending": max(0, req_all - done_all), "fix": fix}
 
@@ -130,7 +136,7 @@ _ON, _OFF, _WAIT, _TODAY = "#2d7d46", "#4a2c2c", "#8a6d1f", "#5865f2"
 def render_png(w: dict, final: bool = False) -> bytes:
     week, today = w["week"], w["today"]
     cols = [""] + [f"{DAYS[i]}\n{day_label(week + i)}" for i in range(7)] + ["이번 주"]
-    gap_ok = w["gap_weekday"] >= GAP_WEEKDAY_H
+    gap_ok = w["gap_weekday"] >= GAP_WEEKDAY_H or w.get("gap_pass")   # gap_pass: 사용자 요청으로 달성 처리한 주
     rows = []
     for p in ("갑", "을"):
         cells = []
@@ -141,7 +147,7 @@ def render_png(w: dict, final: bool = False) -> bytes:
             else:
                 cells.append((f"{h:.1f}h" if h >= 0.05 else "-", _ON if h >= 0.05 else (_OFF if d < today else None)))
         if p == "갑":
-            com_ok = w["commissions"] >= GAP_COMMISSIONS
+            com_ok = w["commissions"] >= GAP_COMMISSIONS or w.get("gap_pass")
             total = (f"평일 {w['gap_weekday']:.1f}/{GAP_WEEKDAY_H}h" + (" 달성" if gap_ok else "")
                      + f"\n의뢰 {w['commissions']}/{GAP_COMMISSIONS}" + (" 달성" if com_ok else ""))
             ok = gap_ok and com_ok
@@ -199,7 +205,7 @@ def make_embed(w: dict, final: bool = False) -> discord.Embed:
 
 # ───────────── 장부 ─────────────
 # 볼바 알: 매크로가 뜨자마자 기록(결과 화면 사진과 함께) → 갑이 판매 금액 등록.
-# 데삭작 대리: 갑이 [의뢰 +1] → 받은 금액 등록. 정산하면 갑이 을 · 병에게 지분만큼 준다.
+# 데삭작 대리: 갑이 [대리 등록](의뢰 수 포함) → 받은 금액 등록. 정산하면 갑이 을 · 병에게 지분만큼 준다.
 SHARES = {   # (종류, 출처 기기) → {사람: %}
     ("egg", "갑"): {"갑": 45, "을": 25, "병": 30},
     ("egg", "을"): {"갑": 30, "을": 40, "병": 30},
@@ -227,7 +233,7 @@ def split(amount: int, kind: str, source: str) -> dict:
 
 def entry_label(e: dict) -> str:
     when = time.strftime("%m/%d %H:%M", time.gmtime(e["ts"] + KST))
-    what = f"볼바 알 ({e['source']} 기기)" if e["kind"] == "egg" else "데삭작 대리"
+    what = f"볼바 알 ({e['source']} 기기)" if e["kind"] == "egg" else f"데삭작 대리 · 의뢰 {e.get('qty') or 1}건"
     return f"#{e['id']} {what} · {when}"
 
 
@@ -243,8 +249,9 @@ def entry_text(e: dict) -> str:
 
 def ledger_data(con) -> dict:
     cols = ("id", "ts", "kind", "source", "event_id", "amount", "note", "buyer", "detail")
-    rows = [dict(zip(cols, r)) for r in con.execute(
-        f"SELECT {', '.join(cols)} FROM chk_ledger WHERE settle_id IS NULL ORDER BY id")]
+    rows = [dict(zip(cols + ("qty",), r)) for r in con.execute(
+        f"SELECT {', '.join('l.' + c for c in cols)}, ev.qty FROM chk_ledger l "
+        "LEFT JOIN chk_events ev ON ev.id = l.event_id WHERE l.settle_id IS NULL ORDER BY l.id")]
     owed = {"갑": 0, "을": 0, "병": 0}
     for e in rows:
         if e["amount"] is not None:
@@ -303,8 +310,8 @@ def _gap_or_owner(uid: int) -> bool:
 
 
 class EntryModal(discord.ui.Modal):
-    """장부 항목 입력 — 대리 의뢰(구매자 · 의뢰 내용 · 금액 · 메모) / 볼바 알(금액 · 구매자 · 메모).
-    entry 가 없으면 새 대리 의뢰([의뢰 +1]), 있으면 그 항목 고치기."""
+    """장부 항목 입력 — 대리(구매자 · 의뢰 내용 · 의뢰 수 · 금액 · 메모) / 볼바 알(금액 · 구매자 · 메모).
+    entry 가 없으면 새 대리([대리 등록]), 있으면 그 항목 고치기."""
 
     def __init__(self, cog: "Checklist", kind: str, entry: Optional[dict] = None):
         new = entry is None
@@ -316,13 +323,15 @@ class EntryModal(discord.ui.Modal):
         self.detail = discord.ui.TextInput(label="의뢰 내용", style=discord.TextStyle.paragraph, max_length=500,
                                            required=False, default=e.get("detail"),
                                            placeholder="캐릭터 · 작업 범위 · 기한 등")
+        self.qty = discord.ui.TextInput(label="의뢰 수 (이 대리에 든 의뢰 건수)", max_length=3,
+                                        default=str(e.get("qty") or 1), placeholder="예: 3")
         amount = e.get("amount")
         self.amount = discord.ui.TextInput(
             label="받은 금액" + (" (나중에 등록해도 돼요)" if kind == "commission" else ""), max_length=20,
             required=kind == "egg", default=str(amount) if amount is not None else None, placeholder="예: 300000 · 30만")
         self.note = discord.ui.TextInput(label="메모", style=discord.TextStyle.paragraph, max_length=300,
                                          required=False, default=e.get("note"))
-        items = ([self.buyer, self.detail, self.amount, self.note] if kind == "commission"
+        items = ([self.buyer, self.detail, self.qty, self.amount, self.note] if kind == "commission"
                  else [self.amount, self.buyer, self.note])
         for it in items:
             self.add_item(it)
@@ -333,18 +342,24 @@ class EntryModal(discord.ui.Modal):
         amount = parse_amount(raw) if raw else None
         if raw and amount is None:
             return await interaction.response.send_message("금액을 숫자로 적어 주세요. (예: 300000 · 30만)", ephemeral=True)
+        qty = None
+        if self.kind == "commission":
+            q = str(self.qty.value).strip()
+            if not q.isdigit() or int(q) < 1:
+                return await interaction.response.send_message("의뢰 수를 1 이상의 숫자로 적어 주세요.", ephemeral=True)
+            qty = int(q)
         fields = {"buyer": str(self.buyer.value).strip() or None, "amount": amount,
                   "detail": (str(self.detail.value).strip() or None) if self.kind == "commission" else self.entry.get("detail"),
-                  "note": str(self.note.value).strip() or None}
+                  "note": str(self.note.value).strip() or None, "qty": qty}
         if self.new:
             eid = await asyncio.to_thread(self.cog.record_commission, interaction.user.id, **fields)
-            msg = f"`#{eid}` 데삭작 대리 의뢰를 장부에 적었어요." + ("" if amount else " 금액은 장부의 [금액 · 내용]으로 나중에 등록해 주세요.")
+            msg = f"`#{eid}` 데삭작 대리(의뢰 {qty}건)를 장부에 적었어요." + ("" if amount else " 금액은 장부의 [금액 · 내용]으로 나중에 등록해 주세요.")
         else:
             ok = await asyncio.to_thread(self.cog.ledger_update, self.entry["id"], **fields)
             msg = f"`#{self.entry['id']}` 고쳤어요." if ok else "이미 정산됐거나 없는 항목이에요."
         await interaction.response.send_message(msg, ephemeral=True)
-        if self.new:
-            await self.cog.refresh()   # 이번 주 의뢰 수
+        if self.kind == "commission":
+            await self.cog.refresh_week(self.entry["ts"] if self.entry else time.time())   # 그 주 의뢰 수
         await self.cog.refresh_ledger()
 
 
@@ -481,7 +496,7 @@ class ChecklistView(discord.ui.View):
         await interaction.response.defer()
         await self.cog.refresh()
 
-    @discord.ui.button(label="의뢰 +1", emoji="📥", style=discord.ButtonStyle.primary, custom_id="chk:commission")
+    @discord.ui.button(label="대리 등록", emoji="📥", style=discord.ButtonStyle.primary, custom_id="chk:commission")
     async def commission(self, interaction: discord.Interaction, _):
         if not _gap_or_owner(interaction.user.id):
             return await interaction.response.send_message("갑만 누를 수 있어요.", ephemeral=True)
@@ -512,6 +527,10 @@ class Checklist(commands.Cog):
             for p, h in (("갑", 1.5), ("을", 6.3)):                    # 사용자 요청 — 보고 연결 전에 돌린 시간
                 con.execute("INSERT INTO chk_hours(person, day, secs) VALUES(?, ?, ?) ON CONFLICT(person, day) "
                             "DO UPDATE SET secs = secs + excluded.secs", (p, day, h * 3600))
+        if con.execute("INSERT OR IGNORE INTO chk_kv(key, value) VALUES('manual_20261019', 1)").rowcount:
+            week = week_of(kst_day(calendar.timegm((2026, 10, 12, 3, 0, 0))))   # 2026-10-12 (월) 주
+            con.execute("INSERT OR IGNORE INTO chk_kv(key, value) VALUES(?, 1)", (f"gap_pass_{week}",))   # 사용자 요청 — 갑 달성
+            con.execute("UPDATE chk_messages SET final=0 WHERE week=?", (week,))   # 켜질 때 마감 표를 다시 그리게
         con.commit()
         con.close()
 
@@ -567,12 +586,13 @@ class Checklist(commands.Cog):
             "INSERT INTO chk_ledger(ts, kind, source, note) VALUES(?, 'egg', ?, ?)", (int(ts), source, note)).lastrowid)
 
     def record_commission(self, uid: int, buyer: Optional[str], detail: Optional[str], amount: Optional[int],
-                          note: Optional[str]) -> int:
-        """데삭작 대리 의뢰: 이번 주 의뢰 수(체크) + 장부 항목 → 장부 번호."""
+                          note: Optional[str], qty: int = 1) -> int:
+        """데삭작 대리: 이번 주 의뢰 수(체크, 의뢰 qty건) + 장부 항목 → 장부 번호."""
         now = int(time.time())
 
         def fn(con):
-            ev = con.execute("INSERT INTO chk_events(ts, kind, user_id) VALUES(?, 'commission', ?)", (now, uid)).lastrowid
+            ev = con.execute("INSERT INTO chk_events(ts, kind, user_id, qty) VALUES(?, 'commission', ?, ?)",
+                             (now, uid, qty)).lastrowid
             return con.execute(
                 "INSERT INTO chk_ledger(ts, kind, source, event_id, buyer, detail, amount, amount_ts, note) "
                 "VALUES(?, 'commission', '갑', ?, ?, ?, ?, ?, ?)",
@@ -580,11 +600,17 @@ class Checklist(commands.Cog):
         return self._db(fn)
 
     def ledger_update(self, eid: int, buyer: Optional[str], detail: Optional[str], amount: Optional[int],
-                      note: Optional[str]) -> bool:
-        """미정산 항목의 구매자 · 의뢰 내용 · 금액 · 메모를 고친다."""
-        return self._db(lambda con: con.execute(
-            "UPDATE chk_ledger SET buyer=?, detail=?, amount=?, amount_ts=?, note=? WHERE id=? AND settle_id IS NULL",
-            (buyer, detail, amount, int(time.time()) if amount else None, note, eid)).rowcount > 0)
+                      note: Optional[str], qty: Optional[int] = None) -> bool:
+        """미정산 항목의 구매자 · 의뢰 내용 · 금액 · 메모(대리면 의뢰 수도)를 고친다."""
+        def fn(con):
+            if not con.execute(
+                    "UPDATE chk_ledger SET buyer=?, detail=?, amount=?, amount_ts=?, note=? WHERE id=? AND settle_id IS NULL",
+                    (buyer, detail, amount, int(time.time()) if amount else None, note, eid)).rowcount:
+                return False
+            if qty:
+                con.execute("UPDATE chk_events SET qty=? WHERE id=(SELECT event_id FROM chk_ledger WHERE id=?)", (qty, eid))
+            return True
+        return self._db(fn)
 
     def ledger_delete(self, eid: int) -> bool:
         """미정산 항목 삭제 — 대리 의뢰면 그 체크(주간 의뢰 수)도 같이 지운다."""
@@ -718,6 +744,16 @@ class Checklist(commands.Cog):
             if created or startup:                         # 새 주 표 아래로 장부를 옮긴다
                 await self._ledger(repost=True)
             self._rendered_day = kst_day(now)
+
+    async def refresh_week(self, ts: float):
+        """ts 가 든 주의 표를 다시 그린다 (지난주면 마감 표를 고친다)."""
+        week = week_of(kst_day(ts))
+        if week == week_of(kst_day(time.time())):
+            return await self.refresh()
+        async with self._lock:
+            if await asyncio.to_thread(self._db, lambda con: con.execute(
+                    "SELECT 1 FROM chk_messages WHERE week=?", (week,)).fetchone()):
+                await self._post_or_edit(week, final=True)
 
     async def bump(self):
         """이번 주 표 · 장부를 스레드 맨 아래로 (지우고 다시 올린다)."""
