@@ -88,7 +88,7 @@ def result_embed(user, r: dict, log: list[str] | None = None) -> discord.Embed:
         f"`돈` 💰 {r['coins']:,}원 · `훈련 경험치` +{r['xp']}",
     ]
     if r.get("first"):
-        lines.append("✨ **첫 클리어 보너스!** " + " · ".join(item_name(k) + f" ×{n}" for k, n in FIRST_CLEAR.items()))
+        lines.append("✨ **첫 클리어 보너스** (위 아이템에 포함): " + " · ".join(item_name(k) + f" ×{n}" for k, n in FIRST_CLEAR.items()))
     lines.append(f"`잔액` {r['balance']:,}원")
     e = ui.card(title, "\n".join(lines), color, user, SECTION)
     e.set_footer(text="보상은 가방에 들어갔어요 · 내일 00시에 다시 입장할 수 있어요 · 🏆 주간 최고 층은 /던전에서")
