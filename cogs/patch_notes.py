@@ -37,12 +37,13 @@ class PatchNotesCog(commands.Cog):
         finally:
             con.close()
 
-    async def send_all(self, embed: discord.Embed) -> tuple[int, int]:
+    async def send_all(self, embed: "discord.Embed | list[discord.Embed]") -> tuple[int, int]:
+        embeds = embed if isinstance(embed, list) else [embed]
         success, fail = 0, 0
         for guild in self.bot.guilds:
             channel = await asyncio.to_thread(self._pick_channel, guild)
             try:
-                await channel.send(embed=embed)
+                await channel.send(embeds=embeds)
                 success += 1
             except Exception:
                 fail += 1
@@ -53,9 +54,11 @@ class PatchNotesCog(commands.Cog):
         now = int(time.time())
         for key, ts, title, content in NOTICES:
             if ts <= now and await asyncio.to_thread(self._claim_notice, key):
-                e = discord.Embed(title=title, description=content, color=0xE67E22)
-                e.timestamp = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
-                ok, fail = await self.send_all(e)
+                parts = content if isinstance(content, list) else [("", content)]   # [(소제목, 내용), …] 이면 임베드 여러 개
+                es = [discord.Embed(title=f"{title} · {sub}" if sub else title, description=body, color=0xE67E22)
+                      for sub, body in parts]
+                es[-1].timestamp = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
+                ok, fail = await self.send_all(es)
                 print(f"[공지] {key} 성공 {ok} / 실패 {fail}")
 
     @notice_loop.before_loop
@@ -144,6 +147,19 @@ class PatchNotesCog(commands.Cog):
         e.timestamp = datetime.datetime.fromtimestamp(now_ts, tz=datetime.timezone.utc)
         return e
 
+    def make_embeds(self, version: str, content, now_ts: int) -> list[discord.Embed]:
+        """내용이 [(제목, 내용), …] 이면 임베드 여러 개 (2.8~). 문자열이면 예전처럼 하나."""
+        if not isinstance(content, list):
+            return [self._make_embed(version, content, now_ts)]
+        es = []
+        for i, (sub, body) in enumerate(content):
+            e = discord.Embed(title=f"📢 버전 {version} 업데이트 · {sub}", description=body, color=0x3498db)
+            if i == len(content) - 1:
+                e.set_footer(text=f"v{version} 패치노트")
+                e.timestamp = datetime.datetime.fromtimestamp(now_ts, tz=datetime.timezone.utc)
+            es.append(e)
+        return es
+
     def _pick_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         """알림 채널 우선순위: 설정된 채널 → 시스템 채널 → 첫 번째 쓸 수 있는 텍스트 채널"""
         channel_id = self._get_announce_channel(guild.id)
@@ -166,10 +182,9 @@ class PatchNotesCog(commands.Cog):
         self, interaction: discord.Interaction, version: str, content: str
     ):
         now_ts = int(time.time())
-        await asyncio.to_thread(self._save_patch, version, content, now_ts)
-        embed = self._make_embed(version, content, now_ts)
-
-        success, fail = await self.send_all(embed)
+        text = content if isinstance(content, str) else "\n\n".join(f"{t}\n{b}" for t, b in content)
+        await asyncio.to_thread(self._save_patch, version, text, now_ts)
+        success, fail = await self.send_all(self.make_embeds(version, content, now_ts))
 
         await interaction.followup.send(
             f"✅ **v{version}** 패치노트 전송 완료!\n"
