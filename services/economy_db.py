@@ -3,8 +3,11 @@ import calendar
 import random
 import sqlite3
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional, Tuple
+
+from services import ui
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
 
@@ -74,6 +77,11 @@ COUPONS = {
                 calendar.timegm((2026, 10, 8, 15, 0, 0))),   # 2026-10-09 00:00 KST 만료
     "PATCH25": ({"box": 1}, calendar.timegm((2026, 10, 8, 15, 0, 0))),   # 2.5 점검 보상 · 2026-10-09 00:00 KST 만료
 }
+
+
+# 창단 멤버 영구 칭호 (2.8) — 마이그레이션으로 한 번만 지급 (eco_migrations 에 'founder-2.8' 표시)
+FOUNDER_TITLE = "🏅 창단 멤버"
+FOUNDER_IDS = (680586058680893461, 1264955405029736569, 867801225507897395, 673864024030445569)
 
 
 def give_item(con, user_id: int, item: str, qty: int = 1) -> None:
@@ -274,6 +282,13 @@ class EconomyDB:
                         "PRIMARY KEY(user_id, mission))")
             con.execute("CREATE TABLE IF NOT EXISTS eco_migrations (name TEXT PRIMARY KEY)")
             con.execute("CREATE TABLE IF NOT EXISTS tutorial_done (user_id INTEGER PRIMARY KEY, ts INTEGER NOT NULL)")
+            con.execute("CREATE TABLE IF NOT EXISTS user_titles (user_id INTEGER PRIMARY KEY, title TEXT NOT NULL, "
+                        "source TEXT NOT NULL, ts INTEGER NOT NULL)")
+            if con.execute("INSERT OR IGNORE INTO eco_migrations(name) VALUES('founder-2.8')").rowcount:
+                now = int(time.time())
+                con.executemany("INSERT OR IGNORE INTO user_titles(user_id, title, source, ts) VALUES(?, ?, 'founder', ?)",
+                                [(uid, FOUNDER_TITLE, now) for uid in FOUNDER_IDS])
+            ui.TITLES.update({int(u): t for u, t in con.execute("SELECT user_id, title FROM user_titles")})
             if con.execute("INSERT OR IGNORE INTO eco_migrations(name) VALUES('rookie_veterans')").rowcount:
                 con.execute("INSERT OR IGNORE INTO rookie(user_id, start_ts) SELECT user_id, 0 FROM wallets")
                         # ───────────── 토토 ─────────────

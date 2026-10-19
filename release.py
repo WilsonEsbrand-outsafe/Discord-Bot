@@ -1,16 +1,16 @@
 # release.py — 단계 배포: 새 패치는 테스트 서버에 먼저, 다른 서버는 RELEASE_TS(정기점검)에 한꺼번에.
 # 다음 패치 때: PREVIEW_ONLY(새 명령어) · LEGACY_ONLY(없어질 명령어) · RELEASE_TS 를 바꾼다.
-# 지금: 2.7 레이스 3종(/달팽이 · /조정 · /f1) — 2026-10-12 17:00 KST 공개 (점검 16:55 ~ 17:05)
-#       (2.5 는 2026-10-02 00:00 · 2.6 은 2026-10-03 12:00 KST 공개 완료)
+# 지금: 2.8 — 테스트 서버에서 먼저 (공개 시각은 규완님이 정하면 RELEASE_TS 에)
+#       (2.5 는 2026-10-02 00:00 · 2.6 은 2026-10-03 12:00 · 2.7 은 2026-10-12 17:00 KST 공개 완료)
 import calendar  # RELEASE_TS = calendar.timegm((년, 월, 일, 시(UTC), 분, 0)) · None = 아직 테스트 서버에만
 import time
 from typing import Optional
 
 TEST_GUILD = 1374213619793006704
-RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 12, 8, 0, 0))   # 2026-10-12 17:00 KST
+RELEASE_TS: Optional[int] = None   # 2.8 공개 시각 — 아직 안 정함
 MAINTENANCE = (RELEASE_TS - 300, RELEASE_TS + 300) if RELEASE_TS else None   # 정기점검 (공개 5분 전 ~ 5분 뒤) — 명령어 막음
 
-PREVIEW_ONLY: set[str] = {"달팽이", "조정", "f1"}   # 공개 전엔 테스트 서버에만 보이는 명령어
+PREVIEW_ONLY: set[str] = set()   # 공개 전엔 테스트 서버에만 보이는 명령어 (2.8 새 명령어는 만들 때마다 추가)
 LEGACY_ONLY: set[str] = set()    # 공개 전까지만 다른 서버에 남는 명령어
 
 

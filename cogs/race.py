@@ -23,6 +23,7 @@ from matplotlib.patches import Rectangle
 import matplotlib.patheffects as pe
 from PIL import Image
 
+import release
 from services.economy_db import EconomyDB
 from services import ui
 
@@ -168,18 +169,24 @@ ROWERS = (   # (국기, 이름, 체중 kg, 소개) — 표시용
 )
 ROW_N = 6                 # 레인 수 (나 + 상대 5)
 ROW_SEGS = ("500m", "1000m", "1500m", "라스트 스퍼트", "결승선 앞")
-ROW_SEC = 3.0             # 구간 하나 길이 (초)
-ROW_TARGET = 6            # 구간당 이만큼 저으면 전속력 (그 이상은 같음)
+ROW_SEC = 4.0             # 구간 하나 길이 (초) — 2.8: 3 → 4
+ROW_TARGET = 4            # 구간당 이만큼 저으면 전속력 (그 이상은 같음) — 2.8: 6 → 4
 ROW_NOISE = 0.5           # 구간마다 물살 운 (±)
-ROW_LAZY = 0.75           # 하나도 안 저었을 때 속도 (전속력 = 1)
+ROW_LAZY = 0.85           # 하나도 안 저었을 때 속도 (전속력 = 1) — 2.8: 0.75 → 0.85
+ROW_RULES_27 = (3.0, 6, 0.75)   # 2.8 공개 전 다른 서버 (구간 초, 전속력 횟수, 최저 속도) — 공개 뒤 지운다
 
 
-def row_step(dist: list[float], me: int, taps: int, rng=random) -> float:
-    """한 구간 진행. 상대는 1 ± 물살, 나는 (0.75 + 0.25 × 젓기 비율) ± 물살 — 전속력이면 상대와 똑같은 분포.
+def row_rules(guild_id) -> tuple[float, int, float]:
+    """(구간 초, 전속력 횟수, 최저 속도). 2.8 하향은 테스트 서버 먼저."""
+    return (ROW_SEC, ROW_TARGET, ROW_LAZY) if release.preview(guild_id) else ROW_RULES_27
+
+
+def row_step(dist: list[float], me: int, taps: int, rng=random, target: int = ROW_TARGET, lazy: float = ROW_LAZY) -> float:
+    """한 구간 진행. 상대는 1 ± 물살, 나는 (최저 + (1 - 최저) × 젓기 비율) ± 물살 — 전속력이면 상대와 똑같은 분포.
     덜 저을수록 불리하지만 물살 운으로 뒤집을 여지는 남는다 (반은 운). 젓기 비율을 돌려준다."""
-    e = min(1.0, taps / ROW_TARGET)
+    e = min(1.0, taps / target)
     for i in range(len(dist)):
-        dist[i] += (ROW_LAZY + (1 - ROW_LAZY) * e if i == me else 1.0) + rng.uniform(-ROW_NOISE, ROW_NOISE)
+        dist[i] += (lazy + (1 - lazy) * e if i == me else 1.0) + rng.uniform(-ROW_NOISE, ROW_NOISE)
     return e
 
 
@@ -910,7 +917,8 @@ class Race(commands.Cog):
             me = random.randrange(ROW_N)
             rivals = iter(random.sample(ROWERS, ROW_N - 1))
             boats = [None if i == me else next(rivals) for i in range(ROW_N)]
-            race = {"no": random.randint(1, 12), "me": me, "boats": boats, "prizes": prizes(ROW_N)}
+            race = {"no": random.randint(1, 12), "me": me, "boats": boats, "prizes": prizes(ROW_N),
+                    "rules": row_rules(interaction.guild_id)}
             lines = [f"`{i + 1}` 🚣 **{user.display_name}** 👈 · 내 보트" if b is None else
                      f"`{i + 1}` {b[0]} **{b[1]}** · {b[2]}kg · {random.choice(MOODS)}\n　 *{b[3]}*" for i, b in enumerate(boats)]
             e = ui.card(f"🚣 제{race['no']}경주 · 싱글 스컬 2000m",
@@ -918,7 +926,7 @@ class Race(commands.Cog):
                         + "\n".join(lines) + f"\n\n**🏆 상금표** · `베팅` **{amount:,}원**\n" + prize_lines(amount, race["prizes"]),
                         ui.INFO, user, "🎙️ 조정 중계")
             e.set_thumbnail(url=ui.emoji_url("🚣"))
-            e.set_footer(text=f"구간마다 {ROW_TARGET}번 이상 저으면 전속력 · 60초 안에 출발하지 않으면 실격")
+            e.set_footer(text=f"구간마다 {race['rules'][1]}번 이상 저으면 전속력 · 60초 안에 출발하지 않으면 실격")
             return (lambda: RowView(self, user, amount, race)), e, None
         await self._bet(interaction, amount, "🎙️ 조정 중계", build)
 
@@ -926,6 +934,7 @@ class Race(commands.Cog):
         # ponytail: 경주 중(약 15초) 봇이 재시작되면 정산 전이라 베팅금이 사라진다 — 문제 되면 진행 중 경주를 DB에 남겨 재시작 때 환불
         race, amount, user, sec = view.race, view.amount, view.user, "🎙️ 조정 중계"
         me, boats = race["me"], race["boats"]
+        seg_sec, target, lazy = race["rules"]
         names = [user.display_name if b is None else b[1] for b in boats]
         runners = [("🚣", n) if b is None else (b[0], n) for b, n in zip(boats, names)]
         title = f"🚣 제{race['no']}경주"
@@ -935,9 +944,9 @@ class Race(commands.Cog):
             ui.DARK, user, sec), view=view)
         for k, seg in enumerate(ROW_SEGS):
             view.taps = 0
-            await asyncio.sleep(ROW_SEC)
+            await asyncio.sleep(seg_sec)
             taps = view.taps
-            e = row_step(dist, me, taps)
+            e = row_step(dist, me, taps, random, target, lazy)
             lead = max(range(ROW_N), key=lambda i: dist[i])
             rank = sorted(range(ROW_N), key=lambda i: -dist[i]).index(me) + 1
             last = k == len(ROW_SEGS) - 1
