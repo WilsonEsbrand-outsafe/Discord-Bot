@@ -57,9 +57,14 @@ ITEMS = {
     "fish_charm":  ("🍀", "낚시 부적",       "오늘 물고기 판매 · 보내기 한도 +5"),
     "spice":       ("🧂", "양념 세트",       "요리 재료 · /낚시 → 요리에서 사용"),
     "skip_piece":  ("🧩", "스킵권 조각",     "5개를 모으면 스킵권 1장 (스카우트 · 훈련 · 직관 중 하나)"),
+    # ── 2.8 양궁 (판을 시작할 때 고르면 그 판에만) ──
+    "bow_pro":     ("🏹", "고급 활",         "/양궁 한 판 · 손떨림 -30%"),
+    "windbreaker": ("🧥", "바람막이",        "/양궁 한 판 · 바람 영향 -50%"),
+    "focus":       ("🧪", "집중 물약",       "/양궁 한 판 · 조준 바늘이 1.5배 느려짐"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
-PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice"}
+PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
+                 "bow_pro", "windbreaker", "focus"}
 # 점검 보상 상자: 6종을 한 장씩 뒤집어 섞고, 고른 한 장을 받는다
 BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
 BOX_CHOICES = len(BOX_REWARDS)
