@@ -143,8 +143,10 @@ def test_release():
     assert release.preview(T, before) and not release.preview(other, before) and release.preview(other, after)
     assert release.hidden_commands(other, before) == release.PREVIEW_ONLY
     assert release.hidden_commands(T, before) == release.hidden_commands(other, after) == release.LEGACY_ONLY
-    assert release.maintenance(release.RELEASE_TS - 300) and release.maintenance(release.RELEASE_TS + 299)
-    assert not release.maintenance(release.RELEASE_TS - 301) and not release.maintenance(release.RELEASE_TS + 300)
+    start, end = release.MAINTENANCE   # 점검 창은 공개 시각을 감싼다
+    assert start < release.RELEASE_TS < end
+    assert release.maintenance(start) and release.maintenance(end - 1)
+    assert not release.maintenance(start - 1) and not release.maintenance(end)
 
 
 if __name__ == "__main__":

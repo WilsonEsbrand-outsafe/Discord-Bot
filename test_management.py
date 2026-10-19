@@ -108,7 +108,12 @@ def test_settle():
         assert not con.execute("SELECT 1 FROM club_mgmt WHERE user_id=3").fetchone()
         assert not con.execute("SELECT 1 FROM club_form WHERE user_id=3").fetchone()
         con.close()
-    asyncio.run(flow())
+    real = release.RELEASE_TS
+    release.RELEASE_TS = None   # 공개 전 상황부터 (테스트 시각 T0 는 실제 공개 시각 뒤라서)
+    try:
+        asyncio.run(flow())
+    finally:
+        release.RELEASE_TS = real
 
 
 class Resp:
