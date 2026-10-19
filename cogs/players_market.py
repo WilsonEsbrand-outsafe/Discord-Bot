@@ -18,7 +18,7 @@ matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 
 
 import release
 from services import ui
-from services.economy_db import ITEMS, SELL_PRICES, SHOP_DAILY_LIMITS, SHOP_PRICES, EconomyDB
+from services.economy_db import ITEMS, SELL_PRICES, SHOP_DAILY_LIMITS, SHOP_GROUPS, SHOP_PRICES, EconomyDB
 from services.player_market_db import PlayerMarketDB, PACKS, PACK_MAX_PULLS, JACKPOT_PROB, JACKPOT_RANGE, player_profile
 
 PACK_EMOJI = {
@@ -253,6 +253,8 @@ class ShopView(_ShopOwnerView):
             today = f" · `오늘` {r['bought']}/{r['limit']}개" if r["limit"] else ""
             e = ui.card(f"🛒 {emoji} {name} 구매!", f"{desc}\n\n`가격` **-{r['price']:,}원** · `잔액` **{r['balance']:,}원**\n"
                         f"`보유` **{r['qty']}개**{today} · `/가방`에서 바로 사용", ui.WIN, self.user, sec)
+        elif r["reason"] == "have":
+            e = ui.card("🙅 이미 가지고 있어요", f"{emoji} {name}은(는) 하나만 있으면 돼요.", ui.EVEN, self.user, sec)
         elif r["reason"] == "daily":
             e = ui.card("🙅 오늘은 더 살 수 없어요", f"{emoji} {name}은(는) 하루 **{r['limit']}개**까지예요. 내일 00:00에 다시 열려요!",
                         ui.EVEN, self.user, sec)
@@ -815,13 +817,14 @@ class PlayersMarket(commands.Cog):
             e.set_footer(text=f"아래 메뉴에서 팩을 고르면 1~{PACK_MAX_PULLS}장 선택 · 팩별 가격대 · 잭팟은 /팩정보 · 아이템은 /아이템상점")
             return e, ShopView(self, user, inv, kind)
         bought = await self.money.shop_bought_today(user.id, int(time.time()))
-        items = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** · {price:,}원"
-                          + (f" · 오늘 {bought.get(k, 0)}/{SHOP_DAILY_LIMITS[k]}" if k in SHOP_DAILY_LIMITS else "")
-                          + f"\n　 *{ITEMS[k][2]}*" for k, price in SHOP_PRICES.items())
+        for group, keys in SHOP_GROUPS:
+            e.add_field(name=group, inline=False, value="\n".join(
+                f"{ITEMS[k][0]} **{ITEMS[k][1]}** · {SHOP_PRICES[k]:,}원"
+                + (f" · 오늘 {bought.get(k, 0)}/{SHOP_DAILY_LIMITS[k]}" if k in SHOP_DAILY_LIMITS else "")
+                + f"\n　 *{ITEMS[k][2]}*" for k in keys))
         sell = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** × {inv[k]} · 개당 +{each:,}원"
                          for k, each in SELL_PRICES.items() if inv.get(k))
-        e.add_field(name="🎒 아이템", value=items, inline=False)
-        e.add_field(name="💸 팔기 (원가의 50%)", value=sell or "팔 수 있는 아이템이 없어요.", inline=False)
+        e.add_field(name="💸 팔기 (원가의 50%)", value=sell[:1024] or "팔 수 있는 아이템이 없어요.", inline=False)
         e.set_footer(text="아래 메뉴에서 고르면 바로 구매 · 리셋권 · 스킵권 · 토토 용지는 사고팔 수 없어요 · 선수팩은 /선수팩상점")
         return e, ShopView(self, user, inv, kind)
 

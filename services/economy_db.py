@@ -85,8 +85,26 @@ PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "ic
 BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
 BOX_CHOICES = len(BOX_REWARDS)
 # 원가 = 상점 가격. 판매가는 원가의 50% · 원가가 없는 아이템(리셋권 · 스킵권 · 토토 용지)은 사고팔 수 없다.
-ITEM_PRICES = {"muffler": 50_000, "steroid": 30_000_000}
-SHOP_DAILY_LIMITS = {"steroid": 3}   # 하루(KST) 구매 한도가 있는 아이템
+ITEM_PRICES = {
+    "muffler": 50_000, "steroid": 30_000_000,
+    # 낚시 (낚시터 상점과 같은 가격)
+    "bait": 2_000, "bait_gold": 15_000, "rod_carbon": 500_000, "rod_pro": 5_000_000, "rod_legend": 30_000_000,
+    "icebox": 2_000_000, "fish_charm": 500_000, "spice": 30_000,
+    # 양궁
+    "bow_pro": 300_000, "windbreaker": 300_000, "focus": 500_000,
+    # 유스
+    "first_team": 3_000_000, "special_training": 300_000, "scout_coupon": 500_000,
+    # 전술
+    "tactic_note": 500_000, "analysis_report": 300_000,
+}
+# 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
+SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
+               ("🎣 낚시", ("bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "fish_charm", "spice")),
+               ("🏹 양궁", ("bow_pro", "windbreaker", "focus")),
+               ("🎓 유스", ("first_team", "special_training", "scout_coupon")),
+               ("⚔️ 전술", ("tactic_note", "analysis_report")))
+SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3}   # 하루(KST) 구매 한도가 있는 아이템
+SHOP_ONE_ONLY = {"rod_carbon", "rod_pro", "rod_legend", "icebox"}   # 하나만 가지면 되는 장비 (이미 있으면 못 산다)
 SELL_RATE = 0.5
 SELL_PRICES = {k: int(p * SELL_RATE) for k, p in ITEM_PRICES.items()}
 MUFFLER_USES, MUFFLER_BONUS = 5, 3
@@ -1549,11 +1567,14 @@ class EconomyDB:
             "SELECT item, cnt FROM shop_daily WHERE user_id=? AND day_key=?", (user_id, day))})
 
     async def buy_item(self, user_id: int, item: str, now_ts: int) -> dict:
-        """상점 구매: 돈을 내고 가방에 1개. 실패 reason: daily(오늘 한도 — SHOP_DAILY_LIMITS) / balance."""
+        """상점 구매: 돈을 내고 가방에 1개. 실패 reason: daily(오늘 한도 — SHOP_DAILY_LIMITS) / have(SHOP_ONE_ONLY) / balance."""
         price, day, cap = SHOP_PRICES[item], _kst_day(now_ts), SHOP_DAILY_LIMITS.get(item)
 
         def fn(con):
             bought = 0
+            if item in SHOP_ONE_ONLY and con.execute("SELECT 1 FROM inventory WHERE user_id=? AND item=? AND qty>0",
+                                                     (user_id, item)).fetchone():
+                return {"ok": False, "reason": "have"}
             if cap:
                 row = con.execute("SELECT day_key, cnt FROM shop_daily WHERE user_id=? AND item=?", (user_id, item)).fetchone()
                 bought = int(row[1]) if row and row[0] == day else 0

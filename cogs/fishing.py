@@ -12,7 +12,7 @@ from discord.ext import commands
 from cogs.economy import ITEM_HANDLERS
 from services import ui
 from services.club_db import ClubDB
-from services.economy_db import ITEMS, give_item
+from services.economy_db import ITEM_PRICES, ITEMS, SHOP_ONE_ONLY, give_item
 from services.fishing import (
     AQUARIUM_MAX, BAG_MAX, BY_GRADE, CATCH_WINDOW, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES,
     SKIP_PIECES, TRADE_DAILY, fish_name, grade_odds, level_need, odds_line,
@@ -20,9 +20,8 @@ from services.fishing import (
 from services.hub import HubView, Page
 
 SECTION = "🎣 낚시터"
-SHOP = {"bait": 2_000, "bait_gold": 15_000, "rod_carbon": 500_000, "rod_pro": 5_000_000, "rod_legend": 30_000_000,
-        "icebox": 2_000_000}
-ONE_ONLY = {"rod_carbon", "rod_pro", "rod_legend", "icebox"}   # 하나만 가지면 되는 장비
+SHOP = {k: ITEM_PRICES[k] for k in ("bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox")}   # /아이템상점과 같은 가격
+ONE_ONLY = SHOP_ONE_ONLY   # 하나만 가지면 되는 장비
 
 
 def _clock(sec: int) -> str:

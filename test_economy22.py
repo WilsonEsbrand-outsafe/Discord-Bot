@@ -208,7 +208,7 @@ async def _items():
 
     # 스테로이드: 3,000만원 · 하루 3개 · 다음 날 다시
     Q = 15
-    assert edb.SHOP_PRICES["steroid"] == 30_000_000 and edb.SHOP_DAILY_LIMITS == {"steroid": 3}
+    assert edb.SHOP_PRICES["steroid"] == 30_000_000 and edb.SHOP_DAILY_LIMITS["steroid"] == 3
     await db.add_balance(Q, 30_000_000 * 5)
     for n in (1, 2, 3):
         r = await db.buy_item(Q, "steroid", T)
@@ -224,7 +224,22 @@ async def _items():
     assert (await db.sell_item(Z, "muffler", 2))["reason"] == "short"
     for k in ("toto_slip", "scout_reset", "train_skip"):                      # 원가 없는 아이템은 못 판다
         assert (await db.sell_item(Z, k, 1))["reason"] == "unsellable"
-    assert set(edb.SELL_PRICES) == set(edb.SHOP_PRICES) == {"muffler", "steroid"}
+    assert set(edb.SELL_PRICES) == set(edb.SHOP_PRICES)
+    # 2.81: 낚시 · 양궁 · 유스 · 전술 아이템도 /아이템상점에서 판다 (던전 아이템은 던전에서만)
+    assert {"bait", "rod_legend", "bow_pro", "focus", "first_team", "scout_coupon", "tactic_note",
+            "analysis_report"} <= set(edb.SHOP_PRICES)
+    assert not {"torch", "potion", "feather", "dungeon_ticket", "skip_piece", "box"} & set(edb.SHOP_PRICES)
+    assert [k for _, keys in edb.SHOP_GROUPS for k in keys] == list(edb.SHOP_PRICES)   # 화면 묶음에 빠짐 · 중복 없음
+    from cogs.fishing import SHOP as FISH_SHOP
+    assert all(edb.SHOP_PRICES[k] == p for k, p in FISH_SHOP.items())                 # 낚시터 상점과 같은 가격
+    R = 16
+    await db.add_balance(R, 10_000_000)
+    assert (await db.buy_item(R, "rod_pro", T))["ok"]
+    assert (await db.buy_item(R, "rod_pro", T))["reason"] == "have"                    # 낚싯대 · 아이스박스는 하나만
+    for n in (1, 2, 3):
+        assert (await db.buy_item(R, "focus", T))["ok"]
+    assert (await db.buy_item(R, "focus", T))["reason"] == "daily"                     # 양궁 아이템은 하루 3개
+    assert (await db.buy_item(R, "tactic_note", T))["qty"] == 1
     assert edb.SELL_PRICES["steroid"] == 15_000_000                           # 산 아이템은 원가의 50%로 판다
     assert edb.TOTO_SLIP_AMOUNT == (200_000, 1_000_000)
     await db._tx(lambda con: con.execute("DELETE FROM inventory WHERE user_id=?", (Z,)))
@@ -355,13 +370,13 @@ async def _item_screens():
     await cpm.PlayersMarket.item_shop.callback(shop, inter)
     view = sent[-1]["view"]
     assert [o.value for o in view.sell.options] == ["muffler:1", "muffler:3"] and "+75,000원" in view.sell.options[1].label
-    assert "개당 +25,000원" in sent[-1]["embed"].fields[1].value and "리셋권" not in sent[-1]["embed"].fields[1].value
+    assert "개당 +25,000원" in sent[-1]["embed"].fields[-1].value and "리셋권" not in sent[-1]["embed"].fields[-1].value
     bal0 = await db.get_balance(user.id)
     view.sell._values = ["muffler:3"]
     await view._sell(inter)
     redraw, result = sent[-2], sent[-1]
     assert "3개 판매" in result["embed"].title and result["ephemeral"] is False         # 결과는 공개
-    assert not hasattr(redraw["view"], "sell") and "없어요" in redraw["embed"].fields[1].value
+    assert not hasattr(redraw["view"], "sell") and "없어요" in redraw["embed"].fields[-1].value
     assert redraw["view"].kind == "item" and "아이템 상점" in redraw["embed"].title
     assert await db.get_balance(user.id) - bal0 == 75_000
     # 구매도 결과는 공개 · 화면 새로고침 → 산 머플러가 판매 메뉴에 바로 뜬다

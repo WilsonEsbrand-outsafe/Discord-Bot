@@ -37,13 +37,18 @@ class PatchNotesCog(commands.Cog):
         finally:
             con.close()
 
-    async def send_all(self, embed: "discord.Embed | list[discord.Embed]") -> tuple[int, int]:
+    async def send_all(self, embed: "discord.Embed | list[discord.Embed]", everyone: bool = False) -> tuple[int, int]:
+        """모든 서버 알림 채널에 보낸다. everyone=True 면 @everyone 태그 (패치노트)."""
         embeds = embed if isinstance(embed, list) else [embed]
         success, fail = 0, 0
         for guild in self.bot.guilds:
             channel = await asyncio.to_thread(self._pick_channel, guild)
             try:
-                await channel.send(embeds=embeds)
+                if everyone:
+                    await channel.send(content="@everyone", embeds=embeds,
+                                       allowed_mentions=discord.AllowedMentions(everyone=True))
+                else:
+                    await channel.send(embeds=embeds)
                 success += 1
             except Exception:
                 fail += 1
@@ -58,7 +63,7 @@ class PatchNotesCog(commands.Cog):
                 es = [discord.Embed(title=f"{title} · {sub}" if sub else title, description=body, color=0xE67E22)
                       for sub, body in parts]
                 es[-1].timestamp = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
-                ok, fail = await self.send_all(es)
+                ok, fail = await self.send_all(es, everyone=key.startswith("patch-"))
                 print(f"[공지] {key} 성공 {ok} / 실패 {fail}")
 
     @notice_loop.before_loop
@@ -184,7 +189,7 @@ class PatchNotesCog(commands.Cog):
         now_ts = int(time.time())
         text = content if isinstance(content, str) else "\n\n".join(f"{t}\n{b}" for t, b in content)
         await asyncio.to_thread(self._save_patch, version, text, now_ts)
-        success, fail = await self.send_all(self.make_embeds(version, content, now_ts))
+        success, fail = await self.send_all(self.make_embeds(version, content, now_ts), everyone=True)
 
         await interaction.followup.send(
             f"✅ **v{version}** 패치노트 전송 완료!\n"

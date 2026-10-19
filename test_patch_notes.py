@@ -40,7 +40,10 @@ def test_embeds():
     ok, fail = asyncio.run(cog.send_all(es))
     assert (ok, fail) == (1, 0) and len(sent[0]["embeds"]) == 2
     asyncio.run(cog.send_all(old[0]))
-    assert len(sent[1]["embeds"]) == 1
+    assert len(sent[1]["embeds"]) == 1 and "content" not in sent[1]
+    # 2.81: 패치노트는 @everyone 태그
+    asyncio.run(cog.send_all(es, everyone=True))
+    assert sent[2]["content"] == "@everyone" and sent[2]["allowed_mentions"].everyone is True
 
 
 if __name__ == "__main__":
