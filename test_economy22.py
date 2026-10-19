@@ -234,6 +234,8 @@ async def _items():
     assert all(edb.SHOP_PRICES[k] == p for k, p in FISH_SHOP.items())                 # 낚시터 상점과 같은 가격
     R = 16
     await db.add_balance(R, 10_000_000)
+    assert (await db.buy_item(R, "focus", edb.SHOP_281_TS - 1))["reason"] == "closed"   # 06:00 KST 무점검 패치 전
+    assert edb.shop_open("muffler", 0) and edb.shop_open("focus", edb.SHOP_281_TS) and not edb.shop_open("torch")
     assert (await db.buy_item(R, "rod_pro", T))["ok"]
     assert (await db.buy_item(R, "rod_pro", T))["reason"] == "have"                    # 낚싯대 · 아이스박스는 하나만
     for n in (1, 2, 3):

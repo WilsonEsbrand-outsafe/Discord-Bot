@@ -41,6 +41,9 @@ def test_embeds():
     assert (ok, fail) == (1, 0) and len(sent[0]["embeds"]) == 2
     asyncio.run(cog.send_all(old[0]))
     assert len(sent[1]["embeds"]) == 1 and "content" not in sent[1]
+    import patch_notes_data as pnd
+    import services.economy_db as edb
+    assert ("patch-2.81", edb.SHOP_281_TS) in [(k, ts) for k, ts, *_ in pnd.NOTICES]   # 상점이 열리는 시각에 발송
     # 2.81: 패치노트는 @everyone 태그
     asyncio.run(cog.send_all(es, everyone=True))
     assert sent[2]["content"] == "@everyone" and sent[2]["allowed_mentions"].everyone is True

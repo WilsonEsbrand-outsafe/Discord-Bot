@@ -18,7 +18,7 @@ matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 
 
 import release
 from services import ui
-from services.economy_db import ITEMS, SELL_PRICES, SHOP_DAILY_LIMITS, SHOP_GROUPS, SHOP_PRICES, EconomyDB
+from services.economy_db import ITEMS, SELL_PRICES, SHOP_DAILY_LIMITS, SHOP_GROUPS, SHOP_PRICES, EconomyDB, shop_open
 from services.player_market_db import PlayerMarketDB, PACKS, PACK_MAX_PULLS, JACKPOT_PROB, JACKPOT_RANGE, player_profile
 
 PACK_EMOJI = {
@@ -216,7 +216,7 @@ class ShopView(_ShopOwnerView):
             opts = [discord.SelectOption(label=f"{ITEMS[k][1]} · {price:,}원", value=f"item:{k}", emoji=ITEMS[k][0],
                                          description=(ITEMS[k][2] + (f" · 하루 {SHOP_DAILY_LIMITS[k]}개"
                                                                      if k in SHOP_DAILY_LIMITS else ""))[:100])
-                    for k, price in SHOP_PRICES.items()]
+                    for k, price in SHOP_PRICES.items() if shop_open(k)]
         self.menu = discord.ui.Select(placeholder="🃏 살 선수팩을 고르세요" if kind == "pack" else "🛒 살 아이템을 고르세요",
                                       options=opts[:25])
         self.menu.callback = self._buy
@@ -226,6 +226,8 @@ class ShopView(_ShopOwnerView):
 
         sell = []
         for k, each in SELL_PRICES.items():
+            if not shop_open(k):
+                continue
             n, (emoji, name, _) = inv.get(k, 0), ITEMS[k]
             if n:
                 sell.append(discord.SelectOption(label=f"{name} 1개 팔기 · +{each:,}원", value=f"{k}:1", emoji=emoji))
@@ -253,6 +255,8 @@ class ShopView(_ShopOwnerView):
             today = f" · `오늘` {r['bought']}/{r['limit']}개" if r["limit"] else ""
             e = ui.card(f"🛒 {emoji} {name} 구매!", f"{desc}\n\n`가격` **-{r['price']:,}원** · `잔액` **{r['balance']:,}원**\n"
                         f"`보유` **{r['qty']}개**{today} · `/가방`에서 바로 사용", ui.WIN, self.user, sec)
+        elif r["reason"] == "closed":
+            e = ui.card("🙅 아직 팔지 않아요", f"{emoji} {name}은(는) 곧 상점에 들어와요.", ui.EVEN, self.user, sec)
         elif r["reason"] == "have":
             e = ui.card("🙅 이미 가지고 있어요", f"{emoji} {name}은(는) 하나만 있으면 돼요.", ui.EVEN, self.user, sec)
         elif r["reason"] == "daily":
@@ -818,12 +822,15 @@ class PlayersMarket(commands.Cog):
             return e, ShopView(self, user, inv, kind)
         bought = await self.money.shop_bought_today(user.id, int(time.time()))
         for group, keys in SHOP_GROUPS:
+            keys = [k for k in keys if shop_open(k)]
+            if not keys:
+                continue
             e.add_field(name=group, inline=False, value="\n".join(
                 f"{ITEMS[k][0]} **{ITEMS[k][1]}** · {SHOP_PRICES[k]:,}원"
                 + (f" · 오늘 {bought.get(k, 0)}/{SHOP_DAILY_LIMITS[k]}" if k in SHOP_DAILY_LIMITS else "")
                 + f"\n　 *{ITEMS[k][2]}*" for k in keys))
         sell = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** × {inv[k]} · 개당 +{each:,}원"
-                         for k, each in SELL_PRICES.items() if inv.get(k))
+                         for k, each in SELL_PRICES.items() if inv.get(k) and shop_open(k))
         e.add_field(name="💸 팔기 (원가의 50%)", value=sell[:1024] or "팔 수 있는 아이템이 없어요.", inline=False)
         e.set_footer(text="아래 메뉴에서 고르면 바로 구매 · 리셋권 · 스킵권 · 토토 용지는 사고팔 수 없어요 · 선수팩은 /선수팩상점")
         return e, ShopView(self, user, inv, kind)

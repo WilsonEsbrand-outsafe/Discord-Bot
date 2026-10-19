@@ -104,6 +104,16 @@ SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
                ("🎓 유스", ("first_team", "special_training", "scout_coupon")),
                ("⚔️ 전술", ("tactic_note", "analysis_report")))
 SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3}   # 하루(KST) 구매 한도가 있는 아이템
+# 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
+SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST
+SHOP_BASE = ("muffler", "steroid")
+
+
+def shop_open(item: str, now_ts: Optional[float] = None) -> bool:
+    """/아이템상점에서 지금 사고팔 수 있는 아이템인가."""
+    return item in ITEM_PRICES and (item in SHOP_BASE or (time.time() if now_ts is None else now_ts) >= SHOP_281_TS)
+
+
 SHOP_ONE_ONLY = {"rod_carbon", "rod_pro", "rod_legend", "icebox"}   # 하나만 가지면 되는 장비 (이미 있으면 못 산다)
 SELL_RATE = 0.5
 SELL_PRICES = {k: int(p * SELL_RATE) for k, p in ITEM_PRICES.items()}
@@ -1516,7 +1526,7 @@ class EconomyDB:
 
     async def sell_item(self, user_id: int, item: str, qty: int) -> dict:
         """아이템 판매: 개당 원가의 50%. 실패 reason: unsellable(원가 없는 아이템) / short(수량 부족)."""
-        if item not in SELL_PRICES:
+        if not shop_open(item):
             return {"ok": False, "reason": "unsellable"}
         each = SELL_PRICES[item]
 
@@ -1572,6 +1582,8 @@ class EconomyDB:
 
         def fn(con):
             bought = 0
+            if not shop_open(item, now_ts):
+                return {"ok": False, "reason": "closed"}
             if item in SHOP_ONE_ONLY and con.execute("SELECT 1 FROM inventory WHERE user_id=? AND item=? AND qty>0",
                                                      (user_id, item)).fetchone():
                 return {"ok": False, "reason": "have"}

@@ -10,7 +10,7 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS, SHOP_PRICES, SKIP_ITEMS,
+    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS, SKIP_ITEMS, shop_open,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
@@ -947,7 +947,7 @@ class Economy(commands.Cog):
 
     def _no_item_card(self, user, item: str) -> discord.Embed:
         emoji, name, _ = ITEMS[item]
-        where = ("`/아이템상점`에서 살 수 있어요." if item in SHOP_PRICES else
+        where = ("`/아이템상점`에서 살 수 있어요." if shop_open(item) else
                  "`/직관` 경기장 이벤트에서 얻을 수 있어요." if item in self.WATCH_ITEM_WEIGHTS else
                  "지금은 `/쿠폰` 같은 이벤트로 얻을 수 있어요.")
         return ui.card(f"🙅 {emoji} {name}이(가) 없어요", where, ui.LOSE, user, "🎒 아이템")
