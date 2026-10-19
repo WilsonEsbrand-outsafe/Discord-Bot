@@ -414,9 +414,8 @@ class Club(commands.Cog):
                 try:
                     await msg.edit(embed=ui.card(
                         f"{title_tag} {h['name']} {sh} : {sa} {a['name']} · 하프타임",
-                        log_until(45) + f"\n\n🔍 **상대 전술 공개** — {a['name']} **{T.label(a['tactic'])}**\n"
-                        f"⚔️ 내 전술 **{T.label(h['tactic'])}** · 규칙대로면 후반 **{T.label(th_rule)}**\n"
-                        f"⏱️ **{self.HT_WAIT}초** 안에 후반 전술을 고르세요. 바꾸면 후반 초반 15분은 적응이 덜 돼요.",
+                        log_until(45) + f"\n\n🔍 상대 **{T.label(a['tactic'])}** · 나 **{T.label(h['tactic'])}**\n"
+                        f"⏱️ **{self.HT_WAIT}초** 안에 후반 전술 선택 (안 고르면 {T.label(th_rule)})",
                         ui.DARK, user, section), view=hv)
                     try:
                         await asyncio.wait_for(hv.done.wait(), self.HT_WAIT)
@@ -441,7 +440,7 @@ class Club(commands.Cog):
             note += "\n" + " · ".join(subs) + " (부상 대신 출전)"
         if tac:
             fit = round(h["fit"][h["tactic"]])
-            note += f"\n⚔️ 내 전술 **{T.label(h['tactic'])}** · 적응도 {fit} · 상대 전술은 하프타임에 공개"
+            note += f"\n⚔️ 내 전술 **{T.label(h['tactic'])}** · 적응도 {fit}"
             if h.get("report") and await self.tac.consume_report(h["uid"]):
                 note += f"\n📊 분석 리포트: {a['name']} **{T.label(a['tactic'])}** · 하프타임 규칙 {T.rules_text(a)}"
         kickoff = ui.card(f"{title_tag} {h['name']} vs {a['name']}",

@@ -216,17 +216,14 @@ class Hubs(commands.Cog):
         lines = []
         for t, (e_, n_, _, attr) in T.TACTICS.items():
             fit = sum(f[t] for f in fits.values()) / len(fits) if fits else T.FIT_START
-            comp = T.composition(xi, t)
             mark = " ✅ **기본 전술**" if t == s["tactic"] else ""
-            lines.append(f"{e_} **{n_}** — {T.label(T.BEATS[t])}에 강함 · 중요 능력치 {attr}{mark}\n"
-                         f"　`적응도` {ui.bar(fit, 100, 8)} {fit:.0f} · `구성` ×{comp:.2f} · `효과` {T.effect(fit, comp):.0%}")
-        rules = "\n".join(f"　{n} → **{T.label(s['rules'][k]) if s['rules'].get(k) else '유지'}**" for k, n in T.RULE_STATES)
-        e = ui.card("⚔️ 전술", "🔥 압박 > 🎯 점유 > ⚡ 역습 > 🔥 압박 · 유리하면 기대 득점 최대 +6%, 불리하면 -6%\n"
-                    "모든 경기(친선 · 공식)에 기본 전술로 나가요. 상대 전술은 하프타임에 공개돼요.\n\n"
-                    + "\n".join(lines) + f"\n\n**하프타임 규칙** (내가 고르지 않을 때 · 상대 쪽일 때)\n{rules}",
-                    ui.INFO, user, "⚔️ 전술")
-        e.set_footer(text=f"적응도: 그 전술로 뛰면 +{T.FIT_GAIN} · {T.FIT_IDLE_DAYS}일 넘게 안 쓰면 하루 -{T.FIT_DECAY} · "
-                          "효과 = (0.5 + 0.5 × 적응도) × 구성")
+            lines.append(f"{e_} **{n_}** · 적응도 {fit:.0f} · 효과 **{T.effect(fit, T.composition(xi, t)):.0%}**{mark}")
+        short = {"losing": "질 때", "draw": "비길 때", "winning": "이길 때"}
+        rules = " · ".join(f"{short.get(k, n)} {T.label(s['rules'][k]) if s['rules'].get(k) else '유지'}" for k, n in T.RULE_STATES)
+        e = ui.card("⚔️ 전술", "🔥 압박 > 🎯 점유 > ⚡ 역습 > 🔥 압박\n\n" + "\n".join(lines)
+                    + f"\n\n**하프타임 규칙** {rules}", ui.INFO, user, "⚔️ 전술")
+        e.set_footer(text="유리하면 기대 득점 최대 +6% · 효과는 적응도(그 전술로 뛸수록 ↑)와 선수 구성"
+                          "(압박 피지컬 · 점유 패스 · 역습 속력)으로 정해져요")
         base = discord.ui.Select(placeholder="⚔️ 기본 전술 바꾸기", row=0, options=[
             discord.SelectOption(label=n_, value=t, emoji=e_, default=t == s["tactic"]) for t, (e_, n_, *_) in T.TACTICS.items()])
 
@@ -254,23 +251,21 @@ class Hubs(commands.Cog):
     async def _p_scout(self, view: HubView) -> discord.Embed:
         user = view.user
         opp_id = view.ctx.get("scout")
-        body = "상대를 고르면 **최근 5경기** 전술을 보여 드려요. 기본 전술 자체는 경기 전에 공개되지 않아요.\n" \
-               "📊 분석 리포트(아이템)를 쓰면 다음 경기 킥오프 때 상대 기본 전술과 하프타임 규칙이 보여요."
+        body = "상대를 고르면 최근 5경기 전술을 보여 드려요."
         if opp_id:
             rows = await self.tac.recent(opp_id, 5)
             m = self.bot.get_user(opp_id) if self.bot else None
             name = m.display_name if m else f"<@{opp_id}>"
             if rows:
-                cnt = {t: sum(s == t for s, _ in rows) for t in T.TACTICS}
-                sw = sum(s != e for s, e in rows)
-                body += (f"\n\n**{name}** 최근 {len(rows)}경기 — 시작 전술 "
-                         + " · ".join(f"{T.label(t)} {c}" for t, c in cnt.items() if c)
-                         + f"\n하프타임에 바꾼 경기 **{sw}번**\n"
-                         + "\n".join(f"　{i}. {T.label(s)}" + (f" → {T.label(e)}" if e != s else "")
-                                      for i, (s, e) in enumerate(rows, 1)))
+                cnt = {t: sum(st == t for st, _ in rows) for t in T.TACTICS}
+                sw = sum(st != en for st, en in rows)
+                body = (f"**{name}** 최근 {len(rows)}경기\n시작 전술 "
+                        + " · ".join(f"{T.label(t)} {c}" for t, c in cnt.items() if c)
+                        + f"\n하프타임에 바꾼 경기 {sw}번")
             else:
-                body += f"\n\n**{name}** — 2.8 전술 경기 기록이 아직 없어요."
+                body = f"**{name}** — 아직 전술 경기 기록이 없어요."
         e = ui.card("🔍 상대 분석", body, ui.INFO, user, "⚔️ 전술")
+        e.set_footer(text="📊 분석 리포트(아이템)를 쓰면 다음 경기 킥오프 때 상대 전술이 보여요")
         pick = discord.ui.UserSelect(placeholder="🔍 분석할 상대 고르기", row=0)
 
         async def chosen(interaction: discord.Interaction):
@@ -329,31 +324,25 @@ class Hubs(commands.Cog):
         if view.ctx.get("yid") not in ids:
             view.ctx["yid"] = youth[0]["id"] if youth else None
         sel_y = next((y for y in youth if y["id"] == view.ctx["yid"]), None)
-        head = (f"유스 아카데미 **Lv.{st['level']}** · 슬롯 **{len(youth)}/{st['slots']}** · 1군 등록 OVR 상한 **{st['cap']}**\n"
-                f"오늘 시장 열기 **×{st['heat']:.2f}** · "
-                + " · ".join([_check(st["tried"], "입단 테스트"), _check(st["matched"], "주간 연습경기"),
-                              _check(st["registered"], "이번 주 1군 등록")]))
+        head = (f"아카데미 Lv.{st['level']} · 슬롯 **{len(youth)}/{st['slots']}** · 1군 상한 OVR {st['cap']}\n"
+                + " ".join([_check(st["tried"], "테스트"), _check(st["matched"], "연습경기"), _check(st["registered"], "1군 등록")]))
         lines = []
         for y in youth:
-            pe, pn, _ = Y.PERSONALITIES[y["personality"]]
-            grad = " 🎓**졸업**" if y["age"] >= Y.GRAD_AGE else ""
             pick = "▶ " if y["id"] == view.ctx["yid"] else ""
-            lines.append(f"{pick}**{y['name']}** \"{y['nick']}\" · {y['pos']} · {y['age']}세{grad}\n"
-                         f"　OVR **{y['ovr']:.1f}** · 잠재력 {Y.pot_text(y)} · {pe} {pn} · "
-                         f"오늘 훈련 {y['trains_left']}번 남음 · 판매가 {y['price']:,}원")
-        body = head + "\n\n" + ("\n".join(lines) if lines else "아직 유스 선수가 없어요. **입단 테스트**로 첫 선수를 뽑아 보세요!")
+            grad = " 🎓졸업" if y["age"] >= Y.GRAD_AGE else ""
+            lines.append(f"{pick}**{y['name']}** {y['pos']} {y['age']}세{grad} · OVR **{y['ovr']:.1f}** · 잠재력 {Y.pot_text(y)} · "
+                         f"{Y.PERSONALITIES[y['personality']][0]} · 훈련 {y['trains_left']}")
+        body = head + "\n\n" + ("\n".join(lines) if lines else "유스 선수가 없어요. **지원자 보기**로 첫 선수를 뽑아 보세요!")
         if st["first"]:
-            body += "\n\n**1군 등록 선수** (내 구단 전용 · 7일 = 1살 · 35세 은퇴)\n" + "\n".join(
-                f"　🎓 {y['name']} · {y['pos']} · OVR {y['first_ovr']} · {Y.age_of(y, now)}세" for y in st["first"])
+            body += "\n\n**1군** " + " · ".join(f"🎓 {y['name']} OVR {y['first_ovr']}" for y in st["first"])
         apps = view.ctx.get("apps") if not st["tried"] else None
         if apps:
-            body += "\n\n**🔎 오늘의 지원자** — 한 명을 골라 테스트해요 (잠재력은 숨겨져 있어요)\n" + "\n".join(
-                f"　{i}. **{a['name']}** \"{a['nick']}\" · {a['pos']} · {a['age']}세 · OVR {a['ovr']} · "
-                f"{Y.personality_label(a['personality'])}\n　　🗣️ 스카우터: \"{a['scout']}\""
-                for i, a in enumerate(apps, 1))
+            body += "\n\n**🔎 오늘의 지원자** (잠재력은 비밀)\n" + "\n".join(
+                f"{i}. **{a['name']}** {a['pos']} {a['age']}세 · OVR {a['ovr']} · {Y.PERSONALITIES[a['personality']][0]} — "
+                f"\"{a['scout']}\"" for i, a in enumerate(apps, 1))
         e = ui.card("🎓 유스", body, ui.INFO, user, "🎓 유스")
-        e.set_footer(text=f"입단 테스트 {_won(Y.TRYOUT_FEE)}원 (떨어지면 절반 환불) · 훈련 하루 {Y.TRAIN_DAILY}번 · "
-                          f"7일 = 1살 · {Y.GRAD_AGE}세 졸업 뒤 판매가 주마다 -15% · 1군 등록 📝 + {_won(Y.REGISTER_FEE)}원")
+        e.set_footer(text=f"테스트 {_won(Y.TRYOUT_FEE)}원(불합격 시 절반 환불) · 훈련 하루 {Y.TRAIN_DAILY}번 · "
+                          f"{Y.GRAD_AGE}세 졸업 · 성격: 📚성실 ✨천재 🌱대기만성 🔥승부사")
         # 0줄: 선수 고르기
         if youth:
             pick = discord.ui.Select(placeholder="🎓 선수 고르기", row=0, options=[

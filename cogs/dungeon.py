@@ -12,7 +12,7 @@ from cogs.economy import ITEM_HANDLERS
 from services import ui
 from services.club_db import ClubDB
 from services.dungeon import (
-    BOSS_FLOORS, DEATH_KEEP, FIRST_CLEAR, FLOORS, IDLE_RETURN, MERCHANT, POTION_HEAL, ROOMS, STATS, THEMES, ALTAR_COST,
+    BOSS_FLOORS, DEATH_KEEP, FLOORS, IDLE_RETURN, MERCHANT, POTION_HEAL, ROOMS, STATS, THEMES, ALTAR_COST,
     DungeonDB, act, drink_potion, enter, item_name, loot_text, reveal, team_stats, theme_of,
 )
 
@@ -47,30 +47,28 @@ def run_embed(user, st: dict, log: list[str] | None = None) -> discord.Embed:
         parts.append("\n".join(log))
     if ph == "doors":
         if st["floor"] in BOSS_FLOORS:
-            parts.append("👑 **보스층**이에요. 문은 하나뿐, 도망칠 수 없어요.")
+            parts.append("👑 **보스층** — 도망칠 수 없어요")
         else:
             rows = []
             for i, d in enumerate(st["doors"]):
                 real = f" → {ROOMS[d['room']][0]} **{ROOMS[d['room']][1]}**" if st.get("revealed") else ""
                 rows.append(f"🚪 **{i + 1}번 문** — {d['hint']}{real}")
-            parts.append("\n".join(rows) + ("\n-# 🔦 횃불이 켜져 있어서 힌트가 모두 진짜예요" if st.get("torch") else
-                                             "\n-# 힌트는 가끔 거짓이에요"))
+            parts.append("\n".join(rows) + ("\n-# 🔦 힌트가 모두 진짜예요" if st.get("torch") else ""))
     elif ph == "battle":
         m = st["monster"]
         parts.append(f"{'👑' if m['boss'] else '👹'} **{m['name']}** — 위험도 {'🔥' * min(5, round(m['power'] / 10))}"
-                     + ("" if m["boss"] else "\n🏃 도망치면 보상은 없지만 피해를 피할 수 있어요 (기동이 높을수록 잘 도망쳐요)"))
+                     )
     elif ph == "treasure":
-        parts.append("📦 열어 볼까요? 가끔 미믹이 숨어 있어요 (운이 높을수록 적게)"
-                     + (f"\n🗝️ 열쇠가 **{st['inv_dkey']}개** 있어요 — 금고를 열면 좋은 보상 2번" if st.get("inv_dkey") else ""))
+        parts.append("📦 열어 볼까요? (가끔 미믹)" + (f" · 🗝️ 열쇠 {st['inv_dkey']}개" if st.get("inv_dkey") else ""))
     elif ph == "merchant":
         parts.append("\n".join(f"{item_name(k)} — **{MERCHANT[k]:,}원**" for k in st.get("offers", []))
                      or "🧙 \"오늘은 다 팔렸다네.\"")
     elif ph == "altar":
-        parts.append(f"🙏 기도하면 체력 **-{ALTAR_COST}**. 대개 축복(다음 보상 2배)이지만, 가끔 저주(다음 피해 +50%)예요.")
+        parts.append(f"🙏 체력 **-{ALTAR_COST}** 바치고 기도 — 대개 축복(보상 2배), 가끔 저주")
     parts.append(f"{_hp_line(st)}\n{_floor_line(st)}\n{_loot_line(st)}")
     color = ui.DOOM if ph == "battle" and st["monster"]["boss"] else (ui.DARK if ph == "battle" else ui.INFO)
     e = ui.card(f"{th[0]} {th[1]} · {st['floor']}층", "\n\n".join(parts), color, user, SECTION)
-    e.set_footer(text=f"{_stats_line(st['stats']).replace('**', '')} · 30분 동안 아무것도 안 하면 자동 귀환(보상 전부)")
+    e.set_footer(text="힌트는 가끔 거짓 · 30분 방치하면 자동 귀환(보상 전부)")
     return e
 
 
@@ -85,13 +83,13 @@ def result_embed(user, r: dict, log: list[str] | None = None) -> discord.Embed:
     got = " · ".join(item_name(k) + (f" ×{n}" if n > 1 else "") for k, n in r["items"].items()) or "없음"
     lines = ([*log, ""] if log else []) + [
         f"`아이템` {got}",
-        f"`돈` 💰 {r['coins']:,}원 · `훈련 경험치` +{r['xp']}",
+        f"`돈` 💰 {r['coins']:,}원 · `경험치` +{r['xp']}",
     ]
     if r.get("first"):
-        lines.append("✨ **첫 클리어 보너스** (위 아이템에 포함): " + " · ".join(item_name(k) + f" ×{n}" for k, n in FIRST_CLEAR.items()))
+        lines.append("✨ 첫 클리어 보너스 포함")
     lines.append(f"`잔액` {r['balance']:,}원")
     e = ui.card(title, "\n".join(lines), color, user, SECTION)
-    e.set_footer(text="보상은 가방에 들어갔어요 · 내일 00시에 다시 입장할 수 있어요 · 🏆 주간 최고 층은 /던전에서")
+    e.set_footer(text="보상은 가방에 들어갔어요 · 내일 00시에 다시 열려요")
     return e
 
 
@@ -235,16 +233,11 @@ class Dungeon(commands.Cog):
         team = await self.clubs.get_team(user.id, fill_injured=True)
         stats = team_stats(team["lineup"]) if team else None
         clears = await self.db.clears(user.id)
-        week = " · ".join(f"{t[0]}" for t in THEMES)
-        lines = [f"> 🎙️ *\"오늘의 던전은 **{th[0]} {th[1]}**입니다.\"*", "",
-                 f"🗓️ 요일마다 테마가 바뀌어요: {week} (월~일)",
-                 f"🚪 층마다 문 2~3개 · 힌트는 가끔 거짓 · {'·'.join(map(str, BOSS_FLOORS))}층 보스 · 모두 {FLOORS}층",
-                 f"🏃 [귀환]하면 모은 보상 전부, 체력이 0이 되면 **절반**만 가져가요", ""]
+        lines = [f"{FLOORS}층 · {'·'.join(map(str, BOSS_FLOORS))}층 보스 · [귀환]하면 보상 전부, 쓰러지면 절반", ""]
         if stats:
-            lines.append(f"`파티` 선발 11명 — {_stats_line(stats)}")
-            lines.append("-# 공격 = FW · 기동 = MF · 수비 = DF · 운 = GK 평균 능력치")
-        lines.append(f"`오늘 입장` **{info['runs']}/{info['allowed']}** · `🎫 추가 입장권` {info['tickets']}장 · `🔦 횃불` {info['torch']}개")
-        lines.append(f"`{th[1]} 첫 클리어` {'✅ 완료' if theme_of(now) in clears else '아직 — 깨면 🎁 상자 · 🎫 입장권 · 🧩 조각 5'}")
+            lines.append(f"`파티` {_stats_line(stats)}")
+        lines.append(f"`오늘 입장` **{info['runs']}/{info['allowed']}** · 🎫 {info['tickets']} · 🔦 {info['torch']}")
+        lines.append(f"`첫 클리어` {'✅ 완료' if theme_of(now) in clears else '아직 (보너스 있음)'}")
         if info["active"]:
             st = info["active"]
             lines += ["", f"⏸️ **진행 중인 던전이 있어요** — {st['floor']}층 · 체력 {st['hp']}/{st['max_hp']}"]

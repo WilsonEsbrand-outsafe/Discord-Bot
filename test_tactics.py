@@ -181,7 +181,7 @@ def test_match_flow():
             assert "⚔️ 내 전술 **🎯 점유**" in kick
             assert ("📊 분석 리포트: FC12 **🔥 압박**" in kick) == (press == "counter")   # 리포트는 한 번만
             ht = next(e for e in edits if isinstance(e.get("view"), CC.HalftimeView))
-            assert "상대 전술 공개" in ht["embed"].description and "🔥 압박" in ht["embed"].description
+            assert "🔍 상대" in ht["embed"].description and "🔥 압박" in ht["embed"].description
             rows = await club.tac.recent(A, 1)
             if press:
                 assert rows[0] == ("possession", "counter") and "→ ⚡ 역습" in final and "전술 변경" in final
