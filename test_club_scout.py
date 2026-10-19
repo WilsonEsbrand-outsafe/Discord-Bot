@@ -263,6 +263,8 @@ async def _club22():
     await eco.use_item(A, "muffler", NOW)
     cog = cc.Club.__new__(cc.Club)
     cog.clubs, cog.money, cog.pm, cog._playing = clubs, eco, pm, set()
+    from services.fishing import FishingDB
+    cog.fish = FishingDB()   # 2.8 🍽️ 든든한 식단
     user = SimpleNamespace(id=A, display_name="알파", display_avatar=SimpleNamespace(url="https://x/a.png"), bot=False)
     opp = SimpleNamespace(id=B, display_name="베타", display_avatar=SimpleNamespace(url="https://x/b.png"), bot=False)
     edits = []

@@ -15,6 +15,7 @@ from services.club_db import (
     match_highlights, official_odds, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
+from services.fishing import FishingDB
 from services.player_market_db import PlayerMarketDB
 
 _LINES = [("FW", "⚽ 공격"), ("MF", "🎯 미드필드"), ("DF", "🛡️ 수비"), ("GK", "🧤 골키퍼")]
@@ -103,6 +104,7 @@ class Club(commands.Cog):
         self.bot = bot
         self.clubs = ClubDB()
         self.money = EconomyDB()
+        self.fish = FishingDB()   # 2.8 🍽️ 든든한 식단
         self.pm = PlayerMarketDB()
         self._playing: set[int] = set()   # 경기 중인 유저 (중계가 겹치지 않게 — 끝나면 바로 다시 가능)
 
@@ -327,9 +329,11 @@ class Club(commands.Cog):
         sides = []
         for uid, team in ((home_id, home), (away_id, away)):
             muffler = team.get("squad") != "B" and await self.money.consume_buff(uid, "muffler")
-            rating = team["rating"] + (MUFFLER_BONUS if muffler else 0)
+            # 2.8 🍽️ 든든한 식단: 오늘 선발 11명에게 모두 물고기를 먹였으면 전력 +1 (스쿼드 B 제외)
+            meal = await self.fish.team_meal_bonus(uid, int(time.time())) if team.get("squad") != "B" else 0
+            rating = team["rating"] + (MUFFLER_BONUS if muffler else 0) + meal
             name = (f"{team['emblem']} " if team.get("emblem") else "") + team["name"]
-            sides.append({"uid": uid, "name": name + (" 🧣" if muffler else ""), "rating": rating,
+            sides.append({"uid": uid, "name": name + (" 🧣" if muffler else "") + (" 🍽️" if meal else ""), "rating": rating,
                           "stadium": team.get("stadium"),
                           "xi": [s for s in team["lineup"] if s.get("player_id")]})
         return sides

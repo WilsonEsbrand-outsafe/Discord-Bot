@@ -185,6 +185,8 @@ async def _flow():
     assert "`자신감`" in e.fields[2].value and "`프로 의식` 보통" in e.fields[2].value
     club = cc.Club.__new__(cc.Club)
     club.clubs, club.money, club.pm, club._playing = clubs, eco, pm, set()
+    from services.fishing import FishingDB
+    club.fish = FishingDB()   # 2.8 🍽️ 든든한 식단
     real_sleep, cc.asyncio.sleep = cc.asyncio.sleep, (lambda s: real_sleep(0))
     try:
         await clubs.auto_lineup(A)   # 선발 11명이 꽉 차야 경기 (2.6)

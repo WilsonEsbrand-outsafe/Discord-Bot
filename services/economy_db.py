@@ -47,7 +47,19 @@ ITEMS = {
     "toto_slip":   ("🧾", "토토 용지",       "길에서 주운 토토 용지 — 가질까, 신고할까?"),
     "steroid":     ("💉", "스테로이드 주사기", "내 유망주에게 주사 — OVR · 잠재력 상승? 약물 검출 · 은퇴?"),
     "box":         ("🎁", "점검 보상 상자",   "뒤집힌 카드 6장 중 한 장을 골라 스킵권 · 리셋권 하나를 받아요"),
+    # ── 2.8 낚시 ──
+    "bait":        ("🪱", "일반 미끼",       "던질 때 사용 · 이번 한 번 잡템 확률 절반"),
+    "bait_gold":   ("✨", "고급 미끼",       "던질 때 사용 · 이번 한 번 희귀한 물고기 확률 ↑"),
+    "rod_carbon":  ("🎣", "카본 낚싯대",     "가지고만 있으면 적용 · 크기 +5% · 입질 뒤 7분 기다려 줌"),
+    "rod_pro":     ("🎣", "프로 낚싯대",     "가지고만 있으면 적용 · 크기 +10% · 입질 뒤 10분 기다려 줌"),
+    "rod_legend":  ("🔱", "전설의 낚싯대",   "가지고만 있으면 적용 · 크기 +15% · 입질 뒤 15분 기다려 줌"),
+    "icebox":      ("🧊", "아이스박스",      "가지고만 있으면 적용 · 물고기 신선도가 하루 5%만 떨어짐"),
+    "fish_charm":  ("🍀", "낚시 부적",       "오늘 물고기 판매 · 보내기 한도 +5"),
+    "spice":       ("🧂", "양념 세트",       "요리 재료 · /낚시 → 요리에서 사용"),
+    "skip_piece":  ("🧩", "스킵권 조각",     "5개를 모으면 스킵권 1장 (스카우트 · 훈련 · 직관 중 하나)"),
 }
+# 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
+PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice"}
 # 점검 보상 상자: 6종을 한 장씩 뒤집어 섞고, 고른 한 장을 받는다
 BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
 BOX_CHOICES = len(BOX_REWARDS)
@@ -140,6 +152,15 @@ TRANSFER_REQUIRE = [
 # 파산: 잔액이 마이너스일 때만. 스폰서 계약을 강제 해지해 원금으로 갚고, 남은 빚의 30~70% 를 랜덤 탕감.
 BANKRUPT_COOLDOWN = 3600             # 한 시간에 한 번
 BANKRUPT_FORGIVE = (0.3, 0.7)
+
+
+def _cook_buff(con, user_id: int, now_ts: int, kind: str) -> bool:
+    """2.8 낚시 요리 효과가 지금 켜져 있나 (👑 용궁 만찬은 전부)."""
+    try:
+        return bool(con.execute("SELECT 1 FROM fish_buffs WHERE user_id=? AND kind IN (?, 'feast') AND until>?",
+                                (user_id, kind, now_ts)).fetchone())
+    except sqlite3.OperationalError:
+        return False
 
 
 def _kst_day(ts: int) -> int:
@@ -1360,6 +1381,12 @@ class EconomyDB:
                         ("bankruptcy",            "user_id"),
                         ("notification_settings", "user_id"),
                         ("toto_bets",             "user_id"),
+                        ("fish_state",            "user_id"),   # 2.8 낚시
+                        ("fish_bag",              "user_id"),
+                        ("fish_dex",              "user_id"),
+                        ("fish_trade",            "user_id"),
+                        ("fish_fed",              "user_id"),
+                        ("fish_buffs",            "user_id"),
                     ]:
                         try:
                             cur = con.execute(f"DELETE FROM {table} WHERE {col}=?", (int(user_id),))
@@ -1646,6 +1673,8 @@ class EconomyDB:
                     boost = total > 0 and now_ts < rookie_until(rookie_start(con, user_id, now_ts))
                     if boost:
                         total *= ROOKIE_GRIND_MULT
+                    if total > 0 and _cook_buff(con, user_id, now_ts, "sashimi"):   # 2.8 🍣 모둠회: +보상 10%
+                        total = int(total * 1.1)
 
                     con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total, user_id))
                     con.execute(

@@ -10,7 +10,7 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, RESET_ITEMS, SHOP_PRICES, SKIP_ITEMS,
+    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS, SHOP_PRICES, SKIP_ITEMS,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
@@ -80,17 +80,31 @@ class RaceView(discord.ui.View):
             pass
 
 
+# 아이템 키 → async handler(interaction, user). 새 기능 cog 가 setup 때 등록한다 (가방 [사용] 버튼이 부른다).
+ITEM_HANDLERS: dict = {}
+
+
 class BagView(discord.ui.View):
     """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼. 사용 결과는 채널에 공개로 올린다. (판매는 /아이템상점)"""
 
     def __init__(self, cog: "Economy", user, inv: dict):
         super().__init__(timeout=180)
         self.cog, self.user = cog, user
-        for key, (emoji, name, _) in ITEMS.items():
-            if inv.get(key, 0) > 0:
+        usable = [k for k in ITEMS if inv.get(k, 0) > 0 and k not in PASSIVE_ITEMS]
+        if len(usable) <= 5:
+            for key in usable:
+                emoji, name, _ = ITEMS[key]
                 b = discord.ui.Button(label=f"{name} 사용 ({inv[key]})", emoji=emoji, style=discord.ButtonStyle.primary)
                 b.callback = self._use(key)
                 self.add_item(b)
+        else:   # 2.8: 아이템이 많아지면 버튼 대신 메뉴 하나 (버튼은 한 화면 25개까지)
+            menu = discord.ui.Select(placeholder="🎒 쓸 아이템을 고르세요", options=[
+                discord.SelectOption(label=f"{ITEMS[k][1]} 사용 ({inv[k]})", value=k, emoji=ITEMS[k][0]) for k in usable[:25]])
+
+            async def chosen(interaction: discord.Interaction):
+                await self._use(menu.values[0])(interaction)
+            menu.callback = chosen
+            self.add_item(menu)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
@@ -110,6 +124,9 @@ class BagView(discord.ui.View):
                 return await self.cog._steroid_prompt(interaction, self.user)
             if key == "box":         # 카드 고르는 화면부터 모두에게
                 return await self.cog._box_prompt(interaction, self.user)
+            handler = ITEM_HANDLERS.get(key)   # 2.8 새 기능 아이템 (낚시 · 던전 …) — 그 기능의 cog 가 등록한다
+            if handler:
+                return await handler(interaction, self.user)
             result, ok = await self.cog._use_embed(self.user, key)
             await self._refresh(interaction)
             await interaction.followup.send(embed=result, ephemeral=not ok)   # 성공은 모두에게, 실패는 나만
