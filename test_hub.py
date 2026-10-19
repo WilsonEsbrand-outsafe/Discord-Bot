@@ -65,6 +65,7 @@ def test_hubs():
     hubs = CH.Hubs.__new__(CH.Hubs)
     hubs.bot, hubs.db, hubs.clubs, hubs.fish = None, edb.EconomyDB(), cdb.ClubDB(), CH.FishingDB()
     hubs.dungeon, hubs.pm, hubs.tac, hubs.youth = CH.DungeonDB(), pmdb.PlayerMarketDB(), CH.TacticsDB(), CH.YouthDB()
+    hubs.mgmt = CH.MgmtDB()
 
     async def flow():
         await hubs.clubs.create_club(U, "허브 FC", 1)

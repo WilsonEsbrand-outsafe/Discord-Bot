@@ -1418,6 +1418,8 @@ class EconomyDB:
                         ("youth_players",         "user_id"),   # 2.8 유스
                         ("youth_daily",           "user_id"),
                         ("youth_week",            "user_id"),
+                        ("club_mgmt",             "user_id"),   # 2.8 구단 경영
+                        ("club_form",             "user_id"),
                     ]:
                         try:
                             cur = con.execute(f"DELETE FROM {table} WHERE {col}=?", (int(user_id),))

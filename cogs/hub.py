@@ -5,7 +5,7 @@ import time
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from services import ui
 from services.club_db import (
@@ -17,6 +17,9 @@ from services.economy_db import (
 )
 from services.fishing import FishingDB
 from services.hub import HubView, Page
+from services import management as M
+from services.management import MgmtDB
+from services.notifier import send_notify
 from services import tactics as T
 from services.tactics import TacticsDB
 from services import youth as Y
@@ -33,6 +36,18 @@ def _check(done: bool, text: str) -> str:
 def _won(n: int) -> str:
     return f"{n // 100_000_000}억" if n >= 100_000_000 and n % 100_000_000 == 0 else (
         f"{n // 10_000:,}만" if n >= 10_000 and n % 10_000 == 0 else f"{n:,}")
+
+
+def _mgmt_lines(r: dict) -> str:
+    sell = " 🎉 **매진!**" if r["sellout"] else f" · 빈자리 {r['capacity'] - r['fans']:,}석"
+    return (f"　관중 **{r['fans']:,}** / {r['capacity']:,}석{sell}\n"
+            f"　매출 {r['gross']:,}원 − 선수 유지비 {r['wage']:,}원 − 시설 유지비 {r['upkeep']:,}원"
+            + (" (수입까지만)" if r["cost"] < r["wage"] + r["upkeep"] else "") + f"\n　순이익 **+{r['net']:,}원**")
+
+
+def mgmt_report_card(r: dict, user, title: str) -> discord.Embed:
+    return ui.card(title, _mgmt_lines(r) + f"\n\n😊 팬 만족도 {r['sat_before']:.0f} → **{r['sat']:.0f}** (목표 {r['target']:.0f})",
+                   ui.WIN, user, "💼 경영")
 
 
 # /게임 페이지: (이모지, 제목, 한 줄, 본문)
@@ -75,15 +90,29 @@ class Hubs(commands.Cog):
         self.pm = PlayerMarketDB()
         self.tac = TacticsDB()
         self.youth = YouthDB()
+        self.mgmt = MgmtDB()
 
     async def cog_load(self):
         from cogs.economy import ITEM_HANDLERS
         ITEM_HANDLERS.update({"tactic_note": self._use_note, "analysis_report": self._use_report})
+        self.mgmt_loop.start()
 
     async def cog_unload(self):
         from cogs.economy import ITEM_HANDLERS
         for k in ("tactic_note", "analysis_report"):
             ITEM_HANDLERS.pop(k, None)
+        self.mgmt_loop.cancel()
+
+    # ───────────── 🏟️ 구단 경영 정산 (2.8 · 00시 KST) ─────────────
+    @tasks.loop(minutes=10)
+    async def mgmt_loop(self):
+        for r in await self.mgmt.settle(int(time.time())):
+            print(f"[경영] {r['user_id']} 관중 {r['fans']:,} · 순이익 +{r['net']:,} · 만족도 {r['sat_before']}→{r['sat']}")
+            await send_notify(self.bot, self.db, r["user_id"], "구단_경영", mgmt_report_card(r, None, "🏟️ 어제 구단 경영 정산"))
+
+    @mgmt_loop.before_loop
+    async def _before_mgmt(self):
+        await self.bot.wait_until_ready()
 
     # ───────────── /오늘 ─────────────
     def today_view(self, user, page: int = 0) -> HubView:
@@ -173,7 +202,8 @@ class Hubs(commands.Cog):
                  Page("👔", "감독 · 의료진", self._p_staff, "전력 보너스 · 부상 치료"),
                  Page("⚔️", "전술", self._p_tactics, "기본 전술 · 적응도 · 하프타임 규칙"),
                  Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술"),
-                 Page("🎓", "유스", self._p_youth, "입단 테스트 · 훈련 · 판매 · 1군 등록")]
+                 Page("🎓", "유스", self._p_youth, "입단 테스트 · 훈련 · 판매 · 1군 등록"),
+                 Page("💼", "경영", self._p_mgmt, "관중 수입 · 팬 만족도 · 티켓 가격")]
         return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page)
 
     # ───────────── ⚔️ 전술 (2.8) ─────────────
@@ -249,6 +279,44 @@ class Hubs(commands.Cog):
         pick.callback = chosen
         view.add_item(pick)
         return e
+
+    # ───────────── 💼 경영 (2.8) ─────────────
+    async def _p_mgmt(self, view: HubView) -> discord.Embed:
+        user = view.user
+        await self.mgmt.join(user.id, int(time.time()))
+        p = await self.mgmt.preview(user.id)
+        if not p:
+            return ui.card("💼 경영", "구단이 있어야 경영을 할 수 있어요. `/구단생성`을 먼저 해 주세요.", ui.EVEN, user, "💼 경영")
+        t, parts = p["today"], p["parts"]
+        sp, el = M.fan_bonus(p["sat"])
+        bonus = (f"스폰서 플러스 수익 **+{sp:.0%}** · 명문 구단 하루 수입 **+{el:.0%}**" if sp else
+                 f"없음 (70 이상: 스폰서 +{M.BONUS[1][1]:.0%} · 명문 구단 +{M.BONUS[1][2]:.0%} / "
+                 f"85 이상: +{M.BONUS[0][1]:.0%} · +{M.BONUS[0][2]:.0%})")
+        arrow = "↗️" if p["target"] > p["sat"] + 0.5 else "↘️" if p["target"] < p["sat"] - 0.5 else "➡️"
+        why = " · ".join(f"{n} {v:+d}" for n, v in (("최근 10경기", parts["form"]), ("시설", parts["facility"]),
+                                                    ("티켓", parts["ticket"]), ("🐠 수족관", parts["aquarium"])))
+        te, tn, price, _, _ = M.TICKETS[p["ticket"]]
+        body = (f"**😊 팬 만족도** {ui.bar(p['sat'], 100, 10)} **{p['sat']:.0f}** {arrow} 목표 {p['target']:.0f}\n"
+                f"　목표 = 50 · {why}\n　보너스: {bonus}\n\n"
+                f"**🎟️ 티켓** {te} {tn} ({price}원) — 바꾸면 다음 정산부터 적용돼요\n\n"
+                f"**🌙 오늘 밤 예상** (지금 전력 {t['rating']:.0f} 기준)\n" + _mgmt_lines(t))
+        if p["last"]:
+            body += "\n\n**📒 지난 정산**\n" + _mgmt_lines(p["last"])
+        e = ui.card("💼 구단 경영", body, ui.INFO, user, "💼 경영")
+        e.set_footer(text="매일 00시(KST) 정산 · 관중 = 경기장 수용 한도까지 · 비용은 그날 수입까지만 (마이너스 없음) · "
+                          "/알림설정 → 구단 경영 정산 DM")
+        for k, (e_, n_, pr, mult, _) in M.TICKETS.items():
+            b = discord.ui.Button(label=f"{n_} {pr}원 (관중 ×{mult:g})", emoji=e_, row=0, disabled=k == p["ticket"],
+                                  style=discord.ButtonStyle.success if k == p["ticket"] else discord.ButtonStyle.secondary)
+            b.callback = self._ticket_cb(view, k)
+            view.add_item(b)
+        return e
+
+    def _ticket_cb(self, view: HubView, key: str):
+        async def cb(interaction: discord.Interaction):
+            await self.mgmt.set_ticket(view.user.id, key)
+            await view.refresh(interaction)
+        return cb
 
     # ───────────── 🎓 유스 (2.8) ─────────────
     SCENE_DELAY = 1.2   # 입단 테스트 장면 사이 (초)

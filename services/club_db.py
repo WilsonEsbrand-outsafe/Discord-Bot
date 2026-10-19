@@ -504,6 +504,7 @@ class ClubDB:
             )
             # 구단 생성 보너스는 평생 한 번 — 삭제 후 재생성으로 보너스를 반복해 받지 못하게 한다.
             con.execute("CREATE TABLE IF NOT EXISTS club_bonus (user_id INTEGER PRIMARY KEY)")
+            con.execute("CREATE TABLE IF NOT EXISTS club_form (user_id INTEGER PRIMARY KEY, recent TEXT NOT NULL DEFAULT '')")
             # 공식경기: 월 시즌별 기록 (건 쪽과 상대 모두)
             con.execute(
                 """
@@ -957,6 +958,9 @@ class ClubDB:
         for uid, gf, ga in ((home_id, home_goals, away_goals), (away_id, away_goals, home_goals)):
             col = "wins" if gf > ga else ("draws" if gf == ga else "losses")
             con.execute(f"UPDATE clubs SET {col}={col}+1 WHERE user_id=?", (int(uid),))
+            # 최근 10경기 (2.8 구단 경영 · 팬 만족도)
+            con.execute("INSERT INTO club_form(user_id, recent) VALUES(?, ?) ON CONFLICT(user_id) DO UPDATE SET "
+                        "recent = substr(recent || excluded.recent, -10, 10)", (int(uid), "WDL"[(gf <= ga) + (gf < ga)]))
 
     async def record_match(self, home_id: int, away_id: int, home_goals: int, away_goals: int) -> None:
         await self._tx(lambda con: self._add_record(con, home_id, away_id, home_goals, away_goals))

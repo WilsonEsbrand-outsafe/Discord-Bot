@@ -107,6 +107,8 @@ async def _flow():
     # 자동 정산 루프: 만기된 계약을 정산하고 DM 알림을 보낸다
     cog = Sponsor.__new__(Sponsor)
     cog.db, cog.clubs, cog.bot = db, cdb.ClubDB(), None
+    from services.management import MgmtDB
+    cog.mgmt = MgmtDB()
     dms = []
     async def fake_notify(bot, _db, uid, key, embed):
         dms.append((uid, key, embed))

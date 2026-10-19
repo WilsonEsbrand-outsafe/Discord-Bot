@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from services import ui
+from services.management import MgmtDB
 from services.club_db import (
     ELITE_CLUBS, ELITE_SIZES, ELITE_TAKEOVER, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS, FACILITY_MAX,
     SLOT_GROUP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, elite_team, facility_effect,
@@ -64,6 +65,7 @@ class Elite(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.clubs = ClubDB()
+        self.mgmt = MgmtDB()
         self.income_loop.start()
 
     def cog_unload(self):
@@ -72,6 +74,7 @@ class Elite(commands.Cog):
     @tasks.loop(minutes=10)
     async def income_loop(self):
         for x in await self.clubs.settle_elite_income(int(time.time())):
+            x["fan"] = await self.mgmt.elite_bonus(x["owner_id"], x["amount"])   # 2.8 팬 만족도 70↑ +5% · 85↑ +10%
             print(f"[명문] {x['key']} → {x['owner_id']} +{x['amount']:,} ({x['days']}일)")
             await self._income_dm(x)
 
@@ -79,7 +82,8 @@ class Elite(commands.Cog):
         """하루 수입 DM — 알림 설정과 상관없이 꼭 보낸다 (2.6)."""
         emblem, name, size = ELITE_CLUBS[x["key"]]
         days = f" ({x['days']}일치)" if x["days"] > 1 else ""
-        e = ui.card(f"{emblem} {name} 하루 수입", f"`수입` **+{x['amount']:,}원**{days}\n`규모` {size}",
+        fan = f"\n`팬 만족도 보너스` **+{x['fan']:,}원**" if x.get("fan") else ""
+        e = ui.card(f"{emblem} {name} 하루 수입", f"`수입` **+{x['amount']:,}원**{days}{fan}\n`규모` {size}",
                     ui.WIN, None, "🏰 명문 구단")
         try:
             user = self.bot.get_user(x["owner_id"]) or await self.bot.fetch_user(x["owner_id"])

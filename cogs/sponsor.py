@@ -6,8 +6,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import release
 from services import ui
 from services.club_db import ClubDB
+from services.management import MgmtDB
 from services.notifier import send_notify
 from services.sponsor_db import (
     CANCEL_FEE, CLUB_BONUS, GRADES, MAX_ACTIVE, MAX_AMOUNT, MIN_AMOUNT, OPEN_TERMS, REP_MIN_AMOUNT, SPONSORS, TERMS,
@@ -181,6 +183,7 @@ class Sponsor(commands.Cog):
         self.bot = bot
         self.db = SponsorDB()
         self.clubs = ClubDB()
+        self.mgmt = MgmtDB()
         self.settle_task.start()
 
     def cog_unload(self):
@@ -205,6 +208,10 @@ class Sponsor(commands.Cog):
         team = await self.clubs.get_team(user_id)
         return team["rating"] if team else None
 
+    async def _fan_bonus(self, interaction: discord.Interaction) -> float:
+        """2.8 구단 경영: 팬 만족도 70↑ +3% · 85↑ +5% (계약 보너스에 더한다)."""
+        return (await self.mgmt.fan_bonus(interaction.user.id))[0] if release.preview(getattr(interaction, "guild_id", None)) else 0.0
+
     # ───────────── 명령어 ─────────────
     @app_commands.command(name="스폰서", description="내 계약 · 스폰서 등급 · 계약 관리 (만기된 계약은 자동 정산)")
     async def overview(self, interaction: discord.Interaction):
@@ -214,6 +221,7 @@ class Sponsor(commands.Cog):
         contracts = await self.db.active(user.id)
         rep = await self.db.reputation(user.id)
         rating = await self._club_rating(user.id)
+        fan = await self._fan_bonus(interaction)
         cb = club_bonus(rating)
         club = (f"+{_pct(cb)} (전력 {rating})" if cb else
                 f"없음 (전력 {rating} · {CLUB_BONUS[-1][0]} 이상부터)" if rating is not None else
@@ -221,7 +229,7 @@ class Sponsor(commands.Cog):
 
         mine = ui.card("🤝 내 스폰서 계약",
                        f"`진행 중` **{len(contracts)}/{MAX_ACTIVE}건** · `맡긴 돈` **{sum(c['amount'] for c in contracts):,}원**\n"
-                       f"`구단 보너스` {club}"
+                       f"`구단 보너스` {club}" + (f"\n`팬 만족도 보너스` +{_pct(fan)}" if fan else "")
                        + ("" if contracts else "\n\n아직 계약이 없어요. `/스폰서계약`으로 시작해 보세요!"),
                        ui.INFO, user, SECTION)
         for c in contracts:
@@ -260,6 +268,8 @@ class Sponsor(commands.Cog):
         await interaction.response.defer()
         user = interaction.user
         cb = club_bonus(await self._club_rating(user.id))
+        fan = await self._fan_bonus(interaction)
+        cb = round(cb + fan, 4)
         r = await self.db.open(user.id, 스폰서, 기간, int(금액), int(time.time()), cb, 자동재계약)
         if not r["ok"]:
             title, msg = {
