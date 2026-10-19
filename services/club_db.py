@@ -97,9 +97,10 @@ def expected_goals(r_home: float, r_away: float) -> tuple[float, float]:
     return clamp(XG_BASE * math.exp(d)), clamp(XG_BASE * math.exp(-d))
 
 
-def win_probs(r_home: float, r_away: float) -> tuple[float, float, float]:
-    """(홈 승, 무, 원정 승) 확률 — 포아송 분포를 10골까지 더한다."""
+def win_probs(r_home: float, r_away: float, m_home: float = 1.0, m_away: float = 1.0) -> tuple[float, float, float]:
+    """(홈 승, 무, 원정 승) 확률 — 포아송 분포를 10골까지 더한다. m_*: 2.8 전술 상성 기대 득점 배율."""
     lh, la = expected_goals(r_home, r_away)
+    lh, la = lh * m_home, la * m_away
     ph = [math.exp(-lh) * lh ** k / math.factorial(k) for k in range(11)]
     pa = [math.exp(-la) * la ** k / math.factorial(k) for k in range(11)]
     win = sum(ph[i] * pa[j] for i in range(11) for j in range(11) if i > j)
@@ -110,7 +111,11 @@ def win_probs(r_home: float, r_away: float) -> tuple[float, float, float]:
 
 
 def simulate_match(home: dict, away: dict, rng: random.Random = random) -> dict:
-    """home/away: {name, rating, xi:[{name, pos, ovr}]}. 전력 차이로 기대 득점을 정하고 포아송으로 굴린다."""
+    """home/away: {name, rating, xi:[{name, pos, ovr}]}. 전력 차이로 기대 득점을 정하고 포아송으로 굴린다.
+    2.8: 두 팀 모두 전술(tactic)이 붙어 있으면 세 구간 + 하프타임 규칙으로 굴린다 (services/tactics)."""
+    if home.get("tactic") and away.get("tactic"):
+        from services import tactics
+        return tactics.simulate(home, away, rng)
     xg_h, xg_a = expected_goals(home["rating"], away["rating"])
 
     def poisson(lam: float) -> int:

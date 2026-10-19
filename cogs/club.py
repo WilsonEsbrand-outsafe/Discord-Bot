@@ -18,6 +18,8 @@ from services.club_db import (
 from services.economy_db import MUFFLER_BONUS, EconomyDB
 from services.fishing import FishingDB
 from services.player_market_db import PlayerMarketDB
+from services import tactics as T
+from services.tactics import TacticsDB
 
 _LINES = [("FW", "⚽ 공격"), ("MF", "🎯 미드필드"), ("DF", "🛡️ 수비"), ("GK", "🧤 골키퍼")]
 _NO_CLUB = "아직 구단이 없습니다. `/구단생성`으로 먼저 만들어 주세요."
@@ -106,6 +108,7 @@ class Club(commands.Cog):
         self.clubs = ClubDB()
         self.money = EconomyDB()
         self.fish = FishingDB()   # 2.8 🍽️ 든든한 식단
+        self.tac = TacticsDB()    # 2.8 ⚔️ 전술
         self.pm = PlayerMarketDB()
         self._playing: set[int] = set()   # 경기 중인 유저 (중계가 겹치지 않게 — 끝나면 바로 다시 가능)
 
@@ -274,6 +277,7 @@ class Club(commands.Cog):
     # ───────────── 경기 (친선 · 공식 공용) ─────────────
     BROADCAST_MINUTES = (15, 30, 45, 60, 75, 90)   # 문자중계 장면 (킥오프 다음부터)
     BROADCAST_GAP = 3.5                             # 장면 사이 간격(초) — 읽을 시간을 준다
+    HT_WAIT = 10                                    # 2.8 하프타임 전술 고르는 시간(초)
 
     @staticmethod
     def _caster_line(home: str, away: str, hg: int, ag: int) -> str:
@@ -329,7 +333,7 @@ class Club(commands.Cog):
                 return None
         return home, away
 
-    async def _sides(self, home_id: int, away_id: int, home: dict, away: dict) -> list[dict]:
+    async def _sides(self, home_id: int, away_id: int, home: dict, away: dict, guild_id: Optional[int] = None) -> list[dict]:
         """경기에 나설 두 팀 — 응원 머플러를 쓰는 중이면 1회 소모하고 전력 +3 (스쿼드 B 는 머플러 없음)."""
         sides = []
         for uid, team in ((home_id, home), (away_id, away)):
@@ -338,65 +342,134 @@ class Club(commands.Cog):
             meal = await self.fish.team_meal_bonus(uid, int(time.time())) if team.get("squad") != "B" else 0
             rating = team["rating"] + (MUFFLER_BONUS if muffler else 0) + meal
             name = (f"{team['emblem']} " if team.get("emblem") else "") + team["name"]
-            sides.append({"uid": uid, "name": name + (" 🧣" if muffler else "") + (" 🍽️" if meal else ""), "rating": rating,
-                          "stadium": team.get("stadium"),
-                          "xi": [s for s in team["lineup"] if s.get("player_id")]})
+            side = {"uid": uid, "name": name + (" 🧣" if muffler else "") + (" 🍽️" if meal else ""), "rating": rating,
+                    "stadium": team.get("stadium"), "squad": team.get("squad"),
+                    "xi": [s for s in team["lineup"] if s.get("player_id")]}
+            if release.preview(guild_id):   # 2.8 ⚔️ 전술 (공개 전 서버는 2.7 경기 그대로)
+                await self.tac.prepare(uid, team, side, int(time.time()))
+            sides.append(side)
         return sides
 
     async def _play_match(self, interaction, user, h: dict, a: dict, section: str, title_tag: str,
                           after=None, view=None, note: str = "", friendly: bool = False) -> dict:
         """경기 시뮬레이션 → 90분 하이라이트 문자중계. after(result) 가 돌려준 문자열을 결과 카드에,
-        note 는 킥오프 카드에 붙인다."""
-        result = simulate_match(h, a)
-        hg, ag = result["home"], result["away"]
-        highlights = match_highlights(result, h, a)
-        pw, pd, pl = win_probs(h["rating"], a["rating"])
-        extra = await after(result) if after else ""
-        # 양 팀 유망주 기록(출전 · 골 · 도움) + 성장 (2.6: 친선 · 전력 차 · 같은 상대 반복이면 경험치 ↓)
-        gap = round(h["rating"] - a["rating"])
-        stars = await self.clubs.record_prospects(
-            [(h["xi"], hg, ag, a["uid"], gap), (a["xi"], ag, hg, h["uid"], -gap)], result["goals"], int(time.time()),
-            highlights, friendly=friendly)
-        if stars:
-            extra = "\n" + "".join(self._star_line(x) for x in stars) + extra
+        note 는 킥오프 카드에 붙인다.
+        2.8 전술: 두 팀에 전술이 붙어 있으면 전반만 먼저 굴리고, 하프타임에 상대 전술을 공개하고 경기를 건 사람이
+        HT_WAIT 초 안에 후반 전술을 고른다 (안 고르면 하프타임 규칙). 그 뒤 후반을 굴려 기록 · 정산한다."""
+        tac = bool(h.get("tactic") and a.get("tactic"))
+        mh, ma = T.base_mults(h, a) if tac else (1.0, 1.0)
+        pw, pd, pl = win_probs(h["rating"], a["rating"], mh, ma)
+        if tac:
+            first = T.first_half(h, a)
+            st = {"result": first, "hl": [x for x in match_highlights(first, h, a) if x["minute"] <= 45]}
+        else:
+            result = simulate_match(h, a)
+            st = {"result": result, "hl": match_highlights(result, h, a)}
+        shown: list[dict] = []   # 중계에만 보이는 줄 (전술 변경)
 
         def log_until(minute: int) -> str:
             lines = [f"`{x['minute']:>2}'` {x['icon']} "
                      + (f"**{x['text']}**" if x["goal"] else x["text"])
                      + f" *({h['name'] if x['side'] == 'home' else a['name']})*"
-                     for x in highlights if x["minute"] <= minute]
+                     for x in sorted(st["hl"] + shown, key=lambda x: (x["minute"], not x["goal"])) if x["minute"] <= minute]
             return "\n".join(lines[-8:]) or "*아직 큰 장면은 없습니다.*"
 
         def score(minute: int) -> tuple[int, int]:
-            return (sum(g["side"] == "home" and g["minute"] <= minute for g in result["goals"]),
-                    sum(g["side"] == "away" and g["minute"] <= minute for g in result["goals"]))
+            return (sum(g["side"] == "home" and g["minute"] <= minute for g in st["result"]["goals"]),
+                    sum(g["side"] == "away" and g["minute"] <= minute for g in st["result"]["goals"]))
+
+        async def finish() -> discord.Embed:
+            """기록 · 정산 · 유망주 성장 → 결과 카드."""
+            result = st["result"]
+            hg, ag = result["home"], result["away"]
+            extra = await after(result) if after else ""
+            # 양 팀 유망주 기록(출전 · 골 · 도움) + 성장 (2.6: 친선 · 전력 차 · 같은 상대 반복이면 경험치 ↓)
+            gap = round(h["rating"] - a["rating"])
+            stars = await self.clubs.record_prospects(
+                [(h["xi"], hg, ag, a["uid"], gap), (a["xi"], ag, hg, h["uid"], -gap)], result["goals"], int(time.time()),
+                st["hl"], friendly=friendly)
+            if stars:
+                extra = "\n" + "".join(self._star_line(x) for x in stars) + extra
+            if tac:   # 적응도 +5 · 상대 분석 기록
+                for side, key in ((h, "home"), (a, "away")):
+                    await self.tac.after_match(side["uid"], side, result["tactics"][key], int(time.time()))
+                (h0, h1), (a0, a1) = result["tactics"]["home"], result["tactics"]["away"]
+                extra = (f"\n`전술` {h['name']} {T.label(h0)}" + (f" → {T.label(h1)}" if h1 != h0 else "")
+                         + f" · {a['name']} {T.label(a0)}" + (f" → {T.label(a1)}" if a1 != a0 else "")) + extra
+            color = ui.WIN if hg > ag else (ui.LOSE if hg < ag else ui.EVEN)
+            return ui.card(f"{title_tag} {h['name']} {hg} : {ag} {a['name']}",
+                           f"> 🎙️ *\"{self._caster_line(h['name'], a['name'], hg, ag)}\"*\n\n{log_until(90)}\n\n"
+                           f"`전력` {h['rating']} vs {a['rating']} · `예상 승률` {pw:.0%} / {pd:.0%} / {pl:.0%}" + extra,
+                           color, user, section)
+
+        async def second_half(msg) -> None:
+            """하프타임: 상대 전술 공개 → 경기를 건 사람이 고르기(없으면 규칙) → 후반 계산."""
+            first = st["result"]
+            sh, sa = first["home"], first["away"]
+            th_rule = T.ht_choice(h, sh, sa)
+            choice = None
+            if msg is not None:
+                hv = HalftimeView(user, h["tactic"], th_rule)
+                try:
+                    await msg.edit(embed=ui.card(
+                        f"{title_tag} {h['name']} {sh} : {sa} {a['name']} · 하프타임",
+                        log_until(45) + f"\n\n🔍 **상대 전술 공개** — {a['name']} **{T.label(a['tactic'])}**\n"
+                        f"⚔️ 내 전술 **{T.label(h['tactic'])}** · 규칙대로면 후반 **{T.label(th_rule)}**\n"
+                        f"⏱️ **{self.HT_WAIT}초** 안에 후반 전술을 고르세요. 바꾸면 후반 초반 15분은 적응이 덜 돼요.",
+                        ui.DARK, user, section), view=hv)
+                    try:
+                        await asyncio.wait_for(hv.done.wait(), self.HT_WAIT)
+                    except asyncio.TimeoutError:
+                        pass
+                    choice = hv.choice
+                except discord.HTTPException:
+                    pass
+            th = choice or th_rule
+            ta = T.ht_choice(a, sa, sh)
+            result = T.second_half(h, a, first, th, ta)
+            late = {"goals": [g for g in result["goals"] if g["minute"] > 45]}
+            st["hl"] = st["hl"] + [x for x in match_highlights(late, h, a) if x["minute"] > 45]
+            st["result"] = result
+            for side, key, t in ((h, "home", th), (a, "away", ta)):
+                if t != side["tactic"]:
+                    shown.append({"minute": 46, "side": key, "goal": False, "icon": "🔄", "text": f"전술 변경 → **{T.label(t)}**"})
 
         venue = f"🏟️ **{h['stadium']}**\n" if h.get("stadium") else ""
         subs = [f"🔄 {s['name']} ← 🚑 {s['sub_for']}" for s in h["xi"] + a["xi"] if s.get("sub_for")]
         if subs:   # 2.6 부상 유망주 자리를 이번 경기만 벤치 선수가 대신
             note += "\n" + " · ".join(subs) + " (부상 대신 출전)"
+        if tac:
+            fit = round(h["fit"][h["tactic"]])
+            note += f"\n⚔️ 내 전술 **{T.label(h['tactic'])}** · 적응도 {fit} · 상대 전술은 하프타임에 공개"
+            if h.get("report") and await self.tac.consume_report(h["uid"]):
+                note += f"\n📊 분석 리포트: {a['name']} **{T.label(a['tactic'])}** · 하프타임 규칙 {T.rules_text(a)}"
         kickoff = ui.card(f"{title_tag} {h['name']} vs {a['name']}",
                           f"{venue}> 🎙️ *\"전력 {h['rating']} 대 {a['rating']}! 주심의 휘슬과 함께 킥오프!\"*\n\n"
                           f"`예상 승률` {h['name']} **{pw:.0%}** · 무 **{pd:.0%}** · {a['name']} **{pl:.0%}**" + note,
                           ui.DARK, user, section)
-        color = ui.WIN if hg > ag else (ui.LOSE if hg < ag else ui.EVEN)
-        final = ui.card(f"{title_tag} {h['name']} {hg} : {ag} {a['name']}",
-                        f"> 🎙️ *\"{self._caster_line(h['name'], a['name'], hg, ag)}\"*\n\n{log_until(90)}\n\n"
-                        f"`전력` {h['rating']} vs {a['rating']} · `예상 승률` {pw:.0%} / {pd:.0%} / {pl:.0%}" + extra,
-                        color, user, section)
+        final = None if tac else await finish()   # 2.7 과 같이: 전술이 없으면 중계 전에 기록
+        msg = None
         try:
             msg = await interaction.followup.send(embed=kickoff, wait=True)
             for minute in self.BROADCAST_MINUTES[:-1]:
                 await asyncio.sleep(self.BROADCAST_GAP)
+                if tac and minute == 45:
+                    await second_half(msg)
+                    final = await finish()
+                    continue
                 sh, sa = score(minute)
                 label = "하프타임" if minute == 45 else f"{minute}'"
                 await msg.edit(embed=ui.card(f"{title_tag} {h['name']} {sh} : {sa} {a['name']} · {label}",
-                                             log_until(minute), ui.DARK, user, section))
+                                             log_until(minute), ui.DARK, user, section), view=None)
             await asyncio.sleep(self.BROADCAST_GAP)
             await msg.edit(embed=final, view=view)
         except discord.HTTPException:
+            if final is None:   # 중계가 끊겨도 경기는 끝낸다 (하프타임은 규칙대로)
+                if "tactics" not in st["result"]:
+                    await second_half(None)
+                final = await finish()
             await interaction.followup.send(embed=final, view=view)
-        return result
+        return st["result"]
 
     @app_commands.command(name="친선경기", description="다른 유저의 구단과 친선경기 (90분 문자중계 · 연속 가능 · 돈 없이 전적만 기록)")
     @app_commands.describe(상대="상대 구단의 주인")
@@ -428,7 +501,7 @@ class Club(commands.Cog):
             sides = await self._load_sides(interaction, user, user.id, opp.id, f"{opp.display_name}님", "🎙️ 친선경기 중계")
             if not sides:
                 return
-            h, a = await self._sides(user.id, opp.id, *sides)
+            h, a = await self._sides(user.id, opp.id, *sides, guild_id=interaction.guild_id)
 
             async def record(result):
                 await self.clubs.record_match(user.id, opp.id, result["home"], result["away"])
@@ -495,8 +568,8 @@ class Club(commands.Cog):
             pool.sort(key=lambda x: x[0])
             _, opp_id, opp = random.choice(pool[:5])
 
-        h, a = await self._sides(user.id, opp_id, me, opp)
-        odds = official_odds(win_probs(h["rating"], a["rating"]))
+        h, a = await self._sides(user.id, opp_id, me, opp, guild_id=interaction.guild_id)
+        odds = official_odds(win_probs(h["rating"], a["rating"], *(T.base_mults(h, a) if h.get("tactic") else (1, 1))))
         board = " · ".join((f"**{self.PICKS[k]} {o:.2f}배** 👈" if k == pick else f"{self.PICKS[k]} {o:.2f}배")
                            for k, o in odds.items())
         note = f"\n`배당` {board}\n`베팅` **{amount:,}원** · 적중하면 **{ui.won(round(amount * (odds[pick] - 1)))}**"
@@ -594,6 +667,28 @@ class Club(commands.Cog):
         e = ui.card("🩺 의료진", head + "\n\n" + "\n".join(lines), ui.INFO, user, "🏟️ 구단")
         e.set_footer(text="/의료진 영입:<의료진> · 영입비는 한 번만 · 바꾸면 새 영입비 · 부상은 유망주만 당해요")
         await interaction.followup.send(embed=e)
+
+
+class HalftimeView(discord.ui.View):
+    """하프타임 후반 전술 고르기 — 경기를 건 사람만. 고르면 바로 후반으로."""
+
+    def __init__(self, user, current: str, rule: str):
+        super().__init__(timeout=60)
+        self.user, self.choice, self.done = user, None, asyncio.Event()
+        for t in T.TACTICS:
+            b = discord.ui.Button(label=T.TACTICS[t][1] + (" (유지)" if t == current else ""), emoji=T.TACTICS[t][0],
+                                  style=discord.ButtonStyle.success if t == rule else discord.ButtonStyle.secondary)
+            b.callback = self._pick(t)
+            self.add_item(b)
+
+    def _pick(self, t: str):
+        async def cb(interaction: discord.Interaction):
+            if interaction.user.id != self.user.id:
+                return await interaction.response.send_message("🙅 경기를 건 사람만 고를 수 있어요.", ephemeral=True)
+            self.choice = t
+            self.done.set()
+            await interaction.response.defer()
+        return cb
 
 
 class RematchView(discord.ui.View):

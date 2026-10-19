@@ -69,6 +69,9 @@ ITEMS = {
     "scroll":      ("📜", "탐지 두루마리",    "/던전 이번 층 문 뒤가 무엇인지 모두 보임"),
     "feather":     ("🪶", "부활 깃털",       "/던전에서 쓰러지면 체력 50으로 한 번 부활 (가지고 있으면 자동)"),
     "dungeon_ticket": ("🎫", "던전 추가 입장권", "오늘 /던전 1번 더"),
+    # ── 2.8 전술 ──
+    "tactic_note": ("📓", "전술 노트",       "기본 전술의 선발 11명 적응도 +15"),
+    "analysis_report": ("📊", "분석 리포트",  "다음 경기 킥오프 때 상대 기본 전술 · 하프타임 규칙 공개"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
@@ -1404,6 +1407,9 @@ class EconomyDB:
                         ("dungeon_daily",         "user_id"),
                         ("dungeon_best",          "user_id"),
                         ("dungeon_clears",        "user_id"),
+                        ("club_tactics",          "user_id"),   # 2.8 전술
+                        ("tactic_fit",            "user_id"),
+                        ("tactic_log",            "user_id"),
                     ]:
                         try:
                             cur = con.execute(f"DELETE FROM {table} WHERE {col}=?", (int(user_id),))

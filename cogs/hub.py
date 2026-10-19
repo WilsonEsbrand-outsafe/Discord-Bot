@@ -16,6 +16,8 @@ from services.economy_db import (
 )
 from services.fishing import FishingDB
 from services.hub import HubView, Page
+from services import tactics as T
+from services.tactics import TacticsDB
 from services.player_market_db import PACKS, PlayerMarketDB
 
 ATTEND_REWARD = 30_000   # cogs.economy.Economy.ATTEND_REWARD 와 같다
@@ -68,6 +70,16 @@ class Hubs(commands.Cog):
         self.fish = FishingDB()
         self.dungeon = DungeonDB()
         self.pm = PlayerMarketDB()
+        self.tac = TacticsDB()
+
+    async def cog_load(self):
+        from cogs.economy import ITEM_HANDLERS
+        ITEM_HANDLERS.update({"tactic_note": self._use_note, "analysis_report": self._use_report})
+
+    async def cog_unload(self):
+        from cogs.economy import ITEM_HANDLERS
+        for k in ("tactic_note", "analysis_report"):
+            ITEM_HANDLERS.pop(k, None)
 
     # ───────────── /오늘 ─────────────
     def today_view(self, user, page: int = 0) -> HubView:
@@ -154,8 +166,101 @@ class Hubs(commands.Cog):
         pages = [Page("🏟️", "구단", self._p_club, "선발 명단 · 전력 · 전적"),
                  Page("🌟", "유망주", self._p_prospect, "나만의 선수"),
                  Page("🏗️", "시설", self._p_facility, "경기장 · 훈련장 · 유스 · 메디컬"),
-                 Page("👔", "감독 · 의료진", self._p_staff, "전력 보너스 · 부상 치료")]
+                 Page("👔", "감독 · 의료진", self._p_staff, "전력 보너스 · 부상 치료"),
+                 Page("⚔️", "전술", self._p_tactics, "기본 전술 · 적응도 · 하프타임 규칙"),
+                 Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술")]
         return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page)
+
+    # ───────────── ⚔️ 전술 (2.8) ─────────────
+    async def _p_tactics(self, view: HubView) -> discord.Embed:
+        user, now = view.user, int(time.time())
+        s = await self.tac.settings(user.id)
+        team = await self.clubs.get_team(user.id)
+        xi = [p for p in team["lineup"] if p.get("player_id")]
+        fits = await self.tac.player_fits(user.id, [str(p["player_id"]) for p in xi], now)
+        lines = []
+        for t, (e_, n_, _, attr) in T.TACTICS.items():
+            fit = sum(f[t] for f in fits.values()) / len(fits) if fits else T.FIT_START
+            comp = T.composition(xi, t)
+            mark = " ✅ **기본 전술**" if t == s["tactic"] else ""
+            lines.append(f"{e_} **{n_}** — {T.label(T.BEATS[t])}에 강함 · 중요 능력치 {attr}{mark}\n"
+                         f"　`적응도` {ui.bar(fit, 100, 8)} {fit:.0f} · `구성` ×{comp:.2f} · `효과` {T.effect(fit, comp):.0%}")
+        rules = "\n".join(f"　{n} → **{T.label(s['rules'][k]) if s['rules'].get(k) else '유지'}**" for k, n in T.RULE_STATES)
+        e = ui.card("⚔️ 전술", "🔥 압박 > 🎯 점유 > ⚡ 역습 > 🔥 압박 · 유리하면 기대 득점 최대 +6%, 불리하면 -6%\n"
+                    "모든 경기(친선 · 공식)에 기본 전술로 나가요. 상대 전술은 하프타임에 공개돼요.\n\n"
+                    + "\n".join(lines) + f"\n\n**하프타임 규칙** (내가 고르지 않을 때 · 상대 쪽일 때)\n{rules}",
+                    ui.INFO, user, "⚔️ 전술")
+        e.set_footer(text=f"적응도: 그 전술로 뛰면 +{T.FIT_GAIN} · {T.FIT_IDLE_DAYS}일 넘게 안 쓰면 하루 -{T.FIT_DECAY} · "
+                          "효과 = (0.5 + 0.5 × 적응도) × 구성")
+        base = discord.ui.Select(placeholder="⚔️ 기본 전술 바꾸기", row=0, options=[
+            discord.SelectOption(label=n_, value=t, emoji=e_, default=t == s["tactic"]) for t, (e_, n_, *_) in T.TACTICS.items()])
+
+        async def set_base(interaction: discord.Interaction):
+            await self.tac.set_tactic(user.id, base.values[0])
+            await view.refresh(interaction)
+        base.callback = set_base
+        view.add_item(base)
+        for row, (k, n) in enumerate(T.RULE_STATES, 1):
+            sel = discord.ui.Select(placeholder=f"하프타임 · {n}", row=row, options=[
+                discord.SelectOption(label=f"{n} → 유지", value="keep", default=not s["rules"].get(k))] + [
+                discord.SelectOption(label=f"{n} → {n_}", value=t, emoji=e_, default=s["rules"].get(k) == t)
+                for t, (e_, n_, *_) in T.TACTICS.items()])
+            sel.callback = self._rule_cb(view, k, sel)
+            view.add_item(sel)
+        return e
+
+    def _rule_cb(self, view: HubView, state: str, sel):
+        async def cb(interaction: discord.Interaction):
+            v = sel.values[0]
+            await self.tac.set_rule(view.user.id, state, None if v == "keep" else v)
+            await view.refresh(interaction)
+        return cb
+
+    async def _p_scout(self, view: HubView) -> discord.Embed:
+        user = view.user
+        opp_id = view.ctx.get("scout")
+        body = "상대를 고르면 **최근 5경기** 전술을 보여 드려요. 기본 전술 자체는 경기 전에 공개되지 않아요.\n" \
+               "📊 분석 리포트(아이템)를 쓰면 다음 경기 킥오프 때 상대 기본 전술과 하프타임 규칙이 보여요."
+        if opp_id:
+            rows = await self.tac.recent(opp_id, 5)
+            m = self.bot.get_user(opp_id) if self.bot else None
+            name = m.display_name if m else f"<@{opp_id}>"
+            if rows:
+                cnt = {t: sum(s == t for s, _ in rows) for t in T.TACTICS}
+                sw = sum(s != e for s, e in rows)
+                body += (f"\n\n**{name}** 최근 {len(rows)}경기 — 시작 전술 "
+                         + " · ".join(f"{T.label(t)} {c}" for t, c in cnt.items() if c)
+                         + f"\n하프타임에 바꾼 경기 **{sw}번**\n"
+                         + "\n".join(f"　{i}. {T.label(s)}" + (f" → {T.label(e)}" if e != s else "")
+                                      for i, (s, e) in enumerate(rows, 1)))
+            else:
+                body += f"\n\n**{name}** — 2.8 전술 경기 기록이 아직 없어요."
+        e = ui.card("🔍 상대 분석", body, ui.INFO, user, "⚔️ 전술")
+        pick = discord.ui.UserSelect(placeholder="🔍 분석할 상대 고르기", row=0)
+
+        async def chosen(interaction: discord.Interaction):
+            view.ctx["scout"] = pick.values[0].id
+            await view.refresh(interaction)
+        pick.callback = chosen
+        view.add_item(pick)
+        return e
+
+    async def _use_note(self, interaction: discord.Interaction, user):
+        team = await self.clubs.get_team(user.id)
+        if not team or not team["filled"]:
+            return await interaction.response.send_message("🙅 선발 명단이 있어야 쓸 수 있어요.", ephemeral=True)
+        r = await self.tac.use_note(user.id, [str(p["player_id"]) for p in team["lineup"] if p.get("player_id")],
+                                    int(time.time()))
+        if not r["ok"]:
+            return await interaction.response.send_message("🙅 📓 전술 노트가 없어요.", ephemeral=True)
+        await interaction.response.send_message(embed=ui.card(
+            "📓 전술 노트 사용!", f"선발 11명의 **{T.label(r['tactic'])}** 적응도 **+{T.NOTE_GAIN}**", ui.GOLD, user, "🎒 아이템"))
+
+    async def _use_report(self, interaction: discord.Interaction, user):
+        if not await self.tac.use_report(user.id):
+            return await interaction.response.send_message("🙅 📊 분석 리포트가 없어요.", ephemeral=True)
+        await interaction.response.send_message(embed=ui.card(
+            "📊 분석 리포트 준비!", "다음 경기 킥오프 때 상대 기본 전술과 하프타임 규칙을 알려 드려요.", ui.GOLD, user, "🎒 아이템"))
 
     async def _p_club(self, view: HubView) -> discord.Embed:
         from cogs.club import _team_embed

@@ -43,7 +43,8 @@ ROOMS = {   # 키: (이모지, 이름, 기본 비중, 힌트)
 # 보상 표 (아이템 키 → 비중). 층이 깊을수록 좋은 표를 더 자주.
 LOOT_COMMON = {"skip_piece": 30, "bait": 20, "spice": 18, "potion": 10, "torch": 6, "bait_gold": 8, "fish_charm": 4, "dkey": 4}
 LOOT_RARE = {"skip_piece": 20, "box": 10, "bow_pro": 9, "windbreaker": 9, "focus": 9, "antidote": 8, "scroll": 8,
-             "feather": 5, "dkey": 8, "fish_charm": 8, "dungeon_ticket": 2, "potion": 4}
+             "feather": 5, "dkey": 8, "fish_charm": 8, "dungeon_ticket": 2, "potion": 4, "tactic_note": 6,
+             "analysis_report": 6}
 COIN = (3_000, 12_000)          # 보물 · 전투에서 나오는 돈 (층 × 이만큼)
 XP_PER_FLOOR = 4                # 훈련 경험치 (층마다 진행 보상)
 FIRST_CLEAR = {"box": 1, "dungeon_ticket": 1, "skip_piece": 5}   # 테마마다 처음 10층을 깨면
