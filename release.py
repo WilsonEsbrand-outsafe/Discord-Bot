@@ -10,7 +10,7 @@ TEST_GUILD = 1374213619793006704
 RELEASE_TS: Optional[int] = None   # 2.8 공개 시각 — 아직 안 정함
 MAINTENANCE = (RELEASE_TS - 300, RELEASE_TS + 300) if RELEASE_TS else None   # 정기점검 (공개 5분 전 ~ 5분 뒤) — 명령어 막음
 
-PREVIEW_ONLY: set[str] = {"낚시", "낚시시세", "양궁", "던전"}   # 공개 전엔 테스트 서버에만 보이는 명령어 (2.8 새 명령어는 만들 때마다 추가)
+PREVIEW_ONLY: set[str] = {"낚시", "낚시시세", "양궁", "던전", "오늘", "게임"}   # 공개 전엔 테스트 서버에만 보이는 명령어 (2.8 새 명령어는 만들 때마다 추가)
 LEGACY_ONLY: set[str] = set()    # 공개 전까지만 다른 서버에 남는 명령어
 
 

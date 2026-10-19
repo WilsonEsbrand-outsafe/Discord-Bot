@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 matplotlib.rcParams["font.family"] = "NanumGothic"
 matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
+import release
 from services import ui
 from services.economy_db import ITEMS, SELL_PRICES, SHOP_DAILY_LIMITS, SHOP_PRICES, EconomyDB
 from services.player_market_db import PlayerMarketDB, PACKS, PACK_MAX_PULLS, JACKPOT_PROB, JACKPOT_RANGE, player_profile
@@ -652,6 +653,9 @@ class PlayersMarket(commands.Cog):
     # ───────────────── 시장 상태 ─────────────────
     @app_commands.command(name="시장", description="시장 오픈/클로즈 상태를 확인합니다.")
     async def market_status(self, interaction: discord.Interaction):
+        hubs = self.bot.get_cog("Hubs") if getattr(self, "bot", None) else None
+        if hubs and release.preview(interaction.guild_id):   # 2.8: 시장 허브 (◀ 🏠 ▶)
+            return await hubs.market_view(interaction.user).send(interaction, ephemeral=False)
         # ✅ 3초 제한 회피: 먼저 defer
         try:
             await interaction.response.defer()

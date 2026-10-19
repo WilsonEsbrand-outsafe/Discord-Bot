@@ -278,6 +278,19 @@ def _signed_up(user_id: int) -> bool:
         con.close()
 
 
+ONBOARD_FREE = {"튜토리얼", "명령어"}   # 2.8 서버: 입문 튜토리얼을 안 끝낸 새 유저가 쓸 수 있는 명령어
+
+
+def _onboard_state(user_id: int) -> str:
+    import sqlite3
+    from services.onboarding import gate_state
+    con = sqlite3.connect(BASE_DIR / "data" / "economy.sqlite3", timeout=30)
+    try:
+        return gate_state(con, user_id)
+    finally:
+        con.close()
+
+
 async def _tree_check(interaction: discord.Interaction) -> bool:
     if interaction.type != discord.InteractionType.application_command or interaction.user.id == OWNER_ID:
         return True
@@ -287,6 +300,13 @@ async def _tree_check(interaction: discord.Interaction) -> bool:
             f"🔧 정기점검 중입니다. (<t:{start}:t> ~ <t:{end}:t>) 점검이 끝나면 다시 이용해 주세요.", ephemeral=True)
         return False
     name = (interaction.command.qualified_name if interaction.command else "").split(" ")[0]
+    if release.preview(interaction.guild_id):   # 2.8: 새 유저는 🎓 입문 튜토리얼부터 (구단도 그 안에서 만든다)
+        if name not in ONBOARD_FREE and await asyncio.to_thread(_onboard_state, interaction.user.id) == "tutorial":
+            await interaction.response.send_message(
+                "🎓 처음 오셨네요! `/튜토리얼`로 입문 안내(약 10분)를 먼저 끝내 주세요.\n"
+                "구단 만들기부터 첫 경기까지 직접 해 보고, 끝나면 보상 상자를 드려요.", ephemeral=True)
+            return False
+        return True
     if name not in SIGNUP_FREE and not await asyncio.to_thread(_signed_up, interaction.user.id):
         await interaction.response.send_message(
             "🏟️ 처음 오셨네요! `/구단생성`으로 구단을 만들어야 다른 명령어를 쓸 수 있어요.\n"
@@ -314,7 +334,7 @@ async def on_ready():
     print(f"🤖 로그인 성공: {bot.user} (ID: {bot.user.id})")
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dungeon")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dungeon", "cogs.hub")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -457,7 +477,7 @@ async def sync_and_reload(interaction: discord.Interaction):
             print(f"⚠️ {_name} 리로드 실패:", repr(e))
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dungeon")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dungeon", "cogs.hub")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)

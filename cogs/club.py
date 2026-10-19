@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, NEWBIE_GAP, NEWBIE_OFFICIAL, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
@@ -203,6 +204,10 @@ class Club(commands.Cog):
     @app_commands.command(name="구단", description="구단 정보와 선발 명단을 봅니다. (다른 유저 구단도 가능)")
     @app_commands.describe(유저="볼 구단의 주인 (비우면 내 구단)")
     async def show_club(self, interaction: discord.Interaction, 유저: Optional[discord.Member] = None):
+        hubs = self.bot.get_cog("Hubs") if self.bot else None
+        if hubs and release.preview(interaction.guild_id) and (유저 is None or 유저.id == interaction.user.id) \
+                and await self.clubs.get_club(interaction.user.id):   # 2.8: 내 구단은 허브 화면 (◀ 🏠 ▶)
+            return await hubs.club_view(interaction.user).send(interaction, ephemeral=False)
         await interaction.response.defer()
         owner = 유저 or interaction.user
         team = await self.clubs.get_team(owner.id)

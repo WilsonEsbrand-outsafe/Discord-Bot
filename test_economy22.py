@@ -438,7 +438,8 @@ async def _tutorial():
     sent = []
     async def rec(*a, **k):
         sent.append(k)
-    inter = SimpleNamespace(guild_id=1374213619793006704, user=user, response=SimpleNamespace(send_message=rec, edit_message=rec))
+    # 2.8 전 서버 (2.8 서버의 입문 튜토리얼 · 아이템 장은 test_onboarding)
+    inter = SimpleNamespace(guild_id=None, user=user, response=SimpleNamespace(send_message=rec, edit_message=rec))
     cog = tut.Tutorial.__new__(tut.Tutorial)
     cog.db = db
     await tut.Tutorial.tutorial.callback(cog, inter)
