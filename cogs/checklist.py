@@ -275,6 +275,37 @@ def settle(con, uid: int, now: float) -> Optional[dict]:
     return {"id": cur.lastrowid, "count": len(paid), "total": total, "owed": o}
 
 
+def merge_commissions(con, n: int) -> bool:
+    """미정산 대리가 딱 n건이면 맨 앞 항목 하나(의뢰 n건)로 합친다 — 구매자 · 내용 · 메모는 이어 붙이고,
+    금액은 모두 있으면 합, 아니면 비우고 메모에 남긴다. 합친 건이 지난주 것이면 그 주 마감 표를 다시 그리게."""
+    rows = con.execute("SELECT id, event_id, buyer, detail, amount, note, ts FROM chk_ledger "
+                       "WHERE kind='commission' AND settle_id IS NULL ORDER BY id").fetchall()
+    if len(rows) != n:
+        print(f"⚠️ [장부] 대리 합치기 건너뜀 — 미정산 대리 {len(rows)}건")
+        return False
+
+    def join(i, sep):
+        vals = [r[i] for r in rows if r[i]]
+        return sep.join(dict.fromkeys(vals)) or None
+    amounts = [r[4] for r in rows]
+    amount = sum(amounts) if all(a is not None for a in amounts) else None
+    note = join(5, " / ")
+    if amount is None and any(a is not None for a in amounts):
+        note = ((note + " / ") if note else "") + "합치기 전 금액 " + ", ".join(f"{a:,}" for a in amounts if a is not None)
+    first = rows[0]
+    con.execute("UPDATE chk_ledger SET buyer=?, detail=?, amount=?, amount_ts=?, note=? WHERE id=?",
+                (join(2, " · "), join(3, " / "), amount, int(time.time()) if amount else None, note, first[0]))
+    con.execute("UPDATE chk_events SET qty=? WHERE id=?", (n, first[1]))
+    for r in rows[1:]:
+        con.execute("DELETE FROM chk_ledger WHERE id=?", (r[0],))
+        con.execute("DELETE FROM chk_events WHERE id=?", (r[1],))
+    for (ts,) in {(r[6],) for r in rows}:
+        con.execute("UPDATE chk_messages SET final=0 WHERE week=? AND week<?",
+                    (week_of(kst_day(ts)), week_of(kst_day(time.time()))))
+    print(f"📒 [장부] 대리 {n}건 → #{first[0]} 하나(의뢰 {n}건)로 합침")
+    return True
+
+
 def ledger_embed(d: dict) -> discord.Embed:
     rows = d["rows"]
 
@@ -531,6 +562,8 @@ class Checklist(commands.Cog):
             week = week_of(kst_day(calendar.timegm((2026, 10, 12, 3, 0, 0))))   # 2026-10-12 (월) 주
             con.execute("INSERT OR IGNORE INTO chk_kv(key, value) VALUES(?, 1)", (f"gap_pass_{week}",))   # 사용자 요청 — 갑 달성
             con.execute("UPDATE chk_messages SET final=0 WHERE week=?", (week,))   # 켜질 때 마감 표를 다시 그리게
+        if con.execute("INSERT OR IGNORE INTO chk_kv(key, value) VALUES('manual_20261019b', 1)").rowcount:
+            merge_commissions(con, 4)   # 사용자 요청 — 따로 적힌 대리 4건은 대리 한 건 · 의뢰 4건
         con.commit()
         con.close()
 

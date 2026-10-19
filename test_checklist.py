@@ -268,10 +268,33 @@ def test_gap_pass():
     ck.render_png(w, final=True)
 
 
+def test_merge():
+    """따로 적힌 대리 4건 → 대리 한 건(의뢰 4건) · 주간 의뢰 수는 그대로 · 건수가 다르면 안 건드림."""
+    import time
+    con = ck.connect()
+    con.execute("UPDATE chk_ledger SET settle_id=0 WHERE settle_id IS NULL AND kind='commission'")
+    con.commit()
+    cog = ck.Checklist.__new__(ck.Checklist)
+    gap = 1146659618790051960
+    week = ck.week_of(ck.kst_day(time.time()))
+    count = lambda: ck.week_data(ck.connect(), week, time.time())["commissions"]   # noqa: E731
+    n0 = count()
+    for b, a in (("A", 10_000), ("B", None), ("A", 5_000), ("C", None)):
+        cog.record_commission(gap, b, f"{b} 내용", a, None)
+    con = ck.connect()
+    assert not ck.merge_commissions(con, 3)
+    assert ck.merge_commissions(con, 4)
+    con.commit()
+    rows = [e for e in cog.ledger()["rows"] if e["kind"] == "commission"]
+    assert len(rows) == 1 and rows[0]["qty"] == 4 and rows[0]["buyer"] == "A · B · C" and rows[0]["amount"] is None
+    assert "10,000, 5,000" in rows[0]["note"] and count() == n0 + 4
+
+
 if __name__ == "__main__":
     test_flow()
     test_ledger()
     test_modal()
     test_bump()
     test_gap_pass()
+    test_merge()
     print("OK: checklist")
