@@ -31,7 +31,8 @@ def _slot_text(s: dict, captain: Optional[str]) -> str:
     eff = effective_ovr(s["ovr"], s["pos"], s["slot"])
     power = f"{s['ovr']}" if eff == s["ovr"] else f"{s['ovr']}→{eff}⚠️"
     cap = " ©️" if s["player_id"] == captain else ""
-    name = f"🌟**{s['name']}** #{s['number']}" if s.get("prospect") else f"**{s['name']}**"
+    name = (f"🌟**{s['name']}** #{s['number']}" if s.get("prospect") else
+            f"🎓**{s['name']}**" if s.get("youth") else f"**{s['name']}**")
     return f"{s['slot']} {name} {power}{cap}"
 
 
@@ -142,7 +143,7 @@ class Club(commands.Cog):
                 continue
             eff = effective_ovr(p["ovr"], p["pos"], slot) if slot else p["ovr"]
             fit = "" if eff == p["ovr"] else f" → {eff}"
-            star = "🌟 유망주 " if p.get("prospect") else ""
+            star = "🌟 유망주 " if p.get("prospect") else "🎓 유스 " if p.get("youth") else ""
             rows.append((eff, app_commands.Choice(name=f"{star}{p['name']} · {p['pos']} · OVR {p['ovr']}{fit}"[:100],
                                                   value=p["player_id"])))
         rows.sort(key=lambda r: -r[0])

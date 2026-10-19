@@ -64,7 +64,7 @@ async def _all_pages(view: HubView):
 def test_hubs():
     hubs = CH.Hubs.__new__(CH.Hubs)
     hubs.bot, hubs.db, hubs.clubs, hubs.fish = None, edb.EconomyDB(), cdb.ClubDB(), CH.FishingDB()
-    hubs.dungeon, hubs.pm, hubs.tac = CH.DungeonDB(), pmdb.PlayerMarketDB(), CH.TacticsDB()
+    hubs.dungeon, hubs.pm, hubs.tac, hubs.youth = CH.DungeonDB(), pmdb.PlayerMarketDB(), CH.TacticsDB(), CH.YouthDB()
 
     async def flow():
         await hubs.clubs.create_club(U, "허브 FC", 1)

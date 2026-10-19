@@ -1,5 +1,6 @@
 # cogs/hub.py — 2.8 허브: /오늘 · /게임 (새 명령어) + /구단 · /시장 허브 화면 (2.8 서버에서 내 구단 · 시장을 열 때)
 # 한 메시지를 계속 고쳐 쓰고 맨 아래 줄은 ◀ 🏠 ▶ (services/hub.py). 예전 명령어(/출석 /시설 /이적시장 …)는 그대로 남는다.
+import asyncio
 import time
 
 import discord
@@ -18,6 +19,8 @@ from services.fishing import FishingDB
 from services.hub import HubView, Page
 from services import tactics as T
 from services.tactics import TacticsDB
+from services import youth as Y
+from services.youth import YouthDB
 from services.player_market_db import PACKS, PlayerMarketDB
 
 ATTEND_REWARD = 30_000   # cogs.economy.Economy.ATTEND_REWARD 와 같다
@@ -71,6 +74,7 @@ class Hubs(commands.Cog):
         self.dungeon = DungeonDB()
         self.pm = PlayerMarketDB()
         self.tac = TacticsDB()
+        self.youth = YouthDB()
 
     async def cog_load(self):
         from cogs.economy import ITEM_HANDLERS
@@ -168,7 +172,8 @@ class Hubs(commands.Cog):
                  Page("🏗️", "시설", self._p_facility, "경기장 · 훈련장 · 유스 · 메디컬"),
                  Page("👔", "감독 · 의료진", self._p_staff, "전력 보너스 · 부상 치료"),
                  Page("⚔️", "전술", self._p_tactics, "기본 전술 · 적응도 · 하프타임 규칙"),
-                 Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술")]
+                 Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술"),
+                 Page("🎓", "유스", self._p_youth, "입단 테스트 · 훈련 · 판매 · 1군 등록")]
         return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page)
 
     # ───────────── ⚔️ 전술 (2.8) ─────────────
@@ -244,6 +249,168 @@ class Hubs(commands.Cog):
         pick.callback = chosen
         view.add_item(pick)
         return e
+
+    # ───────────── 🎓 유스 (2.8) ─────────────
+    SCENE_DELAY = 1.2   # 입단 테스트 장면 사이 (초)
+
+    async def _p_youth(self, view: HubView) -> discord.Embed:
+        user, now = view.user, int(time.time())
+        st = await self.youth.status(user.id, now)
+        youth, items = st["youth"], st["items"]
+        ids = {y["id"] for y in youth}
+        if view.ctx.get("yid") not in ids:
+            view.ctx["yid"] = youth[0]["id"] if youth else None
+        sel_y = next((y for y in youth if y["id"] == view.ctx["yid"]), None)
+        head = (f"유스 아카데미 **Lv.{st['level']}** · 슬롯 **{len(youth)}/{st['slots']}** · 1군 등록 OVR 상한 **{st['cap']}**\n"
+                f"오늘 시장 열기 **×{st['heat']:.2f}** · "
+                + " · ".join([_check(st["tried"], "입단 테스트"), _check(st["matched"], "주간 연습경기"),
+                              _check(st["registered"], "이번 주 1군 등록")]))
+        lines = []
+        for y in youth:
+            pe, pn, _ = Y.PERSONALITIES[y["personality"]]
+            grad = " 🎓**졸업**" if y["age"] >= Y.GRAD_AGE else ""
+            pick = "▶ " if y["id"] == view.ctx["yid"] else ""
+            lines.append(f"{pick}**{y['name']}** \"{y['nick']}\" · {y['pos']} · {y['age']}세{grad}\n"
+                         f"　OVR **{y['ovr']:.1f}** · 잠재력 {Y.pot_text(y)} · {pe} {pn} · "
+                         f"오늘 훈련 {y['trains_left']}번 남음 · 판매가 {y['price']:,}원")
+        body = head + "\n\n" + ("\n".join(lines) if lines else "아직 유스 선수가 없어요. **입단 테스트**로 첫 선수를 뽑아 보세요!")
+        if st["first"]:
+            body += "\n\n**1군 등록 선수** (내 구단 전용 · 7일 = 1살 · 35세 은퇴)\n" + "\n".join(
+                f"　🎓 {y['name']} · {y['pos']} · OVR {y['first_ovr']} · {Y.age_of(y, now)}세" for y in st["first"])
+        apps = view.ctx.get("apps") if not st["tried"] else None
+        if apps:
+            body += "\n\n**🔎 오늘의 지원자** — 한 명을 골라 테스트해요 (잠재력은 숨겨져 있어요)\n" + "\n".join(
+                f"　{i}. **{a['name']}** \"{a['nick']}\" · {a['pos']} · {a['age']}세 · OVR {a['ovr']} · "
+                f"{Y.personality_label(a['personality'])}\n　　🗣️ 스카우터: \"{a['scout']}\""
+                for i, a in enumerate(apps, 1))
+        e = ui.card("🎓 유스", body, ui.INFO, user, "🎓 유스")
+        e.set_footer(text=f"입단 테스트 {_won(Y.TRYOUT_FEE)}원 (떨어지면 절반 환불) · 훈련 하루 {Y.TRAIN_DAILY}번 · "
+                          f"7일 = 1살 · {Y.GRAD_AGE}세 졸업 뒤 판매가 주마다 -15% · 1군 등록 📝 + {_won(Y.REGISTER_FEE)}원")
+        # 0줄: 선수 고르기
+        if youth:
+            pick = discord.ui.Select(placeholder="🎓 선수 고르기", row=0, options=[
+                discord.SelectOption(label=f"{y['name']} · {y['pos']} · OVR {y['ovr']:.1f}", value=str(y["id"]),
+                                     description=f"{y['age']}세 · {Y.personality_label(y['personality'])}",
+                                     default=y["id"] == view.ctx["yid"]) for y in youth[:25]])
+
+            async def picked(interaction: discord.Interaction):
+                view.ctx["yid"] = int(pick.values[0])
+                view.ctx.pop("confirm", None)
+                await view.refresh(interaction)
+            pick.callback = picked
+            view.add_item(pick)
+        # 1줄: 고른 선수에게
+        confirm = view.ctx.get("confirm")
+        acts = [("train", "훈련", "🏋️", discord.ButtonStyle.primary, sel_y and sel_y["trains_left"] > 0),
+                ("ticket", f"특훈권 ({items['special_training']})", "🏋️", discord.ButtonStyle.secondary,
+                 sel_y and items["special_training"] > 0),
+                ("sell", f"정말 판매 ({sel_y['price']:,}원)" if sel_y and confirm == ("sell", sel_y["id"]) else "판매", "💰",
+                 discord.ButtonStyle.danger if confirm and confirm[0] == "sell" else discord.ButtonStyle.secondary, bool(sel_y)),
+                ("register", "정말 1군 등록" if sel_y and confirm == ("register", sel_y["id"]) else f"1군 등록 ({items['first_team']})",
+                 "📝", discord.ButtonStyle.success, sel_y and items["first_team"] > 0 and not st["registered"])]
+        for key, label, emoji, style, ok in acts:
+            b = discord.ui.Button(label=label, emoji=emoji, style=style, row=1, disabled=not ok)
+            b.callback = self._youth_act(view, key)
+            view.add_item(b)
+        # 2줄: 테스트 · 연습경기
+        full = len(youth) >= st["slots"]
+        for key, label, emoji, ok in (
+                ("tryout", "지원자 보기" if not apps else "지원자 다시 보기", "🔎", not st["tried"] and not full),
+                ("coupon", f"쿠폰으로 테스트 ({items['scout_coupon']})", "🎟️",
+                 not st["tried"] and not full and not apps and items["scout_coupon"] > 0),
+                ("match", "주간 연습경기", "⚽", not st["matched"] and bool(youth))):
+            b = discord.ui.Button(label=label, emoji=emoji, row=2, disabled=not ok,
+                                  style=discord.ButtonStyle.primary if key == "tryout" else discord.ButtonStyle.secondary)
+            b.callback = self._youth_act(view, key)
+            view.add_item(b)
+        # 3줄: 지원자 고르기 → 테스트
+        if apps:
+            sel = discord.ui.Select(placeholder=f"🔎 테스트할 지원자 고르기 ({'무료' if apps[0].get('free') else _won(Y.TRYOUT_FEE) + '원'})",
+                                    row=3, options=[discord.SelectOption(
+                                        label=f"{a['name']} \"{a['nick']}\" · {a['pos']} · OVR {a['ovr']}"[:100], value=str(i),
+                                        description=a["scout"][:100]) for i, a in enumerate(apps)])
+
+            async def go(interaction: discord.Interaction):
+                await self._youth_tryout(view, interaction, int(sel.values[0]))
+            sel.callback = go
+            view.add_item(sel)
+        return e
+
+    def _youth_act(self, view: HubView, key: str):
+        async def cb(interaction: discord.Interaction):
+            user, now, yid = view.user, int(time.time()), view.ctx.get("yid")
+            note = None
+            if key in ("tryout", "coupon"):
+                r = await self.youth.open_tryout(user.id, now, coupon=key == "coupon")
+                if r["ok"]:
+                    view.ctx["apps"] = r["applicants"]
+                else:
+                    note = ui.card("🙅 입단 테스트", {"done": "오늘은 이미 테스트했어요. 내일 다시!", "full": "유스 슬롯이 꽉 찼어요.",
+                                                    "coupon": "🎟️ 스카우트 쿠폰이 없어요."}[r["reason"]], ui.LOSE, user, "🎓 유스")
+            elif key in ("train", "ticket"):
+                r = await self.youth.train(user.id, yid, now, ticket=key == "ticket")
+                note = ui.card(f"🏋️ {r['name']} 훈련!", f"OVR {r['before']:.1f} → **{r['ovr']:.1f}** · 누적 훈련 {r['trains']}번"
+                               + (f"\n잠재력 공개: {Y.REVEAL[0]}번 등급 · {Y.REVEAL[1]}번 ±5 · {Y.REVEAL[2]}번 정확한 값"
+                                  if r["trains"] in Y.REVEAL else ""), ui.WIN, user, "🎓 유스") if r["ok"] else ui.card(
+                    "🙅 훈련", {"limit": "오늘 훈련을 다 했어요.", "ticket": "🏋️ 특훈권이 없어요.", "none": "선수를 골라 주세요."}[r["reason"]],
+                    ui.LOSE, user, "🎓 유스")
+            elif key == "match":
+                r = await self.youth.weekly_match(user.id, now)
+                if r["ok"]:
+                    gf, ga = r["score"]
+                    note = ui.card(f"⚽ 유스 연습경기 {gf} : {ga} {'승리!' if r['won'] else '무승부' if gf == ga else '패배'}",
+                                   "\n".join(f"{n} {a:.1f} → **{b:.1f}**" for n, a, b in r["grown"]),
+                                   ui.WIN if r["won"] else ui.EVEN, user, "🎓 유스")
+                else:
+                    note = ui.card("🙅 연습경기", "이번 주 연습경기는 이미 했어요." if r["reason"] == "done" else "유스 선수가 없어요.",
+                                   ui.LOSE, user, "🎓 유스")
+            elif key in ("sell", "register"):
+                if view.ctx.get("confirm") != (key, yid):   # 한 번 더 눌러야 실행 (되돌릴 수 없다)
+                    view.ctx["confirm"] = (key, yid)
+                    return await view.refresh(interaction)
+                view.ctx.pop("confirm", None)
+                if key == "sell":
+                    r = await self.youth.sell(user.id, yid, now)
+                    note = ui.card(f"💰 {r['name']} 판매", f"NPC 구단이 **{r['price']:,}원**에 데려갔어요.\n잔액 {r['balance']:,}원",
+                                   ui.GOLD, user, "🎓 유스") if r["ok"] else ui.card("🙅 판매", "선수를 찾지 못했어요.", ui.LOSE, user, "🎓 유스")
+                else:
+                    r = await self.youth.register(user.id, yid, now)
+                    note = ui.card(f"📝 {r['name']} 1군 등록!", f"OVR **{r['ovr']}**로 내 구단 명단에 들어왔어요. `/선발`로 넣어 보세요.\n"
+                                   f"(내 구단 전용 · 팔거나 넘길 수 없어요 · 7일 = 1살 · 35세 은퇴)", ui.GOLD, user, "🎓 유스") \
+                        if r["ok"] else ui.card("🙅 1군 등록", {
+                            "cap": f"OVR이 상한 {r.get('cap')}을 넘어요. 유스 아카데미를 올리면 상한이 올라가요.",
+                            "week": "1군 등록은 주 1회예요.", "item": "📝 1군 등록권이 없어요.",
+                            "balance": f"등록비 {Y.REGISTER_FEE:,}원이 부족해요.", "club": "구단이 있어야 해요.",
+                            "none": "선수를 찾지 못했어요."}[r["reason"]], ui.LOSE, user, "🎓 유스")
+            await view.refresh(interaction, note)
+        return cb
+
+    async def _youth_tryout(self, view: HubView, interaction: discord.Interaction, idx: int):
+        user = view.user
+        r = await self.youth.tryout(user.id, idx, int(time.time()))
+        if not r["ok"]:
+            msg = {"balance": f"테스트비 {Y.TRYOUT_FEE:,}원이 부족해요.", "full": "유스 슬롯이 꽉 찼어요.",
+                   "done": "오늘은 이미 테스트했어요."}.get(r["reason"], "지원자를 다시 열어 주세요.")
+            return await view.refresh(interaction, ui.card("🙅 입단 테스트", msg, ui.LOSE, user, "🎓 유스"))
+        view.ctx.pop("apps", None)
+        a = r["applicant"]
+        title = f"🔎 {a['name']} \"{a['nick']}\" 입단 테스트"
+        shown = []
+        await interaction.response.defer()
+        for i, (scene, ok) in enumerate(zip(Y.SCENES, r["scenes"])):
+            shown.append(f"{scene} — {'✅ 통과' if ok else '❌ 실수'}")
+            if i < len(Y.SCENES) - 1:
+                await interaction.edit_original_response(embeds=[ui.card(title, "\n".join(shown) + "\n…", ui.INFO, user, "🎓 유스")],
+                                                         view=view)
+                await asyncio.sleep(self.SCENE_DELAY)
+        if r["passed"]:
+            res = (f"🎉 **합격!** 잠재력 **{a['grade']}등급** · {Y.personality_label(a['personality'])}\n"
+                   f"테스트비 {r['fee']:,}원 · 잔액 {r['balance']:,}원")
+            view.ctx["yid"] = r["youth"]["id"]
+        else:
+            res = f"😢 **불합격** — 테스트비 {r['fee']:,}원 중 {r['refund']:,}원 환불 · 잔액 {r['balance']:,}원"
+        await view.refresh(interaction, ui.card(title, "\n".join(shown) + "\n\n" + res,
+                                                ui.GOLD if r["passed"] else ui.LOSE, user, "🎓 유스"))
 
     async def _use_note(self, interaction: discord.Interaction, user):
         team = await self.clubs.get_team(user.id)

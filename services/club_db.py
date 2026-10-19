@@ -672,6 +672,8 @@ class ClubDB:
             squad[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"], "ovr": p["ovr"],
                                "nation": p["nation"], "number": p["number"], "prospect": True,
                                "conf_mult": 0.6 + p["confidence"] * 0.04}   # 자신감 10 → 1.0
+        from services.youth import first_team_squad   # 1군 등록한 유스 (2.8 · 주인 구단 전용)
+        squad.update(first_team_squad(con, user_id, int(time.time())))
         return squad
 
     @staticmethod

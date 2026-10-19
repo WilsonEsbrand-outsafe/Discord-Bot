@@ -72,10 +72,15 @@ ITEMS = {
     # ── 2.8 전술 ──
     "tactic_note": ("📓", "전술 노트",       "기본 전술의 선발 11명 적응도 +15"),
     "analysis_report": ("📊", "분석 리포트",  "다음 경기 킥오프 때 상대 기본 전술 · 하프타임 규칙 공개"),
+    # ── 2.8 유스 (/구단 → 🎓 유스 화면에서 쓴다) ──
+    "first_team":  ("📝", "1군 등록권",      "유스 선수 한 명을 내 구단 선수로 등록 (등록비 100만원 · 주 1회)"),
+    "special_training": ("🏋️", "특훈권",     "오늘 유스 선수 한 명 훈련 +1번"),
+    "scout_coupon": ("🎟️", "스카우트 쿠폰",  "다음 유스 입단 테스트 무료 + 지원자 +2명"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
-                 "bow_pro", "windbreaker", "focus", "torch", "potion", "antidote", "dkey", "scroll", "feather"}
+                 "bow_pro", "windbreaker", "focus", "torch", "potion", "antidote", "dkey", "scroll", "feather",
+                 "first_team", "special_training", "scout_coupon"}
 # 점검 보상 상자: 6종을 한 장씩 뒤집어 섞고, 고른 한 장을 받는다
 BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
 BOX_CHOICES = len(BOX_REWARDS)
@@ -1410,6 +1415,9 @@ class EconomyDB:
                         ("club_tactics",          "user_id"),   # 2.8 전술
                         ("tactic_fit",            "user_id"),
                         ("tactic_log",            "user_id"),
+                        ("youth_players",         "user_id"),   # 2.8 유스
+                        ("youth_daily",           "user_id"),
+                        ("youth_week",            "user_id"),
                     ]:
                         try:
                             cur = con.execute(f"DELETE FROM {table} WHERE {col}=?", (int(user_id),))
