@@ -61,10 +61,18 @@ ITEMS = {
     "bow_pro":     ("🏹", "고급 활",         "/양궁 한 판 · 손떨림 -30%"),
     "windbreaker": ("🧥", "바람막이",        "/양궁 한 판 · 바람 영향 -50%"),
     "focus":       ("🧪", "집중 물약",       "/양궁 한 판 · 조준 바늘이 1.5배 느려짐"),
+    # ── 2.8 던전 (던전 안에서 버튼으로 쓰거나, 가지고 있으면 자동) ──
+    "torch":       ("🔦", "횃불",            "/던전 입장 때 켜면 그 판 문 힌트가 전부 진짜"),
+    "potion":      ("🩹", "회복 포션",        "/던전 안에서 파티 체력 +40"),
+    "antidote":    ("💊", "해독제",          "/던전 함정 피해를 한 번 막음 (가지고 있으면 자동)"),
+    "dkey":        ("🗝️", "던전 열쇠",       "/던전 보물방에서 금고를 열어 좋은 보상 2번"),
+    "scroll":      ("📜", "탐지 두루마리",    "/던전 이번 층 문 뒤가 무엇인지 모두 보임"),
+    "feather":     ("🪶", "부활 깃털",       "/던전에서 쓰러지면 체력 50으로 한 번 부활 (가지고 있으면 자동)"),
+    "dungeon_ticket": ("🎫", "던전 추가 입장권", "오늘 /던전 1번 더"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
-                 "bow_pro", "windbreaker", "focus"}
+                 "bow_pro", "windbreaker", "focus", "torch", "potion", "antidote", "dkey", "scroll", "feather"}
 # 점검 보상 상자: 6종을 한 장씩 뒤집어 섞고, 고른 한 장을 받는다
 BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
 BOX_CHOICES = len(BOX_REWARDS)
@@ -1392,6 +1400,10 @@ class EconomyDB:
                         ("fish_trade",            "user_id"),
                         ("fish_fed",              "user_id"),
                         ("fish_buffs",            "user_id"),
+                        ("dungeon_runs",          "user_id"),   # 2.8 던전
+                        ("dungeon_daily",         "user_id"),
+                        ("dungeon_best",          "user_id"),
+                        ("dungeon_clears",        "user_id"),
                     ]:
                         try:
                             cur = con.execute(f"DELETE FROM {table} WHERE {col}=?", (int(user_id),))
