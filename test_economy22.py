@@ -15,6 +15,8 @@ edb.ROOKIE_DAYS = 0   # 신인 부스트(×2)는 test_rookie.py 에서 — 여�
 
 from cogs.economy import Economy  # noqa: E402
 from services.sponsor_db import SponsorDB  # noqa: E402
+import release  # noqa: E402
+release.RELEASE_TS = release.MAINTENANCE = None   # 2.8 공개 전 상태로 고정: 다른 서버(999 등)는 2.7, 테스트 서버만 2.8
 
 D = 86400
 NOW = 1_800_000_000 - 9 * 3600 + 3600   # KST 01:00

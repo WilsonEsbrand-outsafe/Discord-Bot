@@ -15,6 +15,7 @@ edb.DB_PATH = cdb.DB_PATH = pmdb.DB_PATH = TMP
 
 import cogs.tutorial as CT   # noqa: E402
 import release   # noqa: E402
+release.RELEASE_TS = release.MAINTENANCE = None   # 2.8 공개 전 상태로 고정: 다른 서버(999 등)는 2.7, 테스트 서버만 2.8
 import services.onboarding as OB   # noqa: E402
 
 

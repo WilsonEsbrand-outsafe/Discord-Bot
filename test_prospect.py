@@ -18,6 +18,8 @@ edb.DB_PATH = cdb.DB_PATH = pmdb.DB_PATH = TMP
 import cogs.club as cc  # noqa: E402
 import cogs.prospect as cp  # noqa: E402
 from cogs.economy import Economy  # noqa: E402
+import release  # noqa: E402
+release.RELEASE_TS = release.MAINTENANCE = None   # 2.8 공개 전 상태로 고정: 다른 서버(999 등)는 2.7, 테스트 서버만 2.8
 
 Y = cdb.PROSPECT_YEAR
 INFO, _ = cdb.prospect_input("손흥민", "대한민국", "LW", 7, "7월 8일", "양발", 183)

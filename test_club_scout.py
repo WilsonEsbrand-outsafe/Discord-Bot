@@ -18,6 +18,9 @@ from services.club_db import (  # noqa: E402
     FORMATIONS, SLOT_GROUP, ClubDB, auto_assign, effective_ovr, simulate_match, team_rating,
 )
 
+import release  # noqa: E402
+release.RELEASE_TS = release.MAINTENANCE = None   # 2.8 공개 전 상태로 고정: 다른 서버(999 등)는 2.7, 테스트 서버만 2.8
+
 NOW = 1_800_000_000
 U1, U2 = 111, 222
 

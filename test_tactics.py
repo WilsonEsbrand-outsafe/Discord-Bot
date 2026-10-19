@@ -17,6 +17,7 @@ edb.DB_PATH = cdb.DB_PATH = pmdb.DB_PATH = TMP
 import cogs.club as CC   # noqa: E402
 import cogs.hub as CH   # noqa: E402
 import release   # noqa: E402
+release.RELEASE_TS = release.MAINTENANCE = None   # 2.8 공개 전 상태로 고정: 다른 서버(999 등)는 2.7, 테스트 서버만 2.8
 import services.tactics as T   # noqa: E402
 from services.fishing import FishingDB   # noqa: E402
 
