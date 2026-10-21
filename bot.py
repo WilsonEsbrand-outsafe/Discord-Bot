@@ -746,7 +746,7 @@ def _guess_category_from_module(cmd: app_commands.Command) -> str:
 
     if "fixtures" in mod:
         return "📅 경기 정보"
-    if "economy" in mod or "race" in mod:
+    if any(k in mod for k in ("economy", "race", "fishing", "dungeon", "archery")):   # 2.10.1: 낚시 · 던전 · 양궁도 경제
         return "💰 경제"
     if "toto" in mod:
         return "🎰 토토"
