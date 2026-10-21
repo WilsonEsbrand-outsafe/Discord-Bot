@@ -55,6 +55,7 @@ JUNK = {   # 아이템 → 비중 (old_boot = 낡은 장화, 아무것도 아님
 }
 BAG_MAX = 100                 # 어망(보관) 한도
 TRADE_DAILY = 20              # 하루 보내기 포인트
+RESET_282B_TS = 1792544400    # 2026-10-21 10:00 KST — 2.82b 때 이날 쓴 포인트를 한 번 초기화
 CHARM_BONUS = 5               # 🍀 낚시 부적 1장 = 오늘 한도 +5
 FRESH_DROP, FRESH_DROP_ICE, FRESH_MIN = 0.10, 0.05, 0.5   # 하루 신선도 -10% (아이스박스 -5%) · 최저 50%
 MARKET_MIN, MARKET_MAX, MARKET_REVERT = 0.5, 2.0, 0.25    # 싯가 배수 0.5~2.0 · 매일 평균(1)으로 25% 회귀
@@ -171,6 +172,10 @@ class FishingDB(EconomyDB):
                         "PRIMARY KEY(user_id, target, day_key))")
             con.execute("CREATE TABLE IF NOT EXISTS fish_buffs (user_id INTEGER, kind TEXT, until INTEGER, "
                         "PRIMARY KEY(user_id, kind))")
+            # 2.82b 한 번만: 판매로 쓴 10/21 거래 포인트 초기화 (부적 보너스는 그대로)
+            con.execute("CREATE TABLE IF NOT EXISTS fish_migrations (key TEXT PRIMARY KEY)")
+            if con.execute("INSERT OR IGNORE INTO fish_migrations VALUES('reset-trade-2.82b')").rowcount:
+                con.execute("UPDATE fish_trade SET used=0 WHERE day_key=?", (_kst_day(RESET_282B_TS),))
             con.commit()
         finally:
             con.close()

@@ -289,10 +289,32 @@ def test_screens():
     run(flow())
 
 
+def test_reset_282b():
+    """2.82b: 10/21 쓴 포인트는 처음 한 번만 0으로 (부적 보너스 · 다른 날은 그대로)."""
+    day = F._kst_day(F.RESET_282B_TS)
+    con = F.FishingDB()._connect()
+    con.execute("DELETE FROM fish_migrations")
+    con.execute("INSERT OR REPLACE INTO fish_trade VALUES(91, ?, 17, 5)", (day,))
+    con.execute("INSERT OR REPLACE INTO fish_trade VALUES(91, ?, 9, 0)", (day - 1,))
+    con.commit()
+    con.close()
+    F.FishingDB()
+    con = F.FishingDB()._connect()
+    assert con.execute("SELECT used, bonus FROM fish_trade WHERE user_id=91 AND day_key=?", (day,)).fetchone() == (0, 5)
+    assert con.execute("SELECT used FROM fish_trade WHERE user_id=91 AND day_key=?", (day - 1,)).fetchone() == (9,)
+    con.execute("UPDATE fish_trade SET used=3 WHERE user_id=91 AND day_key=?", (day,))
+    con.commit()
+    con.close()
+    con = F.FishingDB()._connect()   # 다시 켜져도 또 초기화하지 않는다
+    assert con.execute("SELECT used FROM fish_trade WHERE user_id=91 AND day_key=?", (day,)).fetchone() == (3,)
+    con.close()
+
+
 if __name__ == "__main__":
     test_odds_and_values()
     test_flow()
     test_trade_and_market()
     test_feed_cook_aquarium_weekly()
     test_screens()
+    test_reset_282b()
     print("OK: fishing")
