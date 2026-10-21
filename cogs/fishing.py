@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import release
 from cogs.economy import ITEM_HANDLERS
 from services import ui
 from services.club_db import ClubDB
@@ -252,7 +253,8 @@ class Fishing(commands.Cog):
             return await interaction.response.send_message("🙅 자기 찌만 당길 수 있어요.", ephemeral=True)
         if from_bite and not s.get("cast_ts"):
             return await interaction.response.send_message("🙅 이 찌는 주인이 아니거나 이미 끝났어요.", ephemeral=True)
-        r = await self.db.reel(user.id, int(time.time()))
+        new = release.preview_291(interaction.guild_id)   # 2.9.1: 경험치 하향 · 결과 남기기 (테스트 서버 먼저)
+        r = await self.db.reel(user.id, int(time.time()), new_xp=new)
         task = self._tasks.pop(user.id, None)
         if task:
             task.cancel()
@@ -260,7 +262,7 @@ class Fishing(commands.Cog):
             return await interaction.response.send_message("🎣 물에 던진 찌가 없어요. `/낚시`로 던져 보세요.", ephemeral=True)
         e = self._result_card(user, r)
         s = await self.db.status(user.id, int(time.time()))
-        await interaction.response.edit_message(embed=e, view=CastView(self, user, s, keep=r["kind"] in ("fish", "junk")))
+        await interaction.response.edit_message(embed=e, view=CastView(self, user, s, keep=new and r["kind"] in ("fish", "junk")))
 
     def _result_card(self, user, r: dict) -> discord.Embed:
         kind = r["kind"]
@@ -293,10 +295,10 @@ class Fishing(commands.Cog):
 
     # ───────────── 낚시 메뉴 (허브) ─────────────
     async def open_menu(self, interaction: discord.Interaction, page: int = 0):
-        view = self.menu_view(interaction.user, page)
+        view = self.menu_view(interaction.user, page, release.preview_291(interaction.guild_id))
         await view.send(interaction)
 
-    def menu_view(self, user, page: int = 0) -> HubView:
+    def menu_view(self, user, page: int = 0, new: bool = True) -> HubView:
         pages = [
             Page("🧺", "어망", self._p_bag, "잡은 물고기 · 팔기 · 놓아주기 · 보내기"),
             Page("📈", "오늘 시세", self._p_market, "물고기마다 오늘 값 ▲▼"),
@@ -308,6 +310,8 @@ class Fishing(commands.Cog):
             Page("🏆", "주간 최대어", self._p_weekly, "이번 주 가장 큰 물고기"),
             Page("🛒", "낚시 상점", self._p_shop, "미끼 · 낚싯대 · 아이스박스"),
         ]
+        if not new:   # 2.9.1 낚시 기록은 공개 전 서버엔 아직
+            pages = [p for p in pages if p.render != self._p_log]
         return HubView(user, "🎣 낚시 메뉴", SECTION, pages, "/낚시", page,
                        ctx={"sel": []},
                        home_note=f"판매는 한도 없음 · 다른 유저에게 보내기는 하루 **{TRADE_DAILY}포인트**까지 (흔함 1 · 보통 1 · 희귀 2 · 영웅 3 · 전설 5).\n"

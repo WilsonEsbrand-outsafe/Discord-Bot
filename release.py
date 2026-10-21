@@ -1,6 +1,6 @@
 # release.py — 단계 배포: 새 패치는 테스트 서버에 먼저, 다른 서버는 RELEASE_TS(정기점검)에 한꺼번에.
 # 다음 패치 때: PREVIEW_ONLY(새 명령어) · LEGACY_ONLY(없어질 명령어) · RELEASE_TS 를 바꾼다.
-# 지금: 2.8 — 2026-10-20 00:00 KST 공개 완료 · 2.82 점검 10/21 10:00 ~ 10:03 KST
+# 지금: 2.9.1 — 테스트 서버 먼저 (RELEASE_291_TS 미정) · 2.8 은 2026-10-20 00:00 KST 공개 완료
 #       (2.5 는 2026-10-02 00:00 · 2.6 은 2026-10-03 12:00 · 2.7 은 2026-10-12 17:00 KST 공개 완료)
 import calendar  # RELEASE_TS = calendar.timegm((년, 월, 일, 시(UTC), 분, 0)) · None = 아직 테스트 서버에만
 import time
@@ -26,6 +26,19 @@ def released(now: Optional[float] = None) -> bool:
 def preview(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     """이 서버에 새 패치가 적용됐나 (테스트 서버는 언제나)."""
     return guild_id == TEST_GUILD or released(now)
+
+
+# 2.9.1 — 서버마다 나눌 수 있는 것(낚시 · 토토 화면 · 튜토리얼)은 테스트 서버에 먼저, 나눌 수 없는 것
+# (일반 선수 나이 · 은퇴, 토토 무효 처리 — 모든 서버가 같이 쓰는 데이터)은 RELEASE_291_TS 부터 켠다. None = 아직
+RELEASE_291_TS: Optional[int] = None
+
+
+def released_291(now: Optional[float] = None) -> bool:
+    return RELEASE_291_TS is not None and _now(now) >= RELEASE_291_TS
+
+
+def preview_291(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_291(now)
 
 
 def maintenance(now: Optional[float] = None) -> bool:

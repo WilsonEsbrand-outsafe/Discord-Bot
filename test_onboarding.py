@@ -157,6 +157,24 @@ def test_flow():
     asyncio.run(flow())
 
 
+def test_notify_step_preview_only():
+    """2.9.1 '알림 설정' 단계는 테스트 서버(공개 전)에서만 — 다른 서버는 건너뛰고 7단계."""
+    user = _user(5)
+    i = OB.STEP_KEYS.index("notify")
+
+    async def flow():
+        v = CT.OnboardingView(None, user, None, i, replay=True, new=False)    # 저장된 단계가 알림 설정이어도 마무리로
+        assert OB.STEP_KEYS[v.step] == "finish" and "7/7" in v.embed().description
+        v = CT.OnboardingView(None, user, None, i - 1, replay=True, new=False)
+        log = []
+        await next(c for c in v.children if c.label == "다음").callback(_inter(user, log, guild=1))
+        assert "마무리" in log[-1][1].title
+        v = CT.OnboardingView(None, user, None, i, replay=True)
+        assert "7/8" in v.embed().description and any(c.label == "알림 설정하기" for c in v.children)
+    asyncio.run(flow())
+
+
 if __name__ == "__main__":
     test_flow()
+    test_notify_step_preview_only()
     print("OK: onboarding")

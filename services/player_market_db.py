@@ -6,6 +6,7 @@ import math
 import random
 import zlib
 import sqlite3
+import release
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -23,6 +24,12 @@ MARKET_CLOSE_HOUR = 23
 TICK_SECONDS = 600  # 10분
 
 REAL_SECONDS_PER_MONTH = 4 * 3600  # 4시간 = 1개월 → 실제 이틀에 1살 (2.9.1: 2시간 · 하루에 1살에서 늦춤)
+REAL_SECONDS_PER_MONTH_OLD = 2 * 3600   # 2.9.1 공개(release.RELEASE_291_TS) 전
+
+
+def month_seconds(now_ts: float) -> int:
+    """2.9.1 공개 뒤엔 4시간, 그 전엔 2시간 = 게임 속 1개월. 선수 시장은 모든 서버가 같이 쓰므로 서버별로 나누지 않는다."""
+    return REAL_SECONDS_PER_MONTH if release.released_291(now_ts) else REAL_SECONDS_PER_MONTH_OLD
 MONTHS_PER_YEAR = 12
 MONTH_CATCHUP_MAX = 3   # 한 번의 호출에서 진행할 최대 개월 수 (락 점유 시간 상한)
 
@@ -60,6 +67,9 @@ GROWTH_PROB_BY_AGE = [
     (999, 0.00), # 30+ (성장 없음)
 ]
 
+GROWTH_PROB_BY_AGE_OLD = [(18, 0.40), (20, 0.35), (22, 0.28), (24, 0.20), (26, 0.12), (28, 0.05), (999, 0.00)]   # 2.9.1 전
+
+
 def growth_penalty(gap: int) -> float:
     if gap >= 10:
         return 1.0
@@ -88,6 +98,21 @@ def retire_prob(age: int) -> float:
     if age >= RETIRE_AGE_MAX:
         return 1.0
     return RETIRE_PROB_BY_AGE.get(age, 0.0)
+
+
+def retire_prob_old(age: int) -> float:
+    """2.9.1 전 은퇴 확률(월) — 평균 38세, 늦으면 48세까지."""
+    if age < 33:
+        return 0.0
+    if age <= 34:
+        return 0.005
+    if age <= 36:
+        return 0.010
+    if age <= 38:
+        return 0.020
+    if age <= 40:
+        return 0.040
+    return 0.080
 
 # ───────────── 선수 뉴스(가격 이벤트) ─────────────
 # 틱마다 ±5% 랜덤워크만 돌면 시장이 밋밋하다. 뉴스는 기준가 자체를 움직여서
@@ -757,9 +782,6 @@ class PlayerMarketDB:
                     """,
                     (_p["player_id"], _p["name"], _p["position"]),
                 )
-            # 2.9.1: 예전엔 아마추어도 하루에 1살씩 먹어 늙고 은퇴할 수 있었다 → 22세 · OVR 50 현역으로 되돌린다
-            con.execute("UPDATE pm_players SET age=22, ovr=50, pot=50, base_value=0, retired=0 "
-                        "WHERE player_id LIKE 'AMT_%' AND (age!=22 OR ovr!=50 OR pot!=50 OR base_value!=0 OR retired!=0)")
 
             # ── 기존 구단주 마이그레이션: clubs 테이블의 모든 유저에게 아마추어 스쿼드 일괄 지급
             _clubs_exists = con.execute(
@@ -844,7 +866,7 @@ class PlayerMarketDB:
                     if row is None:
                         con.execute(
                             "INSERT INTO pm_game_time(id, start_ts, minute_per_month, month_index, last_month_ts, last_tick_ts) VALUES(1, ?, ?, 0, ?, 0)",
-                            (int(now_ts), int(REAL_SECONDS_PER_MONTH // 60), int(now_ts)),
+                            (int(now_ts), int(month_seconds(now_ts) // 60), int(now_ts)),
                         )
                         con.commit()
                 finally:
@@ -1701,10 +1723,12 @@ class PlayerMarketDB:
                         return 0, {}
                     _start_ts, month_index, last_month_ts = int(row[0]), int(row[1]), int(row[2])
 
-                    if (now_ts - last_month_ts) < REAL_SECONDS_PER_MONTH:
+                    month_sec = month_seconds(now_ts)
+                    new = release.released_291(now_ts)   # 2.9.1 성장 · 노쇠 · 은퇴 (공개 뒤 모든 서버에 한꺼번에)
+                    if (now_ts - last_month_ts) < month_sec:
                         return 0, {}
 
-                    months_due = int((now_ts - last_month_ts) // REAL_SECONDS_PER_MONTH)
+                    months_due = int((now_ts - last_month_ts) // month_sec)
                     if months_due <= 0:
                         return 0, {}
 
@@ -1720,13 +1744,17 @@ class PlayerMarketDB:
                     ).fetchall()
                     initial_data = {str(r[0]): {"name": str(r[1]), "ovr": int(r[2])} for r in initial_rows}
                     retired_this_run: set = set()
+                    if new:   # 예전엔 아마추어도 나이를 먹어 늙고 은퇴할 수 있었다 → 22세 · OVR 50 현역으로 되돌린다
+                        con.execute("UPDATE pm_players SET age=22, ovr=50, pot=50, base_value=0, retired=0 "
+                                    "WHERE player_id LIKE 'AMT_%' AND (age!=22 OR ovr!=50 OR pot!=50 OR base_value!=0 OR retired!=0)")
 
                     for _ in range(months_due):
                         month_index += 1
 
                         # 아마추어 더미(AMT_)는 모든 구단이 같이 쓰는 고정 선수라 나이를 먹지 않는다 (2.9.1)
                         players = con.execute(
-                            "SELECT player_id, age, ovr, pot FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"
+                            "SELECT player_id, age, ovr, pot FROM pm_players WHERE retired=0"
+                            + (" AND player_id NOT LIKE 'AMT_%'" if new else "")
                         ).fetchall()
 
                         for pid, age, ovr, pot in players:
@@ -1745,7 +1773,7 @@ class PlayerMarketDB:
 
                             # 성장
                             base_p = 0.0
-                            for max_age, pr in GROWTH_PROB_BY_AGE:
+                            for max_age, pr in (GROWTH_PROB_BY_AGE if new else GROWTH_PROB_BY_AGE_OLD):
                                 if age <= max_age:
                                     base_p = float(pr)
                                     break
@@ -1757,7 +1785,7 @@ class PlayerMarketDB:
                                 ovr = min(pot, ovr + inc)
 
                             # 은퇴
-                            if random.random() < retire_prob(age):
+                            if random.random() < (retire_prob(age) if new else retire_prob_old(age)):
                                 retired_this_run.add(str(pid))
                                 con.execute("UPDATE pm_players SET retired=1, updated_ts=? WHERE player_id=?", (int(now_ts), str(pid)))
                                 con.execute(
@@ -1775,7 +1803,7 @@ class PlayerMarketDB:
                                 age += 1
                                 if age >= 30:
                                     pot = max(ovr, pot - random.randint(1, 3))
-                                lo, hi = decline_range(age)
+                                lo, hi = decline_range(age) if new else ((0, 2) if age >= 33 else (0, 0))
                                 if hi:
                                     ovr = max(1, ovr - random.randint(lo, hi))
                                     pot = max(ovr, pot)
@@ -1831,7 +1859,7 @@ class PlayerMarketDB:
                                     (p["player_id"], p["price"], int(now_ts)),
                                 )
 
-                        last_month_ts += REAL_SECONDS_PER_MONTH
+                        last_month_ts += month_sec
 
                     con.execute(
                         "UPDATE pm_game_time SET month_index=?, last_month_ts=? WHERE id=1",

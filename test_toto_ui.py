@@ -25,7 +25,7 @@ def _inter(sent, user):
         pass
     async def modal(m):
         sent.append({"modal": m})
-    return SimpleNamespace(user=user, response=SimpleNamespace(defer=noop, send_message=rec, send_modal=modal),
+    return SimpleNamespace(user=user, guild_id=ct.release.TEST_GUILD, response=SimpleNamespace(defer=noop, send_message=rec, send_modal=modal),
                            followup=SimpleNamespace(send=rec))
 
 
@@ -38,7 +38,7 @@ async def _flow():
     await cog.db.add_balance(U, 100_000)
     fight = {"event_id": "e1", "match_id": "A|B", "home": "A", "away": "B", "home_odds": 1.5, "away_odds": 2.6,
              "commence_time": "2099-01-01T00:00:00Z"}
-    async def fake_fights():
+    async def fake_fights(ufc_only=True):
         return [fight]
     ct.upcoming_fights = fake_fights
 
@@ -53,6 +53,10 @@ async def _flow():
     soccer, ufc = sent[-1]["embeds"]                               # 2.9.1: 종목마다 임베드 따로 · 날짜별 묶음
     assert "아스날 vs 첼시" in soccer.description and "A vs B" in ufc.description and "📅" in soccer.description
     assert "`1.50`" in ufc.description and ufc.footer.text
+    inter.guild_id = 1                                             # 2.9.1 공개 전 서버: 예전 한 장짜리 목록
+    await Toto.toto_list.callback(cog, inter)
+    assert "**⚽ 축구**" in sent[-1]["embed"].description and "A vs B" in sent[-1]["embed"].description
+    inter.guild_id = ct.release.TEST_GUILD
 
     # 축구 경기 선택 → 결과 버튼 3개 → [원정승] → 금액 입력 → 베팅 완료 (공개)
     menu.select._values = ["s:m1"]

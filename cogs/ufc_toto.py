@@ -134,12 +134,15 @@ async def _fetch_fights() -> list[dict]:
     return fights
 
 
-async def upcoming_fights() -> list[dict]:
-    """베팅 가능한(시작 전) UFC 경기 — 다른 MMA 단체 경기는 뺀다. API 키가 없거나 조회에 실패하면 빈 목록."""
+async def upcoming_fights(ufc_only: bool = True) -> list[dict]:
+    """베팅 가능한(시작 전) UFC 경기 — 다른 MMA 단체 경기는 뺀다 (ufc_only=False 면 2.9.1 전처럼 MMA 전부).
+    API 키가 없거나 조회에 실패하면 빈 목록."""
     if not ODDS_API_KEY:
         return []
     try:
         fights = [f for f in await _fetch_fights() if not fight_started(f)]
+        if not ufc_only:
+            return fights
         ufc = await _fetch_ufc_names() if fights else set()
         return [f for f in fights if is_ufc_fight(f, ufc)]
     except Exception as e:

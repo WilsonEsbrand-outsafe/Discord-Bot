@@ -263,7 +263,7 @@ OB_TEXT = {
              "　👥 아마추어 선수 18명 입단 · 가장 강한 11명 선발\n"
              "　©️ 선발 중 가장 강한 선수를 주장으로 (전력 +1)\n"
              "　📋 기본 포메이션 4-4-2 · 🐣 초보 감독 · 🩹 인턴 트레이너 (무료)\n"
-             "　🔔 DM 알림은 마무리 전에 골라요"),
+             "　🔔 DM 알림은 `/알림설정`에서 켜고 끌 수 있어요 (처음엔 모두 꺼짐)"),
     "squad": ("선수는 `/선발` `/포메이션` `/주장`으로 직접 바꿀 수 있지만, **`/자동편성` 한 번**이면 충분해요.\n"
               "새 선수를 얻을 때마다 `/자동편성`을 눌러 주세요. 지금 한번 해 볼까요?"),
     "prospect": (f"🌟 **유망주** = 내가 직접 만드는 선수예요. `/유망주생성` · **{PROSPECT_PRICE:,}원** (처음 7일은 첫 유망주 반값)\n\n"
@@ -310,8 +310,13 @@ class ClubNameModal(discord.ui.Modal, title="🏟️ 구단 이름 정하기"):
 class OnboardingView(discord.ui.View):
     """입문 튜토리얼 한 화면. replay=True 면 다시 보기 (실습 · 보상 없음)."""
 
-    def __init__(self, cog: "Tutorial", user, row: dict | None, step: int = 0, replay: bool = False, note: str = ""):
+    def __init__(self, cog: "Tutorial", user, row: dict | None, step: int = 0, replay: bool = False, note: str = "",
+                 new: bool = True):
         super().__init__(timeout=600)
+        # new: 2.9.1 '알림 설정' 단계를 보여 줄지 (테스트 서버 먼저). 꺼져 있으면 그 단계를 건너뛴다
+        self.new = new
+        if not new and OB.STEP_KEYS[step] == "notify":
+            step += 1
         self.cog, self.user, self.row, self.step, self.replay, self.note = cog, user, row, step, replay, note
         key, _, _, needs = OB.STEPS[step]
         done = replay or key in (row or {}).get("practiced", [])
@@ -336,8 +341,9 @@ class OnboardingView(discord.ui.View):
 
     def embed(self) -> discord.Embed:
         key, emoji, title, _ = OB.STEPS[self.step]
-        n = len(OB.STEPS)
-        body = f"{ui.bar(self.step + 1, n)} **{self.step + 1}/{n}**\n\n{OB_TEXT[key]}"
+        keys = [k for k in OB.STEP_KEYS if self.new or k != "notify"]
+        n, i = len(keys), keys.index(key) + 1
+        body = f"{ui.bar(i, n)} **{i}/{n}**\n\n{OB_TEXT[key]}"
         if self.note:
             body += "\n\n" + self.note
         done = self.replay or key in (self.row or {}).get("practiced", [])
@@ -355,7 +361,7 @@ class OnboardingView(discord.ui.View):
     async def show(self, interaction: discord.Interaction, step: int | None = None, note: str = "", row=None):
         step = self.step if step is None else step
         row = row if row is not None else self.row
-        v = OnboardingView(self.cog, self.user, row, step, self.replay, note)
+        v = OnboardingView(self.cog, self.user, row, step, self.replay, note, self.new)
         if interaction.response.is_done():
             await interaction.edit_original_response(embed=v.embed(), view=v)
         else:
@@ -364,6 +370,8 @@ class OnboardingView(discord.ui.View):
     def _move(self, d: int):
         async def cb(interaction: discord.Interaction):
             step = max(0, min(len(OB.STEPS) - 1, self.step + d))
+            if not self.new and OB.STEP_KEYS[step] == "notify":
+                step = max(0, min(len(OB.STEPS) - 1, step + d))
             row = self.row if self.replay else await self.cog.ob.set_step(self.user.id, step)
             await self.show(interaction, step, row=row)
         return cb
@@ -467,7 +475,8 @@ class Tutorial(commands.Cog):
     async def open_onboarding(self, interaction: discord.Interaction, replay: bool = False):
         user = interaction.user
         row = None if replay else await self.ob.begin(user.id, int(time.time()))
-        v = OnboardingView(self, user, row, 0 if replay else row["step"], replay)
+        v = OnboardingView(self, user, row, 0 if replay else row["step"], replay,
+                           new=release.preview_291(getattr(interaction, "guild_id", None)))
         await interaction.response.send_message(embed=v.embed(), view=v, ephemeral=True)
 
     @app_commands.command(name="튜토리얼", description="오늘 할 일 체크리스트와 기능별 안내 (목차로 바로 이동)")

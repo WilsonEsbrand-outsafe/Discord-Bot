@@ -15,6 +15,7 @@ GRADES = ("흔함", "보통", "희귀", "영웅", "전설")
 GRADE_EMOJI = ("⚪", "🟢", "🔵", "🟣", "🟡")
 GRADE_POINTS = (1, 1, 2, 3, 5)            # 보내기 때 깎이는 거래 포인트
 GRADE_XP = (2, 4, 10, 25, 60)             # 낚시 경험치 (+ 크기 보너스) — 2.9.1: 5 · 10 · 25 · 60 · 150 에서 약 40%로
+GRADE_XP_OLD = (5, 10, 25, 60, 150)       # 2.9.1 공개 전 서버 (release.preview_291)
 GRADE_SIGMA = (0.08, 0.12, 0.18, 0.25, 0.35)   # 싯가 하루 변동 폭 (±)
 # 키 → (이모지, 이름, 등급, 평균 크기 cm, 기준가 원). 기준가 = 평균 크기 · 싯가 1배 · 신선할 때 값.
 FISH = {   # (이모지, 이름, 등급, 평균 cm, 기준가) — 2.82: 기준가 등급별 ×1 · ×2 · ×4 · ×7 · ×12
@@ -119,9 +120,9 @@ def size_mult(key: str, size: float) -> float:
     return size / FISH[key][3]
 
 
-def catch_xp(key: str, size: float) -> int:
-    """등급 경험치 + 크기 보너스 (평균보다 큰 만큼, 최대 +50%)."""
-    base = GRADE_XP[FISH[key][2]]
+def catch_xp(key: str, size: float, new: bool = True) -> int:
+    """등급 경험치 + 크기 보너스 (평균보다 큰 만큼, 최대 +50%). new=False 면 2.9.1 전 경험치."""
+    base = (GRADE_XP if new else GRADE_XP_OLD)[FISH[key][2]]
     return base + round(base * max(0.0, min(0.5, size_mult(key, size) - 1)))
 
 
@@ -293,7 +294,7 @@ class FishingDB(EconomyDB):
                 "SELECT user_id, cast_ts, bite_ts, window, channel_id, message_id FROM fish_state WHERE cast_ts IS NOT NULL")]
         return await self._tx(fn)
 
-    async def reel(self, uid: int, now_ts: int, rng=random) -> dict:
+    async def reel(self, uid: int, now_ts: int, rng=random, new_xp: bool = True) -> dict:
         """[잡기!]. 결과 kind: early(아직 입질 전 — 찌만 회수) / fled(늦음) / junk / fish. 실패 reason: idle."""
         def fn(con):
             s = self._state(con, uid)
@@ -319,7 +320,7 @@ class FishingDB(EconomyDB):
             key = rng.choice(BY_GRADE[grade])
             rod = self._rod(con, uid)
             size = roll_size(key, rng, RODS[rod][0] if rod else 0)
-            xp = catch_xp(key, size)
+            xp = catch_xp(key, size, new_xp)
             if "grill" in buffs:
                 xp = round(xp * 1.3)
             level, lxp, up = add_xp(s["level"], s["xp"], xp)
