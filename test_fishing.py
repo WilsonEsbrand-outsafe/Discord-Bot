@@ -32,14 +32,14 @@ def test_odds_and_values():
     for k in F.FISH:
         sizes = [F.roll_size(k, rng) for _ in range(200)]
         avg = F.FISH[k][3]
-        assert min(sizes) >= avg * 0.4 - 0.1 and max(sizes) <= avg * 2.2 + 0.1   # 2.82: 40%~220%
+        assert min(sizes) >= avg * 0.55 - 0.1 and max(sizes) <= avg * 1.7 + 0.1
     assert F.roll_size("tuna", random.Random(2), 0.15) == round(F.roll_size("tuna", random.Random(2)) * 1.15, 1) or True
     assert F.catch_xp("anchovy", 10) == 5 and F.catch_xp("anchovy", 15) == 5 + round(5 * 0.5)      # 크기 보너스 최대 +50%
     assert F.catch_xp("coelacanth", 180) == 150
     # 신선도: 하루 -10% · 최저 50% · 아이스박스 -5%
     assert F.freshness(T0, T0) == 1 and abs(F.freshness(T0, T0 + D) - 0.9) < 1e-9 and F.freshness(T0, T0 + 30 * D) == 0.5
     assert abs(F.freshness(T0, T0 + 2 * D, icebox=True) - 0.9) < 1e-9
-    # 싯가: 0.3~3.0 (2.82) · 평균으로 돌아간다 · 등급이 높을수록 크게 흔들린다
+    # 싯가: 0.5~2.0 · 평균으로 돌아간다 · 등급이 높을수록 크게 흔들린다
     for g in range(5):
         m, sup, seen = 1.0, 0.5, []
         r = random.Random(g)
@@ -48,7 +48,7 @@ def test_odds_and_values():
             assert F.MARKET_MIN <= m <= F.MARKET_MAX
             seen.append(m)
         assert abs(sum(seen) / len(seen) - 1) < 0.08 and sup > 0.99
-    assert F.market_step(2.0, 1, 0, random.Random(0))[0] < 1.75 * 1.13                                   # 25% 회귀
+    assert F.market_step(2.0, 1, 0, random.Random(0))[0] < 1.85                                    # 25% 회귀
     assert abs(F.market_step(1.0, 0.5, 0, random.Random(0))[1] - 0.6) < 1e-9                       # 부족분 20% 회복
     print("기준가 평균(기다린 시간별):", {w: round(F.expected_value(w)) for w in (10, 300, 600)})
 
