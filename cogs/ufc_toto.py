@@ -49,6 +49,10 @@ def card_rank(fight: dict, rank: dict[str, int]) -> int:
     return max((rank.get(k, -1) for side in ("home", "away") for k in _name_keys(fight[side])), default=-1)
 
 
+def _kst_day(fight: dict) -> str:
+    return (datetime.fromisoformat(fight["commence_time"].replace("Z", "+00:00")) + timedelta(hours=9)).date().isoformat()
+
+
 def is_ufc_fight(fight: dict, ufc_names: set[str]) -> bool:
     return any(_name_keys(fight[k]) & ufc_names for k in ("home", "away"))
 
@@ -152,7 +156,7 @@ async def upcoming_fights(ufc_only: bool = True) -> list[dict]:
             return fights
         ufc = await _fetch_ufc_names() if fights else set()
         fights = [f for f in fights if is_ufc_fight(f, ufc)]
-        return sorted(fights, key=lambda f: (f["commence_time"], -card_rank(f, _ufc_cache["rank"])))   # 같은 날은 메인이벤트부터
+        return sorted(fights, key=lambda f: (_kst_day(f), -card_rank(f, _ufc_cache["rank"]), f["commence_time"]))   # 같은 날은 메인이벤트부터
     except Exception as e:
         log.warning(f"[UFC] 경기 조회 실패: {e}")
         return []
