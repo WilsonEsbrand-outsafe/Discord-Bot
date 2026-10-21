@@ -44,8 +44,26 @@ async def _any_player(pm):
 
 def test_market_open_hours():
     pm = PlayerMarketDB()
-    assert pm._is_market_open(0)              # 09:00 KST
-    assert not pm._is_market_open(23 * 3600)  # 08:00 KST
+    assert all(pm._is_market_open(h * 3600) for h in range(24))   # 2.10.1: 24시간 오픈
+
+
+def test_listing_price_band():
+    """2.10.1: 등록가는 기준가의 70% ~ 150% 안에서만."""
+    eco, pm = run(_setup())
+    seller = 2223
+    pid = run(_any_player(pm))
+    row = run(pm.get_player(pid))
+    run(eco.set_balance(seller, row[9] * 2))
+    run(pm.buy_from_market(user_id=seller, player_id=pid, qty=1, now_ts=NOW_OPEN,
+                           get_balance=eco.get_balance, add_balance=eco.add_balance))
+    lo, hi = pm.listing_band(row)
+    assert lo == max(1_000, int(row[7] * 0.7)) and hi == max(1_000, int(row[7] * 1.5))
+    for bad in (lo - 1, hi + 1):
+        ok, msg = run(pm.create_listing(seller_id=seller, player_id=pid, qty=1, price_per=bad, now_ts=NOW_OPEN))
+        assert not ok and "사이로만" in msg
+    assert run(pm.get_holding(seller, pid)) == 1                    # 실패하면 선수는 그대로
+    ok, msg = run(pm.create_listing(seller_id=seller, player_id=pid, qty=1, price_per=hi, now_ts=NOW_OPEN))
+    assert ok, msg
 
 
 def test_take_cash_is_atomic():
@@ -149,19 +167,20 @@ def test_listing_roundtrip_pays_seller():
     run(pm.buy_from_market(user_id=seller, player_id=pid, qty=1, now_ts=NOW_OPEN,
                            get_balance=eco.get_balance, add_balance=eco.add_balance))
 
+    ask = pm.listing_band(run(pm.get_player(pid)))[0]
     ok, msg = run(pm.create_listing(seller_id=seller, player_id=pid, qty=1,
-                                    price_per=10_000, now_ts=NOW_OPEN))
+                                    price_per=ask, now_ts=NOW_OPEN))
     assert ok, msg
     lid = run(pm.get_my_listings(seller))[0][0]
 
-    run(eco.set_balance(buyer, 10_000))
+    run(eco.set_balance(buyer, ask))
     ok, msg, meta = run(pm.buy_listing(listing_id=lid, buyer_id=buyer, qty=1, now_ts=NOW_OPEN,
                                        get_balance=eco.get_balance, add_balance=eco.add_balance))
     assert ok, msg                       # 예전엔 price_per NameError로 터졌다
-    assert meta["price"] == 10_000
+    assert meta["price"] == ask
     assert run(eco.get_balance(buyer)) == 0
     assert run(pm.get_holding(buyer, pid)) == 1
-    assert run(eco.get_balance(seller)) == 10_000 - int(10_000 * 0.05)
+    assert run(eco.get_balance(seller)) == ask - int(ask * 0.05)
 
 
 def test_listing_buy_rejected_when_broke():
@@ -172,7 +191,8 @@ def test_listing_buy_rejected_when_broke():
     run(eco.set_balance(seller, price))
     run(pm.buy_from_market(user_id=seller, player_id=pid, qty=1, now_ts=NOW_OPEN,
                            get_balance=eco.get_balance, add_balance=eco.add_balance))
-    run(pm.create_listing(seller_id=seller, player_id=pid, qty=1, price_per=50_000, now_ts=NOW_OPEN))
+    run(pm.create_listing(seller_id=seller, player_id=pid, qty=1,
+                          price_per=pm.listing_band(run(pm.get_player(pid)))[0], now_ts=NOW_OPEN))
     lid = run(pm.get_my_listings(seller))[0][0]
 
     run(eco.set_balance(buyer, 10))
@@ -404,10 +424,13 @@ def test_goalkeeper_share():
     con.close()
 
 
-def test_news_skipped_when_market_closed():
+def test_tick_runs_at_night():
+    """2.10.1: 24시간 오픈 — 예전엔 08:00 KST(시장 닫힘)엔 틱이 돌지 않았다."""
     eco, pm = run(_setup())
-    closed = 23 * 3600                        # 08:00 KST
-    assert run(pm.run_tick_if_due(closed)) == []
+    prices = lambda: {r[0]: r[7] for r in run(pm.search_players("", limit=25))}
+    before = prices()
+    run(pm.run_tick_if_due(NOW_OPEN + 23 * 3600))   # 다음 날 08:00 KST
+    assert prices() != before
 
 
 def test_aging_and_retirement_291():

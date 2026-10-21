@@ -544,9 +544,9 @@ class Hubs(commands.Cog):
 
     async def _p_status(self, view: HubView) -> discord.Embed:
         st = await self.pm.market_status(int(time.time()))
-        return ui.card("📈 선수 시장", f"{'🟢' if st.is_open else '🔴'} **{st.reason}**\n운영 시간: 매일 **09:00 ~ 23:00 KST**\n"
+        return ui.card("📈 선수 시장", f"{'🟢' if st.is_open else '🔴'} **{st.reason}**\n"
                        f"다음 변경: <t:{st.next_change_ts}:f>\n\n"
-                       "`/선수` 검색 · `/시세` 그래프 · `/선수뉴스`\n`/판매` → 12시간 뒤 `/매각`(70%) · `/즉시판매`(50%)\n"
+                       "`/선수` 검색 · `/시세` 그래프 · `/선수뉴스`\n`/판매` → 12시간 뒤 메뉴에서 매각(70%) · `/즉시판매`(50%)\n"
                        "`/이적시장` · `/구매` · `/트레이드` · `/선수팩상점` · `/아이템상점`", ui.INFO, view.user, "📈 시장")
 
     async def _p_listings(self, view: HubView) -> discord.Embed:

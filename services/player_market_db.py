@@ -37,6 +37,7 @@ SELL_FEE_RATE = 0.05
 
 # 이적시장 파라미터
 LISTING_DURATION    = 72 * 3600   # 72시간 후 만료
+LISTING_FLOOR, LISTING_CEIL = 0.70, 1.50   # 2.10.1: 등록가는 기준가의 70% ~ 150% 안에서만
 TRADE_EXPIRE        = 86400       # 트레이드 제안 24시간 후 만료
 INSTANT_SELL_DELAY  = 12 * 3600   # 12시간 후 즉시판매 가능
 INSTANT_SELL_RATE     = 0.70      # 즉시판매 수령 비율 — 시장 오픈 중 (기준가의 70%)
@@ -840,8 +841,8 @@ class PlayerMarketDB:
         return int((now_ts + KST_OFFSET) % 86400 // 3600)
 
     def _is_market_open(self, now_ts: int) -> bool:
-        h = self._kst_hour(now_ts)
-        return MARKET_OPEN_HOUR <= h < MARKET_CLOSE_HOUR
+        """2.10.1: 24시간 오픈 (예전엔 MARKET_OPEN_HOUR ~ MARKET_CLOSE_HOUR KST 만)."""
+        return True
 
     def _next_tick_boundary(self, now_ts: int) -> int:
         return (now_ts // TICK_SECONDS + 1) * TICK_SECONDS
@@ -969,7 +970,7 @@ class PlayerMarketDB:
     async def market_status(self, now_ts: int) -> MarketStatus:
         open_ = self._is_market_open(now_ts)
         if open_:
-            return MarketStatus(True, self._next_tick_boundary(now_ts), "시장 오픈(거래 가능)")
+            return MarketStatus(True, self._next_tick_boundary(now_ts), "시장 오픈 (24시간 거래 가능)")
         return MarketStatus(False, self._next_market_change_ts(now_ts), "시장 클로즈(거래 불가)")
 
     # ───────────────── 가치 계산/스폰 ─────────────────
@@ -1921,6 +1922,10 @@ class PlayerMarketDB:
         (_pid, name, _nat, _pos, _age, _ovr, _potg, _basev, retired, *_rest) = row
         if int(retired) == 1:
             return False, "은퇴 선수는 이적시장에 등록할 수 없습니다. `/방출` 명령어를 사용하세요."
+        lo, hi = self.listing_band(row)
+        if not lo <= price_per <= hi:   # 2.10.1: 기준가로 정한 하한가 ~ 상한가 안에서만
+            return False, (f"**{name}**은(는) **{lo:,}원 ~ {hi:,}원** 사이로만 올릴 수 있습니다.\n"
+                           f"(하한가 기준가의 {LISTING_FLOOR:.0%} · 상한가 기준가의 {LISTING_CEIL:.0%})")
 
         have = await self.get_holding(seller_id, pid)
         if have < qty:
@@ -1963,8 +1968,14 @@ class PlayerMarketDB:
             f"✅ 이적시장 등록 완료\n"
             f"매물 번호: **#{lid}** | **{name}** x{qty}\n"
             f"등록가: **{price_per:,}원** / 장\n"
-            f"⏳ 12시간 후 즉시판매 가능 · 72시간 후 자동 만료(선수 반환)"
+            f"⏳ 12시간 뒤 안 팔리면 `/판매`에서 바로 매각(기준가 70%) · 72시간 후 자동 만료(선수 반환)"
         )
+
+    @staticmethod
+    def listing_band(row) -> tuple[int, int]:
+        """2.10.1 이적시장 등록가 범위 (하한가, 상한가) — get_player 의 기준가 × LISTING_FLOOR ~ LISTING_CEIL."""
+        base = int(row[7])
+        return max(1_000, int(base * LISTING_FLOOR)), max(1_000, int(base * LISTING_CEIL))
 
     async def get_listings(self, q: str = "", limit: int = 10, offset: int = 0) -> List:
         """이적시장 활성 매물 조회"""
