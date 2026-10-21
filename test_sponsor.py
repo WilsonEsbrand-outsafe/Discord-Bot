@@ -160,3 +160,24 @@ if __name__ == "__main__":
     test_rules()
     test_flow()
     print("OK: sponsor")
+
+
+def test_closed_2101():
+    """2.10.1: 공개(RELEASE_2101_TS) 뒤엔 자동 재계약을 하지 않고 만기 정산만 한다 · 명령어는 release.LEGACY_2101."""
+    import asyncio
+    import release
+    db = sdb.SponsorDB()
+    W = 9_101
+
+    async def flow():
+        await db.add_balance(W, 10_000_000)
+        assert (await db.open(W, "bank", 1, 5_000_000, NOW, auto=True))["ok"]
+        saved, release.RELEASE_2101_TS = release.RELEASE_2101_TS, NOW
+        try:
+            res = (await db.settle(NOW + D, W))[W]["done"]
+        finally:
+            release.RELEASE_2101_TS = saved
+        assert len(res) == 1 and not res[0]["renewed"] and res[0]["payout"] > 5_000_000
+        assert await db.active(W) == []
+    asyncio.run(flow())
+    assert {"스폰서", "스폰서계약"} <= release.LEGACY_2101

@@ -49,7 +49,7 @@ async def _flow():
     # /토토 → 축구 1 + UFC 1 경기가 메뉴에 뜬다
     await Toto.toto_list.callback(cog, inter)
     menu = sent[-1]["view"]
-    assert [o.value for o in menu.select.options] == ["s:m1", "u:e1"]
+    assert [[o.value for o in m.options] for m in menu.selects] == [["s:m1"], ["u:e1"]]   # 2.9.1: 종목별 메뉴
     soccer, ufc = sent[-1]["embeds"]                               # 2.9.1: 종목마다 임베드 따로 · 날짜별 묶음
     assert "아스날 vs 첼시" in soccer.description and "A vs B" in ufc.description and "📅" in soccer.description
     assert "`1.50`" in ufc.description and ufc.footer.text
@@ -61,8 +61,7 @@ async def _flow():
     inter.guild_id = ct.release.TEST_GUILD
 
     # 축구 경기 선택 → 결과 버튼 3개 → [원정승] → 금액 입력 → 베팅 완료 (공개)
-    menu.select._values = ["s:m1"]
-    await menu._chosen(inter)
+    await menu._pick(inter, "s:m1")
     picks = sent[-1]["view"]
     assert sent[-1]["ephemeral"] and len(picks.children) == 3
     await picks.children[2].callback(inter)
@@ -73,8 +72,7 @@ async def _flow():
     assert await cog.db.get_balance(U) == 90_000
 
     # UFC 선택 → 버튼 2개 → B 에 5,000원
-    menu.select._values = ["u:e1"]
-    await menu._chosen(inter)
+    await menu._pick(inter, "u:e1")
     assert len(sent[-1]["view"].children) == 2
     await sent[-1]["view"].children[1].callback(inter)
     modal = sent[-1]["modal"]
@@ -92,8 +90,10 @@ async def _flow():
     # /내베팅 → 축구·UFC 내역 + 취소 메뉴 → 축구 취소하면 전액 환불
     await Toto.my_bets.callback(cog, inter)
     d = sent[-1]["embed"].description
-    assert "아스날 vs 첼시" in d and "A vs B" in d
+    assert "아스날 vs 첼시" in d and "A vs B" in d and not sent[-1].get("ephemeral")   # 2.10.1: 모두에게
     cancel = sent[-1]["view"]
+    other = SimpleNamespace(user=SimpleNamespace(id=U + 1), response=inter.response)
+    assert not await cancel.interaction_check(other)                                   # 남의 베팅은 취소 못 한다
     cancel.select._values = ["m1"]
     await cancel._cancel(inter)
     assert await cog.db.get_balance(U) == 95_000
@@ -118,6 +118,14 @@ def test_by_day_and_ufc_filter():
     assert is_ufc_fight({"home": "Jose Aldo", "away": "X"}, names)                    # 악센트 · Jr 무시
     assert is_ufc_fight({"home": "Patricio Freire", "away": "A. Pereira"}, names)     # 이름 첫 글자만
     assert not is_ufc_fight({"home": "Patricio Freire", "away": "Usman Nurmagomedov"}, names)   # 다른 단체
+    from cogs.ufc_toto import card_rank
+    rank = {**dict.fromkeys(_name_keys("Alex Pereira"), 13), **dict.fromkeys(_name_keys("Jose Aldo"), 2)}
+    assert card_rank({"home": "Alex Pereira", "away": "X"}, rank) == 13 and card_rank({"home": "A", "away": "B"}, rank) == -1
+    # 대진 14경기 + 축구 15경기도 메뉴 두 개로 다 들어간다
+    opts = [ct.discord.SelectOption(label=str(i), value=f"s:{i}") for i in range(15)] + \
+           [ct.discord.SelectOption(label=str(i), value=f"u:{i}") for i in range(14)]
+    menu = ct.GameMenu(None, {}, opts)
+    assert [len(m.options) for m in menu.selects] == [15, 14]
 
 
 async def _void():

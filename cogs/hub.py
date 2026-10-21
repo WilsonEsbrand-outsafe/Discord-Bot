@@ -7,9 +7,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import release
 from services import ui
 from services.club_db import (
-    FACILITIES, FACILITY_COSTS, FACILITY_MAX, MANAGERS, MEDICS, PROSPECT_PRICE, ClubDB, facility_effect,
+    CLUB_NAME_MAX, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS, FACILITY_MAX, MANAGERS, MEDICS, PROSPECT_PRICE,
+    STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect,
 )
 from services.dungeon import THEMES, DungeonDB, theme_of
 from services.economy_db import (
@@ -195,7 +197,7 @@ class Hubs(commands.Cog):
         await self.games_view(interaction.user).send(interaction)
 
     # ───────────── /구단 허브 (2.8 서버 · 내 구단) ─────────────
-    def club_view(self, user, page: int = 0) -> HubView:
+    def club_view(self, user, page: int = 0, guild_id: int | None = None) -> HubView:
         pages = [Page("🏟️", "구단", self._p_club, "선발 명단 · 전력 · 전적"),
                  Page("🌟", "유망주", self._p_prospect, "나만의 선수"),
                  Page("🏗️", "시설", self._p_facility, "경기장 · 훈련장 · 유스 · 메디컬"),
@@ -204,7 +206,71 @@ class Hubs(commands.Cog):
                  Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술"),
                  Page("🎓", "유스", self._p_youth, "입단 테스트 · 훈련 · 판매 · 1군 등록"),
                  Page("💼", "경영", self._p_mgmt, "관중 수입 · 팬 만족도 · 티켓 가격")]
+        if release.preview_2101(guild_id):   # 2.10.1 (테스트 서버 먼저)
+            pages.append(Page("🎨", "꾸미기 · 설정", self._p_decor, "구단명 · 엠블럼 · 경기장 이름 · 구단 삭제"))
         return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page)
+
+    # ───────────── 🎨 꾸미기 · 설정 (2.10.1: /구단명변경 · /구단꾸미기 · /구단삭제 를 여기로) ─────────────
+    async def _p_decor(self, view: HubView) -> discord.Embed:
+        user = view.user
+        team = await self.clubs.get_team(user.id)
+        e = ui.card("🎨 꾸미기 · 설정",
+                    f"`구단명` **{team['name']}** · 무료 (최대 {CLUB_NAME_MAX}자)\n"
+                    f"`엠블럼` {team.get('emblem') or '없음'} · {_won(EMBLEM_PRICE)}원\n"
+                    f"`경기장` {team.get('stadium') or '없음'} · {_won(STADIUM_PRICE)}원 (경기 중계에 나와요)",
+                    ui.INFO, user, "🎨 꾸미기")
+        emb = discord.ui.Select(placeholder=f"🛡️ 엠블럼 바꾸기 · {_won(EMBLEM_PRICE)}원", row=0, options=[
+            discord.SelectOption(label=f"{x} 엠블럼", value=x, default=x == team.get("emblem")) for x in EMBLEMS[:25]])
+
+        async def set_emblem(interaction: discord.Interaction):
+            await view.refresh(interaction, await self._decorate(user, "emblem", emb.values[0], "엠블럼"))
+        emb.callback = set_emblem
+        view.add_item(emb)
+        for label, emoji, field, cap, current in (("구단명 변경", "✏️", "name", CLUB_NAME_MAX, team["name"]),
+                                                  ("경기장 이름", "🏟️", "stadium", STADIUM_NAME_MAX, team.get("stadium") or "")):
+            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.primary, row=1)
+            b.callback = self._name_modal(view, field, label, cap, current)
+            view.add_item(b)
+        d = discord.ui.Button(label="구단 삭제", emoji="🗑️", style=discord.ButtonStyle.danger, row=1)
+
+        async def delete(interaction: discord.Interaction):
+            from cogs.club import DeleteConfirm
+            c = ui.card(f"⚠️ {team['name']} 을(를) 삭제할까요?",
+                        "구단 이름·포메이션·선발 명단·전적과 **아마추어 스쿼드**가 사라집니다.\n"
+                        "돈과 일반 선수 카드는 그대로 남습니다. 다시 창단해도 창단 보너스는 다시 지급되지 않습니다.",
+                        ui.DOOM, user, "🏟️ 구단")
+            await interaction.response.send_message(embed=c, view=DeleteConfirm(self, user.id), ephemeral=True)
+        d.callback = delete
+        view.add_item(d)
+        return e
+
+    def _name_modal(self, view: HubView, field: str, label: str, cap: int, current: str):
+        async def open_(interaction: discord.Interaction):
+            modal = discord.ui.Modal(title=label)
+            box = discord.ui.TextInput(label=label, default=current[:cap] or None, max_length=cap, min_length=1)
+            modal.add_item(box)
+
+            async def submit(mi: discord.Interaction):
+                value = str(box.value).strip()
+                if field == "name":
+                    ok, msg = await self.clubs.rename_club(view.user.id, value)
+                    note = ui.card("✏️ 구단명 변경" if ok else "❌ 변경 실패",
+                                   f"구단명이 **{value}**(으)로 바뀌었습니다." if ok else msg,
+                                   ui.WIN if ok else ui.LOSE, view.user, "🎨 꾸미기")
+                else:
+                    note = await self._decorate(view.user, field, value, "경기장")
+                await view.refresh(mi, note)
+            modal.on_submit = submit
+            await interaction.response.send_modal(modal)
+        return open_
+
+    async def _decorate(self, user, col: str, value: str, label: str) -> discord.Embed:
+        r = await self.clubs.decorate(user.id, col, value)
+        if r["ok"]:
+            return ui.card(f"🎨 {label} 변경", f"`{label}` **{value}** (-{r['fee']:,}원)", ui.GOLD, user, "🎨 꾸미기")
+        text = {"no_club": "구단이 없어요.", "same": f"{label}이(가) 이미 **{value}**이에요.",
+                "balance": f"{label} 변경에 **{r.get('fee', 0):,}원**이 필요해요."}[r["reason"]]
+        return ui.card("❌ 꾸미기 실패", text, ui.LOSE, user, "🎨 꾸미기")
 
     # ───────────── ⚔️ 전술 (2.8) ─────────────
     async def _p_tactics(self, view: HubView) -> discord.Embed:
@@ -507,7 +573,7 @@ class Hubs(commands.Cog):
         data = await self.clubs.prospects(view.user.id, now)
         if data["active"]:
             return prospect_embed(data["active"], view.user, now)
-        return ui.card("🌟 유망주", f"아직 현역 유망주가 없어요.\n`/유망주생성`으로 **{PROSPECT_PRICE:,}원**에 나만의 선수를 만들어 보세요!"
+        return ui.card("🌟 유망주", f"아직 현역 유망주가 없어요.\n`/유망주`에서 **{PROSPECT_PRICE:,}원**에 나만의 선수를 만들어 보세요!"
                        + (f"\n\n🏛️ 은퇴한 유망주 {len(data['retired'])}명 — `/유망주`" if data["retired"] else ""),
                        ui.EVEN, view.user, "🌟 유망주")
 
@@ -544,9 +610,9 @@ class Hubs(commands.Cog):
 
     async def _p_status(self, view: HubView) -> discord.Embed:
         st = await self.pm.market_status(int(time.time()))
-        return ui.card("📈 선수 시장", f"{'🟢' if st.is_open else '🔴'} **{st.reason}**\n운영 시간: 매일 **09:00 ~ 23:00 KST**\n"
+        return ui.card("📈 선수 시장", f"{'🟢' if st.is_open else '🔴'} **{st.reason}**\n"
                        f"다음 변경: <t:{st.next_change_ts}:f>\n\n"
-                       "`/선수` 검색 · `/시세` 그래프 · `/선수뉴스`\n`/판매` → 12시간 뒤 `/매각`(70%) · `/즉시판매`(50%)\n"
+                       "`/선수` 검색 · `/시세` 그래프 · `/선수뉴스`\n`/판매` → 12시간 뒤 메뉴에서 매각(70%) · `/즉시판매`(50%)\n"
                        "`/이적시장` · `/구매` · `/트레이드` · `/선수팩상점` · `/아이템상점`", ui.INFO, view.user, "📈 시장")
 
     async def _p_listings(self, view: HubView) -> discord.Embed:

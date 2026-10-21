@@ -108,7 +108,11 @@ def test_balance():
         print(f"던전 OVR {o}: 클리어 {r['clear']:.0%} · 쓰러짐 {r['dead']:.0%} · 평균 {r['floor']:.1f}층 · "
               f"아이템 {r['items']:.1f}개 · 돈 {r['coins']:,.0f}원")
     assert res[55]["clear"] < res[70]["clear"] < res[85]["clear"]
-    assert 0.25 < res[70]["clear"] < 0.6 and res[85]["clear"] > 0.7 and res[55]["dead"] < 0.25
+    assert res[55]["clear"] < 0.05 and 0.05 < res[70]["clear"] < 0.3 and 0.4 < res[85]["clear"] < 0.75   # 2.10.1: 더 어렵게
+    assert res[70]["items"] < 4.5                                          # 2.10.1: 아이템 줄임
+    weak = D.simulate({"atk": 20, "mob": 20, "dfn": 20, "luck": 20}, 2000)   # 선수가 없으면 거의 못 깬다
+    assert weak["clear"] < 0.01 and weak["floor"] < 4.5
+    assert "box" not in D.LOOT_COMMON and "box" not in D.LOOT_RARE and "box" not in D.FIRST_CLEAR
     assert res[85]["coins"] < 400_000                                      # 돈은 적게, 아이템 위주
 
 

@@ -172,7 +172,7 @@ ROOKIE_MISSIONS = [
     ("card", "첫 선수 카드", "`/선수팩상점` 또는 스카우트 발굴",
      "SELECT COUNT(*) FROM pm_holdings WHERE user_id=? AND qty > 0 AND player_id NOT LIKE 'AMT_%'", 1, 500_000, {}),
     ("win", "공식경기 첫 승", "`/공식경기`", "SELECT COALESCE(SUM(w), 0) FROM club_official WHERE user_id=?", 1, 1_000_000, {}),
-    ("prospect", "유망주 데뷔", "`/유망주생성`", "SELECT COUNT(*) FROM prospects WHERE user_id=?", 1, 500_000,
+    ("prospect", "유망주 데뷔", "`/유망주`", "SELECT COUNT(*) FROM prospects WHERE user_id=?", 1, 500_000,
      {"watch_reset": 1}),
     ("grad", "유망주 10경기 출전", "`/선발`에 넣고 경기", "SELECT COALESCE(MAX(apps), 0) FROM prospects WHERE user_id=?",
      10, 2_000_000, {}),
@@ -1589,9 +1589,14 @@ class EconomyDB:
         return await self._tx(lambda con: {i: int(c) for i, c in con.execute(
             "SELECT item, cnt FROM shop_daily WHERE user_id=? AND day_key=?", (user_id, day))})
 
-    async def buy_item(self, user_id: int, item: str, now_ts: int) -> dict:
-        """상점 구매: 돈을 내고 가방에 1개. 실패 reason: daily(오늘 한도 — SHOP_DAILY_LIMITS) / have(SHOP_ONE_ONLY) / balance."""
-        price, day, cap = SHOP_PRICES[item], _kst_day(now_ts), SHOP_DAILY_LIMITS.get(item)
+    async def buy_item(self, user_id: int, item: str, now_ts: int, qty: int = 1) -> dict:
+        """상점 구매: 돈을 내고 가방에 qty개 (2.10.1: 여러 개 한 번에).
+        실패 reason: daily(오늘 한도 — SHOP_DAILY_LIMITS, left = 오늘 남은 수) / have(SHOP_ONE_ONLY) / balance."""
+        qty = max(1, int(qty))
+        if item in SHOP_ONE_ONLY:
+            qty = 1
+        each, day, cap = SHOP_PRICES[item], _kst_day(now_ts), SHOP_DAILY_LIMITS.get(item)
+        price = each * qty
 
         def fn(con):
             bought = 0
@@ -1603,20 +1608,20 @@ class EconomyDB:
             if cap:
                 row = con.execute("SELECT day_key, cnt FROM shop_daily WHERE user_id=? AND item=?", (user_id, item)).fetchone()
                 bought = int(row[1]) if row and row[0] == day else 0
-                if bought >= cap:
-                    return {"ok": False, "reason": "daily", "limit": cap}
+                if bought + qty > cap:
+                    return {"ok": False, "reason": "daily", "limit": cap, "left": max(0, cap - bought)}
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
             if bal < price:
-                return {"ok": False, "reason": "balance", "balance": bal}
+                return {"ok": False, "reason": "balance", "balance": bal, "price": price}
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (price, user_id))
             if cap:
                 con.execute("INSERT OR REPLACE INTO shop_daily(user_id, item, day_key, cnt) VALUES(?,?,?,?)",
-                            (user_id, item, day, bought + 1))
-            give_item(con, user_id, item)
-            qty = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()[0]
-            return {"ok": True, "price": price, "balance": bal - price, "qty": int(qty),
-                    "bought": bought + 1, "limit": cap}
+                            (user_id, item, day, bought + qty))
+            give_item(con, user_id, item, qty)
+            have = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()[0]
+            return {"ok": True, "price": price, "each": each, "n": qty, "balance": bal - price, "qty": int(have),
+                    "bought": bought + qty, "limit": cap}
         return await self._tx(fn)
 
     async def redeem_coupon(self, user_id: int, code: str, now_ts: int) -> dict:

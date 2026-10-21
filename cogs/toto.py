@@ -472,7 +472,7 @@ class Toto(commands.Cog):
         now_ts = int(time.time())
         rows = await self.db.toto_list_open_matches(now_ts, limit=15)
         live = await self.db.toto_list_in_progress(now_ts, limit=10)
-        fights = (await upcoming_fights(ufc_only=new))[:8]
+        fights = (await upcoming_fights(ufc_only=new))[:25 if release.preview_2101(interaction.guild_id) else 8]   # 2.9.1: 대진 전체 (메뉴는 종목별로 나눠 25개씩)
 
         games, options = {}, []
         soccer, ufc = [], []   # [(시각, 2.9.1 줄, 예전 줄)]
@@ -514,7 +514,7 @@ class Toto(commands.Cog):
                 e = ui.card("🎰 토토", "지금은 베팅할 수 있는 경기가 없어요.", ui.EVEN, interaction.user, SECTION)
                 return await interaction.followup.send(embeds=[e] + embeds)
             embeds[-1].set_footer(text="아래 메뉴에서 번호를 골라 바로 베팅 · 배당은 베팅 순간 고정 · 내역·취소는 /내베팅")
-            return await interaction.followup.send(embeds=embeds, view=GameMenu(self, games, options[:25]))
+            return await interaction.followup.send(embeds=embeds, view=GameMenu(self, games, options))
 
         parts = []
         if soccer:
@@ -533,15 +533,15 @@ class Toto(commands.Cog):
 
     @app_commands.command(name="내베팅", description="축구·UFC 베팅 내역 — 경기 시작 전 축구 베팅은 여기서 취소")
     async def my_bets(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        eph = not release.preview_2101(interaction.guild_id)   # 2.10.1: 모두에게 보이게 (취소는 본인만) — 테스트 서버 먼저
+        await interaction.response.defer(ephemeral=eph)
         user, now_ts = interaction.user, int(time.time())
         new = release.preview_291(interaction.guild_id)
         soccer = await self.db.toto_list_user_bets(user.id, limit=10)
         ufc = await self.ufc.list_recent_for_user(user.id, limit=10)
         if not soccer and not ufc:
             return await interaction.followup.send(
-                embed=ui.card("🧾 내 베팅", "베팅 내역이 없어요. `/토토`에서 시작해 보세요!", ui.EVEN, user, SECTION),
-                ephemeral=True)
+                embed=ui.card("🧾 내 베팅", "베팅 내역이 없어요. `/토토`에서 시작해 보세요!", ui.EVEN, user, SECTION), ephemeral=eph)
 
         total_bet = total_pay = 0
         parts, cancellable = [], []
@@ -580,7 +580,7 @@ class Toto(commands.Cog):
         e.set_footer(text=f"총 베팅 {total_bet:,}원 · 총 수령 {total_pay:,}원"
                           + (" · 아래 메뉴로 축구 베팅 취소(전액 환불)" if cancellable else ""))
         view = CancelMenu(self, user.id, cancellable) if cancellable else discord.utils.MISSING
-        await interaction.followup.send(embed=e, view=view, ephemeral=True)
+        await interaction.followup.send(embed=e, view=view, ephemeral=eph)
 
     # ───────────── 관리자 ─────────────
     @app_commands.command(name="토토관리", description="(관리자) 경기 불러오기 · 등록 · 삭제 · 결과 입력 · 배당 확인")
@@ -682,12 +682,25 @@ class GameMenu(discord.ui.View):
     def __init__(self, cog: "Toto", games: dict, options: list[discord.SelectOption]):
         super().__init__(timeout=900)
         self.cog, self.games = cog, games
-        self.select = discord.ui.Select(placeholder="🎯 베팅할 경기를 고르세요", options=options)
-        self.select.callback = self._chosen
-        self.add_item(self.select)
+        # 2.9.1: 메뉴 하나에 25개까지라 축구 · UFC 메뉴를 따로 (UFC 대진이 14경기쯤 된다)
+        groups = [(e, [o for o in options if o.value.startswith(k)]) for k, e in (("s:", "⚽ 축구"), ("u:", "🥊 UFC"))]
+        groups = [(e, o[:25]) for e, o in groups if o]
+        self.selects = []
+        for emoji, opts in groups:
+            sel = discord.ui.Select(placeholder=f"🎯 베팅할 경기 — {emoji}" if len(groups) > 1 else "🎯 베팅할 경기를 고르세요",
+                                    options=opts)
+            sel.callback = self._chosen(sel)
+            self.selects.append(sel)
+            self.add_item(sel)
+        self.select = self.selects[0]
 
-    async def _chosen(self, interaction: discord.Interaction):
-        game = self.games.get(self.select.values[0])
+    def _chosen(self, sel: discord.ui.Select):
+        async def cb(interaction: discord.Interaction):
+            await self._pick(interaction, sel.values[0])
+        return cb
+
+    async def _pick(self, interaction: discord.Interaction, value: str):
+        game = self.games.get(value)
         if game is None:
             return await interaction.response.send_message("❌ 목록이 오래됐어요. `/토토`를 다시 열어 주세요.", ephemeral=True)
         await self.cog.show_pick(interaction, game)
@@ -750,6 +763,12 @@ class CancelMenu(discord.ui.View):
             options=[discord.SelectOption(label=f"{name} · {amt:,}원"[:100], value=mid) for mid, name, amt in bets[:25]])
         self.select.callback = self._cancel
         self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("🙅 본인 베팅만 취소할 수 있어요. `/내베팅`을 직접 열어 주세요.", ephemeral=True)
+            return False
+        return True
 
     async def _cancel(self, interaction: discord.Interaction):
         ok, msg = await self.cog.db.toto_cancel_bet(user_id=self.user_id, match_id=self.select.values[0],

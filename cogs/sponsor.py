@@ -302,4 +302,4 @@ class Sponsor(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Sponsor(bot))
+    await bot.add_cog(Sponsor(bot))   # 2.10.1: /스폰서 · /스폰서계약은 release.LEGACY_2101 (공개 뒤엔 정산 루프만)

@@ -1,7 +1,7 @@
 # cogs/fishing.py — 🎣 /낚시 · /낚시시세 (2.8)
 # /낚시 = 낚시터 화면(모두에게): 찌 던지기 → 입질이 오면 봇이 이 메시지를 [🐟 잡기!]로 바꾼다 → 잡은 결과.
 #   입질 알림 · 도망 처리는 봇이 시각에 맞춰 직접 고친다 (재시작해도 DB 에서 다시 예약).
-# [🧺 어망] = 나만 보는 낚시 메뉴(허브): 어망 · 시세 · 도감 · 수족관 · 요리 · 먹이기 · 상점 · 주간 최대어 — ◀ 🏠 ▶.
+# [🧺 어망] = 모두에게 보이는 낚시 메뉴(허브, 2.10.1 · 버튼은 연 사람만): 어망 · 시세 · 도감 · 수족관 · 요리 · 먹이기 · 상점 · 주간 최대어 — ◀ 🏠 ▶.
 import asyncio
 import time
 
@@ -296,7 +296,7 @@ class Fishing(commands.Cog):
     # ───────────── 낚시 메뉴 (허브) ─────────────
     async def open_menu(self, interaction: discord.Interaction, page: int = 0):
         view = self.menu_view(interaction.user, page, release.preview_291(interaction.guild_id))
-        await view.send(interaction)
+        await view.send(interaction, ephemeral=not release.preview_2101(interaction.guild_id))   # 2.10.1: 어망 · 메뉴는 모두에게 (버튼은 연 사람만)
 
     def menu_view(self, user, page: int = 0, new: bool = True) -> HubView:
         pages = [
@@ -382,6 +382,13 @@ class Fishing(commands.Cog):
         if r["ok"]:
             note = ui.card(f"🎁 {to.display_name}님에게 {r['count']}마리 보냈어요", ", ".join(r["names"])
                            + f"\n`오늘 보내기` **{r['used']}/{r['limit']}**포인트", ui.WIN, view.user, SECTION)
+            await view.refresh(interaction, note)
+            if not release.preview_2101(getattr(interaction, "guild_id", None)):
+                return
+            # 2.10.1: 보낸 건 모두에게 — 채널 맨 아래에 새 메시지로
+            shout = ui.card(f"🎁 {view.user.display_name}님이 {to.display_name}님에게 물고기를 보냈어요!",
+                            ", ".join(r["names"]) + f"\n총 **{r['count']}마리**", ui.WIN, view.user, SECTION)
+            return await interaction.followup.send(content=to.mention, embed=shout, ephemeral=False)
         else:
             msg = {"self": "자기 자신에게는 보낼 수 없어요.", "none": "보낼 물고기가 없어요.",
                    "limit": f"오늘 보내기 한도가 모자라요 (필요 {r.get('need')} · 남음 {r.get('left')}).",

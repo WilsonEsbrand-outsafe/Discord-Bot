@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.economy import ITEM_HANDLERS
+import release
 from services import ui
 from services.club_db import ClubDB
 from services.dungeon import (
@@ -227,11 +228,11 @@ class Dungeon(commands.Cog):
         await self.db.auto_return(int(time.time()), self.rng)
 
     # ───────────── 입구 ─────────────
-    async def entry_embed(self, user, info: dict, note: str = "") -> discord.Embed:
+    async def entry_embed(self, user, info: dict, note: str = "", new: bool = True) -> discord.Embed:
         now = int(time.time())
         th = THEMES[theme_of(now)]
         team = await self.clubs.get_team(user.id, fill_injured=True)
-        stats = team_stats(team["lineup"]) if team else None
+        stats = team_stats(team["lineup"], new) if team else None
         clears = await self.db.clears(user.id)
         lines = [f"{FLOORS}층 · {'·'.join(map(str, BOSS_FLOORS))}층 보스 · [귀환]하면 보상 전부, 쓰러지면 절반", ""]
         if stats:
@@ -249,7 +250,7 @@ class Dungeon(commands.Cog):
 
     async def show_entry(self, interaction: discord.Interaction, edit: bool = False, note: str = ""):
         info = await self.db.today(interaction.user.id, int(time.time()))
-        e = await self.entry_embed(interaction.user, info, note)
+        e = await self.entry_embed(interaction.user, info, note, release.preview_2101(interaction.guild_id))
         v = EntryView(self, interaction.user, info)
         if edit:
             await interaction.response.edit_message(embed=e, view=v)
@@ -289,7 +290,8 @@ class Dungeon(commands.Cog):
         team = await self.clubs.get_team(interaction.user.id, fill_injured=True)
         if not team:
             return await interaction.response.send_message("🙅 구단이 없어요.", ephemeral=True)
-        r = await self.db.start(interaction.user.id, team_stats(team["lineup"]), int(time.time()), torch, self.rng)
+        new = release.preview_2101(interaction.guild_id)   # 2.10.1 던전 난이도 · 보상 (테스트 서버 먼저)
+        r = await self.db.start(interaction.user.id, team_stats(team["lineup"], new), int(time.time()), torch, self.rng, new)
         if not r["ok"]:
             return await self.show_entry(interaction, edit=True,
                                          note="⏸️ 이미 진행 중이에요." if r["reason"] == "active" else "😴 오늘은 다 들어갔어요.")

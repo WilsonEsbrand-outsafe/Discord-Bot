@@ -6,6 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import release
 from services import ui
 from services.club_db import (
     PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
@@ -109,9 +110,10 @@ class CreateConfirm(_OwnerView):
         e = prospect_embed(r, self.user, now)
         e.title = f"🎉 유망주 {r['name']} #{r['number']} 입단!"
         half = " (🚀 신인 반값)" if r["price"] < PROSPECT_PRICE else ""
-        e.description = f"`비용` **-{r['price']:,}원**{half} · `잔액` **{r['balance']:,}원**\n\n" + e.description
+        e.description = (f"🎉 **{self.user.display_name}**님이 새 유망주를 만들었어요!\n"
+                         f"`비용` **-{r['price']:,}원**{half} · `잔액` **{r['balance']:,}원**\n\n" + e.description)
         e.color = ui.GOLD
-        await interaction.followup.send(embed=e)
+        await interaction.followup.send(embed=e, ephemeral=False)   # 입단 소식은 모두에게 (확인 화면만 나만 보기)
 
     @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -146,7 +148,7 @@ class RetireConfirm(_OwnerView):
             e = prospect_embed(r, self.user, now)
             e.title = f"👋 {r['name']} #{r['number']} 은퇴 — 전성기 커리어로 저장"
             e.description = ((f"🏅 **#{r['number']}**은(는) 이제 영구결번이에요.\n" if number else "")
-                             + "`/유망주생성`으로 새 유망주를 만들 수 있어요.\n\n" + e.description)
+                             + "`/유망주`에서 새 유망주를 만들 수 있어요.\n\n" + e.description)
             await interaction.response.edit_message(embed=e, view=None)
         return cb
 
@@ -168,7 +170,7 @@ class DeleteConfirm(_OwnerView):
         self.stop()
         r = await self.cog.clubs.delete_prospect(self.user.id, self.p["id"], int(time.time()))
         e = (ui.card(f"🗑️ {r['name']} #{r['number']} 삭제 완료",
-                     "기록 없이 사라졌어요. `/유망주생성`으로 새 유망주를 만들 수 있어요.", ui.EVEN, self.user, SECTION)
+                     "기록 없이 사라졌어요. `/유망주`에서 새 유망주를 만들 수 있어요.", ui.EVEN, self.user, SECTION)
              if r else ui.card("❌ 삭제 불가", "이미 은퇴했거나 삭제된 선수예요.", ui.LOSE, self.user, SECTION))
         await interaction.response.edit_message(embed=e, view=None)
 
@@ -177,6 +179,64 @@ class DeleteConfirm(_OwnerView):
         self.stop()
         await interaction.response.edit_message(
             embed=ui.card("유망주 삭제 취소", "아무것도 바뀌지 않았어요.", ui.EVEN, self.user, SECTION), view=None)
+
+
+class ProspectPanel(_OwnerView):
+    """2.10.1 /유망주 (내 화면) — 현역이 없으면 포지션 메뉴 → 입력창으로 만들기, 있으면 [은퇴] [삭제],
+    은퇴한 선수가 있으면 🏅 영구결번 메뉴."""
+
+    def __init__(self, cog: "Prospect", user, data: dict):
+        super().__init__(timeout=600)
+        self.cog, self.user = cog, user
+        if data["active"]:
+            for label, emoji, style, fn in (("은퇴", "👋", discord.ButtonStyle.primary, cog.retire),
+                                            ("삭제", "🗑️", discord.ButtonStyle.danger, cog.delete)):
+                b = discord.ui.Button(label=label, emoji=emoji, style=style, row=1)
+                b.callback = fn
+                self.add_item(b)
+        else:
+            self.pos = discord.ui.Select(placeholder=f"🌟 유망주 만들기 — 포지션을 고르세요 ({PROSPECT_PRICE // 10_000:,}만원)",
+                                         row=0, options=[discord.SelectOption(label=f"{k} — {v}", value=k)
+                                                         for k, v in PROSPECT_POSITIONS.items()][:25])
+            self.pos.callback = self._create
+            self.add_item(self.pos)
+        free = [r for r in data["retired"] if not r["retired_number"]]
+        if free:
+            self.number = discord.ui.Select(placeholder="🏅 등번호 영구결번 — 은퇴한 선수 고르기", row=2, options=[
+                discord.SelectOption(label=f"#{r['number']} {r['name']} · 전성기 OVR {r['peak_ovr']}"[:100], value=str(r["id"]))
+                for r in free[:25]])
+            self.number.callback = self._number
+            self.add_item(self.number)
+
+    async def _create(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(CreateModal(self.cog, self.pos.values[0]))
+
+    async def _number(self, interaction: discord.Interaction):
+        await self.cog.retire_number(interaction, self.number.values[0])
+
+
+class CreateModal(discord.ui.Modal):
+    """유망주 만들기 입력창 — 이름 · 국적 · 등번호 · 생일 · 주발/키 (포지션은 메뉴에서)."""
+
+    def __init__(self, cog: "Prospect", position: str):
+        super().__init__(title=f"🌟 유망주 만들기 — {position} {PROSPECT_POSITIONS[position]}"[:45])
+        self.cog, self.position = cog, position
+        self.name = discord.ui.TextInput(label="이름", max_length=PROSPECT_NAME_MAX)
+        self.nation = discord.ui.TextInput(label="국적", placeholder="예: 대한민국", max_length=12)
+        self.number = discord.ui.TextInput(label="등번호 (1~99)", placeholder="예: 7", max_length=2)
+        self.bday = discord.ui.TextInput(label="생일", placeholder="예: 3-15 또는 3월 15일", max_length=10)
+        self.body = discord.ui.TextInput(label=f"주발 · 키 ({'/'.join(PROSPECT_FEET)} · {PROSPECT_HEIGHT[0]}~{PROSPECT_HEIGHT[1]}cm)",
+                                         default="오른발 180", max_length=12, required=False)
+        for x in (self.name, self.nation, self.number, self.bday, self.body):
+            self.add_item(x)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        parts = str(self.body.value or "").split()
+        foot = next((p for p in parts if p in PROSPECT_FEET), "오른발")
+        height = next((int(p.rstrip("cm")) for p in parts if p.rstrip("cm").isdigit()), 180)
+        number = int(self.number.value) if str(self.number.value).strip().isdigit() else 0
+        await self.cog.create(interaction, str(self.name.value), str(self.nation.value), self.position, number,
+                              str(self.bday.value), foot, height)
 
 
 class Prospect(commands.Cog):
@@ -199,7 +259,7 @@ class Prospect(commands.Cog):
                 if not r["retired_number"] and (not current or current in f"#{r['number']} {r['name']}")][:25]
 
     # ───────────── 보기 ─────────────
-    @app_commands.command(name="유망주", description="나만의 유망주 — 세부 능력치 · 성장 · 커리어 기록 · 명예의 전당 (다른 유저도 가능)")
+    @app_commands.command(name="유망주", description="나만의 유망주 — 만들기 · 능력치 · 커리어 · 은퇴 · 삭제 · 영구결번 (다른 유저도 볼 수 있어요)")
     @app_commands.describe(유저="볼 유저 (비우면 나)")
     async def show(self, interaction: discord.Interaction, 유저: Optional[discord.Member] = None):
         await interaction.response.defer()
@@ -209,7 +269,8 @@ class Prospect(commands.Cog):
         if data["active"]:
             e = prospect_embed(data["active"], owner, now)
         else:
-            text = (f"아직 현역 유망주가 없어요.\n`/유망주생성`으로 **{PROSPECT_PRICE:,}원**에 나만의 선수를 만들어 보세요!\n"
+            how = "아래 메뉴에서 포지션을 고르면" if release.preview_2101(interaction.guild_id) else "`/유망주생성`으로"
+            text = (f"아직 현역 유망주가 없어요.\n{how} **{PROSPECT_PRICE:,}원**에 나만의 선수를 만들 수 있어요!\n"
                     "이름 · 국적 · 포지션 · 등번호 · 생일까지 직접 정할 수 있어요.") if mine \
                 else f"{owner.display_name}님은 현역 유망주가 없어요."
             e = ui.card("🌟 유망주", text, ui.EVEN, owner, SECTION)
@@ -217,28 +278,22 @@ class Prospect(commands.Cog):
         if data["retired"]:
             lines = [_legend_line(r) for r in data["retired"][:10]]
             if mine and any(not r["retired_number"] for r in data["retired"]):
-                lines.append("*`/영구결번`으로 은퇴한 선수의 등번호를 남길 수 있어요*")
+                lines.append("*아래 영구결번 메뉴로 은퇴한 선수의 등번호를 남길 수 있어요*")
             e.add_field(name="🏛️ 명예의 전당", value="\n".join(lines), inline=False)
+        if mine and release.preview_2101(interaction.guild_id):   # 2.10.1: 만들기 · 은퇴 · 삭제 · 영구결번을 이 화면에서 (테스트 서버 먼저)
+            return await interaction.followup.send(embed=e, view=ProspectPanel(self, owner, data))
         await interaction.followup.send(embed=e)
 
     # ───────────── 생성 ─────────────
-    @app_commands.command(name="유망주생성",
-                          description=f"나만의 유망주를 만듭니다 ({PROSPECT_PRICE // 10_000:,}만원) — 이름 · 국적 · 포지션 · 등번호 · 생일을 직접")
-    @app_commands.describe(이름=f"선수 이름 (최대 {PROSPECT_NAME_MAX}자)", 국적="국적 (목록에서 고르거나 직접 입력)",
-                           포지션="세부 포지션", 등번호="등번호 1~99", 생일="생일 (예: 3-15, 3월 15일)",
-                           주발="주로 쓰는 발 (기본: 오른발)", 키="키 cm (기본: 180)")
-    @app_commands.choices(포지션=[app_commands.Choice(name=f"{k} — {v}", value=k) for k, v in PROSPECT_POSITIONS.items()],
-                          주발=[app_commands.Choice(name=f, value=f) for f in PROSPECT_FEET])
-    @app_commands.autocomplete(국적=nation_autocomplete)
+    # 2.10.1: 예전 /유망주생성 · /유망주은퇴 · /유망주삭제 · /영구결번 — 이제 /유망주 화면(ProspectPanel)에서 부른다
     async def create(self, interaction: discord.Interaction, 이름: str, 국적: str, 포지션: str,
-                     등번호: app_commands.Range[int, 1, 99], 생일: str, 주발: str = "오른발",
-                     키: app_commands.Range[int, PROSPECT_HEIGHT[0], PROSPECT_HEIGHT[1]] = 180):
+                     등번호: int, 생일: str, 주발: str = "오른발", 키: int = 180):
         user = interaction.user
         info, err = prospect_input(이름, 국적, 포지션, 등번호, 생일, 주발, 키)
         data = await self.clubs.prospects(user.id, int(time.time()))
         if info and data["active"]:
             err = (f"이미 현역 유망주 **{data['active']['name']}**이(가) 있어요. 한 번에 한 명만 키울 수 있어요.\n"
-                   "`/유망주은퇴` 후에 새로 만들 수 있어요.")
+                   "`/유망주`에서 은퇴시킨 뒤에 새로 만들 수 있어요.")
         elif info and info["number"] in {r["number"] for r in data["retired"] if r["retired_number"]}:
             err = f"**#{info['number']}**은(는) 영구결번이에요. 다른 번호를 골라 주세요."
         if err:
@@ -255,13 +310,12 @@ class Prospect(commands.Cog):
         await interaction.response.send_message(embed=e, view=CreateConfirm(self, user, info, price), ephemeral=True)
 
     # ───────────── 은퇴 · 영구결번 ─────────────
-    @app_commands.command(name="유망주은퇴", description="내 유망주를 은퇴시킵니다 — 전성기 커리어로 저장 · 등번호 영구결번 가능")
     async def retire(self, interaction: discord.Interaction):
         user, now = interaction.user, int(time.time())
         p = (await self.clubs.prospects(user.id, now))["active"]
         if not p:
             return await interaction.response.send_message(
-                embed=ui.card("🙅 현역 유망주가 없어요", "`/유망주생성`으로 먼저 만들어 주세요.", ui.LOSE, user, SECTION),
+                embed=ui.card("🙅 현역 유망주가 없어요", "`/유망주`에서 먼저 만들어 주세요.", ui.LOSE, user, SECTION),
                 ephemeral=True)
         e = prospect_embed(p, user, now)
         e.title = f"👋 {p['name']} #{p['number']}을(를) 은퇴시킬까요?"
@@ -270,7 +324,6 @@ class Prospect(commands.Cog):
                          + e.description)
         await interaction.response.send_message(embed=e, view=RetireConfirm(self, user, p))
 
-    @app_commands.command(name="유망주삭제", description="내 현역 유망주를 삭제합니다 (기록 · 명예의 전당에 남지 않고 환불 없음)")
     async def delete(self, interaction: discord.Interaction):
         user, now = interaction.user, int(time.time())
         p = (await self.clubs.prospects(user.id, now))["active"]
@@ -281,18 +334,15 @@ class Prospect(commands.Cog):
                     f"`OVR` **{p['ovr']}** · `잠재력` **{p['pot']}** ({p['pot_grade']}) · {p['age']}세 · "
                     f"{p['apps']:,}경기 {p['goals']:,}골 {p['assists']:,}도움\n\n"
                     f"삭제하면 **기록이 모두 사라지고** 명예의 전당에도 남지 않아요. 생성비 {PROSPECT_PRICE:,}원은 돌려받지 못해요.\n"
-                    "기록을 남기려면 `/유망주은퇴`를 써 주세요.", ui.DOOM, user, SECTION)
+                    "기록을 남기려면 [은퇴]를 눌러 주세요.", ui.DOOM, user, SECTION)
         await interaction.response.send_message(embed=e, view=DeleteConfirm(self, user, p))
 
-    @app_commands.command(name="영구결번", description="은퇴한 내 유망주의 등번호를 영구결번으로 남깁니다 (그 번호는 다시 못 써요)")
-    @app_commands.describe(선수="은퇴한 유망주")
-    @app_commands.autocomplete(선수=retired_autocomplete)
     async def retire_number(self, interaction: discord.Interaction, 선수: str):
         user, now = interaction.user, int(time.time())
         r = await self.clubs.retire_number(user.id, int(선수), now) if 선수.isdigit() else {"ok": False, "reason": "none"}
         if not r["ok"]:
             num = f"#{r.get('number')}"
-            msg = {"none": "은퇴한 내 유망주를 자동완성에서 골라 주세요.", "done": f"**{num}**은(는) 이미 영구결번이에요.",
+            msg = {"none": "은퇴한 내 유망주를 메뉴에서 골라 주세요.", "done": f"**{num}**은(는) 이미 영구결번이에요.",
                    "taken": f"**{num}**은(는) 이미 다른 선수로 영구결번돼 있어요.",
                    "wearing": f"지금 현역 유망주가 **{num}**을(를) 달고 있어요."}[r["reason"]]
             return await interaction.response.send_message(
@@ -301,6 +351,34 @@ class Prospect(commands.Cog):
         e.title = f"🏅 #{r['number']} 영구결번 — {r['name']}"
         e.description = f"이제 **#{r['number']}**은(는) 누구도 달 수 없어요. `/구단`에도 걸려요.\n\n" + e.description
         await interaction.response.send_message(embed=e)
+
+    # ───────────── 2.10.1 공개 전까지 다른 서버에만 남는 예전 명령어 (release.LEGACY_2101) ─────────────
+    @app_commands.command(name="유망주생성",
+                          description=f"나만의 유망주를 만듭니다 ({PROSPECT_PRICE // 10_000:,}만원) — 이름 · 국적 · 포지션 · 등번호 · 생일을 직접")
+    @app_commands.describe(이름=f"선수 이름 (최대 {PROSPECT_NAME_MAX}자)", 국적="국적 (목록에서 고르거나 직접 입력)",
+                           포지션="세부 포지션", 등번호="등번호 1~99", 생일="생일 (예: 3-15, 3월 15일)",
+                           주발="주로 쓰는 발 (기본: 오른발)", 키="키 cm (기본: 180)")
+    @app_commands.choices(포지션=[app_commands.Choice(name=f"{k} — {v}", value=k) for k, v in PROSPECT_POSITIONS.items()],
+                          주발=[app_commands.Choice(name=f, value=f) for f in PROSPECT_FEET])
+    @app_commands.autocomplete(국적=nation_autocomplete)
+    async def legacy_create(self, interaction: discord.Interaction, 이름: str, 국적: str, 포지션: str,
+                            등번호: app_commands.Range[int, 1, 99], 생일: str, 주발: str = "오른발",
+                            키: app_commands.Range[int, PROSPECT_HEIGHT[0], PROSPECT_HEIGHT[1]] = 180):
+        await self.create(interaction, 이름, 국적, 포지션, 등번호, 생일, 주발, 키)
+
+    @app_commands.command(name="유망주은퇴", description="내 유망주를 은퇴시킵니다 — 전성기 커리어로 저장 · 등번호 영구결번 가능")
+    async def legacy_retire(self, interaction: discord.Interaction):
+        await self.retire(interaction)
+
+    @app_commands.command(name="유망주삭제", description="내 현역 유망주를 삭제합니다 (기록 · 명예의 전당에 남지 않고 환불 없음)")
+    async def legacy_delete(self, interaction: discord.Interaction):
+        await self.delete(interaction)
+
+    @app_commands.command(name="영구결번", description="은퇴한 내 유망주의 등번호를 영구결번으로 남깁니다 (그 번호는 다시 못 써요)")
+    @app_commands.describe(선수="은퇴한 유망주")
+    @app_commands.autocomplete(선수=retired_autocomplete)
+    async def legacy_retire_number(self, interaction: discord.Interaction, 선수: str):
+        await self.retire_number(interaction, 선수)
 
 
 async def setup(bot: commands.Bot):

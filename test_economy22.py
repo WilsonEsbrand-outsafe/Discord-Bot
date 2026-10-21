@@ -219,6 +219,11 @@ async def _items():
     assert r["reason"] == "daily" and r["limit"] == 3 and await db.get_balance(Q) == 30_000_000 * 2   # 돈은 안 빠진다
     assert await db.shop_bought_today(Q, T) == {"steroid": 3}
     assert (await db.buy_item(Q, "steroid", T + D))["bought"] == 1
+    await db.add_balance(Q, 200_000_000)
+    r = await db.buy_item(Q, "steroid", T + 2 * D, 2)                          # 2.10.1: 여러 개 한 번에
+    assert r["ok"] and r["n"] == 2 and r["bought"] == 2 and r["price"] == 2 * edb.SHOP_PRICES["steroid"]
+    r = await db.buy_item(Q, "steroid", T + 2 * D, 2)
+    assert r["reason"] == "daily" and r["left"] == 1
 
     # 판매: 원가의 50% · 수량 부족 · 토토 용지는 판매 불가
     r = await db.sell_item(Z, "muffler", 2)
@@ -387,8 +392,16 @@ async def _item_screens():
     await db.add_balance(user.id, 50_000)
     redraw["view"].menu._values = ["item:muffler"]
     await redraw["view"]._buy(inter)
-    assert "구매" in sent[-1]["embed"].title and sent[-1]["ephemeral"] is False
-    assert [o.value for o in sent[-2]["view"].sell.options] == ["muffler:1"]
+    qty = sent[-1]["view"]                                                    # 2.10.1: 몇 개 살지 고른다
+    assert isinstance(qty, cpm.ItemQtyView) and qty.qty.options[1].label == "2개 · 100,000원"
+    qty.qty._values = ["2"]
+    bal0 = await db.get_balance(user.id)
+    await qty._chosen(inter)
+    assert "2개 구매" in sent[-1]["embed"].title and sent[-1]["ephemeral"] is False
+    assert bal0 - await db.get_balance(user.id) == 100_000
+    assert [o.value for o in sent[-2]["view"].sell.options] == ["muffler:1", "muffler:2"]
+    # 하루 한도: 한 번에 한도보다 많이는 못 산다 (메뉴에도 한도까지만)
+    assert [o.value for o in cpm.ItemQtyView(shop, user, "steroid").qty.options] == ["1", "2", "3"]
 
 
 async def _skips():

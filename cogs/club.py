@@ -182,6 +182,7 @@ class Club(commands.Cog):
         e.set_footer(text="/구단 으로 스쿼드를 보고 /선발 · /포메이션 · /주장 으로 꾸며 보세요")
         await interaction.followup.send(embed=e)
 
+    # 2.10.1: /구단 → 🎨 꾸미기 · 설정으로 옮김 — 공개 전까지 다른 서버에만 남는다 (release.LEGACY_2101)
     @app_commands.command(name="구단명변경", description=f"내 구단 이름을 변경합니다. (최대 {CLUB_NAME_MAX}자)")
     @app_commands.describe(이름="새 구단 이름")
     async def rename_club(self, interaction: discord.Interaction, 이름: str):
@@ -211,7 +212,7 @@ class Club(commands.Cog):
         hubs = self.bot.get_cog("Hubs") if self.bot else None
         if hubs and release.preview(interaction.guild_id) and (유저 is None or 유저.id == interaction.user.id) \
                 and await self.clubs.get_club(interaction.user.id):   # 2.8: 내 구단은 허브 화면 (◀ 🏠 ▶)
-            return await hubs.club_view(interaction.user).send(interaction, ephemeral=False)
+            return await hubs.club_view(interaction.user, guild_id=interaction.guild_id).send(interaction, ephemeral=False)
         await interaction.response.defer()
         owner = 유저 or interaction.user
         team = await self.clubs.get_team(owner.id)

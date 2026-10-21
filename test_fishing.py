@@ -288,6 +288,20 @@ def test_screens():
         assert "낚시_입질" in NOTIFY_EVENTS and len(NOTIFY_EVENTS) <= 15   # /알림설정 버튼 3개씩 5줄 한도
         me = await cog.market_embed(user)
         assert me.description.count("원") == 40
+        # 2.10.1 보내기: 내 화면은 그대로 새로고침 + 채널 맨 아래에 모두에게 보이는 새 메시지 (받는 사람 멘션)
+        to = SimpleNamespace(id=42, display_name="받는이", mention="<@42>", bot=False)
+        log, sent = [], []
+        fake = SimpleNamespace(user=user, ctx={"to": to}, refresh=lambda i, note: asyncio.sleep(0, log.append(note)))
+        real = cog.db.give
+        cog.db.give = lambda a, b, ids, now: asyncio.sleep(0, {"ok": True, "count": 2, "names": ["붕어", "잉어"], "used": 2, "limit": 10})
+        inter = SimpleNamespace(guild_id=1374213619793006704,   # 2.10.1 테스트 서버 먼저
+                                followup=SimpleNamespace(send=lambda **k: asyncio.sleep(0, sent.append(k))))
+        try:
+            await cog._give(inter, fake, [1, 2])
+        finally:
+            cog.db.give = real
+        assert "2마리 보냈어요" in log[-1].title
+        assert sent[-1]["ephemeral"] is False and sent[-1]["content"] == "<@42>" and "물고기를 보냈어요" in sent[-1]["embed"].title
     run(flow())
 
 

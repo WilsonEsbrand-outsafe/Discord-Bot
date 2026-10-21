@@ -199,7 +199,7 @@ async def _flow():
     assert "🌟 **손흥민** #7" in sent[-1]["embed"].description and "🌟 **상대** #10" in sent[-1]["embed"].description
 
     # 생성 화면: 이미 있으면 막힌다
-    await cp.Prospect.create.callback(cog, inter, "새선수", "브라질", "ST", 9, "1-1")
+    await cog.create(inter, "새선수", "브라질", "ST", 9, "1-1")
     assert sent[-1]["ephemeral"] and "한 명만" in sent[-1]["embed"].description
 
     # 스테로이드: 유망주에게만 · 결과별 능력치 · 은퇴
@@ -235,7 +235,7 @@ async def _flow():
     assert "유망주가 없어요" in sent[-1]["embed"].title
 
     # 은퇴 + 영구결번 → 명예의 전당 · 그 번호로는 새로 못 만든다 · /구단에 걸린다
-    await cp.Prospect.retire.callback(cog, inter)
+    await cog.retire(inter)
     view = sent[-1]["view"]
     await view.children[0].callback(inter)                                         # 🏅 은퇴 + 영구결번
     assert "전성기 커리어" in sent[-1]["embed"].title and "영구결번" in sent[-1]["embed"].description
@@ -246,14 +246,14 @@ async def _flow():
     assert pid not in {s.get("player_id") for s in (await clubs.get_team(A))["lineup"]}   # 명단에서 빠진다
     await eco.add_balance(A, 20_000_000)
     assert (await clubs.create_prospect(A, INFO, now))["reason"] == "retired_number"
-    await cp.Prospect.create.callback(cog, inter, "새선수", "브라질", "ST", 7, "1-1")
+    await cog.create(inter, "새선수", "브라질", "ST", 7, "1-1")
     assert "영구결번" in sent[-1]["embed"].description
 
     # 새 유망주 → 스테로이드 부작용 은퇴 → /영구결번 (현역이 같은 번호면 막힌다)
-    await cp.Prospect.create.callback(cog, inter, "새선수", "브라질", "ST", 9, "1-1")
+    await cog.create(inter, "새선수", "브라질", "ST", 9, "1-1")
     assert "만들까요" in sent[-1]["embed"].title
     await sent[-1]["view"].confirm.callback(inter)
-    assert "입단" in sent[-1]["embed"].title and sent[-1].get("ephemeral") is None
+    assert "입단" in sent[-1]["embed"].title and sent[-1]["ephemeral"] is False and "새 유망주를 만들었어요" in sent[-1]["embed"].description
     new = (await clubs.prospects(A, now))["active"]
     s = await clubs.use_steroid(A, now, Forced("retire"))
     assert s["kind"] == "retire" and (await clubs.prospects(A, now))["active"] is None
@@ -265,13 +265,33 @@ async def _flow():
     await clubs.retire_prospect(A, r2["id"], now, False)
     choices = await cog.retired_autocomplete(inter, "")
     assert {c.value for c in choices} == {str(new["id"]), str(r2["id"])}
-    await cp.Prospect.retire_number.callback(cog, inter, str(new["id"]))
+    await cog.retire_number(inter, str(new["id"]))
     assert "🏅 #9 영구결번" in sent[-1]["embed"].title
     assert (await clubs.retire_number(A, r2["id"], now))["reason"] == "taken"
     assert (await clubs.retire_number(A, new["id"], now))["reason"] == "done"
     assert (await clubs.retire_number(B, new["id"], now))["reason"] == "none"     # 남의 선수
     await cp.Prospect.show.callback(cog, inter, None)
+    assert not sent[-1].get("view")                                              # 2.10.1 공개 전 서버: 예전 화면
+    inter.guild_id = release.TEST_GUILD                                          # 테스트 서버는 2.10.1 화면
+    await cp.Prospect.show.callback(cog, inter, None)
+    inter.guild_id = None
     assert "명예의 전당" in sent[-1]["embed"].fields[-1].name and sent[-1]["embed"].fields[-1].value.count("🏅") == 2
+    # 2.10.1 /유망주 하나로: 현역이 없으면 포지션 메뉴 → 입력창, 영구결번 안 한 은퇴 선수는 메뉴로
+    panel = sent[-1]["view"]
+    assert isinstance(panel, cp.ProspectPanel) and panel.pos and [o.value for o in panel.number.options] == [str(r2["id"])]
+    modals = []
+    pi = SimpleNamespace(guild_id=release.TEST_GUILD, user=inter.user, response=SimpleNamespace(send_modal=lambda m: noop(modals.append(m)),
+                                                                                send_message=rec, edit_message=rec))
+    panel.pos._values = ["CM"]
+    await panel._create(pi)
+    m = modals[-1]
+    m.name._value, m.nation._value, m.number._value, m.bday._value, m.body._value = "패널선수", "브라질", "10", "5-5", "왼발 175"
+    await m.on_submit(pi)
+    assert "패널선수 #10" in sent[-1]["embed"].title and isinstance(sent[-1]["view"], cp.CreateConfirm)
+    assert sent[-1]["view"].info["foot"] == "왼발" and sent[-1]["view"].info["height"] == 175 and sent[-1]["view"].info["position"] == "CM"
+    panel.number._values = [str(r2["id"])]
+    await panel._number(pi)
+    assert "영구결번" in sent[-1]["embed"].title
 
     # 삭제: 확인 → 기록 없이 사라짐 (명예의 전당 X) · 명단에서 빠짐 · 새로 만들 수 있음
     D = 704
@@ -280,17 +300,17 @@ async def _flow():
     rd = await clubs.create_prospect(D, INFO, now)
     await clubs.set_slot(D, lw, rd["pid"])
     di = SimpleNamespace(guild_id=1374213619793006704, user=member(D, "삭제러"), response=SimpleNamespace(send_message=rec, edit_message=rec))
-    await cp.Prospect.delete.callback(cog, di)
+    await cog.delete(di)
     assert "삭제할까요" in sent[-1]["embed"].title and "환불" not in sent[-1]["embed"].title
     await sent[-1]["view"].cancel.callback(di)
     assert (await clubs.prospects(D, now))["active"]["id"] == rd["id"]                # 취소하면 그대로
-    await cp.Prospect.delete.callback(cog, di)
+    await cog.delete(di)
     await sent[-1]["view"].confirm.callback(di)
     assert "삭제 완료" in sent[-1]["embed"].title
     assert await clubs.prospects(D, now) == {"active": None, "retired": []}
     assert rd["pid"] not in {s.get("player_id") for s in (await clubs.get_team(D))["lineup"]}
     assert await clubs.delete_prospect(D, rd["id"], now) is None
-    await cp.Prospect.delete.callback(cog, di)
+    await cog.delete(di)
     assert sent[-1]["ephemeral"] and "없어요" in sent[-1]["embed"].title
     assert (await clubs.create_prospect(D, INFO, now))["ok"]
 
