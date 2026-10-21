@@ -43,6 +43,10 @@ class Toto(commands.Cog):
     AUTO_IMPORT_FETCH        = 10        # 대회당 한 번에 가져올 최대 경기 수
     SETTLE_MIN_ELAPSED       = 2 * 3600  # 킥오프 후 이 시간이 지나야 정산 조회
     SETTLE_BATCH             = 10        # 한 번에 확인할 최대 경기 수
+    # 2.9.1: 연기 · 취소된 경기는 결과가 안 나와 '진행 중'에 계속 남고 정산 후보 자리도 차지했다 (라요 vs 빌바오, 10/10).
+    # API 가 연기 · 취소라고 하거나 킥오프 뒤 이만큼 지나도 결과가 없으면 전액 환불하고 지운다.
+    SETTLE_VOID_STATUSES     = ("POSTPONED", "CANCELLED", "SUSPENDED")
+    SETTLE_VOID_AFTER        = 3 * 86400
     # 크레딧 계산: 대회 3개 x 지역 2개 x 하루 2회 = 12크레딧/일 (약 360/월).
     # 무료 플랜이 월 500이므로 주기를 줄이면 월 한도를 넘긴다.
     AUTO_IMPORT_INTERVAL     = 3600 * 12 # 체크 주기 (12시간)
@@ -93,6 +97,11 @@ class Toto(commands.Cog):
 
         if self._import_task and not self._import_task.done():
             self._import_task.cancel()
+
+    async def _void_match(self, match_id: str, why: str):
+        """연기 · 취소 · 결과 없음 → 베팅 전액 환불 후 경기 삭제. 다시 잡히면 자동 등록이 새 날짜로 다시 올린다."""
+        ok, msg = await self.db.toto_refund_and_delete_open_match(match_id, allow_closed=True)
+        print(f"{'🚫' if ok else '⚠️'} [AUTO-SETTLE] match_id={match_id} 무효 ({why}) :: {msg}")
 
     async def _notify_settle_dm(self, match_id: str):
         """
@@ -329,6 +338,9 @@ class Toto(commands.Cog):
                 # 시작한 open 경기 -> closed로 전환
                 await self.db.toto_close_started(now_ts)
 
+                for mid in await self.db.toto_list_stale(now_ts - self.SETTLE_VOID_AFTER):
+                    await self._void_match(str(mid), "결과가 나오지 않음")
+
                 # 정산 후보. 킥오프 직후 경기는 끝났을 리가 없는데도 매분
                 # 조회해 분당 10회 한도를 통째로 태우고 있었다. 경기 시간
                 # (연장·추가시간 포함)이 지난 것만 본다.
@@ -345,6 +357,9 @@ class Toto(commands.Cog):
                         m = data.get("match") or data  # 응답 형태 대비
 
                         status = (m.get("status") or "").upper()
+                        if status in self.SETTLE_VOID_STATUSES:
+                            await self._void_match(str(mid), status)
+                            continue
                         if status not in ("FINISHED", "AWARDED"):
                             continue
 

@@ -114,11 +114,36 @@ def test_by_day_and_ufc_filter():
     assert not is_ufc_fight({"home": "Patricio Freire", "away": "Usman Nurmagomedov"}, names)   # 다른 단체
 
 
+async def _void():
+    """2.9.1: 킥오프 뒤 3일이 지나도 결과가 없는(연기 · 취소) 경기는 환불하고 지운다."""
+    cog = Toto.__new__(Toto)
+    cog.db, cog.ufc = edb.EconomyDB(), udb.UfcDB()
+    now = int(time.time())
+    await cog.db.toto_upsert_match(match_id="old", home="라요", away="빌바오", kickoff_ts=now + 3600)
+    await cog.db.add_balance(77, 10_000)
+    assert not await cog.db.toto_place_bet(user_id=77, match_id="old", pick="1", amount=4_000, odds_locked=2.0, now_ts=now)
+    con = cog.db._connect()
+    con.execute("UPDATE toto_matches SET kickoff_ts=? WHERE match_id='old'", (now - 4 * 86400,))
+    con.commit()
+    con.close()
+    await cog.db.toto_close_started(now)
+    assert not (await cog.db.toto_refund_and_delete_open_match("old"))[0]        # 관리자 삭제는 여전히 open 만
+    assert await cog.db.toto_list_stale(now - Toto.SETTLE_VOID_AFTER) == ["old"]
+    await cog._void_match("old", "test")
+    assert await cog.db.get_balance(77) == 10_000 and not await cog.db.toto_get_match("old")
+    assert not await cog.db.toto_list_in_progress(now)
+
+
+def test_void_stale():
+    asyncio.run(_void())
+
+
 def test_flow():
     asyncio.run(_flow())
 
 
 if __name__ == "__main__":
     test_by_day_and_ufc_filter()
+    test_void_stale()
     test_flow()
     print("OK: toto ui")
