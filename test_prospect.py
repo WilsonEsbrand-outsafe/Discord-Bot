@@ -253,7 +253,7 @@ async def _flow():
     await cog.create(inter, "새선수", "브라질", "ST", 9, "1-1")
     assert "만들까요" in sent[-1]["embed"].title
     await sent[-1]["view"].confirm.callback(inter)
-    assert "입단" in sent[-1]["embed"].title and sent[-1].get("ephemeral") is None
+    assert "입단" in sent[-1]["embed"].title and sent[-1]["ephemeral"] is False and "새 유망주를 만들었어요" in sent[-1]["embed"].description
     new = (await clubs.prospects(A, now))["active"]
     s = await clubs.use_steroid(A, now, Forced("retire"))
     assert s["kind"] == "retire" and (await clubs.prospects(A, now))["active"] is None

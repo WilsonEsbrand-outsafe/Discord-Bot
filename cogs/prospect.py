@@ -109,9 +109,10 @@ class CreateConfirm(_OwnerView):
         e = prospect_embed(r, self.user, now)
         e.title = f"🎉 유망주 {r['name']} #{r['number']} 입단!"
         half = " (🚀 신인 반값)" if r["price"] < PROSPECT_PRICE else ""
-        e.description = f"`비용` **-{r['price']:,}원**{half} · `잔액` **{r['balance']:,}원**\n\n" + e.description
+        e.description = (f"🎉 **{self.user.display_name}**님이 새 유망주를 만들었어요!\n"
+                         f"`비용` **-{r['price']:,}원**{half} · `잔액` **{r['balance']:,}원**\n\n" + e.description)
         e.color = ui.GOLD
-        await interaction.followup.send(embed=e)
+        await interaction.followup.send(embed=e, ephemeral=False)   # 입단 소식은 모두에게 (확인 화면만 나만 보기)
 
     @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):

@@ -382,6 +382,11 @@ class Fishing(commands.Cog):
         if r["ok"]:
             note = ui.card(f"🎁 {to.display_name}님에게 {r['count']}마리 보냈어요", ", ".join(r["names"])
                            + f"\n`오늘 보내기` **{r['used']}/{r['limit']}**포인트", ui.WIN, view.user, SECTION)
+            await view.refresh(interaction, note)
+            # 2.10.1: 보낸 건 모두에게 — 채널 맨 아래에 새 메시지로
+            shout = ui.card(f"🎁 {view.user.display_name}님이 {to.display_name}님에게 물고기를 보냈어요!",
+                            ", ".join(r["names"]) + f"\n총 **{r['count']}마리**", ui.WIN, view.user, SECTION)
+            return await interaction.followup.send(content=to.mention, embed=shout, ephemeral=False)
         else:
             msg = {"self": "자기 자신에게는 보낼 수 없어요.", "none": "보낼 물고기가 없어요.",
                    "limit": f"오늘 보내기 한도가 모자라요 (필요 {r.get('need')} · 남음 {r.get('left')}).",
