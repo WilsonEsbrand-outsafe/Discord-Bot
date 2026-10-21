@@ -871,7 +871,7 @@ class Economy(commands.Cog):
         if not p:
             return await interaction.response.send_message(embed=ui.card(
                 "💉 주사할 유망주가 없어요",
-                "스테로이드는 **내 유망주**에게만 쓸 수 있어요.\n`/유망주생성`으로 나만의 선수를 만들어 보세요.",
+                "스테로이드는 **내 유망주**에게만 쓸 수 있어요.\n`/유망주`에서 나만의 선수를 만들어 보세요.",
                 ui.LOSE, user, "🎒 아이템"), ephemeral=True)
         cells = [f"{self.STEROID_TEXT[k][0].split()[0]} {self.STEROID_TEXT[k][1]} **{w:.0%}**" for k, w in STEROID_TABLE.items()]
         odds = " · ".join(cells[:3]) + "\n" + " · ".join(cells[3:])
@@ -890,7 +890,7 @@ class Economy(commands.Cog):
             "none": "주사기만 날렸어요.",
             "fragile": f"부작용으로 몸이 약해졌어요… 🦴 부상 빈도 **{hidden_tier(r['prone0'])} → {hidden_tier(r['prone'])}**",
             "doping": f"약물 검출로 징계! 후유증으로 OVR **{r['ovr0']} → {r['ovr']}**",
-            "retire": "부작용으로 은퇴했어요… 전성기 커리어로 저장됐어요. `/영구결번`으로 등번호를 남길 수 있어요.",
+            "retire": "부작용으로 은퇴했어요… 전성기 커리어로 저장됐어요. `/유망주`에서 등번호를 영구결번으로 남길 수 있어요.",
         }[r["kind"]]
         color = {"ovr": ui.WIN, "pot": ui.WIN, "awaken": ui.GOLD, "none": ui.EVEN}.get(r["kind"], ui.DOOM)
         e = ui.card(f"💉 {r['name']} — {title}", f"🌟 유망주 `#{r['number']}` · {r['age']}세\n> *{change}*",

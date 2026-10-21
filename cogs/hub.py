@@ -571,7 +571,7 @@ class Hubs(commands.Cog):
         data = await self.clubs.prospects(view.user.id, now)
         if data["active"]:
             return prospect_embed(data["active"], view.user, now)
-        return ui.card("🌟 유망주", f"아직 현역 유망주가 없어요.\n`/유망주생성`으로 **{PROSPECT_PRICE:,}원**에 나만의 선수를 만들어 보세요!"
+        return ui.card("🌟 유망주", f"아직 현역 유망주가 없어요.\n`/유망주`에서 **{PROSPECT_PRICE:,}원**에 나만의 선수를 만들어 보세요!"
                        + (f"\n\n🏛️ 은퇴한 유망주 {len(data['retired'])}명 — `/유망주`" if data["retired"] else ""),
                        ui.EVEN, view.user, "🌟 유망주")
 

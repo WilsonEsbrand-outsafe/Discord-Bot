@@ -172,7 +172,7 @@ ROOKIE_MISSIONS = [
     ("card", "첫 선수 카드", "`/선수팩상점` 또는 스카우트 발굴",
      "SELECT COUNT(*) FROM pm_holdings WHERE user_id=? AND qty > 0 AND player_id NOT LIKE 'AMT_%'", 1, 500_000, {}),
     ("win", "공식경기 첫 승", "`/공식경기`", "SELECT COALESCE(SUM(w), 0) FROM club_official WHERE user_id=?", 1, 1_000_000, {}),
-    ("prospect", "유망주 데뷔", "`/유망주생성`", "SELECT COUNT(*) FROM prospects WHERE user_id=?", 1, 500_000,
+    ("prospect", "유망주 데뷔", "`/유망주`", "SELECT COUNT(*) FROM prospects WHERE user_id=?", 1, 500_000,
      {"watch_reset": 1}),
     ("grad", "유망주 10경기 출전", "`/선발`에 넣고 경기", "SELECT COALESCE(MAX(apps), 0) FROM prospects WHERE user_id=?",
      10, 2_000_000, {}),
