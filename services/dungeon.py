@@ -17,6 +17,7 @@ HP_MAX = 100
 HP_MEAL = 20                    # 🍱 보양 정식(낚시 요리) 효과
 IDLE_RETURN = 1800              # 30분 아무것도 안 하면 자동 귀환
 DEATH_KEEP = 0.5                # 쓰러지면 보상 절반
+EMPTY_OVR = 20                  # 2.10.1: 빈 자리 (예전엔 그룹이 통째로 비어야 40)
 FALSE_HINT = 0.25               # 힌트가 거짓일 확률 (🔦 횃불이면 0)
 POTION_HEAL, REST_HEAL, FEATHER_HP = 40, 30, 50
 
@@ -41,29 +42,31 @@ ROOMS = {   # 키: (이모지, 이름, 기본 비중, 힌트)
     "altar": ("🕯️", "제단", 12, ("🕯️ 촛불 빛", "🙏 웅얼거리는 기도 소리")),
 }
 # 보상 표 (아이템 키 → 비중). 층이 깊을수록 좋은 표를 더 자주.
-LOOT_COMMON = {"skip_piece": 30, "bait": 20, "spice": 18, "potion": 10, "torch": 6, "bait_gold": 8, "fish_charm": 4, "dkey": 4}
-LOOT_RARE = {"skip_piece": 20, "box": 10, "bow_pro": 9, "windbreaker": 9, "focus": 9, "antidote": 8, "scroll": 8,
+# 2.10.1: 점검 보상 상자(box)는 던전에서 안 나온다 · 스킵권 조각은 확 줄임 (예전 30 · 20)
+LOOT_COMMON = {"skip_piece": 6, "bait": 20, "spice": 18, "potion": 10, "torch": 6, "bait_gold": 8, "fish_charm": 4, "dkey": 4}
+LOOT_RARE = {"skip_piece": 5, "bow_pro": 9, "windbreaker": 9, "focus": 9, "antidote": 8, "scroll": 8,
              "feather": 5, "dkey": 8, "fish_charm": 8, "dungeon_ticket": 2, "potion": 4, "tactic_note": 6,
              "analysis_report": 6, "special_training": 6, "scout_coupon": 4, "first_team": 2}
+BATTLE_DROP = 0.4               # 일반 전투에서 아이템이 나올 확률 (돈은 항상)
 COIN = (3_000, 12_000)          # 보물 · 전투에서 나오는 돈 (층 × 이만큼)
 XP_PER_FLOOR = 4                # 훈련 경험치 (층마다 진행 보상)
-FIRST_CLEAR = {"box": 1, "dungeon_ticket": 1, "skip_piece": 5, "first_team": 1}   # 테마마다 처음 10층을 깨면
+FIRST_CLEAR = {"dungeon_ticket": 1, "skip_piece": 2, "first_team": 1}   # 테마마다 처음 10층을 깨면
 MERCHANT = {"potion": 150_000, "antidote": 200_000, "torch": 250_000, "scroll": 300_000}   # 돈 쓰는 곳
 ALTAR_COST = 15                 # 제단: 체력을 바치면 다음 보물 · 전투 보상 2배 (40%는 저주: 다음 방 피해 +50%)
 
 
 def norm(ovr: float) -> float:
-    """OVR 50 → 0, 95 → 1."""
-    return max(0.0, min(1.0, (ovr - 50) / 45))
+    """OVR 60 → 0, 95 → 1. 60 아래는 마이너스 (2.10.1: 약한 팀 · 빈 자리는 손해, OVR 25 이하 = -1)."""
+    return max(-1.0, min(1.0, (ovr - 60) / 35))
 
 
 def team_stats(lineup: list[dict]) -> dict[str, int]:
-    """선발 11명 → 스탯 4개 (포지션 그룹 평균 OVR, 없으면 40)."""
+    """선발 11명 → 스탯 4개 (포지션 그룹 평균 OVR). 2.10.1: 빈 자리도 EMPTY_OVR 로 평균에 넣는다."""
     out = {}
     for key, _, group in STATS:
-        vals = [effective_ovr(s["ovr"], s.get("pos", group), s["slot"]) for s in lineup
-                if s.get("player_id") and SLOT_GROUP.get(s.get("slot")) == group]
-        out[key] = round(sum(vals) / len(vals)) if vals else 40
+        vals = [effective_ovr(s["ovr"], s.get("pos", group), s["slot"]) if s.get("player_id") else EMPTY_OVR
+                for s in lineup if SLOT_GROUP.get(s.get("slot")) == group]
+        out[key] = round(sum(vals) / len(vals)) if vals else EMPTY_OVR
     return out
 
 
@@ -109,7 +112,7 @@ def _monster(st: dict, rng, boss: bool) -> dict:
     th = THEMES[st["theme"]]
     f = st["floor"]
     name = (th[3] if f == 5 else th[4]) if boss else rng.choice(th[2])
-    power = (22 + 2.5 * f) if not boss else (30 if f == 5 else 46)
+    power = (26 + 3.2 * f) if not boss else (38 if f == 5 else 60)   # 2.10.1: 더 세게 (예전 22+2.5층 · 30 · 46)
     return {"name": name, "power": power, "boss": boss}
 
 
@@ -191,7 +194,7 @@ def enter(st: dict, door: int, rng) -> list[str]:
             log.append(f"🪤 **{name}**! 💊 해독제로 피해를 막았어요.")
         else:
             log.append(f"🪤 **{name}**에 걸렸어요!")
-            _hurt(st, _damage(st, 10 + 1.5 * st["floor"], rng, 1.15 - 0.5 * norm(s["dfn"])), log)
+            _hurt(st, _damage(st, 12 + 2 * st["floor"], rng, 1.15 - 0.5 * norm(s["dfn"])), log)
         _after_room(st, rng, log)
     elif room == "rest":
         heal = min(REST_HEAL, st["max_hp"] - st["hp"])
@@ -228,7 +231,8 @@ def act(st: dict, action: str, rng) -> list[str]:
             log.append(f"⚔️ **{m['name']}**을(를) 쓰러뜨렸어요!")
             _hurt(st, dmg, log)
             if st["hp"] > 0 or st.get("inv_feather"):
-                got = _roll_loot(st, rng, 3 if m["boss"] else 1, 0.6 if m["boss"] else 0.12 + 0.02 * st["floor"])
+                rolls = 2 if m["boss"] else int(rng.random() < BATTLE_DROP)   # 2.10.1: 보스 3 → 2개 · 일반 전투는 가끔만
+                got = _roll_loot(st, rng, rolls, 0.6 if m["boss"] else 0.12 + 0.02 * st["floor"])
                 log.append("🎁 " + loot_text(got))
         _after_room(st, rng, log)
     elif ph == "treasure":
