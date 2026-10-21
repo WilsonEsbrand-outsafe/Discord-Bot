@@ -27,7 +27,7 @@ MMA_COLOR      = 0xE8003D
 UFC_CARD_URL = "https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard"
 UFC_CARD_DAYS = 30
 UFC_CARD_TTL = 6 * 3600
-_ufc_cache: dict = {"names": set(), "ts": 0.0}
+_ufc_cache: dict = {"names": set(), "rank": {}, "ts": 0.0}   # rank: 이름 키 → 대진표 순서 (클수록 메인이벤트 쪽)
 
 
 def _norm(name: str) -> str:
@@ -43,6 +43,10 @@ def _name_keys(name: str) -> set[str]:
     if not n:
         return set()
     return {" ".join(n), f"{n[-1]} {n[0][0]}"}
+
+
+def card_rank(fight: dict, rank: dict[str, int]) -> int:
+    return max((rank.get(k, -1) for side in ("home", "away") for k in _name_keys(fight[side])), default=-1)
 
 
 def is_ufc_fight(fight: dict, ufc_names: set[str]) -> bool:
@@ -66,15 +70,18 @@ async def _fetch_ufc_names() -> set[str]:
         log.warning(f"[UFC] ESPN 대진표 조회 실패: {e}")
         return _ufc_cache["names"]
     names: set[str] = set()
+    rank: dict[str, int] = {}
     for ev in data.get("events", []):
-        for comp in ev.get("competitions", []):
+        for i, comp in enumerate(ev.get("competitions", [])):   # ESPN 은 언더카드 → 메인이벤트 순서
             for c in comp.get("competitors", []):
                 a = c.get("athlete") or {}
                 for n in (a.get("displayName"), a.get("fullName"), c.get("displayName")):
                     if n:
-                        names |= _name_keys(n)
+                        keys = _name_keys(n)
+                        names |= keys
+                        rank.update(dict.fromkeys(keys, i))
     if names:
-        _ufc_cache.update(names=names, ts=now)
+        _ufc_cache.update(names=names, rank=rank, ts=now)
     return _ufc_cache["names"]
 
 
@@ -144,7 +151,8 @@ async def upcoming_fights(ufc_only: bool = True) -> list[dict]:
         if not ufc_only:
             return fights
         ufc = await _fetch_ufc_names() if fights else set()
-        return [f for f in fights if is_ufc_fight(f, ufc)]
+        fights = [f for f in fights if is_ufc_fight(f, ufc)]
+        return sorted(fights, key=lambda f: (f["commence_time"], -card_rank(f, _ufc_cache["rank"])))   # 같은 날은 메인이벤트부터
     except Exception as e:
         log.warning(f"[UFC] 경기 조회 실패: {e}")
         return []
