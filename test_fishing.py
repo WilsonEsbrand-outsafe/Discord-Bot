@@ -278,6 +278,8 @@ def test_screens():
             assert cog._result_card(user, r).title
         cv = cf.CastView(cog, user, {"cast_ts": None, "bait_qty": {"bait": 2, "bait_gold": 0}})
         assert [c.label for c in cv.children] == ["던지기", "일반 미끼로 (2)", "어망 · 메뉴"]
+        for title in ("어망", "요리", "수족관", "도감"):   # 2.82 바로가기 명령어가 여는 페이지
+            assert any(p.title == title for p in view.pages), title
         me = await cog.market_embed(user)
         assert me.description.count("원") == 30
     run(flow())
