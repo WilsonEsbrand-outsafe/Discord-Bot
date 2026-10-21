@@ -49,7 +49,19 @@ def test_embeds():
     assert sent[2]["content"] == "@everyone" and sent[2]["allowed_mentions"].everyone is True
 
 
+def test_282():
+    v = PATCH_NOTES["2.82"]
+    for word in ("장부", "체크리스트", "가계부"):
+        assert word not in v, word
+    import release
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    assert keys["maint-2.82"] == keys["patch-2.82"] < release.MAINTENANCE[0]   # 점검 전에 안내 · 패치노트
+    assert release.MAINTENANCE[1] - release.MAINTENANCE[0] == 180
+    assert release.released(release.MAINTENANCE[0])                            # 2.8 은 공개된 그대로
+
+
 if __name__ == "__main__":
     test_28_content()
     test_embeds()
+    test_282()
     print("OK: patch notes")

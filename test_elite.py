@@ -143,8 +143,8 @@ def test_release():
     assert release.preview(T, before) and not release.preview(other, before) and release.preview(other, after)
     assert release.hidden_commands(other, before) == release.PREVIEW_ONLY
     assert release.hidden_commands(T, before) == release.hidden_commands(other, after) == release.LEGACY_ONLY
-    start, end = release.MAINTENANCE   # 점검 창은 공개 시각을 감싼다
-    assert start < release.RELEASE_TS < end
+    start, end = release.MAINTENANCE   # 점검 창 (2.82: 공개 시각과 따로 — 2.8 공개 뒤 짧은 점검)
+    assert start < end
     assert release.maintenance(start) and release.maintenance(end - 1)
     assert not release.maintenance(start - 1) and not release.maintenance(end)
 

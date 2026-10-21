@@ -1,4 +1,4 @@
-# cogs/fishing.py — 🎣 /낚시 · /낚시시세 (2.8) · /어망 · /요리 · /수족관 · /도감 (2.82 바로가기)
+# cogs/fishing.py — 🎣 /낚시 · /낚시시세 (2.8)
 # /낚시 = 낚시터 화면(모두에게): 찌 던지기 → 입질이 오면 봇이 이 메시지를 [🐟 잡기!]로 바꾼다 → 잡은 결과.
 #   입질 알림 · 도망 처리는 봇이 시각에 맞춰 직접 고친다 (재시작해도 DB 에서 다시 예약).
 # [🧺 어망] = 나만 보는 낚시 메뉴(허브): 어망 · 시세 · 도감 · 수족관 · 요리 · 먹이기 · 상점 · 주간 최대어 — ◀ 🏠 ▶.
@@ -589,28 +589,6 @@ class Fishing(commands.Cog):
         emoji, name, _ = ITEMS[r["item"]]
         await interaction.response.send_message(embed=ui.card(
             f"🧩 조각 {SKIP_PIECES}개 → {emoji} {name}!", "`/가방`에서 바로 쓸 수 있어요.", ui.GOLD, user, "🎒 아이템"))
-
-    # 2.82: 낚시 메뉴 바로가기 — /낚시 → [🧺 어망 · 메뉴] 를 거치지 않고 그 페이지를 바로 연다
-    async def _open_page(self, interaction: discord.Interaction, title: str):
-        view = self.menu_view(interaction.user)
-        view.page = next(i for i, p in enumerate(view.pages) if p.title == title)
-        await view.send(interaction)
-
-    @app_commands.command(name="어망", description="🧺 잡은 물고기 — 팔기 · 놓아주기 · 보내기")
-    async def bag_cmd(self, interaction: discord.Interaction):
-        await self._open_page(interaction, "어망")
-
-    @app_commands.command(name="요리", description="🍳 물고기로 요리해서 24시간 효과 받기")
-    async def cook_cmd(self, interaction: discord.Interaction):
-        await self._open_page(interaction, "요리")
-
-    @app_commands.command(name="수족관", description="🐠 잡은 물고기 전시하기")
-    async def aquarium_cmd(self, interaction: discord.Interaction):
-        await self._open_page(interaction, "수족관")
-
-    @app_commands.command(name="도감", description="📖 물고기 도감 — 40종 모으기")
-    async def dex_cmd(self, interaction: discord.Interaction):
-        await self._open_page(interaction, "도감")
 
     @app_commands.command(name="낚시시세", description="오늘의 물고기 시세 — 종마다 값 · 어제보다 ▲▼")
     async def market_cmd(self, interaction: discord.Interaction):
