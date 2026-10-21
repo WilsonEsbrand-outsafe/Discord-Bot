@@ -296,7 +296,7 @@ class Fishing(commands.Cog):
     # ───────────── 낚시 메뉴 (허브) ─────────────
     async def open_menu(self, interaction: discord.Interaction, page: int = 0):
         view = self.menu_view(interaction.user, page, release.preview_291(interaction.guild_id))
-        await view.send(interaction)
+        await view.send(interaction, ephemeral=False)   # 2.10.1: 어망 · 메뉴는 모두에게 보이게 (버튼은 연 사람만)
 
     def menu_view(self, user, page: int = 0, new: bool = True) -> HubView:
         pages = [

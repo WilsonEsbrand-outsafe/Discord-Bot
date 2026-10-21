@@ -90,8 +90,10 @@ async def _flow():
     # /내베팅 → 축구·UFC 내역 + 취소 메뉴 → 축구 취소하면 전액 환불
     await Toto.my_bets.callback(cog, inter)
     d = sent[-1]["embed"].description
-    assert "아스날 vs 첼시" in d and "A vs B" in d
+    assert "아스날 vs 첼시" in d and "A vs B" in d and not sent[-1].get("ephemeral")   # 2.10.1: 모두에게
     cancel = sent[-1]["view"]
+    other = SimpleNamespace(user=SimpleNamespace(id=U + 1), response=inter.response)
+    assert not await cancel.interaction_check(other)                                   # 남의 베팅은 취소 못 한다
     cancel.select._values = ["m1"]
     await cancel._cancel(inter)
     assert await cog.db.get_balance(U) == 95_000

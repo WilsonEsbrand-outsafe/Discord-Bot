@@ -533,15 +533,14 @@ class Toto(commands.Cog):
 
     @app_commands.command(name="내베팅", description="축구·UFC 베팅 내역 — 경기 시작 전 축구 베팅은 여기서 취소")
     async def my_bets(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()   # 2.10.1: 모두에게 보이게 (취소 메뉴는 본인만 누를 수 있다)
         user, now_ts = interaction.user, int(time.time())
         new = release.preview_291(interaction.guild_id)
         soccer = await self.db.toto_list_user_bets(user.id, limit=10)
         ufc = await self.ufc.list_recent_for_user(user.id, limit=10)
         if not soccer and not ufc:
             return await interaction.followup.send(
-                embed=ui.card("🧾 내 베팅", "베팅 내역이 없어요. `/토토`에서 시작해 보세요!", ui.EVEN, user, SECTION),
-                ephemeral=True)
+                embed=ui.card("🧾 내 베팅", "베팅 내역이 없어요. `/토토`에서 시작해 보세요!", ui.EVEN, user, SECTION))
 
         total_bet = total_pay = 0
         parts, cancellable = [], []
@@ -580,7 +579,7 @@ class Toto(commands.Cog):
         e.set_footer(text=f"총 베팅 {total_bet:,}원 · 총 수령 {total_pay:,}원"
                           + (" · 아래 메뉴로 축구 베팅 취소(전액 환불)" if cancellable else ""))
         view = CancelMenu(self, user.id, cancellable) if cancellable else discord.utils.MISSING
-        await interaction.followup.send(embed=e, view=view, ephemeral=True)
+        await interaction.followup.send(embed=e, view=view)
 
     # ───────────── 관리자 ─────────────
     @app_commands.command(name="토토관리", description="(관리자) 경기 불러오기 · 등록 · 삭제 · 결과 입력 · 배당 확인")
@@ -763,6 +762,12 @@ class CancelMenu(discord.ui.View):
             options=[discord.SelectOption(label=f"{name} · {amt:,}원"[:100], value=mid) for mid, name, amt in bets[:25]])
         self.select.callback = self._cancel
         self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("🙅 본인 베팅만 취소할 수 있어요. `/내베팅`을 직접 열어 주세요.", ephemeral=True)
+            return False
+        return True
 
     async def _cancel(self, interaction: discord.Interaction):
         ok, msg = await self.cog.db.toto_cancel_bet(user_id=self.user_id, match_id=self.select.values[0],
