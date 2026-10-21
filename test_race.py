@@ -75,19 +75,13 @@ def test_rowing():
     assert all(abs(p - 1 / R.ROW_N) < 0.015 for p in full), full                     # 전속력 = 공평
     assert ranks(R.ROW_TARGET * 5, 4000)[0] < 1 / R.ROW_N + 0.03                     # 매크로로 더 연타해도 이득 없음
     lazy = ranks(0, 4000)
-    assert lazy[-1] > 0.4 and lazy[0] < 0.04                                         # 안 저으면 꼴찌가 제일 흔하다 (2.8: 덜 가혹)
-    half = ranks(R.ROW_TARGET // 2, 4000)
-    assert half[-1] > full[-1] + 0.08 and half[0] > 0.04                             # 반만 저으면 불리하지만 운은 남는다
-    assert R.row_step([0.0] * 6, 0, 2, rng) == 0.5 and R.row_step([0.0] * 6, 0, 99, rng) == 1.0
-    # 2.8 하향: 구간 4초 · 전속력 4번 · 최저 85% — 테스트 서버 먼저, 다른 서버는 공개 전까지 2.7 그대로
-    assert (R.ROW_SEC, R.ROW_TARGET, R.ROW_LAZY) == (4.0, 4, 0.85)
-    assert R.row_rules(R.release.TEST_GUILD) == (4.0, 4, 0.85)
-    old = R.release.RELEASE_TS
-    try:
-        R.release.RELEASE_TS = None
-        assert R.row_rules(1) == (3.0, 6, 0.75)
-    finally:
-        R.release.RELEASE_TS = old
+    assert lazy[-1] > 0.3 and lazy[0] < 0.08                                         # 안 저으면 꼴찌가 제일 흔하다 (2.82: 더 덜 가혹)
+    half = ranks(1, 4000)
+    assert half[-1] > full[-1] + 0.08 and half[0] > 0.04                             # 덜 저으면 불리하지만 운은 남는다
+    assert R.row_step([0.0] * 6, 0, 1, rng) == 1 / 3 and R.row_step([0.0] * 6, 0, 99, rng) == 1.0
+    # 2.82 하향: 구간 5초 · 전속력 3번 · 최저 90% (모든 서버)
+    assert (R.ROW_SEC, R.ROW_TARGET, R.ROW_LAZY) == (5.0, 3, 0.9)
+    assert R.row_rules(1374213619793006704) == R.row_rules(1) == (5.0, 3, 0.9)
     assert all(0 <= c < R.TRACK for c in R.row_cells([0, 2.5, 5.6, 9.0, -1, 3]))
     assert "폭발" in R.row_call("나", 1.0, "상대", False) and "선두입니다" in R.row_call("나", 0.5, "나", True)
 

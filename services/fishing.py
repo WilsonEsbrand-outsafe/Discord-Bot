@@ -1,4 +1,4 @@
-# services/fishing.py — 🎣 낚시 (2.8): 물고기 30종 · 입질 대기 · 싯가 · 거래 한도 · 먹이기 · 요리 · 수족관 · 도감 · 주간 최대어
+# services/fishing.py — 🎣 낚시 (2.8): 물고기 40종 (2.82: 30 → 40) · 입질 대기 · 싯가 · 거래 한도 · 먹이기 · 요리 · 수족관 · 도감 · 주간 최대어
 # 찌는 한 번에 하나. 던지면 10초~10분 뒤 입질 → 5분 안에 [잡기!]를 못 누르면 도망. 상태는 DB(economy.sqlite3)에 남아
 # 봇이 재시작해도 이어진다. 오래 기다린 입질일수록 희귀한 물고기가 걸린다.
 # 돈이 풀리는 곳은 판매뿐이다 — 판매 · 보내기(트레이드)는 하루 20포인트 한도 (흔함 1 · 보통 1 · 희귀 2 · 영웅 3 · 전설 5).
@@ -15,7 +15,7 @@ GRADES = ("흔함", "보통", "희귀", "영웅", "전설")
 GRADE_EMOJI = ("⚪", "🟢", "🔵", "🟣", "🟡")
 GRADE_POINTS = (1, 1, 2, 3, 5)            # 판매 · 보내기 때 깎이는 거래 포인트
 GRADE_XP = (5, 10, 25, 60, 150)           # 낚시 경험치 (+ 크기 보너스)
-GRADE_SIGMA = (0.08, 0.12, 0.18, 0.25, 0.35)   # 싯가 하루 변동 폭 (±)
+GRADE_SIGMA = (0.12, 0.18, 0.25, 0.32, 0.42)   # 싯가 하루 변동 폭 (±) — 2.82: 넓힘 (0.08 · 0.12 · 0.18 · 0.25 · 0.35)
 # 키 → (이모지, 이름, 등급, 평균 크기 cm, 기준가 원). 기준가 = 평균 크기 · 싯가 1배 · 신선할 때 값.
 FISH = {
     "crucian": ("🐟", "붕어", 0, 25, 5_000), "minnow": ("🐟", "피라미", 0, 12, 3_000),
@@ -33,6 +33,14 @@ FISH = {
     "grouper": ("🦈", "다금바리", 3, 80, 150_000), "tuna": ("🦈", "참다랑어", 3, 200, 200_000),
     "swordfish": ("🦈", "황새치", 3, 250, 170_000), "sturgeon": ("🦈", "철갑상어", 3, 150, 180_000),
     "goldcarp": ("🐉", "황금 잉어", 4, 90, 700_000), "coelacanth": ("🦕", "실러캔스", 4, 180, 900_000),
+    # 2.82 새 물고기 10종
+    "herring": ("🐟", "청어", 0, 28, 4_500), "loach": ("🐟", "미꾸라지", 0, 14, 3_000),
+    "spanish": ("🐟", "삼치", 0, 60, 7_500),
+    "octopus": ("🐙", "문어", 1, 60, 22_000), "pufferfish": ("🐡", "복어", 1, 35, 19_000),
+    "trout": ("🐠", "송어", 1, 45, 14_000),
+    "blowfish": ("🐡", "자주복", 2, 50, 65_000), "lobster": ("🦞", "랍스터", 2, 40, 70_000),
+    "marlin": ("🦈", "청새치", 3, 280, 230_000),
+    "oarfish": ("🐉", "산갈치", 4, 300, 1_200_000),
 }
 BY_GRADE = [[k for k, f in FISH.items() if f[2] == g] for g in range(5)]
 
@@ -49,7 +57,7 @@ BAG_MAX = 100                 # 어망(보관) 한도
 TRADE_DAILY = 20              # 하루 판매 · 보내기 포인트
 CHARM_BONUS = 5               # 🍀 낚시 부적 1장 = 오늘 한도 +5
 FRESH_DROP, FRESH_DROP_ICE, FRESH_MIN = 0.10, 0.05, 0.5   # 하루 신선도 -10% (아이스박스 -5%) · 최저 50%
-MARKET_MIN, MARKET_MAX, MARKET_REVERT = 0.5, 2.0, 0.25    # 싯가 배수 0.5~2.0 · 매일 평균(1)으로 25% 회귀
+MARKET_MIN, MARKET_MAX, MARKET_REVERT = 0.3, 3.0, 0.25    # 싯가 배수 0.3~3.0 (2.82: 0.5~2.0 → 넓힘) · 매일 평균(1)으로 25% 회귀
 SUPPLY_HIT, SUPPLY_HEAL, SUPPLY_MIN = 0.02, 0.20, 0.3     # 판매 한 마리 -2% · 매일 부족분 20% 회복
 AQUARIUM_MAX = 10
 LEVEL_MAX = 30
@@ -101,9 +109,9 @@ def grade_odds(wait: float, bonus: float = 0.0) -> list[float]:
 
 
 def roll_size(key: str, rng=random, rod_bonus: float = 0.0) -> float:
-    """크기 cm — 평균 ±15% 정규분포 (평균의 55%~170%) × 낚싯대 보너스."""
+    """크기 cm — 평균 ±25% 정규분포 (평균의 40%~220%) × 낚싯대 보너스. (2.82: ±15% · 55%~170% → 넓힘)"""
     avg = FISH[key][3]
-    return round(min(avg * 1.7, max(avg * 0.55, rng.gauss(avg, avg * 0.15))) * (1 + rod_bonus), 1)
+    return round(min(avg * 2.2, max(avg * 0.4, rng.gauss(avg, avg * 0.25))) * (1 + rod_bonus), 1)
 
 
 def size_mult(key: str, size: float) -> float:
@@ -572,5 +580,5 @@ def now() -> int:
     return int(time.time())
 
 
-assert len(FISH) == 30 and [len(b) for b in BY_GRADE] == [10, 8, 6, 4, 2]
+assert len(FISH) == 40 and [len(b) for b in BY_GRADE] == [13, 11, 8, 5, 3]
 assert math.isclose(sum(ODDS_FAST), 100) and math.isclose(sum(ODDS_SLOW), 100)

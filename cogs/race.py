@@ -23,7 +23,6 @@ from matplotlib.patches import Rectangle
 import matplotlib.patheffects as pe
 from PIL import Image
 
-import release
 from services.economy_db import EconomyDB
 from services import ui
 
@@ -169,16 +168,15 @@ ROWERS = (   # (국기, 이름, 체중 kg, 소개) — 표시용
 )
 ROW_N = 6                 # 레인 수 (나 + 상대 5)
 ROW_SEGS = ("500m", "1000m", "1500m", "라스트 스퍼트", "결승선 앞")
-ROW_SEC = 4.0             # 구간 하나 길이 (초) — 2.8: 3 → 4
-ROW_TARGET = 4            # 구간당 이만큼 저으면 전속력 (그 이상은 같음) — 2.8: 6 → 4
+ROW_SEC = 5.0             # 구간 하나 길이 (초) — 2.8: 3 → 4 · 2.82: 4 → 5
+ROW_TARGET = 3            # 구간당 이만큼 저으면 전속력 (그 이상은 같음) — 2.8: 6 → 4 · 2.82: 4 → 3
 ROW_NOISE = 0.5           # 구간마다 물살 운 (±)
-ROW_LAZY = 0.85           # 하나도 안 저었을 때 속도 (전속력 = 1) — 2.8: 0.75 → 0.85
-ROW_RULES_27 = (3.0, 6, 0.75)   # 2.8 공개 전 다른 서버 (구간 초, 전속력 횟수, 최저 속도) — 공개 뒤 지운다
+ROW_LAZY = 0.9            # 하나도 안 저었을 때 속도 (전속력 = 1) — 2.8: 0.75 → 0.85 · 2.82: 0.85 → 0.9
 
 
 def row_rules(guild_id) -> tuple[float, int, float]:
-    """(구간 초, 전속력 횟수, 최저 속도). 2.8 하향은 테스트 서버 먼저."""
-    return (ROW_SEC, ROW_TARGET, ROW_LAZY) if release.preview(guild_id) else ROW_RULES_27
+    """(구간 초, 전속력 횟수, 최저 속도)."""
+    return ROW_SEC, ROW_TARGET, ROW_LAZY
 
 
 def row_step(dist: list[float], me: int, taps: int, rng=random, target: int = ROW_TARGET, lazy: float = ROW_LAZY) -> float:

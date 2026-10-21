@@ -116,12 +116,11 @@ class Fishing(commands.Cog):
 
     # ───────────── 화면 ─────────────
     async def _pond_embed(self, user, s: dict, note: str = "") -> discord.Embed:
-        now = int(time.time())
         lv = f"`낚시` **Lv.{s['level']}** {ui.bar(s['xp'], s['need'], 8)} {s['xp']}/{s['need']}"
         bag = f"`어망` **{s['bag']}/{BAG_MAX}** · `오늘 거래` **{s['used']}/{s['limit']}**포인트"
         if s.get("cast_ts"):
             body = (f"> 🎙️ *\"찌가 물 위에 둥둥… 입질이 오면 이 메시지가 바뀌어요!\"*\n\n"
-                    f"🎣 던진 지 **{_clock(now - s['cast_ts'])}** · 입질은 10초 ~ 10분 사이 랜덤\n"
+                    f"🎣 **<t:{s['cast_ts']}:R>** 던짐 · 입질은 10초 ~ 10분 사이 랜덤\n"   # 2.82: 디스코드 상대시간이라 저절로 늘어난다
                     f"⏳ 오래 기다린 입질일수록 희귀한 물고기가 걸려요")
             color = ui.DARK
         else:
@@ -298,7 +297,7 @@ class Fishing(commands.Cog):
             Page("🍽️", "먹이기", self._p_feed, "유망주 · 선발 선수에게 하루 한 마리"),
             Page("🍳", "요리", self._p_cook, "24시간 효과"),
             Page("🐠", "수족관", self._p_aquarium, f"최대 {AQUARIUM_MAX}마리 전시"),
-            Page("📖", "도감", self._p_dex, "30종 모으기"),
+            Page("📖", "도감", self._p_dex, "40종 모으기"),
             Page("🏆", "주간 최대어", self._p_weekly, "이번 주 가장 큰 물고기"),
             Page("🛒", "낚시 상점", self._p_shop, "미끼 · 낚싯대 · 아이스박스"),
         ]
@@ -609,7 +608,7 @@ class Fishing(commands.Cog):
     async def aquarium_cmd(self, interaction: discord.Interaction):
         await self._open_page(interaction, "수족관")
 
-    @app_commands.command(name="도감", description="📖 물고기 도감 — 30종 모으기")
+    @app_commands.command(name="도감", description="📖 물고기 도감 — 40종 모으기")
     async def dex_cmd(self, interaction: discord.Interaction):
         await self._open_page(interaction, "도감")
 
