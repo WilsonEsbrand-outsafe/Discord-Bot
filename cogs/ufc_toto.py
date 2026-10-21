@@ -1,8 +1,10 @@
 # cogs/ufc_toto.py — UFC 경기·배당 조회와 자동 정산. 목록·베팅·내역 화면은 /토토 · /내베팅 (cogs/toto.py)
 import os
+import re
 import time
 import logging
-from datetime import datetime, timezone
+import unicodedata
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 import discord
@@ -18,6 +20,62 @@ ODDS_API_KEY   = os.getenv("ODDS_API_KEY", "")
 ODDS_API_URL   = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/odds/"
 SCORES_API_URL = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/scores/"
 MMA_COLOR      = 0xE8003D
+
+
+# 2.9.1: Odds API 의 MMA 는 UFC · PFL · ONE 등이 섞여 온다 (단체 이름이 없다). ESPN 의 UFC 대진표(무료 · 키 없음)에
+# 나온 선수가 뛰는 경기만 남긴다. 대진표를 못 받아 오면 마지막으로 받은 명단을 쓰고, 한 번도 못 받았으면 아무 경기도 안 보인다.
+UFC_CARD_URL = "https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard"
+UFC_CARD_DAYS = 30
+UFC_CARD_TTL = 6 * 3600
+_ufc_cache: dict = {"names": set(), "ts": 0.0}
+
+
+def _norm(name: str) -> str:
+    """'José Aldo Jr.' → 'jose aldo' — 악센트 · 점 · 대소문자 · Jr 차이를 없앤다."""
+    s = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[^a-z ]+", " ", s.replace("-", " "))
+    return " ".join(w for w in s.split() if w not in ("jr", "sr", "ii", "iii"))
+
+
+def _name_keys(name: str) -> set[str]:
+    """이름 하나 → 비교용 키 (전체 이름 · '성 + 이름 첫 글자')."""
+    n = _norm(name).split()
+    if not n:
+        return set()
+    return {" ".join(n), f"{n[-1]} {n[0][0]}"}
+
+
+def is_ufc_fight(fight: dict, ufc_names: set[str]) -> bool:
+    return any(_name_keys(fight[k]) & ufc_names for k in ("home", "away"))
+
+
+async def _fetch_ufc_names() -> set[str]:
+    now = time.monotonic()
+    if _ufc_cache["ts"] and now - _ufc_cache["ts"] < UFC_CARD_TTL:
+        return _ufc_cache["names"]
+    today = datetime.now(timezone.utc)
+    params = {"dates": f"{(today - timedelta(days=1)):%Y%m%d}-{(today + timedelta(days=UFC_CARD_DAYS)):%Y%m%d}", "limit": 100}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(UFC_CARD_URL, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    log.warning(f"[UFC] ESPN 대진표 응답 오류: {resp.status}")
+                    return _ufc_cache["names"]
+                data = await resp.json()
+    except Exception as e:
+        log.warning(f"[UFC] ESPN 대진표 조회 실패: {e}")
+        return _ufc_cache["names"]
+    names: set[str] = set()
+    for ev in data.get("events", []):
+        for comp in ev.get("competitions", []):
+            for c in comp.get("competitors", []):
+                a = c.get("athlete") or {}
+                for n in (a.get("displayName"), a.get("fullName"), c.get("displayName")):
+                    if n:
+                        names |= _name_keys(n)
+    if names:
+        _ufc_cache.update(names=names, ts=now)
+    return _ufc_cache["names"]
 
 
 FIGHTS_CACHE_TTL = 300  # 초 — 짧은 시간 내 중복 호출로 크레딧 낭비 방지
@@ -77,11 +135,13 @@ async def _fetch_fights() -> list[dict]:
 
 
 async def upcoming_fights() -> list[dict]:
-    """베팅 가능한(시작 전) UFC 경기. API 키가 없거나 조회에 실패하면 빈 목록."""
+    """베팅 가능한(시작 전) UFC 경기 — 다른 MMA 단체 경기는 뺀다. API 키가 없거나 조회에 실패하면 빈 목록."""
     if not ODDS_API_KEY:
         return []
     try:
-        return [f for f in await _fetch_fights() if not fight_started(f)]
+        fights = [f for f in await _fetch_fights() if not fight_started(f)]
+        ufc = await _fetch_ufc_names() if fights else set()
+        return [f for f in fights if is_ufc_fight(f, ufc)]
     except Exception as e:
         log.warning(f"[UFC] 경기 조회 실패: {e}")
         return []

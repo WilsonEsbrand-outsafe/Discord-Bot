@@ -43,9 +43,9 @@ def fish_line(f: dict, price: bool = True) -> str:
 class CastView(discord.ui.View):
     """낚시터 화면의 버튼 — 찌 던지기(미끼 고르기) · 찌 걷기 · 낚시 메뉴. 연 사람만."""
 
-    def __init__(self, cog: "Fishing", user, state: dict):
+    def __init__(self, cog: "Fishing", user, state: dict, keep: bool = False):
         super().__init__(timeout=900)
-        self.cog, self.user = cog, user
+        self.cog, self.user, self.keep = cog, user, keep   # keep: 이 메시지가 잡은 결과면 다시 던질 때 남겨 둔다 (2.9.1)
         if state.get("cast_ts"):
             b = discord.ui.Button(label="찌 걷기", emoji="🪝", style=discord.ButtonStyle.secondary)
             b.callback = self._pull
@@ -71,7 +71,7 @@ class CastView(discord.ui.View):
 
     def _cast(self, bait):
         async def cb(interaction: discord.Interaction):
-            await self.cog.do_cast(interaction, bait)
+            await self.cog.do_cast(interaction, bait, self.keep)
         return cb
 
     async def _pull(self, interaction: discord.Interaction):
@@ -161,7 +161,7 @@ class Fishing(commands.Cog):
         await self._show_pond(interaction, edit=False)
 
     # ───────────── 던지기 · 입질 · 잡기 ─────────────
-    async def do_cast(self, interaction: discord.Interaction, bait):
+    async def do_cast(self, interaction: discord.Interaction, bait, keep: bool = False):
         user = interaction.user
         r = await self.db.cast(user.id, int(time.time()), bait, interaction.channel_id or 0)
         if not r["ok"]:
@@ -170,7 +170,13 @@ class Fishing(commands.Cog):
             return await interaction.response.send_message(msg, ephemeral=True)
         note = "🪱 일반 미끼를 끼웠어요 — 이번엔 잡템이 덜 걸려요." if bait == "bait" else \
             "✨ 고급 미끼를 끼웠어요 — 이번엔 희귀한 물고기가 더 잘 걸려요." if bait == "bait_gold" else ""
-        await self._show_pond(interaction, note)
+        # 2.9.1: 잡은 결과 메시지는 그대로 두고(버튼만 뗀다) 새 낚시터를 아래에 연다 — 뭐가 걸렸는지 채널에 남는다
+        await self._show_pond(interaction, note, edit=not keep)
+        if keep:
+            try:
+                await interaction.message.edit(view=None)
+            except discord.HTTPException:
+                pass
         msg = await interaction.original_response()
         await self.db.set_message(user.id, msg.id)
         self._schedule({"user_id": user.id, "bite_ts": r["bite_ts"], "window": r["window"],
@@ -254,7 +260,7 @@ class Fishing(commands.Cog):
             return await interaction.response.send_message("🎣 물에 던진 찌가 없어요. `/낚시`로 던져 보세요.", ephemeral=True)
         e = self._result_card(user, r)
         s = await self.db.status(user.id, int(time.time()))
-        await interaction.response.edit_message(embed=e, view=CastView(self, user, s))
+        await interaction.response.edit_message(embed=e, view=CastView(self, user, s, keep=r["kind"] in ("fish", "junk")))
 
     def _result_card(self, user, r: dict) -> discord.Embed:
         kind = r["kind"]
@@ -298,6 +304,7 @@ class Fishing(commands.Cog):
             Page("🍳", "요리", self._p_cook, "24시간 효과"),
             Page("🐠", "수족관", self._p_aquarium, f"최대 {AQUARIUM_MAX}마리 전시"),
             Page("📖", "도감", self._p_dex, "40종 모으기"),
+            Page("📜", "낚시 기록", self._p_log, "최근에 낚은 물고기 15마리"),
             Page("🏆", "주간 최대어", self._p_weekly, "이번 주 가장 큰 물고기"),
             Page("🛒", "낚시 상점", self._p_shop, "미끼 · 낚싯대 · 아이스박스"),
         ]
@@ -515,6 +522,13 @@ class Fishing(commands.Cog):
             have = sum(k in dex for k in BY_GRADE[g])
             parts.append(f"**{GRADE_EMOJI[g]} {GRADES[g]}** {have}/{len(BY_GRADE[g])}\n" + "\n".join(cells))
         return ui.card(f"📖 도감 · {len(dex)}/{len(FISH)}", "\n\n".join(parts), ui.INFO, view.user, SECTION)
+
+    async def _p_log(self, view: HubView) -> discord.Embed:
+        log = await self.db.recent(view.user.id)
+        lines = [f"<t:{f['ts']}:R> {fish_line(f, price=False)}" for f in log]
+        return ui.card("📜 낚시 기록", "\n".join(lines) or "아직 낚은 물고기가 없어요. `/낚시`로 던져 보세요!",
+                       ui.INFO if lines else ui.EVEN, view.user, SECTION).set_footer(
+            text="최근 15마리 · 판 물고기 · 보낸 물고기도 남아요")
 
     async def _p_weekly(self, view: HubView) -> discord.Embed:
         top = await self.db.weekly_top(int(time.time()))

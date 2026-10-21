@@ -84,7 +84,7 @@ def test_flow():
         inter = _inter(user, log)
         await CT.Tutorial.tutorial.callback(cog, inter)                 # 새 유저 → 입문 튜토리얼
         kind, e, v = log[-1]
-        assert isinstance(v, CT.OnboardingView) and "구단 만들기" in e.title and "1/7" in e.description
+        assert isinstance(v, CT.OnboardingView) and "구단 만들기" in e.title and "1/8" in e.description
         nxt = next(c for c in v.children if c.label == "다음")
         assert nxt.disabled                                             # 실습 전에는 다음으로 못 감
         # ① 구단: 이름 모달 → 창단 + 자동 설정
@@ -105,7 +105,7 @@ def test_flow():
         await CT.Tutorial.tutorial.callback(cog, _inter(user, log))
         assert "선수단" in log[-1][1].title
         v = log[-1][2]
-        # ② 자동편성 → ③ 유망주(설명만) → ④ 출석 → ⑤ 연습 경기 → ⑥ 둘러보기 → ⑦ 상자
+        # ② 자동편성 → ③ 유망주(설명만) → ④ 출석 → ⑤ 연습 경기 → ⑥ 둘러보기 → ⑦ 알림 설정 → ⑧ 상자
         bal0 = await cog.db.get_balance(U)
         for want in ("자동편성", None, "출석", "경기", None):
             if want:
@@ -117,6 +117,13 @@ def test_flow():
         assert await cog.db.get_balance(U) == bal0 + CT.ATTEND_REWARD
         team = await cog.clubs.get_team(U)
         assert team["wins"] + team["draws"] + team["losses"] == 1                 # 연습 경기는 내 전적에만
+        # ⑦ 알림 설정 (2.9.1): 버튼 → /알림설정과 같은 토글 화면 (처음엔 모두 꺼짐)
+        assert "알림 설정" in log[-1][1].title and "모두 꺼져" in log[-1][1].description
+        from cogs.notify import NotifyToggleView
+        await next(c for c in v.children if c.label == "알림 설정하기").callback(_inter(user, log))
+        assert isinstance(log[-1][2], NotifyToggleView) and not any(log[-1][2].settings.values())
+        await next(c for c in v.children if c.label == "다음").callback(_inter(user, log))
+        v = log[-1][2]
         assert "마무리" in log[-1][1].title
         await v.children[0].callback(_inter(user, log))                           # 상자 열기
         kind, e, v = log[-1]

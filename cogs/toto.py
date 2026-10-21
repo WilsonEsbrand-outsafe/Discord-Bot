@@ -17,7 +17,7 @@ from services.economy_db import EconomyDB
 from services.notifier import send_notify
 from services import ui
 from services.ufc_db import UfcDB
-from cogs.ufc_toto import place_ufc_bet, upcoming_fights
+from cogs.ufc_toto import MMA_COLOR, place_ufc_bet, upcoming_fights
 from typing import Optional
 
 def _fmt_ts(ts: int) -> str:
@@ -440,8 +440,9 @@ class Toto(commands.Cog):
             f = game["fight"]
             picks = [(f["home"], f["home"], f["home_odds"]), (f["away"], f["away"], f["away_odds"])]
             title = f"🥊 {f['home']} vs {f['away']}"
-        e = ui.card(title, f"킥오프 <t:{game['ts']}:f> (<t:{game['ts']}:R>)\n\n"
-                    + "\n".join(f"• {label} **{o:.2f}배**" for _, label, o in picks)
+        start = "킥오프" if game["kind"] == "soccer" else "시작"
+        e = ui.card(title, f"{start} <t:{game['ts']}:f> (<t:{game['ts']}:R>)\n\n"
+                    + "\n".join(f"• {label} `{o:.2f}배`" for _, label, o in picks)
                     + "\n\n아래 버튼을 누르고 금액을 입력하면 바로 베팅됩니다. 배당은 베팅 순간 고정돼요.",
                     ui.INFO, interaction.user, SECTION)
         await interaction.response.send_message(embed=e, view=PickView(self, game, picks), ephemeral=True)
@@ -455,10 +456,11 @@ class Toto(commands.Cog):
         live = await self.db.toto_list_in_progress(now_ts, limit=10)
         fights = (await upcoming_fights())[:8]
 
-        games, options, parts = {}, [], []
+        # 2.9.1 가독성: 종목마다 임베드를 따로 · 날짜별로 묶고 · 배당은 `코드` 칸으로 한눈에
+        games, options, embeds = {}, [], []
         n = 0
         if rows:
-            lines = []
+            items = []
             for match_id, home, away, kickoff_ts, base_h, base_d, base_a in rows:
                 n += 1
                 o = await self._odds(match_id, base_h, base_d, base_a)
@@ -466,31 +468,30 @@ class Toto(commands.Cog):
                                           "ts": int(kickoff_ts)}
                 options.append(discord.SelectOption(label=f"{n}. {home} vs {away}"[:100], value=f"s:{match_id}",
                                                     emoji="⚽", description=_short_ts(kickoff_ts)))
-                lines.append(f"`{n}` **{home} vs {away}** · <t:{int(kickoff_ts)}:R>\n"
-                             f"　 홈 **{o['1']}** · 무 **{o['X']}** · 원정 **{o['2']}**")
-            parts.append("**⚽ 축구**\n" + "\n".join(lines))
+                items.append((int(kickoff_ts), f"`{n:>2}` <t:{int(kickoff_ts)}:t> **{home} vs {away}**\n"
+                                                f"　 홈 `{o['1']:.2f}` · 무 `{o['X']:.2f}` · 원정 `{o['2']:.2f}`"))
+            embeds.append(ui.card("⚽ 축구", _by_day(items), ui.INFO, interaction.user, SECTION))
         if fights:
-            lines = []
+            items = []
             for f in fights:
                 n += 1
                 ts = int(datetime.fromisoformat(f["commence_time"].replace("Z", "+00:00")).timestamp())
                 games[f"u:{f['event_id']}"] = {"kind": "ufc", "fight": f, "ts": ts}
                 options.append(discord.SelectOption(label=f"{n}. {f['home']} vs {f['away']}"[:100],
                                                     value=f"u:{f['event_id']}", emoji="🥊", description=_short_ts(ts)))
-                lines.append(f"`{n}` **{f['home']} vs {f['away']}** · <t:{ts}:R>\n"
-                             f"　 {f['home']} **{f['home_odds']:.2f}** · {f['away']} **{f['away_odds']:.2f}**")
-            parts.append("**🥊 UFC**\n" + "\n".join(lines))
+                items.append((ts, f"`{n:>2}` <t:{ts}:t> **{f['home']} vs {f['away']}**\n"
+                                  f"　 {f['home']} `{f['home_odds']:.2f}` · {f['away']} `{f['away_odds']:.2f}`"))
+            embeds.append(ui.card("🥊 UFC", _by_day(items), MMA_COLOR))
         if live:
-            parts.append("**🔴 진행 중** (베팅 마감 · 끝나면 자동 정산)\n" + "\n".join(
-                f"**{home} vs {away}** · 킥오프 <t:{int(k)}:R>" for _, home, away, k, *_ in live))
+            embeds.append(ui.card("🔴 진행 중", "\n".join(
+                f"**{home} vs {away}** · 킥오프 <t:{int(k)}:R>" for _, home, away, k, *_ in live)
+                + "\n-# 베팅 마감 · 끝나면 자동 정산", ui.LOSE))
 
         if not options:
-            e = ui.card("🎰 토토", "지금은 베팅할 수 있는 경기가 없어요." + ("\n\n" + parts[0] if parts else ""),
-                        ui.EVEN, interaction.user, SECTION)
-            return await interaction.followup.send(embed=e)
-        e = ui.card("🎰 토토", "\n\n".join(parts), ui.INFO, interaction.user, SECTION)
-        e.set_footer(text="아래 메뉴에서 경기를 고르면 바로 베팅 · 배당은 베팅 순간 고정 · 내역·취소는 /내베팅")
-        await interaction.followup.send(embed=e, view=GameMenu(self, games, options[:25]))
+            e = ui.card("🎰 토토", "지금은 베팅할 수 있는 경기가 없어요.", ui.EVEN, interaction.user, SECTION)
+            return await interaction.followup.send(embeds=[e] + embeds)
+        embeds[-1].set_footer(text="아래 메뉴에서 번호를 골라 바로 베팅 · 배당은 베팅 순간 고정 · 내역·취소는 /내베팅")
+        await interaction.followup.send(embeds=embeds, view=GameMenu(self, games, options[:25]))
 
     @app_commands.command(name="내베팅", description="축구·UFC 베팅 내역 — 경기 시작 전 축구 베팅은 여기서 취소")
     async def my_bets(self, interaction: discord.Interaction):
@@ -518,8 +519,8 @@ class Toto(commands.Cog):
                     state = f"🟢 킥오프 <t:{int(kickoff_ts)}:R>"
                     if now_ts < int(kickoff_ts) - 600:
                         cancellable.append((match_id, f"{home} vs {away}", int(amount)))
-                lines.append(f"**{home} vs {away}** · {_pick_name(pick)} · {int(amount):,}원 × {odds}\n　 {state}")
-            parts.append("**⚽ 축구**\n" + "\n".join(lines))
+                lines.append(f"**{home} vs {away}**\n　 {_pick_name(pick)} · `{int(amount):,}원 × {float(odds):.2f}` → {state}")
+            parts.append("### ⚽ 축구\n" + "\n".join(lines))
         if ufc:
             lines = []
             for r in ufc:
@@ -531,8 +532,8 @@ class Toto(commands.Cog):
                     state = f"✅ 적중 **+{pay:,}원**" if r["won"] else "❌ 미적중"
                 else:
                     state = f"🟢 진행 중 · 적중 시 **{int(r['amount'] * r['odds']):,}원**"
-                lines.append(f"**{home} vs {away}** · {r['fighter']} · {r['amount']:,}원 × {r['odds']:.2f}\n　 {state}")
-            parts.append("**🥊 UFC**\n" + "\n".join(lines))
+                lines.append(f"**{home} vs {away}**\n　 {r['fighter']} · `{r['amount']:,}원 × {r['odds']:.2f}` → {state}")
+            parts.append("### 🥊 UFC\n" + "\n".join(lines))
 
         e = ui.card("🧾 내 베팅", "\n\n".join(parts), ui.INFO, user, SECTION)
         e.set_footer(text=f"총 베팅 {total_bet:,}원 · 총 수령 {total_pay:,}원"
@@ -611,6 +612,23 @@ class Toto(commands.Cog):
 
 # ───────────── 화면 구성 요소 ─────────────
 SECTION = "🎰 토토"
+
+
+_WEEKDAY = "월화수목금토일"
+
+
+def _by_day(items: list[tuple[int, str]]) -> str:
+    """[(시각, 줄)] → KST 날짜 머리글(📅 10/22 (수)) 아래로 묶는다. 시각 순서 그대로."""
+    out, last = [], None
+    for ts, line in items:
+        d = dt.datetime.fromtimestamp(int(ts), dt.timezone(dt.timedelta(hours=9)))
+        if d.date() != last:
+            last = d.date()
+            if out:
+                out.append("")
+            out.append(f"📅 **{d.month}/{d.day} ({_WEEKDAY[d.weekday()]})**")
+        out.append(line)
+    return "\n".join(out)
 
 
 def _short_ts(ts: int) -> str:

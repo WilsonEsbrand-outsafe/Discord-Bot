@@ -263,7 +263,7 @@ OB_TEXT = {
              "　👥 아마추어 선수 18명 입단 · 가장 강한 11명 선발\n"
              "　©️ 선발 중 가장 강한 선수를 주장으로 (전력 +1)\n"
              "　📋 기본 포메이션 4-4-2 · 🐣 초보 감독 · 🩹 인턴 트레이너 (무료)\n"
-             "　🔔 DM 알림 기본 ON (`/알림설정`에서 끄기)"),
+             "　🔔 DM 알림은 마무리 전에 골라요"),
     "squad": ("선수는 `/선발` `/포메이션` `/주장`으로 직접 바꿀 수 있지만, **`/자동편성` 한 번**이면 충분해요.\n"
               "새 선수를 얻을 때마다 `/자동편성`을 눌러 주세요. 지금 한번 해 볼까요?"),
     "prospect": (f"🌟 **유망주** = 내가 직접 만드는 선수예요. `/유망주생성` · **{PROSPECT_PRICE:,}원** (처음 7일은 첫 유망주 반값)\n\n"
@@ -284,6 +284,9 @@ OB_TEXT = {
              "🎣 `/낚시` — 기다릴수록 희귀한 물고기 · 팔고, 요리하고, 선수에게 먹이기\n"
              "🏰 `/던전` — 하루 한 번, 내 선발 11명으로 10층 탐험\n"
              "🐣 `/루키미션` — 단계별 미션 보상"),
+    "notify": ("판매 · 정산 · 선수 소식 같은 알림을 **DM**으로 보내 드려요.\n\n"
+               "처음엔 **모두 꺼져 있어요.** 아래 **[알림 설정하기]**를 눌러 받고 싶은 알림만 켜 주세요.\n"
+               "나중에 바꾸고 싶으면 언제든 `/알림설정`."),
     "finish": ("수고했어요! 상자를 열면 입문이 끝나고 모든 명령어가 열려요.\n\n"
                f"🎁 **보상 상자** — 💰 {OB.FINAL_MONEY:,}원 · "
                + " · ".join(f"{ITEMS[k][0]} {ITEMS[k][1]} ×{n}" for k, n in OB.FINAL_ITEMS.items())
@@ -314,6 +317,8 @@ class OnboardingView(discord.ui.View):
         done = replay or key in (row or {}).get("practiced", [])
         if not replay and key in PRACTICE_LABEL and not done:
             self._btn(f"실습하기: {PRACTICE_LABEL[key]}", "🧪", discord.ButtonStyle.success, self._practice)
+        if key == "notify":
+            self._btn("알림 설정하기", "🔔", discord.ButtonStyle.success, self._notify)
         if step > 0:
             self._btn("이전", "◀️", discord.ButtonStyle.secondary, self._move(-1))
         if step < len(OB.STEPS) - 1:
@@ -362,6 +367,13 @@ class OnboardingView(discord.ui.View):
             row = self.row if self.replay else await self.cog.ob.set_step(self.user.id, step)
             await self.show(interaction, step, row=row)
         return cb
+
+    async def _notify(self, interaction: discord.Interaction):
+        """/알림설정과 같은 토글 화면을 나만 보이게 띄운다 (튜토리얼 화면은 그대로)."""
+        from cogs.notify import NotifyToggleView
+        settings = await self.cog.db.get_all_notify(self.user.id)
+        v = NotifyToggleView(self.user, settings, self.cog.db)
+        await interaction.response.send_message(embed=v._make_embed(), view=v, ephemeral=True)
 
     async def _practice(self, interaction: discord.Interaction):
         key = OB.STEP_KEYS[self.step]
@@ -447,7 +459,7 @@ class Tutorial(commands.Cog):
         try:
             await user.send(embed=ui.card("🔔 알림은 여기로 와요",
                                           "선수 판매 · 토토 정산 · 스폰서 만기 같은 소식을 이 DM으로 알려 드려요.\n"
-                                          "`/알림설정`에서 항목별로 끌 수 있어요.", ui.INFO, user, OB_SECTION))
+                                          "`/알림설정`에서 항목별로 켜고 끌 수 있어요.", ui.INFO, user, OB_SECTION))
             return True
         except Exception:
             return False

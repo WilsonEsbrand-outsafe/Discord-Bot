@@ -22,7 +22,7 @@ MARKET_OPEN_HOUR = 9
 MARKET_CLOSE_HOUR = 23
 TICK_SECONDS = 600  # 10분
 
-REAL_SECONDS_PER_MONTH = 2 * 3600  # 2시간 = 1개월
+REAL_SECONDS_PER_MONTH = 4 * 3600  # 4시간 = 1개월 → 실제 이틀에 1살 (2.9.1: 2시간 · 하루에 1살에서 늦춤)
 MONTHS_PER_YEAR = 12
 MONTH_CATCHUP_MAX = 3   # 한 번의 호출에서 진행할 최대 개월 수 (락 점유 시간 상한)
 
@@ -48,15 +48,16 @@ P_UP_MIN, P_UP_MAX = 0.20, 0.80
 # 악재 확률(월)
 ADVERSE_PROB = 0.01
 
-# 성장 확률(월 1회)
+# 성장 확률(월 1회) — 2.9.1: 17~23세에 몰아서 크고 24~29세는 조금씩 (예전엔 28세에 뚝 끊겼다)
 GROWTH_PROB_BY_AGE = [
-    (18, 0.40),  # 17~18 (전성기 전 폭발 성장)
-    (20, 0.35),  # 19~20
-    (22, 0.28),  # 21~22
-    (24, 0.20),  # 23~24
-    (26, 0.12),  # 25~26
-    (28, 0.05),  # 27~28
-    (999, 0.00), # 29+ (성장 없음)
+    (18, 0.40),  # 17~18 (폭발 성장)
+    (20, 0.36),  # 19~20
+    (22, 0.30),  # 21~22
+    (23, 0.22),  # 23
+    (25, 0.14),  # 24~25
+    (27, 0.08),  # 26~27
+    (29, 0.04),  # 28~29
+    (999, 0.00), # 30+ (성장 없음)
 ]
 
 def growth_penalty(gap: int) -> float:
@@ -68,19 +69,25 @@ def growth_penalty(gap: int) -> float:
         return 0.4
     return 0.0
 
-# 은퇴 확률(월)
-def retire_prob(age: int) -> float:
-    if age < 33:
-        return 0.0
+# 노쇠화(해마다 OVR 감소) — 2.9.1: 31세부터 점점 크게 (예전엔 33세부터 0~2라 38세도 전성기와 비슷했다)
+def decline_range(age: int) -> tuple[int, int]:
+    if age <= 30:
+        return 0, 0
+    if age <= 32:
+        return 1, 2
     if age <= 34:
-        return 0.005
-    if age <= 36:
-        return 0.010
-    if age <= 38:
-        return 0.020
-    if age <= 40:
-        return 0.040
-    return 0.080
+        return 1, 3
+    return 2, 4
+
+# 은퇴 확률(월) — 2.9.1: 대부분 33~37세에 은퇴 · 40세에는 반드시 (예전엔 평균 38세, 늦으면 48세까지 뛰었다)
+RETIRE_AGE_MAX = 40
+RETIRE_PROB_BY_AGE = {32: 0.003, 33: 0.012, 34: 0.022, 35: 0.035, 36: 0.05, 37: 0.07, 38: 0.10, 39: 0.15}
+
+
+def retire_prob(age: int) -> float:
+    if age >= RETIRE_AGE_MAX:
+        return 1.0
+    return RETIRE_PROB_BY_AGE.get(age, 0.0)
 
 # ───────────── 선수 뉴스(가격 이벤트) ─────────────
 # 틱마다 ±5% 랜덤워크만 돌면 시장이 밋밋하다. 뉴스는 기준가 자체를 움직여서
@@ -750,6 +757,9 @@ class PlayerMarketDB:
                     """,
                     (_p["player_id"], _p["name"], _p["position"]),
                 )
+            # 2.9.1: 예전엔 아마추어도 하루에 1살씩 먹어 늙고 은퇴할 수 있었다 → 22세 · OVR 50 현역으로 되돌린다
+            con.execute("UPDATE pm_players SET age=22, ovr=50, pot=50, base_value=0, retired=0 "
+                        "WHERE player_id LIKE 'AMT_%' AND (age!=22 OR ovr!=50 OR pot!=50 OR base_value!=0 OR retired!=0)")
 
             # ── 기존 구단주 마이그레이션: clubs 테이블의 모든 유저에게 아마추어 스쿼드 일괄 지급
             _clubs_exists = con.execute(
@@ -1714,8 +1724,9 @@ class PlayerMarketDB:
                     for _ in range(months_due):
                         month_index += 1
 
+                        # 아마추어 더미(AMT_)는 모든 구단이 같이 쓰는 고정 선수라 나이를 먹지 않는다 (2.9.1)
                         players = con.execute(
-                            "SELECT player_id, age, ovr, pot FROM pm_players WHERE retired=0"
+                            "SELECT player_id, age, ovr, pot FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"
                         ).fetchall()
 
                         for pid, age, ovr, pot in players:
@@ -1764,8 +1775,9 @@ class PlayerMarketDB:
                                 age += 1
                                 if age >= 30:
                                     pot = max(ovr, pot - random.randint(1, 3))
-                                if age >= 33:
-                                    ovr = max(1, ovr - random.randint(0, 2))
+                                lo, hi = decline_range(age)
+                                if hi:
+                                    ovr = max(1, ovr - random.randint(lo, hi))
                                     pot = max(ovr, pot)
 
                             new_base = self._compute_base_value(age, ovr, pot)

@@ -319,7 +319,7 @@ def kst_day(ts: int) -> int:
 PROSPECT_PRICE = 5_000_000
 PROSPECT_ID = "YP"               # 선발 명단 · 경기에서 쓰는 선수 ID: YP{번호}
 PROSPECT_START_AGE = 17
-PROSPECT_YEAR = 7 * 86400        # 유망주 1살 = 실제 7일 (일반 선수는 실제 하루에 1살)
+PROSPECT_YEAR = 7 * 86400        # 유망주 1살 = 실제 7일 (일반 선수는 실제 이틀에 1살 — 2.9.1)
 PROSPECT_PRIME_END = 30          # 30세까지 성장 · 31세부터 해마다 OVR -1~3
 PROSPECT_RETIRE_AGE = 40         # 40세가 되면 은퇴
 PROSPECT_DAILY_GROWTH = 20       # 하루(KST)에 성장 경험치가 쌓이는 경기 수 (기록은 매 경기)

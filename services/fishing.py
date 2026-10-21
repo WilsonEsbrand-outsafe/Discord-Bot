@@ -14,7 +14,7 @@ from services.economy_db import EconomyDB, give_item, _kst_day
 GRADES = ("흔함", "보통", "희귀", "영웅", "전설")
 GRADE_EMOJI = ("⚪", "🟢", "🔵", "🟣", "🟡")
 GRADE_POINTS = (1, 1, 2, 3, 5)            # 보내기 때 깎이는 거래 포인트
-GRADE_XP = (5, 10, 25, 60, 150)           # 낚시 경험치 (+ 크기 보너스)
+GRADE_XP = (2, 4, 10, 25, 60)             # 낚시 경험치 (+ 크기 보너스) — 2.9.1: 5 · 10 · 25 · 60 · 150 에서 약 40%로
 GRADE_SIGMA = (0.08, 0.12, 0.18, 0.25, 0.35)   # 싯가 하루 변동 폭 (±)
 # 키 → (이모지, 이름, 등급, 평균 크기 cm, 기준가 원). 기준가 = 평균 크기 · 싯가 1배 · 신선할 때 값.
 FISH = {   # (이모지, 이름, 등급, 평균 cm, 기준가) — 2.82: 기준가 등급별 ×1 · ×2 · ×4 · ×7 · ×12
@@ -87,7 +87,7 @@ SKIP_PIECES = 5               # 스킵권 조각 5개 → 스킵권 1장 (스카
 
 
 def level_need(level: int) -> int:
-    """Lv.N → N+1 경험치. 흔한 물고기 기준 Lv.2 까지 약 16마리."""
+    """Lv.N → N+1 경험치. 흔한 물고기 기준 Lv.2 까지 약 40마리 (2.9.1)."""
     return 80 * level
 
 
@@ -542,6 +542,13 @@ class FishingDB(EconomyDB):
     async def dex(self, uid: int) -> dict[str, tuple[int, float]]:
         return await self._tx(lambda con: {s: (int(c), float(b)) for s, c, b in con.execute(
             "SELECT species, cnt, best FROM fish_dex WHERE user_id=?", (uid,))})
+
+    async def recent(self, uid: int, limit: int = 15) -> list[dict]:
+        """최근에 낚은 물고기 (2.9.1 낚시 기록) — 판 · 보낸 물고기도 남는다. 최신 순."""
+        return await self._tx(lambda con: [
+            {"species": sp, "size": float(size), "ts": int(ts)} for sp, size, ts in con.execute(
+                "SELECT species, size, ts FROM fish_log WHERE user_id=? ORDER BY ts DESC, rowid DESC LIMIT ?", (uid, limit))
+            if sp in FISH])
 
     async def weekly_top(self, now_ts: int, limit: int = 5) -> list[dict]:
         """이번 주 최대어 — 평균 크기 대비 가장 큰 물고기 (종마다 크기가 달라서 비율로 겨룬다). 유저당 1마리."""

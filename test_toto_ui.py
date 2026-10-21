@@ -50,7 +50,9 @@ async def _flow():
     await Toto.toto_list.callback(cog, inter)
     menu = sent[-1]["view"]
     assert [o.value for o in menu.select.options] == ["s:m1", "u:e1"]
-    assert "아스날 vs 첼시" in sent[-1]["embed"].description and "A vs B" in sent[-1]["embed"].description
+    soccer, ufc = sent[-1]["embeds"]                               # 2.9.1: 종목마다 임베드 따로 · 날짜별 묶음
+    assert "아스날 vs 첼시" in soccer.description and "A vs B" in ufc.description and "📅" in soccer.description
+    assert "`1.50`" in ufc.description and ufc.footer.text
 
     # 축구 경기 선택 → 결과 버튼 3개 → [원정승] → 금액 입력 → 베팅 완료 (공개)
     menu.select._values = ["s:m1"]
@@ -101,10 +103,22 @@ async def _flow():
     assert await cog.db.toto_get_match("m2")
 
 
+def test_by_day_and_ufc_filter():
+    base = 1792540800   # 2026-10-21 00:00 KST
+    text = ct._by_day([(base + 3600, "a"), (base + 7200, "b"), (base + 86400 + 60, "c")])
+    assert text.split("\n") == ["📅 **10/21 (수)**", "a", "b", "", "📅 **10/22 (목)**", "c"]
+    from cogs.ufc_toto import _name_keys, is_ufc_fight
+    names = _name_keys("José Aldo Jr.") | _name_keys("Alex Pereira")
+    assert is_ufc_fight({"home": "Jose Aldo", "away": "X"}, names)                    # 악센트 · Jr 무시
+    assert is_ufc_fight({"home": "Patricio Freire", "away": "A. Pereira"}, names)     # 이름 첫 글자만
+    assert not is_ufc_fight({"home": "Patricio Freire", "away": "Usman Nurmagomedov"}, names)   # 다른 단체
+
+
 def test_flow():
     asyncio.run(_flow())
 
 
 if __name__ == "__main__":
+    test_by_day_and_ufc_filter()
     test_flow()
     print("OK: toto ui")
