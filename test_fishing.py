@@ -259,7 +259,7 @@ def test_screens():
     import cogs.fishing as cf
     cog = cf.Fishing.__new__(cf.Fishing)
     cog.db, cog.clubs, cog._tasks = F.FishingDB(), cdb.ClubDB(), {}
-    cog.bot = SimpleNamespace(get_user=lambda i: None)
+    cog.bot = SimpleNamespace(get_user=lambda i: None, get_channel=lambda i: None)
     user = SimpleNamespace(id=41, display_name="낚시왕", display_avatar=SimpleNamespace(url="https://x/a.png"))
 
     async def flow():
@@ -280,6 +280,10 @@ def test_screens():
         assert [c.label for c in cv.children] == ["던지기", "일반 미끼로 (2)", "어망 · 메뉴"]
         for title in ("어망", "요리", "수족관", "도감"):   # 2.82 바로가기 명령어가 여는 페이지
             assert any(p.title == title for p in view.pages), title
+        dm = cog._bite_dm({"channel_id": 5, "message_id": 6, "bite_ts": T0, "window": 30}, user)   # 2.82 입질 DM
+        assert "입질" in dm.title and "/5/6" in dm.description
+        from services.notifier import NOTIFY_EVENTS
+        assert "낚시_입질" in NOTIFY_EVENTS and len(NOTIFY_EVENTS) <= 15   # /알림설정 버튼 3개씩 5줄 한도
         me = await cog.market_embed(user)
         assert me.description.count("원") == 30
     run(flow())

@@ -12,12 +12,13 @@ from discord.ext import commands
 from cogs.economy import ITEM_HANDLERS
 from services import ui
 from services.club_db import ClubDB
-from services.economy_db import ITEM_PRICES, ITEMS, SHOP_ONE_ONLY, give_item
+from services.economy_db import ITEM_PRICES, ITEMS, SHOP_ONE_ONLY, EconomyDB, give_item
 from services.fishing import (
     AQUARIUM_MAX, BAG_MAX, BY_GRADE, CATCH_WINDOW, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES,
     SKIP_PIECES, TRADE_DAILY, fish_name, grade_odds, level_need, odds_line,
 )
 from services.hub import HubView, Page
+from services.notifier import send_notify
 
 SECTION = "🎣 낚시터"
 SHOP = {k: ITEM_PRICES[k] for k in ("bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox")}   # /아이템상점과 같은 가격
@@ -97,6 +98,7 @@ class Fishing(commands.Cog):
         self.bot = bot
         self.db = FishingDB()
         self.clubs = ClubDB()
+        self.econ = EconomyDB()   # 2.82 🎣 입질 DM (/알림설정 "낚시 입질")
         self._tasks: dict[int, asyncio.Task] = {}
 
     async def cog_load(self):
@@ -212,6 +214,7 @@ class Fishing(commands.Cog):
                 await msg.edit(embed=e, view=ReelView(self))
             except discord.HTTPException:
                 pass
+            await send_notify(self.bot, self.econ, uid, "낚시_입질", self._bite_dm(c, user))
             await asyncio.sleep(max(0, c["bite_ts"] + c["window"] - time.time()) + 1)
             s = await self.db.status(uid, int(time.time()))
             if s.get("message_id") != c["message_id"]:
@@ -230,6 +233,12 @@ class Fishing(commands.Cog):
         finally:
             if self._tasks.get(c["user_id"]) is asyncio.current_task():
                 self._tasks.pop(c["user_id"], None)
+
+    def _bite_dm(self, c: dict, user) -> discord.Embed:
+        guild = getattr(self.bot.get_channel(c["channel_id"]), "guild", None)
+        link = f"https://discord.com/channels/{guild.id if guild else '@me'}/{c['channel_id']}/{c['message_id']}"
+        return ui.card("🎣 입질이 왔어요!", f"⏱️ <t:{c['bite_ts'] + c['window']}:R>까지 [잡기!]를 누르세요.\n[👉 낚시터로 가기]({link})",
+                       ui.GOLD, user, SECTION)
 
     async def do_reel(self, interaction: discord.Interaction, from_bite: bool = False):
         user = interaction.user
