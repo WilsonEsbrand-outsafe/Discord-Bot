@@ -53,8 +53,10 @@ async def _flow():
     soccer, ufc = sent[-1]["embeds"]                               # 2.9.1: 종목마다 임베드 따로 · 날짜별 묶음
     assert "아스날 vs 첼시" in soccer.description and "A vs B" in ufc.description and "📅" in soccer.description
     assert "`1.50`" in ufc.description and ufc.footer.text
-    inter.guild_id = 1                                             # 2.9.1 공개 전 서버: 예전 한 장짜리 목록
+    inter.guild_id, rel = 1, ct.release.RELEASE_291_TS             # 2.9.1 공개 전 서버: 예전 한 장짜리 목록
+    ct.release.RELEASE_291_TS = None
     await Toto.toto_list.callback(cog, inter)
+    ct.release.RELEASE_291_TS = rel
     assert "**⚽ 축구**" in sent[-1]["embed"].description and "A vs B" in sent[-1]["embed"].description
     inter.guild_id = ct.release.TEST_GUILD
 

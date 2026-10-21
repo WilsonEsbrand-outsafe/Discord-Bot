@@ -55,8 +55,7 @@ def test_282():
             assert word not in PATCH_NOTES[ver], word
     import release
     keys = {k: ts for k, ts, *_ in NOTICES}
-    assert keys["maint-2.82b"] == keys["patch-2.82b"] < release.MAINTENANCE[0]   # 점검 전에 안내 · 패치노트
-    assert release.MAINTENANCE[1] - release.MAINTENANCE[0] == 180
+    assert keys["maint-2.82b"] == keys["patch-2.82b"]
     assert release.released(release.MAINTENANCE[0])                            # 2.8 은 공개된 그대로
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-2.82b")
     start, end = release.MAINTENANCE
@@ -66,8 +65,22 @@ def test_282():
     assert P.notice_text("patch-2.82", "📢", "x", end) == ("📢", "x")
 
 
+def test_291():
+    import calendar
+    import release
+    for word in ("장부", "체크리스트", "가계부"):
+        assert word not in PATCH_NOTES["2.9.1"], word
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    start, end = release.MAINTENANCE
+    assert keys["maint-2.9.1"] == keys["patch-2.9.1"] == calendar.timegm((2026, 10, 21, 5, 0, 0)) < start   # 14:00 KST
+    assert (start, end) == (calendar.timegm((2026, 10, 21, 5, 15, 0)), calendar.timegm((2026, 10, 21, 5, 20, 0)))
+    assert release.RELEASE_291_TS == start and not release.released_291(start - 1) and release.released_291(start)
+    assert release.preview_291(release.TEST_GUILD, start - 1) and not release.preview_291(1, start - 1)
+
+
 if __name__ == "__main__":
     test_28_content()
     test_embeds()
     test_282()
+    test_291()
     print("OK: patch notes")
