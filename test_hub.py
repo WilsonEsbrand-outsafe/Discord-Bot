@@ -102,6 +102,27 @@ def test_hubs():
         auto = next(c for c in cv.children if getattr(c, "label", "") == "자동편성")
         await auto.callback(_inter(log))
         assert "자동편성" in log[-1][0].title or log[-1][0].title
+        # 2.10.1 🎨 꾸미기 · 설정: 엠블럼(돈 부족 → 충전 후 성공) · 구단명 변경(모달)
+        cv.page = [p.title for p in cv.pages].index("꾸미기 · 설정")
+        await cv.build()
+        emb = next(c for c in cv.children if isinstance(c, CH.discord.ui.Select))
+        emb._values = ["🦁"]
+        await emb.callback(_inter(log))
+        assert (await hubs.clubs.get_team(U)).get("emblem") != "🦁"
+        await hubs.db.add_balance(U, CH.EMBLEM_PRICE)
+        await cv.build()
+        emb = next(c for c in cv.children if isinstance(c, CH.discord.ui.Select))
+        emb._values = ["🦁"]
+        await emb.callback(_inter(log))
+        assert (await hubs.clubs.get_team(U))["emblem"] == "🦁"
+        modals = []
+        mi = _inter(log)
+        mi.response.send_modal = lambda m: asyncio.sleep(0, modals.append(m))
+        await next(c for c in cv.children if getattr(c, "label", "") == "구단명 변경").callback(mi)
+        modals[-1].children[0]._value = "새 이름 FC"
+        await modals[-1].on_submit(_inter(log))
+        assert (await hubs.clubs.get_team(U))["name"] == "새 이름 FC"
+        await hubs.clubs.rename_club(U, "허브 FC")
         # /시장 허브
         await _all_pages(hubs.market_view(USER))
 

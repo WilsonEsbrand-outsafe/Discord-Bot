@@ -182,28 +182,6 @@ class Club(commands.Cog):
         e.set_footer(text="/구단 으로 스쿼드를 보고 /선발 · /포메이션 · /주장 으로 꾸며 보세요")
         await interaction.followup.send(embed=e)
 
-    @app_commands.command(name="구단명변경", description=f"내 구단 이름을 변경합니다. (최대 {CLUB_NAME_MAX}자)")
-    @app_commands.describe(이름="새 구단 이름")
-    async def rename_club(self, interaction: discord.Interaction, 이름: str):
-        await interaction.response.defer()
-        ok, msg = await self.clubs.rename_club(interaction.user.id, 이름)
-        text = f"구단명이 **{이름.strip()}**(으)로 바뀌었습니다." if ok else msg
-        await interaction.followup.send(embed=ui.card("✏️ 구단명 변경" if ok else "❌ 변경 실패", text,
-                                                      ui.WIN if ok else ui.LOSE, interaction.user, "🏟️ 구단"))
-
-    @app_commands.command(name="구단삭제", description="내 구단을 삭제합니다. (돈·선수 카드는 유지)")
-    async def delete_club(self, interaction: discord.Interaction):
-        club = await self.clubs.get_club(interaction.user.id)
-        if not club:
-            return await interaction.response.send_message(_NO_CLUB, ephemeral=True)
-        e = ui.card(
-            f"⚠️ {club['name']} 을(를) 삭제할까요?",
-            "구단 이름·포메이션·선발 명단·전적과 **아마추어 스쿼드**가 사라집니다.\n"
-            "돈과 일반 선수 카드는 그대로 남습니다. 다시 창단해도 창단 보너스는 다시 지급되지 않습니다.",
-            ui.DOOM, interaction.user, "🏟️ 구단",
-        )
-        await interaction.response.send_message(embed=e, view=DeleteConfirm(self, interaction.user.id))
-
     # ───────────── 보기 ─────────────
     @app_commands.command(name="구단", description="구단 정보와 선발 명단을 봅니다. (다른 유저 구단도 가능)")
     @app_commands.describe(유저="볼 구단의 주인 (비우면 내 구단)")

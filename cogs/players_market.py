@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 matplotlib.rcParams["font.family"] = "NanumGothic"
 matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
-import release
 from services import ui
 from services.economy_db import (
     ITEMS, SELL_PRICES, SHOP_DAILY_LIMITS, SHOP_GROUPS, SHOP_ONE_ONLY, SHOP_PRICES, EconomyDB, shop_open,
