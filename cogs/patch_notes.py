@@ -11,10 +11,19 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import release
 from auth import owner_only
 from patch_notes_data import NOTICES, PATCH_NOTES
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
+
+
+def notice_text(key: str, title: str, content, now: int):
+    """점검 안내가 점검이 끝난 뒤에 나가면 '✅ 점검 완료' 안내로 바꿔 보낸다 (봇 재시작이 늦은 경우)."""
+    m = release.MAINTENANCE
+    if key.startswith("maint-") and m and now >= m[1] and isinstance(content, str):
+        return "✅ 점검 완료 안내", content.replace("점검 중에는 명령어를 쓸 수 없어요.", "점검이 끝났어요. 지금부터 다시 이용할 수 있어요.")
+    return title, content
 
 
 class PatchNotesCog(commands.Cog):
@@ -59,6 +68,7 @@ class PatchNotesCog(commands.Cog):
         now = int(time.time())
         for key, ts, title, content in NOTICES:
             if ts <= now and await asyncio.to_thread(self._claim_notice, key):
+                title, content = notice_text(key, title, content, now)
                 parts = content if isinstance(content, list) else [("", content)]   # [(소제목, 내용), …] 이면 임베드 여러 개
                 es = [discord.Embed(title=f"{title} · {sub}" if sub else title, description=body, color=0xE67E22)
                       for sub, body in parts]

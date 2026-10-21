@@ -58,6 +58,12 @@ def test_282():
     assert keys["maint-2.82"] == keys["patch-2.82"] < release.MAINTENANCE[0]   # 점검 전에 안내 · 패치노트
     assert release.MAINTENANCE[1] - release.MAINTENANCE[0] == 180
     assert release.released(release.MAINTENANCE[0])                            # 2.8 은 공개된 그대로
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-2.82")
+    start, end = release.MAINTENANCE
+    assert P.notice_text("maint-2.82", title, body, start - 60) == (title, body)              # 점검 전: 그대로
+    t2, b2 = P.notice_text("maint-2.82", title, body, end)                                    # 점검 뒤: 점검 완료
+    assert t2 == "✅ 점검 완료 안내" and "점검이 끝났어요" in b2 and "쓸 수 없어요" not in b2
+    assert P.notice_text("patch-2.82", "📢", "x", end) == ("📢", "x")
 
 
 if __name__ == "__main__":
