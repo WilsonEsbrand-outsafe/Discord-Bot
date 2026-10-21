@@ -43,6 +43,19 @@ jobs:
                                  "(SELECT COUNT(*) FROM toto_bets b WHERE b.match_id=m.match_id) FROM toto_matches m "
                                  "WHERE status!='settled' AND kickoff_ts <= strftime('%s','now') ORDER BY kickoff_ts"):
                 print("  ", r)
+            import json, urllib.request, datetime as dt
+            try:   # 2.9.1 UFC 필터가 쓰는 ESPN 대진표 (키 없음 · 무료)
+                d0 = dt.datetime.utcnow()
+                url = ("https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard?limit=100&dates="
+                       f"{(d0 - dt.timedelta(days=1)):%Y%m%d}-{(d0 + dt.timedelta(days=30)):%Y%m%d}")
+                data = json.load(urllib.request.urlopen(url, timeout=10))
+                print("ESPN UFC 대진표:")
+                for ev in data.get("events", []):
+                    fights = [" vs ".join((c.get("athlete") or {}).get("displayName", "?") for c in comp.get("competitors", []))
+                              for comp in ev.get("competitions", [])]
+                    print("  ", ev.get("date"), ev.get("name"), f"{len(fights)}경기:", " / ".join(fights))
+            except Exception as e:
+                print("ESPN 조회 실패:", e)
             import os
             for f in ("data/economy.sqlite3", "data/economy.sqlite3-wal"):
                 if os.path.exists(f):
