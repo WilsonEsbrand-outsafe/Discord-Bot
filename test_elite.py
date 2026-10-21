@@ -75,6 +75,17 @@ async def _flow():
     await db.add_balance(A, price * 10)
     await clubs.buy_elite(A, "ideal", now)
     assert (await clubs.match_team(B))["name"] == "FC2"
+    # 2.10.1 혼자 매각: 낸 돈의 70% · 주인 없음 · 가격은 기본 가격 · 스쿼드 B 였으면 A 로
+    assert (await clubs.sell_elite(B))["reason"] == "none"
+    assert (await clubs.set_squad(A, True))["ok"]
+    paid_a = next(x for x in await clubs.elite_list() if x["key"] == "ideal")["price"]
+    a_bal = await db.get_balance(A)
+    r = await clubs.sell_elite(A)
+    assert r["ok"] and r["pay"] == int(paid_a * 0.7) and await db.get_balance(A) == a_bal + r["pay"]
+    c = next(x for x in await clubs.elite_list() if x["key"] == "ideal")
+    assert c["owner_id"] is None and c["cost"] == price
+    assert (await clubs.match_team(A))["name"] == "FC1"
+    assert await clubs.settle_elite_income(now + 5 * D) == []
 
     # 시설: 레벨마다 비용 · 최대 5 · 효과
     await db.set_balance(A, 0)

@@ -246,6 +246,7 @@ ELITE_CLUBS = {   # key → (엠블럼, 이름, 규모)
     "ruhr": ("🐝", "루르 옐로우", "미드"), "ideal": ("❌", "암스테르담 아이디얼", "미드"),
 }
 ELITE_TAKEOVER = 1.5
+ELITE_SELL_RATE = 0.7   # 2.10.1: 혼자 매각하면 낸 인수 금액의 70% (남이 인수하면 지금 가격 × 1.5 를 받는다)
 # 신규 보호 (2.6): 다른 유저가 상대로 지정할 수 없다 (신규끼리는 가능) · 자동 매칭은 전력이 NEWBIE_GAP 이하로 강할 때만
 NEWBIE_OFFICIAL = 10
 NEWBIE_GAP = 5
@@ -852,6 +853,24 @@ class ClubDB:
             con.execute("UPDATE elite_clubs SET owner_id=?, price=?, bought_ts=?, income_day=? WHERE key=?",
                         (int(user_id), cost, int(now_ts), kst_day(now_ts), key))
             return {"ok": True, "cost": cost, "prev_owner": owner, "balance": bal}
+        return await self._tx(fn)
+
+    async def sell_elite(self, user_id: int) -> dict:
+        """2.10.1 명문 구단 매각 (인수 말고 혼자서): 낸 인수 금액의 ELITE_SELL_RATE 를 받고 주인 없음으로.
+        가격은 규모별 기본 가격으로 돌아가고, 스쿼드 B 를 쓰고 있었으면 A 로. 실패 reason: none(가진 명문 구단 없음)."""
+        def fn(con):
+            row = con.execute("SELECT key, price FROM elite_clubs WHERE owner_id=?", (int(user_id),)).fetchone()
+            if not row or row[0] not in ELITE_CLUBS:
+                return {"ok": False, "reason": "none"}
+            key, paid = row[0], int(row[1])
+            pay = int(paid * ELITE_SELL_RATE)
+            con.execute("UPDATE elite_clubs SET owner_id=NULL, price=?, bought_ts=0 WHERE key=?",
+                        (ELITE_SIZES[ELITE_CLUBS[key][2]][0], key))
+            con.execute("UPDATE clubs SET squad_b=0 WHERE user_id=?", (int(user_id),))
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (pay, int(user_id)))
+            bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0])
+            return {"ok": True, "key": key, "paid": paid, "pay": pay, "balance": bal}
         return await self._tx(fn)
 
     async def settle_elite_income(self, now_ts: int) -> list[dict]:

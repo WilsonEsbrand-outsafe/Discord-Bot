@@ -9,7 +9,7 @@ from discord.ext import commands, tasks
 from services import ui
 from services.management import MgmtDB
 from services.club_db import (
-    ELITE_CLUBS, ELITE_SIZES, ELITE_TAKEOVER, FACILITIES, FACILITY_COSTS, FACILITY_MAX,
+    ELITE_CLUBS, ELITE_SELL_RATE, ELITE_SIZES, ELITE_TAKEOVER, FACILITIES, FACILITY_COSTS, FACILITY_MAX,
     SLOT_GROUP, ClubDB, elite_team, facility_effect,
 )
 
@@ -61,6 +61,41 @@ class BuyConfirm(discord.ui.View):
             embed=ui.card("인수 취소", "아무것도 바뀌지 않았어요.", ui.EVEN, self.user, SECTION), view=None)
 
 
+class SellConfirm(discord.ui.View):
+    """2.10.1 내 명문 구단 혼자 매각 — 낸 인수 금액의 70%."""
+
+    def __init__(self, cog: "Elite", user, club: dict):
+        super().__init__(timeout=120)
+        self.cog, self.user, self.club = cog, user, club
+        self.sell.label = f"{_eok(int(club['price'] * ELITE_SELL_RATE))}원에 매각"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("🙅 구단주만 누를 수 있어요.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="매각", emoji="💸", style=discord.ButtonStyle.danger)
+    async def sell(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        c = self.club
+        r = await self.cog.clubs.sell_elite(self.user.id)
+        if not r["ok"]:
+            return await interaction.response.edit_message(
+                embed=ui.card("❌ 매각 실패", "가진 명문 구단이 없어요.", ui.LOSE, self.user, SECTION), view=None)
+        e = ui.card(f"{c['emblem']} {c['name']} 매각 완료",
+                    f"`받은 돈` **+{r['pay']:,}원** (인수 금액 {r['paid']:,}원의 {ELITE_SELL_RATE:.0%}) · `잔액` **{r['balance']:,}원**\n"
+                    "스쿼드는 **A**(내 구단)로 돌아갔어요. 이제 다른 명문 구단을 인수할 수 있어요.",
+                    ui.WIN, self.user, SECTION)
+        await interaction.response.edit_message(embed=e, view=None)
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(
+            embed=ui.card("매각 취소", "아무것도 바뀌지 않았어요.", ui.EVEN, self.user, SECTION), view=None)
+
+
 class Elite(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -110,7 +145,7 @@ class Elite(commands.Cog):
                              f"　{owner} · 인수 **{_eok(c['cost'])}원** · 하루 +{_eok(c['income'])}원")
             e = ui.card("🏰 명문 구단", "\n".join(lines), ui.GOLD, user, SECTION)
             e.set_footer(text=f"주인 없음은 표시 가격 · 주인 있으면 지금 가격 ×{ELITE_TAKEOVER} (전 주인에게) · "
-                              "한 사람 한 구단 · /명문구단 구단:<이름>")
+                              "한 사람 한 구단 · /명문구단 구단:<이름> · 내 구단은 거기서 매각(낸 돈의 70%)")
             return await interaction.response.send_message(embed=e)
 
         c = next(x for x in clubs if x["key"] == 구단)
@@ -126,7 +161,10 @@ class Elite(commands.Cog):
                     f"`인수 금액` **{c['cost']:,}원**" + (f" (지금 가격 {c['price']:,}원 ×{ELITE_TAKEOVER})" if c["owner_id"] else "")
                     + "\n\n" + "\n".join(rows) + "\n\n-# 선수 능력치는 바뀌지 않아요 (성장 · 노화 · 부상 없음)",
                     ui.INFO, user, SECTION)
-        view = None if c["owner_id"] == user.id else BuyConfirm(self, user, c)
+        mine = c["owner_id"] == user.id
+        if mine:   # 2.10.1: 남이 인수하지 않아도 혼자 매각
+            e.description += f"\n\n💸 매각하면 낸 인수 금액의 **{ELITE_SELL_RATE:.0%}**(**{int(c['price'] * ELITE_SELL_RATE):,}원**)을 받아요."
+        view = SellConfirm(self, user, c) if mine else BuyConfirm(self, user, c)
         await interaction.response.send_message(embed=e, view=view)
 
     @app_commands.command(name="스쿼드", description="경기에 쓸 스쿼드 — A: 내 구단 · B: 내 명문 구단 (비우면 보기)")
