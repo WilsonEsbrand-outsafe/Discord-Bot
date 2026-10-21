@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS, FACILITY_MAX, MANAGERS, MEDICS, PROSPECT_PRICE,
@@ -196,7 +197,7 @@ class Hubs(commands.Cog):
         await self.games_view(interaction.user).send(interaction)
 
     # ───────────── /구단 허브 (2.8 서버 · 내 구단) ─────────────
-    def club_view(self, user, page: int = 0) -> HubView:
+    def club_view(self, user, page: int = 0, guild_id: int | None = None) -> HubView:
         pages = [Page("🏟️", "구단", self._p_club, "선발 명단 · 전력 · 전적"),
                  Page("🌟", "유망주", self._p_prospect, "나만의 선수"),
                  Page("🏗️", "시설", self._p_facility, "경기장 · 훈련장 · 유스 · 메디컬"),
@@ -204,8 +205,9 @@ class Hubs(commands.Cog):
                  Page("⚔️", "전술", self._p_tactics, "기본 전술 · 적응도 · 하프타임 규칙"),
                  Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술"),
                  Page("🎓", "유스", self._p_youth, "입단 테스트 · 훈련 · 판매 · 1군 등록"),
-                 Page("💼", "경영", self._p_mgmt, "관중 수입 · 팬 만족도 · 티켓 가격"),
-                 Page("🎨", "꾸미기 · 설정", self._p_decor, "구단명 · 엠블럼 · 경기장 이름 · 구단 삭제")]
+                 Page("💼", "경영", self._p_mgmt, "관중 수입 · 팬 만족도 · 티켓 가격")]
+        if release.preview_2101(guild_id):   # 2.10.1 (테스트 서버 먼저)
+            pages.append(Page("🎨", "꾸미기 · 설정", self._p_decor, "구단명 · 엠블럼 · 경기장 이름 · 구단 삭제"))
         return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page)
 
     # ───────────── 🎨 꾸미기 · 설정 (2.10.1: /구단명변경 · /구단꾸미기 · /구단삭제 를 여기로) ─────────────

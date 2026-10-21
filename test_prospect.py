@@ -271,12 +271,16 @@ async def _flow():
     assert (await clubs.retire_number(A, new["id"], now))["reason"] == "done"
     assert (await clubs.retire_number(B, new["id"], now))["reason"] == "none"     # 남의 선수
     await cp.Prospect.show.callback(cog, inter, None)
+    assert not sent[-1].get("view")                                              # 2.10.1 공개 전 서버: 예전 화면
+    inter.guild_id = release.TEST_GUILD                                          # 테스트 서버는 2.10.1 화면
+    await cp.Prospect.show.callback(cog, inter, None)
+    inter.guild_id = None
     assert "명예의 전당" in sent[-1]["embed"].fields[-1].name and sent[-1]["embed"].fields[-1].value.count("🏅") == 2
     # 2.10.1 /유망주 하나로: 현역이 없으면 포지션 메뉴 → 입력창, 영구결번 안 한 은퇴 선수는 메뉴로
     panel = sent[-1]["view"]
     assert isinstance(panel, cp.ProspectPanel) and panel.pos and [o.value for o in panel.number.options] == [str(r2["id"])]
     modals = []
-    pi = SimpleNamespace(guild_id=None, user=inter.user, response=SimpleNamespace(send_modal=lambda m: noop(modals.append(m)),
+    pi = SimpleNamespace(guild_id=release.TEST_GUILD, user=inter.user, response=SimpleNamespace(send_modal=lambda m: noop(modals.append(m)),
                                                                                 send_message=rec, edit_message=rec))
     panel.pos._values = ["CM"]
     await panel._create(pi)

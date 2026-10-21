@@ -14,7 +14,6 @@ edb.DB_PATH = cdb.DB_PATH = Path(tempfile.mkdtemp()) / "t.sqlite3"
 
 import cogs.sponsor as cs  # noqa: E402
 import services.sponsor_db as sdb  # noqa: E402
-sdb.CLOSED = False   # 2.10.1 내린 상태(CLOSED)는 test_closed 에서 따로
 from cogs.sponsor import Sponsor  # noqa: E402
 
 NOW = int(time.time()) - 400 * 86400   # 과거에 맺은 계약 — 명령어 화면에선 전부 만기
@@ -164,37 +163,21 @@ if __name__ == "__main__":
 
 
 def test_closed_2101():
-    """2.10.1: 내린 동안은 명령어가 없고 자동 재계약도 안 한다 · 진행 중 계약은 만기에 그대로 정산."""
+    """2.10.1: 공개(RELEASE_2101_TS) 뒤엔 자동 재계약을 하지 않고 만기 정산만 한다 · 명령어는 release.LEGACY_2101."""
     import asyncio
+    import release
     db = sdb.SponsorDB()
     W = 9_101
 
     async def flow():
         await db.add_balance(W, 10_000_000)
         assert (await db.open(W, "bank", 1, 5_000_000, NOW, auto=True))["ok"]
-        sdb.CLOSED = True
+        saved, release.RELEASE_2101_TS = release.RELEASE_2101_TS, NOW
         try:
             res = (await db.settle(NOW + D, W))[W]["done"]
         finally:
-            sdb.CLOSED = False
+            release.RELEASE_2101_TS = saved
         assert len(res) == 1 and not res[0]["renewed"] and res[0]["payout"] > 5_000_000
         assert await db.active(W) == []
     asyncio.run(flow())
-
-    class Tree:
-        removed = []
-        def remove_command(self, name):
-            self.removed.append(name)
-
-    class Bot:
-        tree = Tree()
-        async def add_cog(self, cog):
-            pass
-    sdb.CLOSED = True
-    real = cs.Sponsor
-    cs.Sponsor = lambda bot: None
-    try:
-        asyncio.run(cs.setup(Bot()))
-    finally:
-        cs.Sponsor, sdb.CLOSED = real, False
-    assert Bot.tree.removed == ["스폰서", "스폰서계약"]
+    assert {"스폰서", "스폰서계약"} <= release.LEGACY_2101

@@ -6,11 +6,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import release
 from services import ui
 from services.management import MgmtDB
 from services.club_db import (
-    ELITE_CLUBS, ELITE_SELL_RATE, ELITE_SIZES, ELITE_TAKEOVER, FACILITIES, FACILITY_COSTS, FACILITY_MAX,
-    SLOT_GROUP, ClubDB, elite_team, facility_effect,
+    ELITE_CLUBS, ELITE_SELL_RATE, ELITE_SIZES, ELITE_TAKEOVER, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS,
+    FACILITY_MAX, SLOT_GROUP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, elite_team, facility_effect,
 )
 
 SECTION = "🏟️ 구단"
@@ -162,9 +163,10 @@ class Elite(commands.Cog):
                     + "\n\n" + "\n".join(rows) + "\n\n-# 선수 능력치는 바뀌지 않아요 (성장 · 노화 · 부상 없음)",
                     ui.INFO, user, SECTION)
         mine = c["owner_id"] == user.id
-        if mine:   # 2.10.1: 남이 인수하지 않아도 혼자 매각
+        sell = mine and release.preview_2101(interaction.guild_id)   # 2.10.1 혼자 매각 (테스트 서버 먼저)
+        if sell:   # 2.10.1: 남이 인수하지 않아도 혼자 매각
             e.description += f"\n\n💸 매각하면 낸 인수 금액의 **{ELITE_SELL_RATE:.0%}**(**{int(c['price'] * ELITE_SELL_RATE):,}원**)을 받아요."
-        view = SellConfirm(self, user, c) if mine else BuyConfirm(self, user, c)
+        view = SellConfirm(self, user, c) if sell else (None if mine else BuyConfirm(self, user, c))
         await interaction.response.send_message(embed=e, view=view)
 
     @app_commands.command(name="스쿼드", description="경기에 쓸 스쿼드 — A: 내 구단 · B: 내 명문 구단 (비우면 보기)")
@@ -220,6 +222,40 @@ class Elite(commands.Cog):
         e = ui.card(title, "\n".join(lines), color, user, SECTION)
         e.set_footer(text="/시설 업그레이드:<시설> · 시설은 구단을 지워도 남아요")
         await interaction.response.send_message(embed=e)
+
+    # ───────────── 꾸미기 (2.10.1: /구단 화면으로 옮김 — 공개 전까지 다른 서버에만, release.LEGACY_2101) ─────────────
+    @app_commands.command(name="구단꾸미기",
+                          description=f"엠블럼({EMBLEM_PRICE // 10_000:,}만원) · 경기장 이름({STADIUM_PRICE // 10_000:,}만원) 바꾸기")
+    @app_commands.describe(엠블럼="구단 이름 앞에 붙는 엠블럼", 경기장="경기장 이름 (경기 중계에 나와요)")
+    @app_commands.choices(엠블럼=[app_commands.Choice(name=e, value=e) for e in EMBLEMS])
+    async def decorate(self, interaction: discord.Interaction, 엠블럼: Optional[str] = None,
+                       경기장: Optional[app_commands.Range[str, 1, STADIUM_NAME_MAX]] = None):
+        user = interaction.user
+        if not 엠블럼 and not 경기장:
+            team = await self.clubs.get_team(user.id)
+            if not team:
+                return await interaction.response.send_message(_NO_CLUB, ephemeral=True)
+            e = ui.card("🎨 구단 꾸미기",
+                        f"`엠블럼` {team.get('emblem') or '없음'} · {EMBLEM_PRICE:,}원\n"
+                        f"`경기장` {team.get('stadium') or '없음'} · {STADIUM_PRICE:,}원\n\n"
+                        "`/구단꾸미기 엠블럼: 경기장:`으로 바꿀 수 있어요.", ui.INFO, user, SECTION)
+            return await interaction.response.send_message(embed=e, ephemeral=True)
+        await interaction.response.defer()
+        done, fail = [], []
+        for col, value, label in (("emblem", 엠블럼, "엠블럼"), ("stadium", (경기장 or "").strip() or None, "경기장")):
+            if not value:
+                continue
+            r = await self.clubs.decorate(user.id, col, value)
+            if r["ok"]:
+                done.append(f"`{label}` **{value}** (-{r['fee']:,}원)")
+            else:
+                fail.append({"no_club": _NO_CLUB, "same": f"{label}이(가) 이미 **{value}**이에요.",
+                             "balance": f"{label} 변경에 **{r.get('fee', 0):,}원**이 필요해요."}[r["reason"]])
+        team = await self.clubs.get_team(user.id)
+        name = f"{team.get('emblem') or '🏟️'} {team['name']}" if team else ""
+        e = ui.card(f"🎨 {name}" if done else "❌ 꾸미기 실패", "\n".join(done + fail), ui.GOLD if done else ui.LOSE,
+                    user, SECTION)
+        await interaction.followup.send(embed=e)
 
 
 async def setup(bot: commands.Bot):

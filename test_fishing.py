@@ -294,7 +294,8 @@ def test_screens():
         fake = SimpleNamespace(user=user, ctx={"to": to}, refresh=lambda i, note: asyncio.sleep(0, log.append(note)))
         real = cog.db.give
         cog.db.give = lambda a, b, ids, now: asyncio.sleep(0, {"ok": True, "count": 2, "names": ["붕어", "잉어"], "used": 2, "limit": 10})
-        inter = SimpleNamespace(followup=SimpleNamespace(send=lambda **k: asyncio.sleep(0, sent.append(k))))
+        inter = SimpleNamespace(guild_id=1374213619793006704,   # 2.10.1 테스트 서버 먼저
+                                followup=SimpleNamespace(send=lambda **k: asyncio.sleep(0, sent.append(k))))
         try:
             await cog._give(inter, fake, [1, 2])
         finally:

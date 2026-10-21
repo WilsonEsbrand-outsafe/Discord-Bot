@@ -95,7 +95,7 @@ def test_hubs():
         assert "게임" in log[-1][0].title and len(log[-1][1].pages) == len(CH.GAMES)
         await _all_pages(hubs.games_view(USER))
         # /구단 허브 · 자동편성 버튼
-        cv = hubs.club_view(USER)
+        cv = hubs.club_view(USER, guild_id=release.TEST_GUILD)
         await _all_pages(cv)
         cv.page = 0
         await cv.build()

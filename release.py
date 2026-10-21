@@ -1,6 +1,6 @@
 # release.py — 단계 배포: 새 패치는 테스트 서버에 먼저, 다른 서버는 RELEASE_TS(정기점검)에 한꺼번에.
 # 다음 패치 때: PREVIEW_ONLY(새 명령어) · LEGACY_ONLY(없어질 명령어) · RELEASE_TS 를 바꾼다.
-# 지금: 2.9.1 — 테스트 서버 먼저, 10/21 14:15 KST 모든 서버 공개 (점검 14:15 ~ 14:20) · 2.8 은 2026-10-20 00:00 KST 공개 완료
+# 지금: 2.10.1 — 테스트 서버 먼저 (RELEASE_2101_TS) · 2.9.1 은 10/21 14:15 KST · 2.8 은 2026-10-20 00:00 KST 공개 완료
 #       (2.5 는 2026-10-02 00:00 · 2.6 은 2026-10-03 12:00 · 2.7 은 2026-10-12 17:00 KST 공개 완료)
 import calendar  # RELEASE_TS = calendar.timegm((년, 월, 일, 시(UTC), 분, 0)) · None = 아직 테스트 서버에만
 import time
@@ -41,10 +41,26 @@ def preview_291(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_291(now)
 
 
+# 2.10.1 — 테스트 서버 먼저. 서버마다 나눌 수 있는 것(던전 · 상점 · 화면 · 구단/유망주/명문 메뉴 · 낚시/내베팅 공개)은
+# preview_2101(guild), 모든 서버가 같이 쓰는 것(이적시장 24시간 · 스폰서 재계약 중단)은 RELEASE_2101_TS 부터. None = 아직
+RELEASE_2101_TS: Optional[int] = None
+LEGACY_2101: set[str] = {"시장", "매각", "구단명변경", "구단꾸미기", "구단삭제", "유망주생성", "유망주은퇴", "유망주삭제",
+                         "영구결번", "스폰서", "스폰서계약"}   # 2.10.1 로 없어지는 명령어 — 공개 전까지 다른 서버엔 남는다
+
+
+def released_2101(now: Optional[float] = None) -> bool:
+    return RELEASE_2101_TS is not None and _now(now) >= RELEASE_2101_TS
+
+
+def preview_2101(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_2101(now)
+
+
 def maintenance(now: Optional[float] = None) -> bool:
     return MAINTENANCE is not None and MAINTENANCE[0] <= _now(now) < MAINTENANCE[1]
 
 
 def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set[str]:
     """이 서버의 / 목록에서 뺄 명령어."""
-    return LEGACY_ONLY if preview(guild_id, now) else PREVIEW_ONLY
+    out = set(LEGACY_ONLY if preview(guild_id, now) else PREVIEW_ONLY)
+    return out | LEGACY_2101 if preview_2101(guild_id, now) else out

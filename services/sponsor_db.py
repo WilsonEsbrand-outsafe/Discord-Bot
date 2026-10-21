@@ -11,7 +11,11 @@ DAY = 86400
 # 2.2: 90일 · 365일 패키지는 새로 맺을 수 없다 (이미 맺은 계약의 정산용으로만 남긴다).
 TERMS = {1: 0.003, 7: 0.025, 30: 0.12, 90: 0.45, 365: 4.00}
 OPEN_TERMS = (1, 7, 30)
-CLOSED = True   # 2.10.1: /스폰서 잠시 내림 (다듬어서 재출시) — 명령어 없음 · 자동 재계약 없음 · 진행 중 계약은 만기에 그대로 정산
+# 2.10.1: /스폰서 잠시 내림 (다듬어서 재출시) — 명령어는 release.LEGACY_2101 · 공개(RELEASE_2101_TS) 뒤엔 자동 재계약 없음
+# · 진행 중 계약은 만기에 그대로 정산. 재출시 때: LEGACY_2101 에서 빼고 closed() 를 False 로
+def closed(now_ts: float) -> bool:
+    import release
+    return release.released_2101(now_ts)
 
 # 스폰서: key → (이모지, 이름, 성향, 실적 배율 하한, 상한, 소개)
 # 만기 수익 = 원금 × 기본 수익률 × 실적 배율(하한~상한 균등 랜덤). 배율이 음수면 원금 손실(최대 원금 전액).
@@ -189,7 +193,7 @@ class SponsorDB(EconomyDB):
                 con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (payout, uid))
                 new_gidx, (_, new_gname, new_limit, _) = grade_of(self._rep(con, uid).get(sponsor, 0))
                 renewed = None
-                if c["auto"] and c["days"] in OPEN_TERMS and not CLOSED:   # 없어진 기간(90·365일) · 내린 동안은 재계약 안 함
+                if c["auto"] and c["days"] in OPEN_TERMS and not closed(now_ts):   # 없어진 기간(90·365일) · 내린 동안은 재계약 안 함
                     amt = min(c["amount"], payout, new_limit)
                     if amt >= MIN_AMOUNT:
                         renewed = self._insert(con, uid, sponsor, c["days"], amt, now_ts, c["club_bonus"], True)

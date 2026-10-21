@@ -11,7 +11,6 @@ from services import ui
 from services.club_db import ClubDB
 from services.management import MgmtDB
 from services.notifier import send_notify
-from services import sponsor_db
 from services.sponsor_db import (
     CANCEL_FEE, CLUB_BONUS, GRADES, MAX_ACTIVE, MAX_AMOUNT, MIN_AMOUNT, OPEN_TERMS, REP_MIN_AMOUNT, SPONSORS, TERMS,
     SponsorDB, cancel_refund, club_bonus, grade_of,
@@ -303,7 +302,4 @@ class Sponsor(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Sponsor(bot))
-    if sponsor_db.CLOSED:   # 2.10.1: 명령어는 내리고 만기 정산 루프만 남긴다 (진행 중 계약은 약속대로 지급)
-        for name in ("스폰서", "스폰서계약"):
-            bot.tree.remove_command(name)
+    await bot.add_cog(Sponsor(bot))   # 2.10.1: /스폰서 · /스폰서계약은 release.LEGACY_2101 (공개 뒤엔 정산 루프만)

@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 matplotlib.rcParams["font.family"] = "NanumGothic"
 matplotlib.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
+import release
 from services import ui
 from services.economy_db import (
     ITEMS, SELL_PRICES, SHOP_DAILY_LIMITS, SHOP_GROUPS, SHOP_ONE_ONLY, SHOP_PRICES, EconomyDB, shop_open,
@@ -249,7 +250,7 @@ class ShopView(_ShopOwnerView):
         kind, key = self.menu.values[0].split(":", 1)
         if kind == "pack":
             return await interaction.response.edit_message(view=PackQtyView(self.cog, self.user, key))
-        if key not in SHOP_ONE_ONLY:   # 2.10.1: 몇 개 살지 고른다
+        if key not in SHOP_ONE_ONLY and release.preview_2101(interaction.guild_id):   # 2.10.1: 몇 개 살지 고른다
             return await interaction.response.edit_message(view=ItemQtyView(self.cog, self.user, key))
         await self.buy_item(interaction, key, 1)
 
@@ -723,6 +724,34 @@ class PlayersMarket(commands.Cog):
         except Exception:
             return []
 
+    # ───────────────── 시장 상태 (2.10.1: 없어짐 — 공개 전까지 다른 서버에만, release.LEGACY_2101) ─────────────────
+    @app_commands.command(name="시장", description="시장 오픈/클로즈 상태를 확인합니다.")
+    async def market_status(self, interaction: discord.Interaction):
+        hubs = self.bot.get_cog("Hubs") if getattr(self, "bot", None) else None
+        if hubs and release.preview(interaction.guild_id):   # 2.8: 시장 허브 (◀ 🏠 ▶)
+            return await hubs.market_view(interaction.user).send(interaction, ephemeral=False)
+        # ✅ 3초 제한 회피: 먼저 defer
+        try:
+            await interaction.response.defer()
+        except (discord.NotFound, discord.HTTPException):
+            return
+
+        try:
+            now = int(time.time())
+            st = await self.pm.market_status(now)
+
+            status_emoji = "🟢" if st.is_open else "🔴"
+            msg = (
+                f"{status_emoji} **{st.reason}**\n"
+                f"운영 시간: 매일 **09:00 ~ 23:00 KST**\n"
+                f"다음 변경: <t:{st.next_change_ts}:f>"
+            )
+            await interaction.followup.send(
+                embed=_embed("📈 선수 시장", msg, interaction.user),
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ 오류: {type(e).__name__}")
+
     # ───────────────── 선수 (검색 + 상세, 하나로 통일) ─────────────────
     async def _player_detail_embed(self, row, viewer: discord.abc.User) -> discord.Embed:
         (pid, name, nation, pos, age, ovr, potg, basev, retired, price, floor_p, ceil_p, last_ts) = row
@@ -830,6 +859,12 @@ class PlayersMarket(commands.Cog):
         """2.10.1: /매각 을 없애고 여기로 — 등록하고, 12시간 지난 매물은 아래 메뉴에서 골라 바로 매각."""
         await interaction.response.defer()
         now = int(time.time())
+        if not release.preview_2101(interaction.guild_id):   # 2.10.1 공개 전 서버: 예전처럼 등록만 (매각은 /매각)
+            if not player_id or 가격 is None:
+                return await interaction.followup.send(embed=_embed("❌ 등록 실패", "`player_id:`와 `가격:`을 적어 주세요.", interaction.user))
+            ok, msg = await self.pm.create_listing(seller_id=interaction.user.id, player_id=player_id, qty=수량,
+                                                   price_per=가격, now_ts=now, band=False)
+            return await interaction.followup.send(embed=_embed("📋 이적시장 등록" if ok else "❌ 등록 실패", msg, interaction.user))
         head = None
         if player_id:
             if 가격 is None:
@@ -1178,7 +1213,10 @@ class PlayersMarket(commands.Cog):
         lines = []
         for lid, pid, qty, price_per, listed_at, expires_at, instant_sell_at, name, nation, pos, age, ovr, potg, base_value in rows:
             can_instant = now >= int(instant_sell_at)
-            instant_tag = "✅ `/판매`에서 매각 가능" if can_instant else f"⏳ {max(0, int(instant_sell_at) - now) // 3600}h 후 매각 가능"
+            if release.preview_2101(interaction.guild_id):
+                instant_tag = "✅ `/판매`에서 매각 가능" if can_instant else f"⏳ {max(0, int(instant_sell_at) - now) // 3600}h 후 매각 가능"
+            else:
+                instant_tag = "✅ 즉시판매 가능" if can_instant else f"⏳ {max(0, int(instant_sell_at) - now) // 3600}h 후 즉시판매"
             h_left = max(0, int(expires_at) - now) // 3600
             lines.append(
                 f"`#{lid}` **{name}** x{qty} | {pos} OVR {ovr}\n"
@@ -1187,6 +1225,31 @@ class PlayersMarket(commands.Cog):
 
         await interaction.followup.send(
             embed=_embed("📋 내 매물", "\n".join(lines), interaction.user),
+        )
+
+    # 2.10.1: /판매 화면 메뉴로 옮김 — 공개 전까지 다른 서버에만 (release.LEGACY_2101)
+    @app_commands.command(name="매각", description="이적시장 등록 후 12시간 뒤 즉시 판매 가능. 기준가의 70% 지급.")
+    @app_commands.describe(매물번호="매각할 매물 번호 (/내매물 에서 확인)")
+    @app_commands.autocomplete(매물번호=my_listing_autocomplete)
+    async def instant_sell(self, interaction: discord.Interaction, 매물번호: str):
+        await interaction.response.defer()
+        try:
+            lid = int(str(매물번호).lstrip("#"))
+        except ValueError:
+            return await interaction.followup.send("❌ 올바른 매물 번호를 입력하세요.")
+
+        now = int(time.time())
+        ok, msg = await self.pm.instant_sell_listing(
+            listing_id=lid,
+            seller_id=interaction.user.id,
+            now_ts=now,
+            add_balance=self.money.add_balance,
+        )
+        if ok:
+            bal = await self.money.get_balance(interaction.user.id)
+            msg += f"\n현재 잔액: **{bal:,}원**"
+        await interaction.followup.send(
+            embed=_embed("💸 매각 완료" if ok else "❌ 매각 실패", msg, interaction.user),
         )
 
     @app_commands.command(name="이적취소", description="이적시장 매물을 취소하고 선수를 돌려받습니다.")

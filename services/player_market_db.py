@@ -841,8 +841,11 @@ class PlayerMarketDB:
         return int((now_ts + KST_OFFSET) % 86400 // 3600)
 
     def _is_market_open(self, now_ts: int) -> bool:
-        """2.10.1: 24시간 오픈 (예전엔 MARKET_OPEN_HOUR ~ MARKET_CLOSE_HOUR KST 만)."""
-        return True
+        """2.10.1 공개(RELEASE_2101_TS) 뒤엔 24시간 오픈 — 모든 서버가 같은 시장. 그 전엔 MARKET_OPEN_HOUR ~ MARKET_CLOSE_HOUR KST."""
+        if release.released_2101(now_ts):
+            return True
+        h = self._kst_hour(now_ts)
+        return MARKET_OPEN_HOUR <= h < MARKET_CLOSE_HOUR
 
     def _next_tick_boundary(self, now_ts: int) -> int:
         return (now_ts // TICK_SECONDS + 1) * TICK_SECONDS
@@ -970,7 +973,8 @@ class PlayerMarketDB:
     async def market_status(self, now_ts: int) -> MarketStatus:
         open_ = self._is_market_open(now_ts)
         if open_:
-            return MarketStatus(True, self._next_tick_boundary(now_ts), "시장 오픈 (24시간 거래 가능)")
+            return MarketStatus(True, self._next_tick_boundary(now_ts),
+                                "시장 오픈 (24시간 거래 가능)" if release.released_2101(now_ts) else "시장 오픈(거래 가능)")
         return MarketStatus(False, self._next_market_change_ts(now_ts), "시장 클로즈(거래 불가)")
 
     # ───────────────── 가치 계산/스폰 ─────────────────
@@ -1903,9 +1907,9 @@ class PlayerMarketDB:
     # ───────────────── 이적시장 ─────────────────
 
     async def create_listing(
-        self, *, seller_id: int, player_id: str, qty: int, price_per: int, now_ts: int
+        self, *, seller_id: int, player_id: str, qty: int, price_per: int, now_ts: int, band: bool = True
     ) -> Tuple[bool, str]:
-        """선수를 이적시장에 등록 (보유에서 차감)"""
+        """선수를 이적시장에 등록 (보유에서 차감). band: 2.10.1 등록가 범위 검사 (테스트 서버 먼저)"""
         pid = (player_id or "").strip()
         qty = int(qty)
         price_per = int(price_per)
@@ -1923,7 +1927,7 @@ class PlayerMarketDB:
         if int(retired) == 1:
             return False, "은퇴 선수는 이적시장에 등록할 수 없습니다. `/방출` 명령어를 사용하세요."
         lo, hi = self.listing_band(row)
-        if not lo <= price_per <= hi:   # 2.10.1: 기준가로 정한 하한가 ~ 상한가 안에서만
+        if band and not lo <= price_per <= hi:   # 2.10.1: 기준가로 정한 하한가 ~ 상한가 안에서만
             return False, (f"**{name}**은(는) **{lo:,}원 ~ {hi:,}원** 사이로만 올릴 수 있습니다.\n"
                            f"(하한가 기준가의 {LISTING_FLOOR:.0%} · 상한가 기준가의 {LISTING_CEIL:.0%})")
 
@@ -1968,7 +1972,8 @@ class PlayerMarketDB:
             f"✅ 이적시장 등록 완료\n"
             f"매물 번호: **#{lid}** | **{name}** x{qty}\n"
             f"등록가: **{price_per:,}원** / 장\n"
-            f"⏳ 12시간 뒤 안 팔리면 `/판매`에서 바로 매각(기준가 70%) · 72시간 후 자동 만료(선수 반환)"
+            + ("⏳ 12시간 뒤 안 팔리면 `/판매`에서 바로 매각(기준가 70%) · 72시간 후 자동 만료(선수 반환)" if band
+               else "⏳ 12시간 후 즉시판매 가능 · 72시간 후 자동 만료(선수 반환)")
         )
 
     @staticmethod

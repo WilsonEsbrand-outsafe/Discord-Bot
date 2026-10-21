@@ -51,22 +51,39 @@ BATTLE_DROP = 0.4               # 일반 전투에서 아이템이 나올 확률
 COIN = (3_000, 12_000)          # 보물 · 전투에서 나오는 돈 (층 × 이만큼)
 XP_PER_FLOOR = 4                # 훈련 경험치 (층마다 진행 보상)
 FIRST_CLEAR = {"dungeon_ticket": 1, "skip_piece": 2, "first_team": 1}   # 테마마다 처음 10층을 깨면
+# 2.10.1 공개 전 서버(테스트 서버 말고)에서 시작한 판은 예전 값 — 판마다 st["v2101"] 로 고른다 (release.preview_2101)
+OLD_LOOT_COMMON = {"skip_piece": 30, "bait": 20, "spice": 18, "potion": 10, "torch": 6, "bait_gold": 8, "fish_charm": 4, "dkey": 4}
+OLD_LOOT_RARE = {"skip_piece": 20, "box": 10, **{k: v for k, v in LOOT_RARE.items() if k != "skip_piece"}}
+OLD_FIRST_CLEAR = {"box": 1, "dungeon_ticket": 1, "skip_piece": 5, "first_team": 1}
 MERCHANT = {"potion": 150_000, "antidote": 200_000, "torch": 250_000, "scroll": 300_000}   # 돈 쓰는 곳
 ALTAR_COST = 15                 # 제단: 체력을 바치면 다음 보물 · 전투 보상 2배 (40%는 저주: 다음 방 피해 +50%)
 
 
-def norm(ovr: float) -> float:
-    """OVR 60 → 0, 95 → 1. 60 아래는 마이너스 (2.10.1: 약한 팀 · 빈 자리는 손해, OVR 25 이하 = -1)."""
+def norm(ovr: float, new: bool = True) -> float:
+    """OVR 60 → 0, 95 → 1. 60 아래는 마이너스 (2.10.1: 약한 팀 · 빈 자리는 손해, OVR 25 이하 = -1).
+    new=False: 예전 (OVR 50 → 0, 95 → 1, 아래는 0)."""
+    if not new:
+        return max(0.0, min(1.0, (ovr - 50) / 45))
     return max(-1.0, min(1.0, (ovr - 60) / 35))
 
 
-def team_stats(lineup: list[dict]) -> dict[str, int]:
-    """선발 11명 → 스탯 4개 (포지션 그룹 평균 OVR). 2.10.1: 빈 자리도 EMPTY_OVR 로 평균에 넣는다."""
+def _n(st: dict, ovr: float) -> float:
+    return norm(ovr, st.get("v2101", False))
+
+
+def team_stats(lineup: list[dict], new: bool = True) -> dict[str, int]:
+    """선발 11명 → 스탯 4개 (포지션 그룹 평균 OVR). 2.10.1: 빈 자리도 EMPTY_OVR 로 평균에 넣는다.
+    new=False: 예전 (빈 자리는 빼고 평균, 그룹이 통째로 비면 40)."""
     out = {}
     for key, _, group in STATS:
-        vals = [effective_ovr(s["ovr"], s.get("pos", group), s["slot"]) if s.get("player_id") else EMPTY_OVR
-                for s in lineup if SLOT_GROUP.get(s.get("slot")) == group]
-        out[key] = round(sum(vals) / len(vals)) if vals else EMPTY_OVR
+        if new:
+            vals = [effective_ovr(s["ovr"], s.get("pos", group), s["slot"]) if s.get("player_id") else EMPTY_OVR
+                    for s in lineup if SLOT_GROUP.get(s.get("slot")) == group]
+            out[key] = round(sum(vals) / len(vals)) if vals else EMPTY_OVR
+        else:
+            vals = [effective_ovr(s["ovr"], s.get("pos", group), s["slot"]) for s in lineup
+                    if s.get("player_id") and SLOT_GROUP.get(s.get("slot")) == group]
+            out[key] = round(sum(vals) / len(vals)) if vals else 40
     return out
 
 
@@ -100,8 +117,8 @@ def make_doors(st: dict, rng) -> list[dict]:
     return doors
 
 
-def new_run(stats: dict, theme: int, rng, torch: bool = False, meal: bool = False) -> dict:
-    st = {"floor": 1, "hp": HP_MAX + (HP_MEAL if meal else 0), "max_hp": HP_MAX + (HP_MEAL if meal else 0),
+def new_run(stats: dict, theme: int, rng, torch: bool = False, meal: bool = False, new: bool = True) -> dict:
+    st = {"v2101": new, "floor": 1, "hp": HP_MAX + (HP_MEAL if meal else 0), "max_hp": HP_MAX + (HP_MEAL if meal else 0),
           "stats": stats, "theme": theme, "torch": torch, "loot": {}, "coins": 0, "xp": 0, "phase": "doors",
           "room": None, "blessed": False, "cursed": False, "revealed": False, "log": [], "used": {}}
     st["doors"] = make_doors(st, rng)
@@ -112,7 +129,10 @@ def _monster(st: dict, rng, boss: bool) -> dict:
     th = THEMES[st["theme"]]
     f = st["floor"]
     name = (th[3] if f == 5 else th[4]) if boss else rng.choice(th[2])
-    power = (26 + 3.2 * f) if not boss else (38 if f == 5 else 60)   # 2.10.1: 더 세게 (예전 22+2.5층 · 30 · 46)
+    if st.get("v2101"):
+        power = (26 + 3.2 * f) if not boss else (38 if f == 5 else 60)   # 2.10.1: 더 세게
+    else:
+        power = (22 + 2.5 * f) if not boss else (30 if f == 5 else 46)
     return {"name": name, "power": power, "boss": boss}
 
 
@@ -128,12 +148,14 @@ def _gain(st: dict, item: str, n: int = 1):
 
 
 def _roll_loot(st: dict, rng, rolls: int, rare_p: float) -> list[str]:
-    luck = norm(st["stats"]["luck"])
+    luck = _n(st, st["stats"]["luck"])
     mult = 2 if st.get("blessed") else 1
     st["blessed"] = False
     got = []
     for _ in range(rolls * mult):
-        table = LOOT_RARE if rng.random() < rare_p + 0.15 * luck else LOOT_COMMON
+        new = st.get("v2101")
+        table = (LOOT_RARE if new else OLD_LOOT_RARE) if rng.random() < rare_p + 0.15 * luck else \
+            (LOOT_COMMON if new else OLD_LOOT_COMMON)
         item = _pick(table, rng)
         _gain(st, item)
         got.append(item)
@@ -186,7 +208,7 @@ def enter(st: dict, door: int, rng) -> list[str]:
         log.append("📦 낡은 상자가 놓여 있어요.")
     elif room == "trap":
         name = THEMES[st["theme"]][5]
-        if rng.random() < 0.25 + 0.5 * norm(s["mob"]):
+        if rng.random() < 0.25 + 0.5 * _n(st, s["mob"]):
             log.append(f"🪤 **{name}**! …재빠르게 피했어요! (기동)")
         elif st.get("inv_antidote"):
             st["inv_antidote"] = False
@@ -194,7 +216,8 @@ def enter(st: dict, door: int, rng) -> list[str]:
             log.append(f"🪤 **{name}**! 💊 해독제로 피해를 막았어요.")
         else:
             log.append(f"🪤 **{name}**에 걸렸어요!")
-            _hurt(st, _damage(st, 12 + 2 * st["floor"], rng, 1.15 - 0.5 * norm(s["dfn"])), log)
+            base = (12 + 2 * st["floor"]) if st.get("v2101") else (10 + 1.5 * st["floor"])
+            _hurt(st, _damage(st, base, rng, 1.15 - 0.5 * _n(st, s["dfn"])), log)
         _after_room(st, rng, log)
     elif room == "rest":
         heal = min(REST_HEAL, st["max_hp"] - st["hp"])
@@ -219,19 +242,22 @@ def act(st: dict, action: str, rng) -> list[str]:
     if ph == "battle":
         m = st["monster"]
         if action == "flee" and not m["boss"]:
-            if rng.random() < 0.3 + 0.55 * norm(s["mob"]):
+            if rng.random() < 0.3 + 0.55 * _n(st, s["mob"]):
                 log.append("🏃 무사히 도망쳤어요! (보상 없음)")
             else:
                 log.append("🏃 도망치다 등을 맞았어요!")
-                _hurt(st, _damage(st, m["power"] * 0.5, rng, 1.15 - 0.5 * norm(s["dfn"])), log)
+                _hurt(st, _damage(st, m["power"] * 0.5, rng, 1.15 - 0.5 * _n(st, s["dfn"])), log)
         else:
             # 공격이 높을수록 빨리 끝나고, 수비가 높을수록 덜 맞는다
-            cut = (1.25 - 0.55 * norm(s["atk"])) * (1.15 - 0.5 * norm(s["dfn"]))
+            cut = (1.25 - 0.55 * _n(st, s["atk"])) * (1.15 - 0.5 * _n(st, s["dfn"]))
             dmg = _damage(st, m["power"] * 0.62, rng, cut)
             log.append(f"⚔️ **{m['name']}**을(를) 쓰러뜨렸어요!")
             _hurt(st, dmg, log)
             if st["hp"] > 0 or st.get("inv_feather"):
-                rolls = 2 if m["boss"] else int(rng.random() < BATTLE_DROP)   # 2.10.1: 보스 3 → 2개 · 일반 전투는 가끔만
+                if st.get("v2101"):   # 2.10.1: 보스 3 → 2개 · 일반 전투는 가끔만
+                    rolls = 2 if m["boss"] else int(rng.random() < BATTLE_DROP)
+                else:
+                    rolls = 3 if m["boss"] else 1
                 got = _roll_loot(st, rng, rolls, 0.6 if m["boss"] else 0.12 + 0.02 * st["floor"])
                 log.append("🎁 " + loot_text(got))
         _after_room(st, rng, log)
@@ -241,7 +267,7 @@ def act(st: dict, action: str, rng) -> list[str]:
             st["used"]["dkey"] = st["used"].get("dkey", 0) + 1
             got = _roll_loot(st, rng, 2, 0.8)
             log.append("🗝️ 열쇠로 금고를 열었어요! 🎁 " + loot_text(got))
-        elif rng.random() < 0.15 * (1 - 0.6 * norm(s["luck"])):
+        elif rng.random() < 0.15 * (1 - 0.6 * _n(st, s["luck"])):
             log.append("😱 미믹이었어요!!")
             _hurt(st, _damage(st, 12 + st["floor"], rng, 1.0), log)
         else:
@@ -259,7 +285,7 @@ def act(st: dict, action: str, rng) -> list[str]:
     elif ph == "altar":
         if action == "pray":
             _hurt(st, ALTAR_COST, log)
-            if rng.random() < 0.6 + 0.2 * norm(s["luck"]):
+            if rng.random() < 0.6 + 0.2 * _n(st, s["luck"]):
                 st["blessed"] = True
                 log.append("✨ 축복! 다음 보물 · 전투 보상이 **2배**")
             else:
@@ -367,7 +393,7 @@ class DungeonDB(EconomyDB):
             return True
         return await self._tx(fn)
 
-    async def start(self, uid: int, stats: dict, now_ts: int, use_torch: bool, rng=random) -> dict:
+    async def start(self, uid: int, stats: dict, now_ts: int, use_torch: bool, rng=random, new: bool = True) -> dict:
         """입장. reason: active(진행 중) / done(오늘 다 함)."""
         day = _kst_day(now_ts)
 
@@ -379,7 +405,7 @@ class DungeonDB(EconomyDB):
                 return {"ok": False, "reason": "done"}
             torch = use_torch and con.execute(
                 "UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='torch' AND qty>0", (uid,)).rowcount > 0
-            st = new_run(stats, theme_of(now_ts), rng, torch=torch, meal=_cook_buff(con, uid, now_ts, "eel_rice"))
+            st = new_run(stats, theme_of(now_ts), rng, torch=torch, meal=_cook_buff(con, uid, now_ts, "eel_rice"), new=new)
             if torch:
                 st["used"]["torch"] = 1
             self._load_inv(con, uid, st)
@@ -434,7 +460,7 @@ class DungeonDB(EconomyDB):
         if st["phase"] == "clear" and con.execute("INSERT OR IGNORE INTO dungeon_clears VALUES(?,?,?)",
                                                   (uid, st["theme"], now_ts)).rowcount:
             first = True
-            for k, n in FIRST_CLEAR.items():
+            for k, n in (FIRST_CLEAR if st.get("v2101") else OLD_FIRST_CLEAR).items():
                 items[k] = items.get(k, 0) + n
         for k, n in items.items():
             give_item(con, uid, k, n)
@@ -513,12 +539,12 @@ class DungeonDB(EconomyDB):
         return await self._tx(lambda con: {t for (t,) in con.execute("SELECT theme FROM dungeon_clears WHERE user_id=?", (uid,))})
 
 
-def simulate(stats: dict, n: int = 2000, rng=None, policy: str = "greedy") -> dict:
+def simulate(stats: dict, n: int = 2000, rng=None, policy: str = "greedy", new: bool = True) -> dict:
     """밸런스 확인용: 정해진 방식으로 끝까지(체력 35 아래면 귀환). {clear, dead, avg_floor, avg_items, avg_coins}."""
     rng = rng or random.Random(7)
     res = {"clear": 0, "dead": 0, "floor": 0, "items": 0, "coins": 0}
     for _ in range(n):
-        st = new_run(stats, rng.randrange(7), rng)
+        st = new_run(stats, rng.randrange(7), rng, new=new)
         while st["phase"] not in ("clear", "dead", "return"):
             if st["phase"] == "doors":
                 if st["hp"] < 35 and st["floor"] not in BOSS_FLOORS:

@@ -296,7 +296,7 @@ class Fishing(commands.Cog):
     # ───────────── 낚시 메뉴 (허브) ─────────────
     async def open_menu(self, interaction: discord.Interaction, page: int = 0):
         view = self.menu_view(interaction.user, page, release.preview_291(interaction.guild_id))
-        await view.send(interaction, ephemeral=False)   # 2.10.1: 어망 · 메뉴는 모두에게 보이게 (버튼은 연 사람만)
+        await view.send(interaction, ephemeral=not release.preview_2101(interaction.guild_id))   # 2.10.1: 어망 · 메뉴는 모두에게 (버튼은 연 사람만)
 
     def menu_view(self, user, page: int = 0, new: bool = True) -> HubView:
         pages = [
@@ -383,6 +383,8 @@ class Fishing(commands.Cog):
             note = ui.card(f"🎁 {to.display_name}님에게 {r['count']}마리 보냈어요", ", ".join(r["names"])
                            + f"\n`오늘 보내기` **{r['used']}/{r['limit']}**포인트", ui.WIN, view.user, SECTION)
             await view.refresh(interaction, note)
+            if not release.preview_2101(getattr(interaction, "guild_id", None)):
+                return
             # 2.10.1: 보낸 건 모두에게 — 채널 맨 아래에 새 메시지로
             shout = ui.card(f"🎁 {view.user.display_name}님이 {to.display_name}님에게 물고기를 보냈어요!",
                             ", ".join(r["names"]) + f"\n총 **{r['count']}마리**", ui.WIN, view.user, SECTION)

@@ -43,8 +43,17 @@ async def _any_player(pm):
 
 
 def test_market_open_hours():
+    import release
     pm = PlayerMarketDB()
-    assert all(pm._is_market_open(h * 3600) for h in range(24))   # 2.10.1: 24시간 오픈
+    saved = release.RELEASE_2101_TS
+    release.RELEASE_2101_TS = None   # 2.10.1 공개 전: 09:00 ~ 23:00 KST
+    try:
+        assert pm._is_market_open(0)              # 09:00 KST
+        assert not pm._is_market_open(23 * 3600)  # 08:00 KST
+        release.RELEASE_2101_TS = 0               # 2.10.1 공개 뒤: 24시간 (모든 서버가 같은 시장)
+        assert all(pm._is_market_open(h * 3600) for h in range(24))
+    finally:
+        release.RELEASE_2101_TS = saved
 
 
 def test_listing_price_band():
@@ -426,10 +435,15 @@ def test_goalkeeper_share():
 
 def test_tick_runs_at_night():
     """2.10.1: 24시간 오픈 — 예전엔 08:00 KST(시장 닫힘)엔 틱이 돌지 않았다."""
+    import release
     eco, pm = run(_setup())
     prices = lambda: {r[0]: r[7] for r in run(pm.search_players("", limit=25))}
     before = prices()
-    run(pm.run_tick_if_due(NOW_OPEN + 23 * 3600))   # 다음 날 08:00 KST
+    saved, release.RELEASE_2101_TS = release.RELEASE_2101_TS, 0
+    try:
+        run(pm.run_tick_if_due(NOW_OPEN + 23 * 3600))   # 다음 날 08:00 KST
+    finally:
+        release.RELEASE_2101_TS = saved
     assert prices() != before
 
 

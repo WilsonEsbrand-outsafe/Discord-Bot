@@ -153,7 +153,16 @@ def test_release():
     before, after = release.RELEASE_TS - 1000, release.RELEASE_TS + 1000
     assert release.preview(T, before) and not release.preview(other, before) and release.preview(other, after)
     assert release.hidden_commands(other, before) == release.PREVIEW_ONLY
-    assert release.hidden_commands(T, before) == release.hidden_commands(other, after) == release.LEGACY_ONLY
+    assert release.hidden_commands(other, after) == release.LEGACY_ONLY
+    assert release.hidden_commands(T, before) == release.LEGACY_ONLY | release.LEGACY_2101   # 2.10.1 없어지는 명령어는 테스트 서버부터
+    # 2.10.1: 공개 전엔 다른 서버에 예전 명령어가 남고, RELEASE_2101_TS 뒤엔 모든 서버에서 빠진다
+    if release.RELEASE_2101_TS is None:
+        assert release.preview_2101(T) and not release.preview_2101(other)
+        assert not release.LEGACY_2101 & release.hidden_commands(other, after)
+    else:
+        t = release.RELEASE_2101_TS
+        assert not release.preview_2101(other, t - 1) and release.preview_2101(other, t)
+        assert release.LEGACY_2101 <= release.hidden_commands(other, t)
     start, end = release.MAINTENANCE   # 점검 창 (2.82: 공개 시각과 따로 — 2.8 공개 뒤 짧은 점검)
     assert start < end
     assert release.maintenance(start) and release.maintenance(end - 1)
