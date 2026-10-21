@@ -1013,11 +1013,12 @@ class EconomyDB:
 
             return await self._run(work)
 
-    async def toto_refund_and_delete_open_match(self, match_id: str) -> Tuple[bool, str]:
+    async def toto_refund_and_delete_open_match(self, match_id: str, allow_closed: bool = False) -> Tuple[bool, str]:
         """
         오픈 상태(open)인 경기 삭제 시:
         1) 해당 경기의 모든 베팅금 전액 환불
         2) 경기 + 베팅 삭제
+        allow_closed=True 면 킥오프가 지난(closed) 경기도 — 연기 · 취소돼 결과가 안 나오는 경기 무효 처리용 (2.9.1)
         """
         async with self._lock:
             def work():
@@ -1034,7 +1035,7 @@ class EconomyDB:
                         return (False, "경기를 찾을 수 없습니다.")
 
                     status = row[0]
-                    if status != "open":
+                    if status != "open" and not (allow_closed and status == "closed"):
                         con.execute("ROLLBACK;")
                         return (False, "오픈 상태인 경기만 삭제/환불할 수 있습니다.")
 
@@ -1206,6 +1207,18 @@ class EconomyDB:
                         (int(now_ts), int(limit)),
                     ).fetchall()
                     return [r[0] for r in rows]
+                finally:
+                    con.close()
+            return await self._run(work)
+
+    async def toto_list_stale(self, before_ts: int) -> list[str]:
+        """킥오프가 before_ts 보다 이전인데 아직 정산 안 된 경기 — 결과가 끝내 안 나오는 경기 (2.9.1)."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    return [r[0] for r in con.execute(
+                        "SELECT match_id FROM toto_matches WHERE status='closed' AND kickoff_ts <= ?", (int(before_ts),))]
                 finally:
                     con.close()
             return await self._run(work)

@@ -410,6 +410,37 @@ def test_news_skipped_when_market_closed():
     assert run(pm.run_tick_if_due(closed)) == []
 
 
+def test_aging_and_retirement_291():
+    """2.9.1: 이틀에 1살 · 31세부터 노쇠 · 40세 은퇴 · 아마추어는 나이를 먹지 않는다 (RELEASE_291_TS 부터)."""
+    import release
+    assert pmdb.month_seconds(0) * 12 == 86400
+    release.RELEASE_291_TS = 0
+    try:
+        _aging_291()
+    finally:
+        release.RELEASE_291_TS = None
+
+
+def _aging_291():
+    assert pmdb.month_seconds(1) * 12 == 2 * 86400
+    assert pmdb.retire_prob(30) == 0 and pmdb.retire_prob(35) > pmdb.retire_prob(33) > 0 and pmdb.retire_prob(40) == 1
+    assert pmdb.decline_range(30) == (0, 0) and pmdb.decline_range(31)[0] >= 1 and pmdb.decline_range(36) == (2, 4)
+    eco, pm = run(_setup())
+    con = pm._connect()
+    con.execute("UPDATE pm_players SET age=45 WHERE player_id='AMT_GK_01'")
+    con.execute("UPDATE pm_players SET age=40 WHERE player_id=(SELECT player_id FROM pm_players "
+                "WHERE retired=0 AND player_id NOT LIKE 'AMT_%' LIMIT 1)")
+    old = con.execute("SELECT player_id FROM pm_players WHERE age=40 AND retired=0").fetchone()[0]
+    last = con.execute("SELECT last_month_ts FROM pm_game_time WHERE id=1").fetchone()[0]
+    con.commit()
+    con.close()
+    run(pm.run_month_if_due(last + pmdb.REAL_SECONDS_PER_MONTH))   # 달이 넘어가면 아마추어는 22세 현역으로
+    con = pm._connect()
+    assert con.execute("SELECT age, retired FROM pm_players WHERE player_id='AMT_GK_01'").fetchone() == (22, 0)
+    assert con.execute("SELECT retired FROM pm_players WHERE player_id=?", (old,)).fetchone()[0] == 1   # 40세는 반드시 은퇴
+    con.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

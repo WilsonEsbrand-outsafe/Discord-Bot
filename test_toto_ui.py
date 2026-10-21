@@ -25,7 +25,7 @@ def _inter(sent, user):
         pass
     async def modal(m):
         sent.append({"modal": m})
-    return SimpleNamespace(user=user, response=SimpleNamespace(defer=noop, send_message=rec, send_modal=modal),
+    return SimpleNamespace(user=user, guild_id=ct.release.TEST_GUILD, response=SimpleNamespace(defer=noop, send_message=rec, send_modal=modal),
                            followup=SimpleNamespace(send=rec))
 
 
@@ -38,7 +38,7 @@ async def _flow():
     await cog.db.add_balance(U, 100_000)
     fight = {"event_id": "e1", "match_id": "A|B", "home": "A", "away": "B", "home_odds": 1.5, "away_odds": 2.6,
              "commence_time": "2099-01-01T00:00:00Z"}
-    async def fake_fights():
+    async def fake_fights(ufc_only=True):
         return [fight]
     ct.upcoming_fights = fake_fights
 
@@ -50,7 +50,13 @@ async def _flow():
     await Toto.toto_list.callback(cog, inter)
     menu = sent[-1]["view"]
     assert [o.value for o in menu.select.options] == ["s:m1", "u:e1"]
-    assert "아스날 vs 첼시" in sent[-1]["embed"].description and "A vs B" in sent[-1]["embed"].description
+    soccer, ufc = sent[-1]["embeds"]                               # 2.9.1: 종목마다 임베드 따로 · 날짜별 묶음
+    assert "아스날 vs 첼시" in soccer.description and "A vs B" in ufc.description and "📅" in soccer.description
+    assert "`1.50`" in ufc.description and ufc.footer.text
+    inter.guild_id = 1                                             # 2.9.1 공개 전 서버: 예전 한 장짜리 목록
+    await Toto.toto_list.callback(cog, inter)
+    assert "**⚽ 축구**" in sent[-1]["embed"].description and "A vs B" in sent[-1]["embed"].description
+    inter.guild_id = ct.release.TEST_GUILD
 
     # 축구 경기 선택 → 결과 버튼 3개 → [원정승] → 금액 입력 → 베팅 완료 (공개)
     menu.select._values = ["s:m1"]
@@ -101,10 +107,47 @@ async def _flow():
     assert await cog.db.toto_get_match("m2")
 
 
+def test_by_day_and_ufc_filter():
+    base = 1792540800   # 2026-10-21 00:00 KST
+    text = ct._by_day([(base + 3600, "a"), (base + 7200, "b"), (base + 86400 + 60, "c")])
+    assert text.split("\n") == ["📅 **10/21 (수)**", "a", "b", "", "📅 **10/22 (목)**", "c"]
+    from cogs.ufc_toto import _name_keys, is_ufc_fight
+    names = _name_keys("José Aldo Jr.") | _name_keys("Alex Pereira")
+    assert is_ufc_fight({"home": "Jose Aldo", "away": "X"}, names)                    # 악센트 · Jr 무시
+    assert is_ufc_fight({"home": "Patricio Freire", "away": "A. Pereira"}, names)     # 이름 첫 글자만
+    assert not is_ufc_fight({"home": "Patricio Freire", "away": "Usman Nurmagomedov"}, names)   # 다른 단체
+
+
+async def _void():
+    """2.9.1: 킥오프 뒤 3일이 지나도 결과가 없는(연기 · 취소) 경기는 환불하고 지운다."""
+    cog = Toto.__new__(Toto)
+    cog.db, cog.ufc = edb.EconomyDB(), udb.UfcDB()
+    now = int(time.time())
+    await cog.db.toto_upsert_match(match_id="old", home="라요", away="빌바오", kickoff_ts=now + 3600)
+    await cog.db.add_balance(77, 10_000)
+    assert not await cog.db.toto_place_bet(user_id=77, match_id="old", pick="1", amount=4_000, odds_locked=2.0, now_ts=now)
+    con = cog.db._connect()
+    con.execute("UPDATE toto_matches SET kickoff_ts=? WHERE match_id='old'", (now - 4 * 86400,))
+    con.commit()
+    con.close()
+    await cog.db.toto_close_started(now)
+    assert not (await cog.db.toto_refund_and_delete_open_match("old"))[0]        # 관리자 삭제는 여전히 open 만
+    assert await cog.db.toto_list_stale(now - Toto.SETTLE_VOID_AFTER) == ["old"]
+    await cog._void_match("old", "test")
+    assert await cog.db.get_balance(77) == 10_000 and not await cog.db.toto_get_match("old")
+    assert not await cog.db.toto_list_in_progress(now)
+
+
+def test_void_stale():
+    asyncio.run(_void())
+
+
 def test_flow():
     asyncio.run(_flow())
 
 
 if __name__ == "__main__":
+    test_by_day_and_ufc_filter()
+    test_void_stale()
     test_flow()
     print("OK: toto ui")

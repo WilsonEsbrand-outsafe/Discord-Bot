@@ -25,6 +25,8 @@ jobs:
             echo "배포 커밋: $(git rev-parse --short HEAD)"
             systemctl is-active discord-bot
             sudo journalctl -u discord-bot --since "${{ github.event.inputs.minutes }} min ago" --no-pager | tail -n 200
+            echo "── 토토 자동 정산 로그 ──"
+            sudo journalctl -u discord-bot --since "${{ github.event.inputs.minutes }} min ago" --no-pager | grep -E "AUTO-SETTLE|IMPORT" | tail -n 60
             python3 - <<'PY'
             import sqlite3
             con = sqlite3.connect("file:data/economy.sqlite3?mode=ro", uri=True)
@@ -36,6 +38,11 @@ jobs:
             for t in ("pm_price_history", "pm_news", "pm_holdings", "pm_listings", "pm_trade_items"):
                 print(t, "행 수:", q(f"SELECT COUNT(*) FROM {t}"))
             print("가장 오래된 시세 기록(일 전):", q("SELECT (strftime('%s','now') - MIN(tick_ts)) / 86400 FROM pm_price_history"))
+            print("토토 정산 안 된 경기 (킥오프 지난 것):")
+            for r in con.execute("SELECT match_id, home, away, datetime(kickoff_ts, 'unixepoch', '+9 hours'), status, "
+                                 "(SELECT COUNT(*) FROM toto_bets b WHERE b.match_id=m.match_id) FROM toto_matches m "
+                                 "WHERE status!='settled' AND kickoff_ts <= strftime('%s','now') ORDER BY kickoff_ts"):
+                print("  ", r)
             import os
             for f in ("data/economy.sqlite3", "data/economy.sqlite3-wal"):
                 if os.path.exists(f):

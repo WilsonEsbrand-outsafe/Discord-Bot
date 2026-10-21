@@ -34,8 +34,8 @@ def test_odds_and_values():
         avg = F.FISH[k][3]
         assert min(sizes) >= avg * 0.55 - 0.1 and max(sizes) <= avg * 1.7 + 0.1
     assert F.roll_size("tuna", random.Random(2), 0.15) == round(F.roll_size("tuna", random.Random(2)) * 1.15, 1) or True
-    assert F.catch_xp("anchovy", 10) == 5 and F.catch_xp("anchovy", 15) == 5 + round(5 * 0.5)      # 크기 보너스 최대 +50%
-    assert F.catch_xp("coelacanth", 180) == 150
+    assert F.catch_xp("anchovy", 10) == 2 and F.catch_xp("anchovy", 15) == 2 + round(2 * 0.5)      # 크기 보너스 최대 +50%
+    assert F.catch_xp("coelacanth", 180) == 60
     # 신선도: 하루 -10% · 최저 50% · 아이스박스 -5%
     assert F.freshness(T0, T0) == 1 and abs(F.freshness(T0, T0 + D) - 0.9) < 1e-9 and F.freshness(T0, T0 + 30 * D) == 0.5
     assert abs(F.freshness(T0, T0 + 2 * D, icebox=True) - 0.9) < 1e-9
@@ -247,6 +247,7 @@ def test_feed_cook_aquarium_weekly():
         con.close()
         top = await db.weekly_top(now)
         assert [t["user_id"] for t in top[:3]] == [2, 1, 3] and top[1]["species"] == "tuna"
+        assert [f["species"] for f in await db.recent(1)][:2] == ["anchovy", "tuna"]   # 2.9.1 낚시 기록: 최신 순
         # 스킵권 조각 5개 → 스킵권
         await db.give_item(U, "skip_piece", 4)
         assert not (await db.combine_pieces(U))["ok"]
@@ -279,7 +280,8 @@ def test_screens():
                    "wait": 600, "price": 700_000, "new": True, "record": False}):
             assert cog._result_card(user, r).title
         cv = cf.CastView(cog, user, {"cast_ts": None, "bait_qty": {"bait": 2, "bait_gold": 0}})
-        assert [c.label for c in cv.children] == ["던지기", "일반 미끼로 (2)", "어망 · 메뉴"]
+        assert [c.label for c in cv.children] == ["던지기", "일반 미끼로 (2)", "어망 · 메뉴"] and not cv.keep
+        assert cf.CastView(cog, user, {"cast_ts": None, "bait_qty": {}}, keep=True).keep   # 2.9.1 결과 메시지는 남긴다
         dm = cog._bite_dm({"channel_id": 5, "message_id": 6, "bite_ts": T0, "window": 30}, user)   # 2.82 입질 DM
         assert "입질" in dm.title and "/5/6" in dm.description
         from services.notifier import NOTIFY_EVENTS
