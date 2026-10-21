@@ -150,12 +150,14 @@ def test_trade_and_market():
         commons = _add(db, A, "mackerel", n=25)
         before = (await db.market(now))["mackerel"]["price"]
         r = await db.sell(A, commons[:20], now)
-        assert r["ok"] and r["points"] == 20 and r["used"] == 20 and r["limit"] == 20
+        assert r["ok"] and "points" not in r
         assert (await db.market(now))["mackerel"]["price"] < before * 0.7                     # 많이 팔리면 시세 하락
-        assert (await db.sell(A, commons[20:21], now))["reason"] == "limit"                    # 하루 20포인트
+        assert (await db.sell(A, commons[20:21], now))["ok"]                                   # 2.82b: 판매는 포인트 한도 없음
+        assert (await db.bag(A, now))["used"] == 0
+        r = await db.give(A, B, commons[21:25], now)                                           # 보내기만 포인트를 쓴다
+        assert r["ok"] and r["used"] == 4
         await db.give_item(A, "fish_charm")
         assert (await db.use_charm(A, now))["limit"] == 25
-        assert (await db.sell(A, commons[20:21], now))["ok"]
         # 다음 날: 한도 초기화 · 판매량 시세 20% 회복
         nxt = now + D
         sup = (await db.market(nxt))["mackerel"]["supply"]
@@ -167,12 +169,12 @@ def test_trade_and_market():
         epic = _add(db, A, "tuna", ts=nxt, n=6)
         bal0 = await db.get_balance(A)
         r = await db.sell(A, legend + epic[:5], nxt)
-        assert r["ok"] and r["points"] == 5 + 15 and await db.get_balance(A) == bal0 + r["gain"]
+        assert r["ok"] and await db.get_balance(A) == bal0 + r["gain"]
         # 보내기(트레이드)도 포인트를 쓴다 · 자신에게는 안 됨
         assert (await db.give(A, A, epic[5:], nxt + D))["reason"] == "self"
         r = await db.give(A, B, epic[5:], nxt + D)
         assert r["ok"] and r["points"] == 3
-        assert [f["species"] for f in (await db.bag(B, nxt + D))["fish"]] == ["tuna"]
+        assert "tuna" in [f["species"] for f in (await db.bag(B, nxt + D))["fish"]]
         # 신선도: 이틀 지난 물고기는 싸다 (아이스박스면 덜)
         old = _add(db, B, "flounder", ts=nxt)
         b = await db.bag(B, nxt + 2 * D)

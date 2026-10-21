@@ -50,15 +50,15 @@ def test_embeds():
 
 
 def test_282():
-    v = PATCH_NOTES["2.82"]
-    for word in ("장부", "체크리스트", "가계부"):
-        assert word not in v, word
+    for ver in ("2.82", "2.82b"):
+        for word in ("장부", "체크리스트", "가계부"):
+            assert word not in PATCH_NOTES[ver], word
     import release
     keys = {k: ts for k, ts, *_ in NOTICES}
-    assert keys["maint-2.82"] == keys["patch-2.82"] < release.MAINTENANCE[0]   # 점검 전에 안내 · 패치노트
+    assert keys["maint-2.82b"] == keys["patch-2.82b"] < release.MAINTENANCE[0]   # 점검 전에 안내 · 패치노트
     assert release.MAINTENANCE[1] - release.MAINTENANCE[0] == 180
     assert release.released(release.MAINTENANCE[0])                            # 2.8 은 공개된 그대로
-    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-2.82")
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-2.82b")
     start, end = release.MAINTENANCE
     assert P.notice_text("maint-2.82", title, body, start - 60) == (title, body)              # 점검 전: 그대로
     t2, b2 = P.notice_text("maint-2.82", title, body, end)                                    # 점검 뒤: 점검 완료

@@ -117,7 +117,7 @@ class Fishing(commands.Cog):
     # ───────────── 화면 ─────────────
     async def _pond_embed(self, user, s: dict, note: str = "") -> discord.Embed:
         lv = f"`낚시` **Lv.{s['level']}** {ui.bar(s['xp'], s['need'], 8)} {s['xp']}/{s['need']}"
-        bag = f"`어망` **{s['bag']}/{BAG_MAX}** · `오늘 거래` **{s['used']}/{s['limit']}**포인트"
+        bag = f"`어망` **{s['bag']}/{BAG_MAX}** · `오늘 보내기` **{s['used']}/{s['limit']}**포인트"
         if s.get("cast_ts"):
             body = (f"> 🎙️ *\"찌가 물 위에 둥둥… 입질이 오면 이 메시지가 바뀌어요!\"*\n\n"
                     f"🎣 **<t:{s['cast_ts']}:R>** 던짐 · 입질은 10초 ~ 10분 사이 랜덤\n"   # 2.82: 디스코드 상대시간이라 저절로 늘어난다
@@ -303,7 +303,7 @@ class Fishing(commands.Cog):
         ]
         return HubView(user, "🎣 낚시 메뉴", SECTION, pages, "/낚시", page,
                        ctx={"sel": []},
-                       home_note=f"판매 · 보내기는 하루 **{TRADE_DAILY}포인트**까지 (흔함 1 · 보통 1 · 희귀 2 · 영웅 3 · 전설 5).\n"
+                       home_note=f"판매는 한도 없음 · 다른 유저에게 보내기는 하루 **{TRADE_DAILY}포인트**까지 (흔함 1 · 보통 1 · 희귀 2 · 영웅 3 · 전설 5).\n"
                                  "먹이기 · 요리 · 수족관 · 도감은 한도가 없어요.")
 
     async def _bag_select(self, view: HubView, fish: list[dict], placeholder: str, row: int, cb, max_values: int = 25):
@@ -332,7 +332,7 @@ class Fishing(commands.Cog):
         more = f"\n…외 {len(fish) - 20}마리" if len(fish) > 20 else ""
         e = ui.card(f"🧺 어망 · {len(fish)}/{BAG_MAX}",
                     ("\n".join(lines) + more if lines else "어망이 비어 있어요. `/낚시`로 낚아 보세요!")
-                    + f"\n\n`오늘 거래` **{b['used']}/{b['limit']}**포인트" + (" · 🧊 아이스박스" if b["icebox"] else ""),
+                    + f"\n\n`오늘 보내기` **{b['used']}/{b['limit']}**포인트" + (" · 🧊 아이스박스" if b["icebox"] else ""),
                     ui.INFO, user, SECTION)
         await self._bag_select(view, free, "💰 팔 물고기 고르기 (여러 마리 가능)", 0, self._sell)
         await self._bag_select(view, free, "🌊 놓아주기 (돈 · 한도 없이 어망 비우기)", 1, self._release)
@@ -353,11 +353,8 @@ class Fishing(commands.Cog):
     async def _sell(self, interaction, view: HubView, ids: list[int]):
         r = await self.db.sell(view.user.id, ids, int(time.time()))
         if r["ok"]:
-            note = ui.card(f"💰 {r['count']}마리 판매!", f"`정산` **+{r['gain']:,}원** · `잔액` **{r['balance']:,}원**\n"
-                           f"`오늘 거래` **{r['used']}/{r['limit']}**포인트", ui.WIN, view.user, SECTION)
-        elif r["reason"] == "limit":
-            note = ui.card("🙅 오늘 거래 한도가 모자라요", f"고른 물고기는 **{r['need']}포인트**, 남은 한도는 **{r['left']}포인트**예요.\n"
-                           f"🍀 낚시 부적을 쓰면 오늘 한도 +{CHARM_BONUS}.", ui.LOSE, view.user, SECTION)
+            note = ui.card(f"💰 {r['count']}마리 판매!", f"`정산` **+{r['gain']:,}원** · `잔액` **{r['balance']:,}원**",
+                           ui.WIN, view.user, SECTION)
         else:
             note = ui.card("🙅 팔 수 없어요", "이미 없거나 수족관에 전시 중인 물고기예요.", ui.LOSE, view.user, SECTION)
         await view.refresh(interaction, note)
@@ -373,10 +370,10 @@ class Fishing(commands.Cog):
         r = await self.db.give(view.user.id, to.id, ids, int(time.time()))
         if r["ok"]:
             note = ui.card(f"🎁 {to.display_name}님에게 {r['count']}마리 보냈어요", ", ".join(r["names"])
-                           + f"\n`오늘 거래` **{r['used']}/{r['limit']}**포인트", ui.WIN, view.user, SECTION)
+                           + f"\n`오늘 보내기` **{r['used']}/{r['limit']}**포인트", ui.WIN, view.user, SECTION)
         else:
             msg = {"self": "자기 자신에게는 보낼 수 없어요.", "none": "보낼 물고기가 없어요.",
-                   "limit": f"오늘 거래 한도가 모자라요 (필요 {r.get('need')} · 남음 {r.get('left')}).",
+                   "limit": f"오늘 보내기 한도가 모자라요 (필요 {r.get('need')} · 남음 {r.get('left')}).",
                    "full": "받는 사람의 어망이 가득 찼어요."}[r["reason"]]
             note = ui.card("🙅 보낼 수 없어요", msg, ui.LOSE, view.user, SECTION)
         await view.refresh(interaction, note)
@@ -578,7 +575,7 @@ class Fishing(commands.Cog):
         if not r["ok"]:
             return await interaction.response.send_message("🙅 🍀 낚시 부적이 없어요.", ephemeral=True)
         await interaction.response.send_message(embed=ui.card(
-            "🍀 낚시 부적 사용!", f"오늘 물고기 판매 · 보내기 한도 **+{CHARM_BONUS}** → **{r['used']}/{r['limit']}**포인트",
+            "🍀 낚시 부적 사용!", f"오늘 물고기 보내기 한도 **+{CHARM_BONUS}** → **{r['used']}/{r['limit']}**포인트",
             ui.GOLD, user, "🎒 아이템"))
 
     async def _use_pieces(self, interaction: discord.Interaction, user):

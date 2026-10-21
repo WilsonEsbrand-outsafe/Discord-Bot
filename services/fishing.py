@@ -1,7 +1,7 @@
 # services/fishing.py — 🎣 낚시 (2.8): 물고기 40종 (2.82: 30 → 40) · 입질 대기 · 싯가 · 거래 한도 · 먹이기 · 요리 · 수족관 · 도감 · 주간 최대어
 # 찌는 한 번에 하나. 던지면 10초~10분 뒤 입질 → 5분 안에 [잡기!]를 못 누르면 도망. 상태는 DB(economy.sqlite3)에 남아
 # 봇이 재시작해도 이어진다. 오래 기다린 입질일수록 희귀한 물고기가 걸린다.
-# 돈이 풀리는 곳은 판매뿐이다 — 판매 · 보내기(트레이드)는 하루 20포인트 한도 (흔함 1 · 보통 1 · 희귀 2 · 영웅 3 · 전설 5).
+# 돈이 풀리는 곳은 판매뿐이다 — 보내기(유저 간 트레이드)만 하루 20포인트 한도 (2.82b: 판매는 한도 없음) (흔함 1 · 보통 1 · 희귀 2 · 영웅 3 · 전설 5).
 import math
 import random
 import sqlite3
@@ -13,7 +13,7 @@ from services.economy_db import EconomyDB, give_item, _kst_day
 # ───────────── 물고기 ─────────────
 GRADES = ("흔함", "보통", "희귀", "영웅", "전설")
 GRADE_EMOJI = ("⚪", "🟢", "🔵", "🟣", "🟡")
-GRADE_POINTS = (1, 1, 2, 3, 5)            # 판매 · 보내기 때 깎이는 거래 포인트
+GRADE_POINTS = (1, 1, 2, 3, 5)            # 보내기 때 깎이는 거래 포인트
 GRADE_XP = (5, 10, 25, 60, 150)           # 낚시 경험치 (+ 크기 보너스)
 GRADE_SIGMA = (0.08, 0.12, 0.18, 0.25, 0.35)   # 싯가 하루 변동 폭 (±)
 # 키 → (이모지, 이름, 등급, 평균 크기 cm, 기준가 원). 기준가 = 평균 크기 · 싯가 1배 · 신선할 때 값.
@@ -54,7 +54,7 @@ JUNK = {   # 아이템 → 비중 (old_boot = 낡은 장화, 아무것도 아님
     "old_boot": 20, "bait": 30, "spice": 22, "skip_piece": 15, "bait_gold": 8, "fish_charm": 3, "box": 2,
 }
 BAG_MAX = 100                 # 어망(보관) 한도
-TRADE_DAILY = 20              # 하루 판매 · 보내기 포인트
+TRADE_DAILY = 20              # 하루 보내기 포인트
 CHARM_BONUS = 5               # 🍀 낚시 부적 1장 = 오늘 한도 +5
 FRESH_DROP, FRESH_DROP_ICE, FRESH_MIN = 0.10, 0.05, 0.5   # 하루 신선도 -10% (아이스박스 -5%) · 최저 50%
 MARKET_MIN, MARKET_MAX, MARKET_REVERT = 0.5, 2.0, 0.25    # 싯가 배수 0.5~2.0 · 매일 평균(1)으로 25% 회귀
@@ -355,15 +355,11 @@ class FishingDB(EconomyDB):
         return await self._tx(fn)
 
     async def sell(self, uid: int, ids: list[int], now_ts: int) -> dict:
-        """판매. 실패 reason: none(없음 · 전시 중) / limit(오늘 포인트 부족)."""
+        """판매 — 거래 포인트를 쓰지 않는다 (2.82b: 포인트는 유저 간 보내기에만). 실패 reason: none(없음 · 전시 중)."""
         def fn(con):
             rows = [f for f in self._fish_rows(con, uid, ids) if not f["displayed"]]
             if not rows:
                 return {"ok": False, "reason": "none"}
-            used, limit = self._trade(con, uid, now_ts)
-            pts = sum(GRADE_POINTS[FISH[f["species"]][2]] for f in rows)
-            if used + pts > limit:
-                return {"ok": False, "reason": "limit", "need": pts, "left": limit - used}
             market = self._market(con, now_ts)
             ice = self._qty(con, uid, "icebox") > 0
             total = 0
@@ -373,12 +369,10 @@ class FishingDB(EconomyDB):
                 m["supply"] = max(SUPPLY_MIN, m["supply"] * (1 - SUPPLY_HIT))
                 con.execute("UPDATE fish_market SET supply=? WHERE species=?", (m["supply"], f["species"]))
                 con.execute("DELETE FROM fish_bag WHERE id=?", (f["id"],))
-            self._spend_points(con, uid, now_ts, pts)
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (uid,))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total, uid))
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (uid,)).fetchone()[0]
-            return {"ok": True, "count": len(rows), "gain": total, "points": pts, "used": used + pts, "limit": limit,
-                    "balance": int(bal)}
+            return {"ok": True, "count": len(rows), "gain": total, "balance": int(bal)}
         return await self._tx(fn)
 
     async def give(self, uid: int, to_uid: int, ids: list[int], now_ts: int) -> dict:
