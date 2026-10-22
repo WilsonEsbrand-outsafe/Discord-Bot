@@ -88,8 +88,8 @@ SKIP_PIECES = 5               # 스킵권 조각 5개 → 스킵권 1장 (스카
 
 
 def level_need(level: int) -> int:
-    """Lv.N → N+1 경험치. 흔한 물고기 기준 Lv.2 까지 약 40마리 (2.9.1)."""
-    return 80 * level
+    """Lv.N → N+1 경험치. 2.10.1: 80 → 120 (레벨 간격 1.5배, 흔한 물고기 기준 Lv.2 까지 약 60마리)."""
+    return 120 * level
 
 
 def add_xp(level: int, xp: int, gain: int) -> tuple[int, int, int]:

@@ -86,6 +86,8 @@ def test_2101():
     start, end = release.MAINTENANCE
     assert (start, end) == (calendar.timegm((2026, 10, 22, 1, 0, 0)), calendar.timegm((2026, 10, 22, 1, 5, 0)))   # 10:00 ~ 10:05 KST
     assert keys["maint-2.10.1"] == keys["patch-2.10.1"] < start                # 점검 전에 안내 · 패치노트
+    assert release.RELEASE_2101_TS == start and not release.released_2101(start - 1) and release.released_2101(start)
+    assert release.preview_2101(release.TEST_GUILD, start - 1) and not release.preview_2101(1, start - 1)
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-2.10.1")
     assert P.notice_text("maint-2.10.1", title, body, keys["maint-2.10.1"]) == (title, body)
 
