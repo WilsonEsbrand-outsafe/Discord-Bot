@@ -7,10 +7,35 @@ from typing import Optional
 DB_PATH = "data/ufc.sqlite3"
 
 
-def _connect():
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
+# 2.10.2: 서버의 ufc.sqlite3 에 event_id 칸이 없는 예전 표가 남아 있어 UFC 베팅이 전부
+# 'no such column: event_id' 로 실패했다. 예전 표는 *_legacy 로 이름만 바꿔 보관하고, 옮길 수 있는 칸은 새 표로 옮긴다.
+_TABLE_COLS = {"ufc_bets": ("event_id", "match_id", "user_id", "fighter", "amount", "odds", "settled", "won"),
+               "ufc_settled": ("event_id",)}
+
+
+def _migrate(con):
+    for table, cols in _TABLE_COLS.items():
+        have = [r[1] for r in con.execute(f"PRAGMA table_info({table})")]
+        if not have or "event_id" in have:
+            continue
+        legacy = f"{table}_legacy"
+        while con.execute("SELECT 1 FROM sqlite_master WHERE name=?", (legacy,)).fetchone():
+            legacy += "_"
+        con.execute(f"ALTER TABLE {table} RENAME TO {legacy}")
+        con.commit()
+        _create(con)
+        # event_id 가 없던 시절엔 match_id 가 경기 키였다
+        src = {c: c for c in cols if c in have}
+        if "match_id" in have:
+            src["event_id"] = "match_id"
+        try:
+            con.execute(f"INSERT OR IGNORE INTO {table} ({', '.join(src)}) SELECT {', '.join(src.values())} FROM {legacy}")
+            con.commit()
+        except sqlite3.Error:
+            con.rollback()   # 칸이 너무 달라 못 옮기면 예전 표에 그대로 둔다
+
+
+def _create(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS ufc_bets (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,6 +56,14 @@ def _connect():
         )
     """)
     con.commit()
+
+
+def _connect():
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    _create(con)
+    _migrate(con)
     return con
 
 

@@ -252,12 +252,13 @@ class UfcToto(commands.Cog):
                 log.warning(f"[UFC] {event_id} 승자 판별 실패: {event.get('scores')}")
                 continue
 
+            home = event.get("home_team", "?")
+            away = event.get("away_team", "?")
             results = await self.db.settle(event_id, winner)
+            results += await self.db.settle(f"{home}|{away}", winner)   # 2.10.2: 예전 표에서 옮겨 온 베팅은 'A|B' 가 경기 키
             if not results:
                 continue
 
-            home = event.get("home_team", "?")
-            away = event.get("away_team", "?")
             log.info(f"[UFC] 자동 정산: {home} vs {away} → 승자 {winner}")
 
             for r in results:
