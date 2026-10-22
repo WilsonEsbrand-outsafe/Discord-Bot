@@ -92,10 +92,19 @@ def test_2101():
     assert P.notice_text("maint-2.10.1", title, body, keys["maint-2.10.1"]) == (title, body)
 
 
+def test_2102():
+    import release
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    assert "UFC" in PATCH_NOTES["2.10.2"] and "장부" not in PATCH_NOTES["2.10.2"]
+    assert keys["patch-2.10.2"] == release.RELEASE_2102_TS and release.preview_2102(1, release.RELEASE_2102_TS)
+    assert not release.maintenance(release.RELEASE_2102_TS)                    # 무점검
+
+
 if __name__ == "__main__":
     test_28_content()
     test_embeds()
     test_282()
     test_291()
     test_2101()
+    test_2102()
     print("OK: patch notes")

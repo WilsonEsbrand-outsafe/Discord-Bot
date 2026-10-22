@@ -57,7 +57,7 @@ def preview_2101(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 
 
 # 2.10.2 — 테스트 서버 먼저. preview_2102(guild): 베팅 금액 입력 뒤 응답 고정(UFC 베팅 실패 수정). None = 아직
-RELEASE_2102_TS: Optional[int] = None
+RELEASE_2102_TS: Optional[int] = calendar.timegm((2026, 10, 22, 4, 10, 0))   # 2026-10-22 13:10 KST 무점검 공개 (버그 수정)
 
 
 def released_2102(now: Optional[float] = None) -> bool:
