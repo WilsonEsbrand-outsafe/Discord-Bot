@@ -744,10 +744,10 @@ class BetModal(discord.ui.Modal):
         await interaction.response.defer()
         try:
             await self._submit(interaction, int(raw), interaction.followup.send)
-        except Exception:
+        except Exception as ex:
             log.exception(f"[토토] 베팅 처리 실패: user={interaction.user.id} game={self.game.get('kind')}")
-            await interaction.followup.send("❌ 베팅 처리 중 오류가 났어요. 잠시 뒤 다시 시도해 주세요.",
-                                            ephemeral=True)
+            await interaction.followup.send("❌ 베팅 처리 중 오류가 났어요. 잠시 뒤 다시 시도해 주세요.\n"
+                                            f"-# 오류: `{type(ex).__name__}: {str(ex)[:150]}`", ephemeral=True)
 
     async def _submit(self, interaction: discord.Interaction, amount: int, send):
         user = interaction.user
