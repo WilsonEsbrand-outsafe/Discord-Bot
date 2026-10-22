@@ -206,7 +206,12 @@ async def place_ufc_bet(user_id: int, fight: dict, fighter: str, odds: float, am
         return f"이미 이 경기에 **{existing['fighter']}** ({existing['amount']:,}원)으로 베팅했습니다."
 
     await eco.add_balance(user_id, -amount)
-    if not await db.place_bet(fight["event_id"], fight["match_id"], user_id, fighter, amount, odds):
+    try:
+        ok = await db.place_bet(fight["event_id"], fight["match_id"], user_id, fighter, amount, odds)
+    except Exception:
+        await eco.add_balance(user_id, amount)   # 2.10.2: 등록이 터져도 돈은 돌려준다
+        raise
+    if not ok:
         await eco.add_balance(user_id, amount)
         return "베팅 등록 실패 (중복)"
     return None
