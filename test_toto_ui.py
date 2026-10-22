@@ -82,6 +82,16 @@ async def _flow():
     await modal.on_submit(inter)                                    # 같은 경기 두 번은 안 된다
     assert "이미" in sent[-1]["content"] and await cog.db.get_balance(U) == 85_000
 
+    # 2.10.2: 베팅 등록 중 DB 가 터져도 '상호작용 실패' 대신 안내하고, 뺀 돈은 돌려준다
+    real = cog.ufc.place_bet
+    async def boom(*a, **k):
+        raise RuntimeError("database is locked")
+    cog.ufc.place_bet = boom
+    modal.game = {**modal.game, "fight": {**modal.game["fight"], "event_id": "e2"}}
+    await modal.on_submit(inter)
+    assert "오류" in sent[-1]["content"] and sent[-1]["ephemeral"] and await cog.db.get_balance(U) == 85_000
+    cog.ufc.place_bet = real
+
     # 숫자가 아니면 거절
     modal.amount._value = "만원"
     await modal.on_submit(inter)

@@ -1,5 +1,6 @@
 # cogs/toto.py
 import time
+import logging
 import discord
 import aiohttp
 import os
@@ -20,6 +21,8 @@ from services import ui
 from services.ufc_db import UfcDB
 from cogs.ufc_toto import MMA_COLOR, place_ufc_bet, upcoming_fights
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 def _fmt_ts(ts: int) -> str:
     # 디스코드 타임스탬프(로컬 표시)
@@ -734,7 +737,20 @@ class BetModal(discord.ui.Modal):
         raw = self.amount.value.replace(",", "").replace("원", "").strip()
         if not raw.isdigit() or int(raw) <= 0:
             return await interaction.response.send_message("❌ 금액은 1 이상의 숫자로 입력해 주세요.", ephemeral=True)
-        amount, user = int(raw), interaction.user
+        if not release.preview_2102(interaction.guild_id):
+            return await self._submit(interaction, int(raw), interaction.response.send_message)
+        # 2.10.2: 금액을 넣으면 '상호작용 실패'로 끝나던 UFC 베팅 — DB 가 바쁘면 3초 응답 시한을 넘긴다.
+        # 먼저 응답을 잡아 두고, 그래도 실패하면 이유를 남기고 사용자에게 알린다.
+        await interaction.response.defer()
+        try:
+            await self._submit(interaction, int(raw), interaction.followup.send)
+        except Exception:
+            log.exception(f"[토토] 베팅 처리 실패: user={interaction.user.id} game={self.game.get('kind')}")
+            await interaction.followup.send("❌ 베팅 처리 중 오류가 났어요. 잠시 뒤 다시 시도해 주세요.",
+                                            ephemeral=True)
+
+    async def _submit(self, interaction: discord.Interaction, amount: int, send):
+        user = interaction.user
         if self.game["kind"] == "soccer":
             err, info = await self.cog.place_soccer_bet(user.id, self.game["match_id"], self.pick, amount)
             odds, title = (info or {}).get("odds"), f"⚽ {self.game['home']} vs {self.game['away']}"
@@ -743,13 +759,13 @@ class BetModal(discord.ui.Modal):
             err = await place_ufc_bet(user.id, f, self.pick, self.odds, amount, self.cog.db, self.cog.ufc)
             odds, title = self.odds, f"🥊 {f['home']} vs {f['away']}"
         if err:
-            return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
+            return await send(f"❌ {err}", ephemeral=True)
         e = ui.card("✅ 베팅 완료",
                     f"`경기` **{title}**\n`픽` **{self.label}**\n"
                     f"`베팅` **{amount:,}원** · `배당` **{odds:.2f}배** (고정)\n"
                     f"`적중 시` **{int(amount * odds):,}원**",
                     ui.WIN, user, SECTION)
-        await interaction.response.send_message(embed=e)
+        await send(embed=e)
 
 
 class CancelMenu(discord.ui.View):
