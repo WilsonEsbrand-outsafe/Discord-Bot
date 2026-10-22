@@ -1,6 +1,6 @@
 # release.py — 단계 배포: 새 패치는 테스트 서버에 먼저, 다른 서버는 RELEASE_TS(정기점검)에 한꺼번에.
 # 다음 패치 때: PREVIEW_ONLY(새 명령어) · LEGACY_ONLY(없어질 명령어) · RELEASE_TS 를 바꾼다.
-# 지금: 2.10.1 — 테스트 서버 먼저 (RELEASE_2101_TS) · 2.9.1 은 10/21 14:15 KST · 2.8 은 2026-10-20 00:00 KST 공개 완료
+# 지금: 2.10.1 — 10/22 10:00 KST 점검(10:00 ~ 10:05) 때 RELEASE_2101_TS 를 넣어 배포 · 2.9.1 은 10/21 14:15 KST · 2.8 은 2026-10-20 00:00 KST 공개 완료
 #       (2.5 는 2026-10-02 00:00 · 2.6 은 2026-10-03 12:00 · 2.7 은 2026-10-12 17:00 KST 공개 완료)
 import calendar  # RELEASE_TS = calendar.timegm((년, 월, 일, 시(UTC), 분, 0)) · None = 아직 테스트 서버에만
 import time
@@ -8,7 +8,7 @@ from typing import Optional
 
 TEST_GUILD = 1374213619793006704
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
-MAINTENANCE = (calendar.timegm((2026, 10, 21, 5, 15, 0)), calendar.timegm((2026, 10, 21, 5, 20, 0)))   # 정기점검 2.9.1 (10/21 14:15 ~ 14:20 KST) — 명령어 막음 (2.82b 는 10:12 ~ 10:15)
+MAINTENANCE = (calendar.timegm((2026, 10, 22, 1, 0, 0)), calendar.timegm((2026, 10, 22, 1, 5, 0)))   # 정기점검 2.10.1 (10/22 10:00 ~ 10:05 KST) — 명령어 막음 (2.9.1 은 10/21 14:15 ~ 14:20)
 # (2.8 점검은 RELEASE_TS ± 600초였다. 공개를 다시 단계 배포할 땐 MAINTENANCE 를 RELEASE_TS 에 맞춘다)
 
 PREVIEW_ONLY: set[str] = {"낚시", "낚시시세", "양궁", "던전", "오늘", "게임"}   # 공개 전엔 테스트 서버에만 보이는 명령어 (2.8 새 명령어는 만들 때마다 추가)
