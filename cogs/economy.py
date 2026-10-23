@@ -880,7 +880,9 @@ class Economy(commands.Cog):
         if r["leveled"]:
             e.description += (f"\n\n🆙 **{self.watch_tier(r['level'])}** 승급! 보상 {self.watch_money_mult(old_lv)}배 → "
                               f"**{self.watch_money_mult(r['level'])}배**")
-        e.set_thumbnail(url=ui.emoji_url(ITEMS[item][0] if item else "🏟️"))
+        scene = ("levelup" if r["leveled"] else {"muffler": "watch_muffler", "toto_slip": "watch_slip", "steroid": "watch_steroid",
+                 "lawyer": "watch_lawyer"}.get(item) if item else "watch_ok" if info["ok"] else "watch_fail")
+        e.set_thumbnail(url=ui.scene_url(scene, user) or ui.emoji_url(ITEMS[item][0] if item else "🏟️"))   # 3.1.0 직관 키코 그림
         await interaction.followup.send(embed=e)
 
     # ✅ 가방 · 아이템 사용

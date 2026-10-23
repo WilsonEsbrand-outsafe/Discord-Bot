@@ -60,10 +60,11 @@ KIKO_POSE = {GOLD: "gold", WIN: "win", EVEN: "even", LOSE: "lose", DOOM: "doom"}
 KIKO_ART = "https://raw.githubusercontent.com/WilsonEsbrand-outsafe/Discord-Bot/main/assets/kiko/{}.png"
 # 결과마다 그 장면을 연기하는 키코 그림이 있는 게임: assets/kiko/scenes/{게임}_{결과 번호}.png (번호 = 결과표 순서)
 KIKO_SCENES = {"pk": 10, "bat": 12, "hoop": 12, "ufc": 13, "race": 4, "snail": 4, "row": 6, "fish": 5}
-# 번호 없는 장면: 낚시 · 던전 · 훈련/스카우트
+# 번호 없는 장면: 낚시 · 던전 · 훈련/스카우트 · 직관
 KIKO_NAMED = {"fish_early", "fish_fled", "fish_boot", "fish_item",
               "dg_doors", "dg_battle", "dg_boss", "dg_treasure", "dg_merchant", "dg_altar", "dg_clear", "dg_dead", "dg_return",
-              "train_ok", "train_fail", "levelup", "scout_ok", "scout_fail", "scout_found"}
+              "train_ok", "train_fail", "levelup", "scout_ok", "scout_fail", "scout_found",
+              "watch_ok", "watch_fail", "watch_muffler", "watch_slip", "watch_steroid", "watch_lawyer"}
 
 
 def scene_url(scene: str | None, user=None) -> str | None:
