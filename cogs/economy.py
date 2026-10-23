@@ -125,6 +125,13 @@ class BagView(discord.ui.View):
                 return await self.cog._steroid_prompt(interaction, self.user)
             if key == "box":         # 카드 고르는 화면부터 모두에게
                 return await self.cog._box_prompt(interaction, self.user)
+            if key == "lawyer":      # 3.1.0: 누구에게 선임할지 고른다 (나 · 다른 유저)
+                return await interaction.response.send_message(
+                    embed=ui.card("⚖️ 누구에게 변호사를 선임할까요?",
+                                  "나 또는 다른 유저를 고르세요. 그 사람이 `/파산신청`에서 탕감 **0%**가 나오면\n"
+                                  "변호사가 다시 변론해 **30~70% · 100%** 중 하나로 바꿔 줘요. (한 번 쓰면 사라져요)",
+                                  ui.INFO, self.user, "🎒 아이템"),
+                    view=LawyerView(self.cog, self.user), ephemeral=True)
             handler = ITEM_HANDLERS.get(key)   # 2.8 새 기능 아이템 (낚시 · 던전 …) — 그 기능의 cog 가 등록한다
             if handler:
                 return await handler(interaction, self.user)
@@ -194,6 +201,35 @@ class TotoSlipView(discord.ui.View):
         await self._choose(interaction, "report")
 
 
+class LawyerView(discord.ui.View):
+    """⚖️ 변호사 선임권 — 선임할 유저 고르기 (본인에게만). 선임 소식은 채널에 공개."""
+
+    def __init__(self, cog: "Economy", user):
+        super().__init__(timeout=180)
+        self.cog, self.user = cog, user
+        self.pick = discord.ui.UserSelect(placeholder="⚖️ 변호사를 붙여 줄 사람 (나도 가능)")
+        self.pick.callback = self._hire
+        self.add_item(self.pick)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user.id
+
+    async def _hire(self, interaction: discord.Interaction):
+        target = self.pick.values[0]
+        if target.bot:
+            return await interaction.response.send_message("🙅 봇에게는 선임할 수 없어요.", ephemeral=True)
+        self.stop()
+        r = await self.cog.db.hire_lawyer(self.user.id, target.id)
+        if not r["ok"]:
+            return await interaction.response.edit_message(embed=self.cog._no_item_card(self.user, "lawyer"), view=None)
+        await interaction.response.edit_message(
+            embed=ui.card("⚖️ 선임 완료", "소식은 채널에 올라갔어요.", ui.DARK, self.user, "🎒 아이템"), view=None)
+        who = "자기 자신" if target.id == self.user.id else f"{target.mention}님"
+        await interaction.followup.send(embed=ui.card(
+            "⚖️ 변호사 선임!", f"**{self.user.display_name}**님이 {who}에게 변호사를 붙였어요.\n"
+            f"파산 탕감 **0%**가 나오면 다시 변론해 줘요. (선임된 변호사 **{r['uses']}명**)", ui.GOLD, self.user, "🎒 아이템"))
+
+
 class SteroidView(discord.ui.View):
     """💉 스테로이드 주사기 — 내 유망주에게 놓을지 확인 (본인에게만). 결과는 채널에 공개."""
 
@@ -242,7 +278,8 @@ class BankruptConfirm(discord.ui.View):
             e = ui.card("⚖️ 파산 처리 완료",
                         f"`빚` **{r['debt']:,}원**\n"
                         f"`스폰서 강제 해지` **+{r['sponsor']:,}원**\n"
-                        f"`탕감` **{r['forgiven']:,}원** · 남은 빚의 **{r['rate']:.0%}**"
+                        + (f"⚖️ 변호사가 다시 변론했어요! 탕감 **0% → {r['rate']:.0%}**\n" if r.get("lawyer") else "")
+                        + f"`탕감` **{r['forgiven']:,}원** · 남은 빚의 **{r['rate']:.0%}**"
                         + (" 🎉 전액 탕감!" if r["rate"] >= 1 else " 😱 한 푼도 탕감 못 받았어요…" if r["rate"] == 0 and r["debt"] > r["sponsor"] else "")
                         + "\n"
                         f"`잔액` **{r['balance']:,}원**\n\n"
@@ -486,6 +523,8 @@ class Economy(commands.Cog):
         if release.preview_310(getattr(interaction, "guild_id", None)):   # 3.1.0
             (p0, _), (pm, _), (p1, _) = BANKRUPT_310
             forgive = f"**0%** ({p0:.0%} 확률) · **{lo:.0%} ~ {hi:.0%}** ({pm:.0%}) · **100%** ({p1:.0%}) 중 하나로 탕감돼요"
+            if n := await self.db.lawyers(user.id):
+                forgive += f"\n　⚖️ 선임된 변호사 **{n}명** — 0%가 나오면 다시 변론해 줘요"
         else:
             forgive = f"**{lo:.0%} ~ {hi:.0%}** 가 랜덤으로 탕감돼요"
         e = ui.card("⚖️ 정말 파산 신청할까요?",
@@ -958,7 +997,7 @@ class Economy(commands.Cog):
 
     def _no_item_card(self, user, item: str) -> discord.Embed:
         emoji, name, _ = ITEMS[item]
-        where = ("`/아이템상점`에서 살 수 있어요." if shop_open(item) else
+        where = ("`/아이템상점`에서 살 수 있어요." if shop_open(item, guild_id=getattr(getattr(user, "guild", None), "id", None)) else
                  "`/직관` 경기장 이벤트에서 얻을 수 있어요." if item in self.WATCH_ITEM_WEIGHTS else
                  "지금은 `/쿠폰` 같은 이벤트로 얻을 수 있어요.")
         return ui.card(f"🙅 {emoji} {name}이(가) 없어요", where, ui.LOSE, user, "🎒 아이템")
@@ -1428,8 +1467,8 @@ class Economy(commands.Cog):
     # 3.1.0: 결과 구간(우승 · 챔스 · 유로파 · 컨퍼런스 · 중위권 · 하위권 · 강등)별 확률로 배당 — 우승 · 강등은 극단적으로.
     # 순위는 완전 랜덤이라 구간 확률 = 순위 칸 수 / 20. 기대값 -5% (순위별 배수 합 -1)
     LEAGUE_PAYOUT_310 = [
-        (1, 20, "🏆 리그 우승"), (4, 3, "⭐ 챔피언스리그 진출"), (6, 1.5, "🌍 유로파리그 진출"),
-        (7, 1, "🎫 컨퍼런스리그 진출"), (12, 0, "😐 중위권"), (17, -2, "😰 하위권"), (20, -8, "⬇️ 강등"),
+        (1, 40, "🏆 리그 우승"), (4, 5, "⭐ 챔피언스리그 진출"), (6, 1.5, "🌍 유로파리그 진출"),
+        (7, 1, "🎫 컨퍼런스리그 진출"), (12, 0, "😐 중위권"), (17, -3, "😰 하위권"), (20, -15, "⬇️ 강등"),
     ]
 
     @classmethod

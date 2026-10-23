@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from services import ui
+import release
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
 
@@ -76,6 +77,8 @@ ITEMS = {
     "first_team":  ("📝", "1군 등록권",      "유스 선수 한 명을 내 구단 선수로 등록 (등록비 100만원 · 주 1회)"),
     "special_training": ("🏋️", "특훈권",     "오늘 유스 선수 한 명 훈련 +1번"),
     "scout_coupon": ("🎟️", "스카우트 쿠폰",  "다음 유스 입단 테스트 무료 + 지원자 +2명"),
+    # ── 3.1.0 ──
+    "lawyer":      ("⚖️", "변호사 선임권",   "나 또는 다른 유저에게 선임 · 파산 탕감 0%가 나오면 다시 변론해 30~70% · 100% 중 하나로"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
@@ -96,21 +99,27 @@ ITEM_PRICES = {
     "first_team": 3_000_000, "special_training": 300_000, "scout_coupon": 500_000,
     # 전술
     "tactic_note": 500_000, "analysis_report": 300_000,
+    # 3.1.0
+    "lawyer": 1_000_000,
 }
 # 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
                ("🎣 낚시", ("bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "fish_charm", "spice")),
                ("🏹 양궁", ("bow_pro", "windbreaker", "focus")),
                ("🎓 유스", ("first_team", "special_training", "scout_coupon")),
-               ("⚔️ 전술", ("tactic_note", "analysis_report")))
+               ("⚔️ 전술", ("tactic_note", "analysis_report")),
+               ("⚖️ 파산", ("lawyer",)))
+SHOP_310 = {"lawyer"}   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고판다
 SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3}   # 하루(KST) 구매 한도가 있는 아이템
 # 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
 SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST
 SHOP_BASE = ("muffler", "steroid")
 
 
-def shop_open(item: str, now_ts: Optional[float] = None) -> bool:
-    """/아이템상점에서 지금 사고팔 수 있는 아이템인가."""
+def shop_open(item: str, now_ts: Optional[float] = None, guild_id: Optional[int] = None) -> bool:
+    """/아이템상점에서 지금 사고팔 수 있는 아이템인가 (3.1.0 새 아이템은 그 서버가 3.1.0 공개 서버일 때만)."""
+    if item in SHOP_310 and not release.preview_310(guild_id, now_ts):
+        return False
     return item in ITEM_PRICES and (item in SHOP_BASE or (time.time() if now_ts is None else now_ts) >= SHOP_281_TS)
 
 
@@ -614,6 +623,27 @@ class EconomyDB:
         return await self._tx(fn)
 
     # ───────────── 파산 ─────────────
+    @staticmethod
+    def _lawyers(con, user_id: int) -> int:
+        row = con.execute("SELECT uses FROM buffs WHERE user_id=? AND item='lawyer'", (user_id,)).fetchone()
+        return int(row[0]) if row else 0
+
+    async def lawyers(self, user_id: int) -> int:
+        """나에게 선임된 변호사 수 (3.1.0)."""
+        return await self._tx(lambda con: self._lawyers(con, user_id))
+
+    async def hire_lawyer(self, user_id: int, target_id: int) -> dict:
+        """⚖️ 변호사 선임권 사용: user 의 선임권 하나로 target(나 · 다른 유저)에게 변호사를 붙인다. 실패 reason: none."""
+        def fn(con):
+            row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='lawyer'", (user_id,)).fetchone()
+            if not row or int(row[0]) <= 0:
+                return {"ok": False, "reason": "none"}
+            con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
+            con.execute("INSERT INTO buffs(user_id, item, uses) VALUES(?, 'lawyer', 1) "
+                        "ON CONFLICT(user_id, item) DO UPDATE SET uses = uses + 1", (target_id,))
+            return {"ok": True, "uses": self._lawyers(con, target_id)}
+        return await self._tx(fn)
+
     async def declare_bankruptcy(self, user_id: int, now_ts: int, rng=random, new: bool = False) -> dict:
         """파산: 진행 중 스폰서 계약을 강제 해지해 원금으로 빚을 갚고, 남은 빚의 30~70% 를 랜덤 탕감한다.
         선수 카드는 건드리지 않는다. 실패 reason: not_negative / cooldown(until).
@@ -635,15 +665,20 @@ class EconomyDB:
                             "WHERE user_id=? AND status='active'", (user_id,))
             after = bal + sponsor
             rate = rng.uniform(*BANKRUPT_FORGIVE)
+            lawyer = False
             if new:
                 pick = rng.choices([r for _, r in BANKRUPT_310], weights=[p for p, _ in BANKRUPT_310])[0]
+                if pick == 0.0 and after < 0 and self._lawyers(con, user_id) > 0:   # ⚖️ 변호사가 다시 변론 (0% 빼고)
+                    con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
+                    rest = [(p, r) for p, r in BANKRUPT_310 if r != 0.0]
+                    pick, lawyer = rng.choices([r for _, r in rest], weights=[p for p, _ in rest])[0], True
                 rate = rate if pick is None else pick
             forgiven = round(-after * rate) if after < 0 else 0
             new_bal = after + forgiven
             con.execute("UPDATE wallets SET balance=? WHERE user_id=?", (new_bal, user_id))
             con.execute("INSERT INTO bankruptcy(user_id, last_ts, times) VALUES(?, ?, 1) "
                         "ON CONFLICT(user_id) DO UPDATE SET last_ts=excluded.last_ts, times=times+1", (user_id, now_ts))
-            return {"ok": True, "debt": -bal, "sponsor": sponsor, "rate": rate if after < 0 else 0.0,
+            return {"ok": True, "debt": -bal, "sponsor": sponsor, "rate": rate if after < 0 else 0.0, "lawyer": lawyer,
                     "forgiven": forgiven, "balance": new_bal, "next": now_ts + BANKRUPT_COOLDOWN}
         return await self._tx(fn)
 
@@ -1542,9 +1577,9 @@ class EconomyDB:
             return {"ok": True, "extra": total, "left": GRIND_RULES[table][1] + total - used}
         return await self._tx(fn)
 
-    async def sell_item(self, user_id: int, item: str, qty: int) -> dict:
+    async def sell_item(self, user_id: int, item: str, qty: int, guild_id: Optional[int] = None) -> dict:
         """아이템 판매: 개당 원가의 50%. 실패 reason: unsellable(원가 없는 아이템) / short(수량 부족)."""
-        if not shop_open(item):
+        if not shop_open(item, guild_id=guild_id):
             return {"ok": False, "reason": "unsellable"}
         each = SELL_PRICES[item]
 
@@ -1594,7 +1629,7 @@ class EconomyDB:
         return await self._tx(lambda con: {i: int(c) for i, c in con.execute(
             "SELECT item, cnt FROM shop_daily WHERE user_id=? AND day_key=?", (user_id, day))})
 
-    async def buy_item(self, user_id: int, item: str, now_ts: int, qty: int = 1) -> dict:
+    async def buy_item(self, user_id: int, item: str, now_ts: int, qty: int = 1, guild_id: Optional[int] = None) -> dict:
         """상점 구매: 돈을 내고 가방에 qty개 (2.10.1: 여러 개 한 번에).
         실패 reason: daily(오늘 한도 — SHOP_DAILY_LIMITS, left = 오늘 남은 수) / have(SHOP_ONE_ONLY) / balance."""
         qty = max(1, int(qty))
@@ -1605,7 +1640,7 @@ class EconomyDB:
 
         def fn(con):
             bought = 0
-            if not shop_open(item, now_ts):
+            if not shop_open(item, now_ts, guild_id):
                 return {"ok": False, "reason": "closed"}
             if item in SHOP_ONE_ONLY and con.execute("SELECT 1 FROM inventory WHERE user_id=? AND item=? AND qty>0",
                                                      (user_id, item)).fetchone():

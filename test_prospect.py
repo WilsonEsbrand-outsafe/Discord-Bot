@@ -73,11 +73,13 @@ def test_input():
     assert len(attrs) == 6 and attrs == cdb.prospect_attrs("YP1", "FW", 70)                     # 선수마다 고정
     assert [v + 5 for _, v in attrs] == [v for _, v in cdb.prospect_attrs("YP1", "FW", 75)]     # OVR 따라 같이 오른다
     assert dict(attrs)["슛"] > dict(attrs)["수비"]
-    hot = dict(cdb.prospect_attrs("YP1", "FW", 70, "슛,속력"))                                   # 3.1.0 특화 능력치 +10
+    hot = dict(cdb.prospect_attrs("YP1", "FW", 70, "슛,속력@60"))                                # 3.1.0 특화: 오른 만큼 2배
     assert hot["슛"] == min(99, dict(attrs)["슛"] + 10) and hot["속력"] == dict(attrs)["속력"] + 10 and hot["패스"] == dict(attrs)["패스"]
+    assert cdb.prospect_attrs("YP1", "FW", 60, "슛,속력@60") == cdb.prospect_attrs("YP1", "FW", 60)   # 만들 땐 그대로
+    assert cdb.prospect_attrs("YP1", "FW", 70, "슛,속력") == attrs                                      # 시작 OVR 모르면 보너스 없음
     for _ in range(50):
-        f = cdb.pick_focus("ST", random).split(",")
-        assert len(set(f)) == 2 and "수비" not in f
+        names, start = cdb.focus_parts(cdb.pick_focus("ST", 55, random))
+        assert len(names) == 2 and "수비" not in names and start == 55
 
 
 def test_assists():

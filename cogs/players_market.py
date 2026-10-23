@@ -33,6 +33,11 @@ from auth import OWNER_ID
 
 _PRICE_LABELS = ["🔴 대박", "🟠 이득", "🟡 본전", "🟢 손해", "⚪ 폭망"]
 
+def _gid(user):
+    """유저가 있는 서버 id (DM 이면 None) — 3.1.0 새 아이템은 공개 서버에서만 상점에 보인다."""
+    return getattr(getattr(user, "guild", None), "id", None)
+
+
 def _price_label(player_price: int, pack_price: int) -> str:
     """현재가 / 팩 단가 비율로 결과 등급 라벨 반환."""
     if pack_price <= 0:
@@ -218,7 +223,7 @@ class ShopView(_ShopOwnerView):
             opts = [discord.SelectOption(label=f"{ITEMS[k][1]} · {price:,}원", value=f"item:{k}", emoji=ITEMS[k][0],
                                          description=(ITEMS[k][2] + (f" · 하루 {SHOP_DAILY_LIMITS[k]}개"
                                                                      if k in SHOP_DAILY_LIMITS else ""))[:100])
-                    for k, price in SHOP_PRICES.items() if shop_open(k)]
+                    for k, price in SHOP_PRICES.items() if shop_open(k, guild_id=_gid(user))]
         self.menu = discord.ui.Select(placeholder="🃏 살 선수팩을 고르세요" if kind == "pack" else "🛒 살 아이템을 고르세요",
                                       options=opts[:25])
         self.menu.callback = self._buy
@@ -228,7 +233,7 @@ class ShopView(_ShopOwnerView):
 
         sell = []
         for k, each in SELL_PRICES.items():
-            if not shop_open(k):
+            if not shop_open(k, guild_id=_gid(user)):
                 continue
             n, (emoji, name, _) = inv.get(k, 0), ITEMS[k]
             if n:
@@ -257,7 +262,7 @@ class ShopView(_ShopOwnerView):
     async def buy_item(self, interaction: discord.Interaction, key: str, n: int):
         emoji, name, desc = ITEMS[key]
         sec = SHOP_SECTION["item"]
-        r = await self.cog.money.buy_item(self.user.id, key, int(time.time()), n)
+        r = await self.cog.money.buy_item(self.user.id, key, int(time.time()), n, interaction.guild_id)
         if r["ok"]:
             today = f" · `오늘` {r['bought']}/{r['limit']}개" if r["limit"] else ""
             each = f" ({r['each']:,}원 × {r['n']}개)" if r["n"] > 1 else ""
@@ -281,7 +286,7 @@ class ShopView(_ShopOwnerView):
         key, qty = self.sell.values[0].split(":")
         emoji, name, _ = ITEMS[key]
         sec = SHOP_SECTION["item"]
-        r = await self.cog.money.sell_item(self.user.id, key, int(qty))
+        r = await self.cog.money.sell_item(self.user.id, key, int(qty), interaction.guild_id)
         if r["ok"]:
             e = ui.card(f"💸 {emoji} {name} {r['qty']}개 판매", f"`판매가` 개당 {r['each']:,}원 (원가의 50%)\n"
                         f"`정산` **+{r['gain']:,}원** · `잔액` **{r['balance']:,}원**\n`남은 수량` {r['left']}개",
@@ -919,7 +924,7 @@ class PlayersMarket(commands.Cog):
             return e, ShopView(self, user, inv, kind)
         bought = await self.money.shop_bought_today(user.id, int(time.time()))
         for group, keys in SHOP_GROUPS:
-            keys = [k for k in keys if shop_open(k)]
+            keys = [k for k in keys if shop_open(k, guild_id=_gid(user))]
             if not keys:
                 continue
             e.add_field(name=group, inline=False, value="\n".join(
@@ -927,7 +932,7 @@ class PlayersMarket(commands.Cog):
                 + (f" · 오늘 {bought.get(k, 0)}/{SHOP_DAILY_LIMITS[k]}" if k in SHOP_DAILY_LIMITS else "")
                 + f"\n　 *{ITEMS[k][2]}*" for k in keys))
         sell = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** × {inv[k]} · 개당 +{each:,}원"
-                         for k, each in SELL_PRICES.items() if inv.get(k) and shop_open(k))
+                         for k, each in SELL_PRICES.items() if inv.get(k) and shop_open(k, guild_id=_gid(user)))
         e.add_field(name="💸 팔기 (원가의 50%)", value=sell[:1024] or "팔 수 있는 아이템이 없어요.", inline=False)
         e.set_footer(text="아래 메뉴에서 고르고 개수를 정하면 구매 · 리셋권 · 스킵권 · 토토 용지는 사고팔 수 없어요 · 선수팩은 /선수팩상점")
         return e, ShopView(self, user, inv, kind)

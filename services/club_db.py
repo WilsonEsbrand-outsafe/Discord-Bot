@@ -401,22 +401,29 @@ def prospect_age(created_ts: int, at_ts: int) -> int:
     return PROSPECT_START_AGE + max(0, int(at_ts) - int(created_ts)) // PROSPECT_YEAR
 
 
-PROSPECT_FOCUS_N, PROSPECT_FOCUS_BOOST = 2, 10   # 3.1.0: 만들 때 특화 능력치 2개 +10 (포지션에 크게 안 맞는 능력치는 빼고)
+PROSPECT_FOCUS_N, PROSPECT_FOCUS_GROWTH = 2, 2.0   # 3.1.0: 만들 때 특화 능력치 2개 — OVR 이 오를 때 2배로 자란다
+
+
+def focus_parts(focus: str) -> tuple[set, Optional[int]]:
+    """'슛,속력@54' → ({'슛', '속력'}, 만들 때 OVR 54). @ 가 없으면(초기 테스트 서버 유망주) 시작 OVR 모름."""
+    names, _, start = (focus or "").partition("@")
+    return set(filter(None, names.split(","))), (int(start) if start.isdigit() else None)
 
 
 def prospect_attrs(pid: str, group: str, ovr: int, focus: str = "") -> list[tuple[str, int]]:
-    """세부 능력치 6개 = OVR + 포지션 가감 + 선수마다 고정된 ±4 (+ 특화 능력치 보너스). OVR 이 오르면 같이 오른다.
-    focus = 특화 능력치 이름들 '슛,드리블' (3.1.0 부터 만든 유망주)."""
+    """세부 능력치 6개 = OVR + 포지션 가감 + 선수마다 고정된 ±4. OVR 이 오르면 같이 오른다.
+    특화 능력치(3.1.0 부터 만든 유망주)는 만들 때보다 오른 OVR 만큼을 PROSPECT_FOCUS_GROWTH 배로 받는다."""
     rng = random.Random(zlib.crc32(f"attrs:{pid}".encode()))
-    hot = set(filter(None, (focus or "").split(",")))
-    return [(n, max(20, min(99, int(ovr) + b + rng.randint(-4, 4) + (PROSPECT_FOCUS_BOOST if n in hot else 0))))
+    hot, start = focus_parts(focus)
+    extra = round(max(0, int(ovr) - start) * (PROSPECT_FOCUS_GROWTH - 1)) if start is not None else 0
+    return [(n, max(20, min(99, int(ovr) + b + rng.randint(-4, 4) + (extra if n in hot else 0))))
             for n, b in PROSPECT_ATTRS[group]]
 
 
-def pick_focus(position: str, rng=random) -> str:
-    """특화 능력치 랜덤 2개 (포지션 가감 -10 밑인 능력치는 후보에서 뺀다)."""
+def pick_focus(position: str, ovr: int, rng=random) -> str:
+    """특화 능력치 랜덤 2개 (포지션 가감 -10 밑인 능력치는 후보에서 뺀다) + 만들 때 OVR → '슛,속력@54'."""
     pool = [n for n, b in PROSPECT_ATTRS[SLOT_GROUP[position]] if b > -10]
-    return ",".join(rng.sample(pool, PROSPECT_FOCUS_N))
+    return ",".join(rng.sample(pool, PROSPECT_FOCUS_N)) + f"@{int(ovr)}"
 
 
 def parse_birthday(text: str) -> Optional[str]:
@@ -1160,7 +1167,7 @@ class ClubDB:
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (price, int(user_id)))
             ovr, pot = rng.randint(50, 58), min(99, rng.randint(75, 94) + self._facility(con, user_id, "youth"))
             prone, pro = rng.randint(3, 14), rng.randint(4, 17)   # 히든 능력치 (자신감은 10에서 시작)
-            hot = pick_focus(info["position"], rng) if focus else ""   # 3.1.0 공개 서버: 특화 능력치
+            hot = pick_focus(info["position"], ovr, rng) if focus else ""   # 3.1.0 공개 서버: 특화 능력치
             cur = con.execute(
                 "INSERT INTO prospects(user_id, name, nation, position, number, birthday, foot, height, ovr, pot, aged, "
                 "peak_ovr, peak_age, created_ts, proneness, pro, focus) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
