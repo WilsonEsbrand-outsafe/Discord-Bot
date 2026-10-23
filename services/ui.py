@@ -59,18 +59,33 @@ def emoji_url(emoji: str) -> str:
 KIKO_POSE = {GOLD: "gold", WIN: "win", EVEN: "even", LOSE: "lose", DOOM: "doom"}
 KIKO_ART = "https://raw.githubusercontent.com/WilsonEsbrand-outsafe/Discord-Bot/main/assets/kiko/{}.png"
 # 결과마다 그 장면을 연기하는 키코 그림이 있는 게임: assets/kiko/scenes/{게임}_{결과 번호}.png (번호 = 결과표 순서)
-KIKO_SCENES = {"pk": 10, "bat": 12, "hoop": 12, "ufc": 13, "race": 4}
+KIKO_SCENES = {"pk": 10, "bat": 12, "hoop": 12, "ufc": 13, "race": 4, "snail": 4, "row": 6, "fish": 5}
+# 번호 없는 장면: 낚시 · 던전 · 훈련/스카우트
+KIKO_NAMED = {"fish_early", "fish_fled", "fish_boot", "fish_item",
+              "dg_doors", "dg_battle", "dg_boss", "dg_treasure", "dg_merchant", "dg_altar", "dg_clear", "dg_dead", "dg_return",
+              "train_ok", "train_fail", "levelup", "scout_ok", "scout_fail", "scout_found"}
+
+
+def scene_url(scene: str | None, user=None) -> str | None:
+    """2.10.3 공개 서버에서 그 장면의 키코 그림 주소. 공개 전 서버거나 없는 장면이면 None."""
+    guild = getattr(user, "guild", None)
+    if not scene or not release.preview_2103(getattr(guild, "id", None)):
+        return None
+    game, _, idx = scene.rpartition("_")
+    if scene in KIKO_NAMED or (idx.isdigit() and int(idx) < KIKO_SCENES.get(game, 0)):
+        return KIKO_ART.format(f"scenes/{scene}")
+    return None
 
 
 def result_thumb(emoji: str, color: int, user=None, scene: str | None = None) -> str:
     """게임 결과 썸네일 (2.10.3): 공개 서버에선 그 결과 장면의 키코 그림(scene) → 없으면 결과 색에 맞는 키코 표정 → 아니면 이모지."""
+    url = scene_url(scene, user)
+    if url:
+        return url
     guild = getattr(user, "guild", None)
-    if not release.preview_2103(getattr(guild, "id", None)):
-        return emoji_url(emoji)
-    game, _, idx = (scene or "").rpartition("_")
-    if idx.isdigit() and int(idx) < KIKO_SCENES.get(game, 0):
-        return KIKO_ART.format(f"scenes/{scene}")
-    return KIKO_ART.format(KIKO_POSE[color]) if color in KIKO_POSE else emoji_url(emoji)
+    if color in KIKO_POSE and release.preview_2103(getattr(guild, "id", None)):
+        return KIKO_ART.format(KIKO_POSE[color])
+    return emoji_url(emoji)
 
 
 def titled(user) -> str:

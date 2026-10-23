@@ -42,6 +42,19 @@ def test_scene_counts_match_tables():
               "race": Economy.RACE_RESULTS}
     for game, table in tables.items():
         assert ui.KIKO_SCENES[game] == len(table), game
+    from cogs.race import Snail, ROW_N
+    from services.fishing import GRADES
+    assert ui.KIKO_SCENES["snail"] == len(Snail.results) and ui.KIKO_SCENES["row"] == ROW_N
+    assert ui.KIKO_SCENES["fish"] == len(GRADES)
+
+
+def test_scene_url_named():
+    m = _member(release.TEST_GUILD)
+    assert ui.scene_url("dg_boss", m).endswith("/assets/kiko/scenes/dg_boss.png")
+    assert ui.scene_url("fish_4", m).endswith("/assets/kiko/scenes/fish_4.png")
+    assert ui.scene_url("dg_nope", m) is None and ui.scene_url(None, m) is None
+    if not release.released_2103():
+        assert ui.scene_url("dg_boss", _member(1)) is None   # 공개 전 서버엔 그림 없음
 
 
 def test_art_files_exist():
@@ -51,6 +64,8 @@ def test_art_files_exist():
     for game, n in ui.KIKO_SCENES.items():
         for i in range(n):
             assert (Path(__file__).parent / "assets" / "kiko" / "scenes" / f"{game}_{i}.png").exists(), (game, i)
+    for name in ui.KIKO_NAMED:
+        assert (Path(__file__).parent / "assets" / "kiko" / "scenes" / f"{name}.png").exists(), name
 
 
 def test_other_servers_unchanged_before_release():
@@ -66,6 +81,7 @@ if __name__ == "__main__":
     test_test_server_gets_kiko()
     test_scene_thumbs()
     test_scene_counts_match_tables()
+    test_scene_url_named()
     test_art_files_exist()
     test_other_servers_unchanged_before_release()
     print("ok")
