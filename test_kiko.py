@@ -27,10 +27,30 @@ def test_test_server_gets_kiko():
     assert "twemoji" in ui.result_thumb("🏇", ui.DARK, _member(release.TEST_GUILD))   # 연출 중엔 이모지 그대로
 
 
+
+def test_scene_thumbs():
+    m = _member(release.TEST_GUILD)
+    assert ui.result_thumb("✅", ui.WIN, m, "ufc_5").endswith("/assets/kiko/scenes/ufc_5.png")
+    assert ui.result_thumb("🐛", ui.LOSE, m, "bat_11").endswith("/assets/kiko/scenes/bat_11.png")
+    assert ui.result_thumb("✅", ui.WIN, m, "ufc_99").endswith("/assets/kiko/win.png")   # 장면이 없으면 표정 그림
+    assert "twemoji" in ui.result_thumb("✅", ui.WIN, _member(1), "ufc_5") or release.released_2103()
+
+
+def test_scene_counts_match_tables():
+    from cogs.economy import Economy
+    tables = {"pk": Economy.PK_TABLE, "bat": Economy.BAT_TABLE, "hoop": Economy.HOOP_TABLE, "ufc": Economy.UFC_TABLE,
+              "race": Economy.RACE_RESULTS}
+    for game, table in tables.items():
+        assert ui.KIKO_SCENES[game] == len(table), game
+
+
 def test_art_files_exist():
     from pathlib import Path
     for pose in ui.KIKO_POSE.values():
         assert (Path(__file__).parent / "assets" / "kiko" / f"{pose}.png").exists(), pose
+    for game, n in ui.KIKO_SCENES.items():
+        for i in range(n):
+            assert (Path(__file__).parent / "assets" / "kiko" / "scenes" / f"{game}_{i}.png").exists(), (game, i)
 
 
 def test_other_servers_unchanged_before_release():
@@ -44,6 +64,8 @@ def test_other_servers_unchanged_before_release():
 
 if __name__ == "__main__":
     test_test_server_gets_kiko()
+    test_scene_thumbs()
+    test_scene_counts_match_tables()
     test_art_files_exist()
     test_other_servers_unchanged_before_release()
     print("ok")
