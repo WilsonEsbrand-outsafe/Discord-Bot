@@ -132,9 +132,12 @@ async def _flow():
             assert (await db.inventory(W))[0].get("lawyer") == had + frees
     assert 0 < frees < 20
     # 3.1.0 쿠폰 PATCH310: 공개 서버에서만 · 변호사 선임권 1장
-    assert (await db.redeem_coupon(L, "patch310", 1_792_800_000, 1))["reason"] == "unknown"
-    r = await db.redeem_coupon(L, "patch310", 1_792_800_000, release.TEST_GUILD)
+    before = (release.RELEASE_310_TS or 1_792_800_000) - 1                       # 공개 전: 다른 서버는 아직 못 받는다
+    assert (await db.redeem_coupon(L, "patch310", before, 1))["reason"] == "unknown"
+    r = await db.redeem_coupon(L, "patch310", before, release.TEST_GUILD)
     assert r["ok"] and r["items"] == {"lawyer": 1}
+    if release.RELEASE_310_TS:                                                     # 공개 뒤엔 모든 서버
+        assert (await db.redeem_coupon(5, "patch310", release.RELEASE_310_TS, 1))["ok"]
 
 
 async def _items():

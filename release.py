@@ -1,6 +1,6 @@
 # release.py — 단계 배포: 새 패치는 테스트 서버에 먼저, 다른 서버는 RELEASE_TS(정기점검)에 한꺼번에.
 # 다음 패치 때: PREVIEW_ONLY(새 명령어) · LEGACY_ONLY(없어질 명령어) · RELEASE_TS 를 바꾼다.
-# 지금: 2.10.1 — 10/22 10:00 KST 모든 서버 공개 (점검 10:00 ~ 10:05) · 2.9.1 은 10/21 14:15 KST · 2.8 은 2026-10-20 00:00 KST 공개 완료
+# 지금: 3.1.0 — 10/23 16:30 KST 모든 서버 공개 (점검 16:30 ~ 16:35) · 2.10.1 — 10/22 10:00 KST (점검 10:00 ~ 10:05) · 2.9.1 은 10/21 14:15 KST · 2.8 은 2026-10-20 00:00 KST 공개 완료
 #       (2.5 는 2026-10-02 00:00 · 2.6 은 2026-10-03 12:00 · 2.7 은 2026-10-12 17:00 KST 공개 완료)
 import calendar  # RELEASE_TS = calendar.timegm((년, 월, 일, 시(UTC), 분, 0)) · None = 아직 테스트 서버에만
 import time
@@ -69,7 +69,7 @@ def preview_2102(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 
 
 # 3.1.0 — 테스트 서버 먼저. preview_310(guild): 명령어 화면에 키코(축구 봇 캐릭터) 디자인 — 로고 파랑 · 키코 푸터 · 한마디. None = 아직
-RELEASE_310_TS: Optional[int] = None
+RELEASE_310_TS: Optional[int] = calendar.timegm((2026, 10, 23, 7, 30, 0))   # 2026-10-23 16:30 KST (점검 시작과 함께)
 
 
 def released_310(now: Optional[float] = None) -> bool:
