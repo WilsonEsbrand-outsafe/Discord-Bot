@@ -15,7 +15,7 @@ from services import ui
 from services.club_db import ClubDB
 from services.economy_db import ITEM_PRICES, ITEMS, SHOP_ONE_ONLY, EconomyDB, give_item
 from services.fishing import (
-    AQUARIUM_MAX, BAG_MAX, CATCH_WINDOW, DAY_FISH_MULT, bag_max, day_fish, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES,
+    AQUARIUM_MAX, AUTO_EVERY, BAG_MAX, CATCH_WINDOW, DAY_FISH_MULT, bag_max, day_fish, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES,
     SKIP_PIECES, TRADE_DAILY, by_grade, fish_name, grade_odds, level_need, odds_line,
 )
 from services.hub import HubView, Page
@@ -104,7 +104,7 @@ class Fishing(commands.Cog):
 
     async def cog_load(self):
         self.bot.add_view(ReelView(self))
-        ITEM_HANDLERS.update({"fish_charm": self._use_charm, "skip_piece": self._use_pieces})
+        ITEM_HANDLERS.update({"fish_charm": self._use_charm, "skip_piece": self._use_pieces, "auto_fish": self._use_auto})
         for c in await self.db.active_casts():
             if c["message_id"] and c["channel_id"]:
                 self._schedule(c)
@@ -112,7 +112,7 @@ class Fishing(commands.Cog):
     async def cog_unload(self):
         for t in self._tasks.values():
             t.cancel()
-        for k in ("fish_charm", "skip_piece"):
+        for k in ("fish_charm", "skip_piece", "auto_fish"):
             ITEM_HANDLERS.pop(k, None)
 
     # ───────────── 화면 ─────────────
@@ -134,6 +134,16 @@ class Fishing(commands.Cog):
                     "🎣 찌를 던지면 **10초 ~ 10분** 사이에 입질이 와요.\n"
                     f"🐟 입질이 오면 **{window // 60}분 안에** [잡기!]를 눌러야 해요. 늦으면 도망가요.")
             color = ui.INFO
+        a = s.get("auto")
+        if a and (a["fish"] or a["junk"] or a["full"]):   # 3.1.0 🤖 자동 낚시가 그동안 한 일
+            got = f"🤖 자동 낚시가 물고기 **{len(a['fish'])}마리**를 낚았어요"
+            if a["fish"]:
+                best = max(a["fish"], key=lambda f: f["price"])
+                got += f" · 최고 {FISH[best['species']][0]} {FISH[best['species']][1]} {best['size']:g}cm"
+            got += (f" · 잡템 {len(a['junk'])}개" if a["junk"] else "") + (f" · 어망이 차서 {a['full']}번 쉼" if a["full"] else "")
+            note = got + ("\n" + note if note else "")
+        if a and a["next"]:
+            bag += f"\n`🤖 자동 낚시` 켜짐 · 다음 입질 <t:{a['next']}:R> · <t:{a['until']}:R> 꺼짐"
         rod = ITEMS[s["rod"]][1] if s.get("rod") else "기본 낚싯대"
         cook = " · ".join(f"{RECIPES[k][0]} {RECIPES[k][1]}" for k in s.get("buffs", []) if k in RECIPES)
         e = ui.card("🎣 낚시터", (note + "\n\n" if note else "") + body + f"\n\n{lv}\n{bag}\n`장비` {rod}"
@@ -141,8 +151,16 @@ class Fishing(commands.Cog):
         e.set_thumbnail(url=ui.emoji_url("🎣"))
         return e
 
+    async def _status(self, user) -> dict:
+        """낚시터 상태 — 3.1.0 공개 서버면 밀린 🤖 자동 낚시를 먼저 처리해 s["auto"] 에 담는다."""
+        now = int(time.time())
+        auto = await self.db.auto_run(user.id, now, new=True) if self._n(user) else None
+        s = await self.db.status(user.id, now)
+        s["auto"] = auto
+        return s
+
     async def _show_pond(self, interaction: discord.Interaction, note: str = "", edit: bool = True):
-        s = await self.db.status(interaction.user.id, int(time.time()))
+        s = await self._status(interaction.user)
         e = await self._pond_embed(interaction.user, s, note)
         view = CastView(self, interaction.user, s)
         if edit:
@@ -152,7 +170,7 @@ class Fishing(commands.Cog):
 
     @app_commands.command(name="낚시", description="찌를 던지고 입질을 기다려요 — 오래 기다린 입질일수록 희귀한 물고기 · 어망 · 요리 · 수족관 · 도감")
     async def fish(self, interaction: discord.Interaction):
-        s = await self.db.status(interaction.user.id, int(time.time()))
+        s = await self._status(interaction.user)
         if s.get("cast_ts") and s.get("message_id"):
             note = "🎣 찌가 이미 물에 있어요! 입질이 오면 처음 던진 메시지가 바뀌어요."
             now = int(time.time())
@@ -360,6 +378,8 @@ class Fishing(commands.Cog):
     async def _p_bag(self, view: HubView) -> discord.Embed:
         user = view.user
         new = self._n(user)
+        if new:
+            await self.db.auto_run(user.id, int(time.time()), new=True)
         b = await self.db.bag(user.id, int(time.time()), new)
         fish = sorted(b["fish"], key=lambda f: -f["price"])
         free = [f for f in fish if not f["displayed"]]
@@ -630,6 +650,21 @@ class Fishing(commands.Cog):
             return await interaction.response.send_message("🙅 🍀 낚시 부적이 없어요.", ephemeral=True)
         await interaction.response.send_message(embed=ui.card(
             "🍀 낚시 부적 사용!", f"오늘 물고기 보내기 한도 **+{CHARM_BONUS}** → **{r['used']}/{r['limit']}**포인트",
+            ui.GOLD, user, "🎒 아이템"))
+
+    async def _use_auto(self, interaction: discord.Interaction, user):
+        if not self._n(user):
+            return await interaction.response.send_message("🤖 자동 낚시는 아직 이 서버에서 쓸 수 없어요.", ephemeral=True)
+        await self.db.auto_run(user.id, int(time.time()), new=True)   # 밀린 자동 낚시부터 정리
+        r = await self.db.use_auto(user.id, int(time.time()))
+        if not r["ok"]:
+            return await interaction.response.send_message("🙅 🤖 자동 낚시가 없어요.", ephemeral=True)
+        await interaction.response.send_message(embed=ui.card(
+            "🤖 자동 낚시 켜짐!",
+            f"**{AUTO_EVERY // 60}분마다** 한 마리씩 자동으로 낚아 어망에 넣어요.\n"
+            f"⏰ <t:{r['until']}:f> 까지 · 다음 입질 <t:{r['next']}:R>\n"
+            f"🐟 입질이 가장 빠른 찌와 같은 확률이라 희귀한 물고기는 잘 안 걸려요 · 어망이 차면 쉬어요\n"
+            f"`/낚시`를 열면 그동안 낚은 물고기가 정리돼요.",
             ui.GOLD, user, "🎒 아이템"))
 
     async def _use_pieces(self, interaction: discord.Interaction, user):
