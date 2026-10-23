@@ -201,6 +201,7 @@ TRANSFER_REQUIRE = [
 # 파산: 잔액이 마이너스일 때만. 스폰서 계약을 강제 해지해 원금으로 갚고, 남은 빚의 30~70% 를 랜덤 탕감.
 BANKRUPT_COOLDOWN = 3600             # 한 시간에 한 번
 BANKRUPT_FORGIVE = (0.3, 0.7)
+BANKRUPT_310 = ((0.25, 0.0), (0.60, None), (0.15, 1.0))   # 3.1.0: 탕감 0% · 30~70%(None = 랜덤) · 100% 확률
 
 
 def _cook_buff(con, user_id: int, now_ts: int, kind: str) -> bool:
@@ -613,9 +614,10 @@ class EconomyDB:
         return await self._tx(fn)
 
     # ───────────── 파산 ─────────────
-    async def declare_bankruptcy(self, user_id: int, now_ts: int, rng=random) -> dict:
+    async def declare_bankruptcy(self, user_id: int, now_ts: int, rng=random, new: bool = False) -> dict:
         """파산: 진행 중 스폰서 계약을 강제 해지해 원금으로 빚을 갚고, 남은 빚의 30~70% 를 랜덤 탕감한다.
-        선수 카드는 건드리지 않는다. 실패 reason: not_negative / cooldown(until)."""
+        선수 카드는 건드리지 않는다. 실패 reason: not_negative / cooldown(until).
+        new = 3.1.0: 탕감이 0% · 30~70% · 100% 중 하나 (BANKRUPT_310)."""
         def fn(con):
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
@@ -633,6 +635,9 @@ class EconomyDB:
                             "WHERE user_id=? AND status='active'", (user_id,))
             after = bal + sponsor
             rate = rng.uniform(*BANKRUPT_FORGIVE)
+            if new:
+                pick = rng.choices([r for _, r in BANKRUPT_310], weights=[p for p, _ in BANKRUPT_310])[0]
+                rate = rate if pick is None else pick
             forgiven = round(-after * rate) if after < 0 else 0
             new_bal = after + forgiven
             con.execute("UPDATE wallets SET balance=? WHERE user_id=?", (new_bal, user_id))

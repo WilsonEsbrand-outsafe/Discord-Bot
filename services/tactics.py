@@ -45,7 +45,7 @@ def key_attr(p: dict, tactic: str) -> int:
     """선수의 그 전술 중요 능력치 — 선수 ID 로 고정된 세부 능력치 (유망주와 같은 공식)."""
     group = p.get("pos") or SLOT_GROUP.get(p.get("slot"), "MF")
     want = TACTICS[tactic][2]
-    attrs = dict(prospect_attrs(str(p.get("player_id")), group, int(p["ovr"])))
+    attrs = dict(prospect_attrs(str(p.get("player_id")), group, int(p["ovr"]), p.get("focus", "")))
     return attrs.get(want, int(p["ovr"]))
 
 
