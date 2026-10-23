@@ -185,7 +185,27 @@ def test_trade_and_market():
         await db.give_item(B, "icebox")
         f2 = next(x for x in (await db.bag(B, nxt + 2 * D))["fish"] if x["id"] == old[0])
         assert abs(f2["fresh"] - 0.9) < 1e-9 and f2["price"] > f["price"]
+        # 3.1.0: 오늘의 물고기 2배 · 전부 팔기 · 레벨별 어망 칸
+        day = nxt + 5 * D
+        k = F.day_fish(day)
+        assert F.day_fish(day) == k and k in F.FISH
+        today = _add(db, B, k, ts=day)
+        old_p = next(x for x in (await db.bag(B, day))["fish"] if x["id"] == today[0])["price"]
+        new_p = next(x for x in (await db.bag(B, day, True))["fish"] if x["id"] == today[0])["price"]
+        assert abs(new_p - old_p * F.DAY_FISH_MULT) <= 10
+        assert (await db.market(day, True))[k]["price"] >= (await db.market(day))[k]["price"] * 1.9
+        r = await db.sell(B, None, day, True)                                                   # 전부 팔기
+        assert r["ok"] and (await db.bag(B, day))["fish"] == []
+        assert F.bag_max(1) == F.BAG_MAX and F.bag_max(1, True) == 50 and F.bag_max(11, True) == 100 and F.bag_max(30, True) == 195
+        assert (await db.bag(B, day, True))["max"] == F.bag_max(1, True)
     run(flow())
+
+
+def test_day_fish_odds():
+    """오늘의 물고기: 비싼 물고기일수록 덜 뽑힌다."""
+    picks = [F.FISH[F.day_fish(T0 + i * D)][2] for i in range(3000)]
+    share = [picks.count(g) / len(picks) for g in range(5)]
+    assert share[0] > share[1] > share[2] > share[3] >= share[4] and share[4] < 0.01
 
 
 def test_feed_cook_aquarium_weekly():
@@ -295,7 +315,7 @@ def test_screens():
         log, sent = [], []
         fake = SimpleNamespace(user=user, ctx={"to": to}, refresh=lambda i, note: asyncio.sleep(0, log.append(note)))
         real = cog.db.give
-        cog.db.give = lambda a, b, ids, now: asyncio.sleep(0, {"ok": True, "count": 2, "names": ["붕어", "잉어"], "used": 2, "limit": 10})
+        cog.db.give = lambda a, b, ids, now, new=False: asyncio.sleep(0, {"ok": True, "count": 2, "names": ["붕어", "잉어"], "used": 2, "limit": 10})
         inter = SimpleNamespace(guild_id=1374213619793006704,   # 2.10.1 테스트 서버 먼저
                                 followup=SimpleNamespace(send=lambda **k: asyncio.sleep(0, sent.append(k))))
         try:

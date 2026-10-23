@@ -80,6 +80,8 @@ def test_input():
     for _ in range(50):
         names, start = cdb.focus_parts(cdb.pick_focus("ST", 55, random))
         assert len(names) == 2 and "수비" not in names and start == 55
+    assert cdb.pick_focus("ST", 55, random, ["슛", "속력"]) == "슛,속력@55"                               # 직접 고른 두 개
+    assert set(cdb.focus_parts(cdb.pick_focus("ST", 55, random, ["수비", "슛"]))[0]) != {"수비", "슛"}   # 고를 수 없는 건 무시
 
 
 def test_assists():

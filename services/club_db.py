@@ -420,10 +420,17 @@ def prospect_attrs(pid: str, group: str, ovr: int, focus: str = "") -> list[tupl
             for n, b in PROSPECT_ATTRS[group]]
 
 
-def pick_focus(position: str, ovr: int, rng=random) -> str:
-    """특화 능력치 랜덤 2개 (포지션 가감 -10 밑인 능력치는 후보에서 뺀다) + 만들 때 OVR → '슛,속력@54'."""
-    pool = [n for n, b in PROSPECT_ATTRS[SLOT_GROUP[position]] if b > -10]
-    return ",".join(rng.sample(pool, PROSPECT_FOCUS_N)) + f"@{int(ovr)}"
+def focus_pool(position: str) -> list[str]:
+    """특화 능력치로 고를 수 있는 능력치 (포지션 가감 -10 밑인 능력치는 뺀다)."""
+    return [n for n, b in PROSPECT_ATTRS[SLOT_GROUP[position]] if b > -10]
+
+
+def pick_focus(position: str, ovr: int, rng=random, names=None) -> str:
+    """특화 능력치 2개 + 만들 때 OVR → '슛,속력@54'. names = 유저가 고른 능력치 (맞지 않으면 랜덤)."""
+    pool = focus_pool(position)
+    if not (names and len(set(names)) == PROSPECT_FOCUS_N and set(names) <= set(pool)):
+        names = rng.sample(pool, PROSPECT_FOCUS_N)
+    return ",".join(names) + f"@{int(ovr)}"
 
 
 def parse_birthday(text: str) -> Optional[str]:
@@ -1150,8 +1157,9 @@ class ClubDB:
     async def prospect_price(self, user_id: int, now_ts: int) -> int:
         return await self._tx(lambda con: self._prospect_price(con, user_id, now_ts))
 
-    async def create_prospect(self, user_id: int, info: dict, now_ts: int, rng=random, focus: bool = False) -> dict:
+    async def create_prospect(self, user_id: int, info: dict, now_ts: int, rng=random, focus=False) -> dict:
         """유망주 생성 (PROSPECT_PRICE). info 는 prospect_input 이 정리한 값.
+        focus (3.1.0 특화 능력치): False(공개 전 서버) · True(랜덤) · [능력치 2개](유저가 고름).
         OVR 50~58 · 잠재력 75~94 에서 시작. 실패 reason: exists(현역 유망주 있음) / retired_number / balance."""
         def fn(con):
             if self._active_prospect(con, user_id, now_ts):
@@ -1167,7 +1175,7 @@ class ClubDB:
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (price, int(user_id)))
             ovr, pot = rng.randint(50, 58), min(99, rng.randint(75, 94) + self._facility(con, user_id, "youth"))
             prone, pro = rng.randint(3, 14), rng.randint(4, 17)   # 히든 능력치 (자신감은 10에서 시작)
-            hot = pick_focus(info["position"], ovr, rng) if focus else ""   # 3.1.0 공개 서버: 특화 능력치
+            hot = pick_focus(info["position"], ovr, rng, focus if isinstance(focus, list) else None) if focus else ""   # 3.1.0 특화
             cur = con.execute(
                 "INSERT INTO prospects(user_id, name, nation, position, number, birthday, foot, height, ovr, pot, aged, "
                 "peak_ovr, peak_age, created_ts, proneness, pro, focus) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
