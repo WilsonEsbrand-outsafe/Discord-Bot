@@ -110,7 +110,7 @@ async def _flow():
     import release
     L = 6
     assert (await db.hire_lawyer(L, W))["reason"] == "none"
-    assert not edb.shop_open("lawyer", guild_id=1) and edb.shop_open("lawyer", guild_id=release.TEST_GUILD)
+    assert not edb.shop_open("lawyer", guild_id=release.TEST_GUILD)                   # 상점에서 살 수 없다
     await db.give_item(L, "lawyer", 1)
     assert (await db.hire_lawyer(L, W))["uses"] == 1 and await db.lawyers(W) == 1 and await db.lawyers(L) == 0
     k, saved = 0, None
