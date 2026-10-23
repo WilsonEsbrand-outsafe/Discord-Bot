@@ -122,6 +122,17 @@ async def _flow():
         assert r["rate"] != 0 or await db.lawyers(W) == 1      # 변호사가 남아 있으면 0% 가 그대로 나오지 않는다
         k += 1
     assert saved["rate"] > 0 and await db.lawyers(W) == 0
+    frees = 0                                                                   # 변호사 없이 0% → 아주 가끔 공짜 변호사
+    for k in range(400):
+        await db.set_balance(W, -1_000_000)
+        r = await db.declare_bankruptcy(W, NOW + 900_000 + 3600 * k, _r.Random(1000 + k), new=True)
+        frees += r["lawyer"] == "free"
+        assert r["lawyer"] in (False, "free") and (r["lawyer"] != "free" or r["rate"] > 0)
+    assert 0 < frees < 20
+    # 3.1.0 쿠폰 PATCH310: 공개 서버에서만 · 변호사 선임권 1장
+    assert (await db.redeem_coupon(L, "patch310", 1_792_800_000, 1))["reason"] == "unknown"
+    r = await db.redeem_coupon(L, "patch310", 1_792_800_000, release.TEST_GUILD)
+    assert r["ok"] and r["items"] == {"lawyer": 1}
 
 
 async def _items():

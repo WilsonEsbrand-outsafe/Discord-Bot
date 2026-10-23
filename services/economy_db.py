@@ -143,7 +143,9 @@ COUPONS = {
     "PATCH22": ({"scout_reset": 1, "train_reset": 1, "watch_reset": 1},
                 calendar.timegm((2026, 10, 8, 15, 0, 0))),   # 2026-10-09 00:00 KST 만료
     "PATCH25": ({"box": 1}, calendar.timegm((2026, 10, 8, 15, 0, 0))),   # 2.5 점검 보상 · 2026-10-09 00:00 KST 만료
+    "PATCH310": ({"lawyer": 1}, calendar.timegm((2026, 11, 6, 15, 0, 0))),   # 3.1.0 변호사 선임권 · 2026-11-07 00:00 KST 만료
 }
+COUPONS_310 = {"PATCH310"}   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 받는다
 
 
 # 창단 멤버 영구 칭호 (2.8) — 마이그레이션으로 한 번만 지급 (eco_migrations 에 'founder-2.8' 표시)
@@ -208,6 +210,7 @@ TRANSFER_REQUIRE = [
 BANKRUPT_COOLDOWN = 3600             # 한 시간에 한 번
 BANKRUPT_FORGIVE = (0.3, 0.7)
 BANKRUPT_310 = ((0.25, 0.0), (0.60, None), (0.15, 1.0))   # 3.1.0: 탕감 0% · 30~70%(None = 랜덤) · 100% 확률
+BANKRUPT_FREE_LAWYER = 0.05   # 3.1.0: 0%가 나왔는데 선임한 변호사가 없으면, 아주 가끔 지나가던 변호사가 공짜로 다시 변론
 
 
 def _cook_buff(con, user_id: int, now_ts: int, kind: str) -> bool:
@@ -665,10 +668,15 @@ class EconomyDB:
             lawyer = False
             if new:
                 pick = rng.choices([r for _, r in BANKRUPT_310], weights=[p for p, _ in BANKRUPT_310])[0]
-                if pick == 0.0 and after < 0 and self._lawyers(con, user_id) > 0:   # ⚖️ 변호사가 다시 변론 (0% 빼고)
-                    con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
-                    rest = [(p, r) for p, r in BANKRUPT_310 if r != 0.0]
-                    pick, lawyer = rng.choices([r for _, r in rest], weights=[p for p, _ in rest])[0], True
+                if pick == 0.0 and after < 0:   # ⚖️ 변호사가 다시 변론 (0% 빼고) — 선임한 변호사, 없으면 아주 가끔 공짜 변호사
+                    if self._lawyers(con, user_id) > 0:
+                        con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
+                        lawyer = True
+                    elif rng.random() < BANKRUPT_FREE_LAWYER:
+                        lawyer = "free"
+                    if lawyer:
+                        rest = [(p, r) for p, r in BANKRUPT_310 if r != 0.0]
+                        pick = rng.choices([r for _, r in rest], weights=[p for p, _ in rest])[0]
                 rate = rate if pick is None else pick
             forgiven = round(-after * rate) if after < 0 else 0
             new_bal = after + forgiven
@@ -1661,10 +1669,10 @@ class EconomyDB:
                     "bought": bought + qty, "limit": cap}
         return await self._tx(fn)
 
-    async def redeem_coupon(self, user_id: int, code: str, now_ts: int) -> dict:
+    async def redeem_coupon(self, user_id: int, code: str, now_ts: int, guild_id: Optional[int] = None) -> dict:
         """쿠폰 사용: 계정당 한 번. 실패 reason: unknown / expired / used."""
         code = (code or "").strip().upper()
-        if code not in COUPONS:
+        if code not in COUPONS or (code in COUPONS_310 and not release.preview_310(guild_id, now_ts)):
             return {"ok": False, "reason": "unknown"}
         items, expires = COUPONS[code]
         if now_ts >= expires:
