@@ -52,6 +52,7 @@ def test_scene_url_named():
     m = _member(release.TEST_GUILD)
     assert ui.scene_url("dg_boss", m).endswith("/assets/kiko/scenes/dg_boss.png")
     assert ui.scene_url("fish_4", m).endswith("/assets/kiko/scenes/fish_4.png")
+    assert ui.scene_url("watch_lawyer", m).endswith("/assets/kiko/scenes/watch_lawyer.png")   # 3.1.0 직관 장면
     assert ui.scene_url("dg_nope", m) is None and ui.scene_url(None, m) is None
     if not release.released_310():
         assert ui.scene_url("dg_boss", _member(1)) is None   # 공개 전 서버엔 그림 없음
