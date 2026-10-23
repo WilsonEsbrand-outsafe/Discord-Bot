@@ -1,6 +1,6 @@
 # cogs/dribble.py — ⚽ /드리블 베팅액 (3.1.0, 테스트 서버 먼저)
-# 키코가 하프라인부터 솔로 드리블: 수비수마다 [왼쪽] · [오른쪽] 중 하나 (반반). 막는 쪽을 피하면 제치고 배당이 오른다.
-# 언제든 [슛!]으로 지금 배당을 받고 끝낼 수 있고, 골키퍼까지 제치면 골 — 120배. 막히면 베팅금을 잃는다.
+# 키코가 하프라인부터 솔로 드리블: 수비수마다 [왼쪽] · [오른쪽] 중 하나. 제칠수록 성공 확률(65% → 35%)은 내려가고 배당은 오른다.
+# 언제든 [슛!]으로 지금 배당을 받고 끝낼 수 있고, 골키퍼까지 제치면 골 — 140배. 막히면 베팅금을 잃는다.
 # 베팅금은 시작할 때 먼저 빼고, 끝날 때 받는 돈(원금 포함)을 넣는다.
 import random
 
@@ -23,7 +23,7 @@ def ladder_text(passed: int) -> str:
     for i, (emoji, name, _) in enumerate(D.STAGES):
         mark = "✅" if i < passed else ("⚽" if i == passed else "▫️")
         cur = " ◀ 지금" if i == passed else ""
-        rows.append(f"{mark} {emoji} {name} → **{D.MULTS[i]:g}배**{cur}")
+        rows.append(f"{mark} {emoji} {name} `{D.ODDS[i]:.0%}` → **{D.MULTS[i]:g}배**{cur}")
     return "\n".join(rows)
 
 
@@ -38,7 +38,7 @@ def play_card(user, amount: int, passed: int, caster: str) -> discord.Embed:
     have = D.payout(amount, passed) if passed else 0
     e = ui.card(f"⚽ {where} — {emoji} {name}이(가) 막아섭니다!",
                 f'> 🎙️ *"{caster}"*\n\n{field(passed)}\n\n'
-                f"⬅️ **왼쪽** · **오른쪽** ➡️ — 수비수가 막는 쪽을 피하면 제쳐요 (반반)\n"
+                f"⬅️ **왼쪽** · **오른쪽** ➡️ — 수비수가 막는 쪽을 피하면 제쳐요 (이번 성공 확률 **{D.ODDS[passed]:.0%}**)\n"
                 + (f"🥅 지금 [슛!] 하면 **{have:,}원**을 받아요 ({D.MULTS[passed - 1]:g}배)\n" if passed else "")
                 + f"\n{ladder_text(passed)}\n\n`베팅` **{amount:,}원**",
                 ui.KIKO, user, SECTION)
@@ -75,9 +75,8 @@ class DribbleView(discord.ui.View):
         async def cb(interaction: discord.Interaction):
             if self.done:
                 return await interaction.response.defer()
-            block = D.step(random)
             emoji, name, _ = D.STAGES[self.passed]
-            if block == pick:   # 막는 쪽으로 들어갔다 — 태클
+            if D.tackled(self.passed, random):   # 막는 쪽으로 들어갔다 — 태클
                 self.done = True
                 self.stop()
                 e = await self.cog.settle(self.user, self.amount, self.passed, tackled=True,
@@ -146,7 +145,7 @@ class Dribble(commands.Cog):
         e.set_thumbnail(url=ui.result_thumb(emoji, color, user))
         return e
 
-    @app_commands.command(name="드리블", description="키코의 솔로 드리블! 수비수마다 왼쪽 · 오른쪽 — 제칠수록 배당 ↑ 언제든 슛, 골이면 120배 (최소 1,000원)")
+    @app_commands.command(name="드리블", description="키코의 솔로 드리블! 수비수마다 왼쪽 · 오른쪽 — 제칠수록 어렵고 배당 ↑ 언제든 슛, 골이면 140배 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def dribble(self, interaction: discord.Interaction, amount: app_commands.Range[int, D.MIN_BET]):
