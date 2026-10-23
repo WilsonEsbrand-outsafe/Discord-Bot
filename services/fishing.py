@@ -42,13 +42,33 @@ FISH = {   # (이모지, 이름, 등급, 평균 cm, 기준가) — 2.82: 기준�
     "blowfish": ("🐡", "자주복", 2, 50, 260_000), "lobster": ("🦞", "랍스터", 2, 40, 280_000),
     "marlin": ("🦈", "청새치", 3, 280, 1_610_000),
     "oarfish": ("🐉", "산갈치", 4, 300, 14_400_000),
+    # 3.1.0 새 물고기 15종 (공개 전엔 테스트 서버에서만 잡힘)
+    "filefish": ("🐟", "쥐치", 0, 20, 4_000), "sandfish": ("🐟", "도루묵", 0, 20, 3_500),
+    "horsemackerel": ("🐟", "전갱이", 0, 30, 5_000), "sandlance": ("🐟", "양미리", 0, 15, 2_500),
+    "scorpionfish": ("🐟", "쏨뱅이", 0, 22, 6_500), "greenling": ("🐟", "노래미", 0, 30, 6_000),
+    "cod": ("🐠", "대구", 1, 70, 30_000), "monkfish": ("🐡", "아귀", 1, 60, 34_000),
+    "crab": ("🦀", "꽃게", 1, 20, 36_000), "webfoot": ("🐙", "주꾸미", 1, 15, 24_000),
+    "abalone": ("🐚", "전복", 1, 10, 42_000),
+    "knifejaw": ("🐡", "돌돔", 2, 50, 230_000), "kingcrab": ("🦀", "킹크랩", 2, 60, 270_000),
+    "sunfish": ("🐡", "개복치", 3, 250, 1_330_000),
+    "whaleshark": ("🐋", "고래상어", 4, 900, 12_000_000),
 }
-BY_GRADE = [[k for k, f in FISH.items() if f[2] == g] for g in range(5)]
+NEW_310 = {"filefish", "sandfish", "horsemackerel", "sandlance", "scorpionfish", "greenling", "cod", "monkfish", "crab",
+           "webfoot", "abalone", "knifejaw", "kingcrab", "sunfish", "whaleshark"}
+BY_GRADE_310 = [[k for k, f in FISH.items() if f[2] == g] for g in range(5)]          # 3.1.0 공개 서버: 55종
+BY_GRADE = [[k for k in b if k not in NEW_310] for b in BY_GRADE_310]                # 3.1.0 전 서버: 40종
+
+
+def by_grade(new: bool = False) -> list[list[str]]:
+    """잡히는 · 시세 · 도감에 나오는 물고기 (등급별). new = 3.1.0 공개 서버."""
+    return BY_GRADE_310 if new else BY_GRADE
 
 # 걸린 시간(입질까지 기다린 시간)별 등급 확률 % — 10초와 10분 사이는 직선으로 잇는다
 BITE_MIN, BITE_MAX = 10, 600
 ODDS_FAST = (62, 28, 8, 1.7, 0.3)
 ODDS_SLOW = (24, 30, 26, 15, 5)
+ODDS_FAST_310 = (66, 27, 6, 0.9, 0.1)   # 3.1.0: 희귀 · 영웅 · 전설 확률 하향 (평균 수입 약 절반)
+ODDS_SLOW_310 = (34, 34, 22, 8, 2)
 CATCH_WINDOW = 300            # 입질 뒤 이 시간(초) 안에 [잡기!] — 낚싯대로 늘어난다
 JUNK_PROB = 0.12              # 물고기 대신 잡템
 JUNK = {   # 아이템 → 비중 (old_boot = 낡은 장화, 아무것도 아님)
@@ -102,10 +122,11 @@ def add_xp(level: int, xp: int, gain: int) -> tuple[int, int, int]:
     return level, (0 if level >= LEVEL_MAX else xp), up
 
 
-def grade_odds(wait: float, bonus: float = 0.0) -> list[float]:
-    """기다린 시간(초) + 효과 보너스 → 등급 확률 (합 1). 10초 → 10분을 0 → 1 로 보고 직선으로 잇는다."""
+def grade_odds(wait: float, bonus: float = 0.0, new: bool = False) -> list[float]:
+    """기다린 시간(초) + 효과 보너스 → 등급 확률 (합 1). 10초 → 10분을 0 → 1 로 보고 직선으로 잇는다. new = 3.1.0 확률."""
     t = (min(max(wait, BITE_MIN), BITE_MAX) - BITE_MIN) / (BITE_MAX - BITE_MIN) + bonus
-    w = [max(0.0, a + (b - a) * t) for a, b in zip(ODDS_FAST, ODDS_SLOW)]
+    fast, slow = (ODDS_FAST_310, ODDS_SLOW_310) if new else (ODDS_FAST, ODDS_SLOW)
+    w = [max(0.0, a + (b - a) * t) for a, b in zip(fast, slow)]
     s = sum(w)
     return [x / s for x in w]
 
@@ -294,7 +315,7 @@ class FishingDB(EconomyDB):
                 "SELECT user_id, cast_ts, bite_ts, window, channel_id, message_id FROM fish_state WHERE cast_ts IS NOT NULL")]
         return await self._tx(fn)
 
-    async def reel(self, uid: int, now_ts: int, rng=random, new_xp: bool = True) -> dict:
+    async def reel(self, uid: int, now_ts: int, rng=random, new_xp: bool = True, new_310: bool = False) -> dict:
         """[잡기!]. 결과 kind: early(아직 입질 전 — 찌만 회수) / fled(늦음) / junk / fish. 실패 reason: idle."""
         def fn(con):
             s = self._state(con, uid)
@@ -315,9 +336,9 @@ class FishingDB(EconomyDB):
                 return {"ok": True, "kind": "junk", "item": item, "wait": wait}
             bonus = min(0.174, LEVEL_RARE_STEP * (s["level"] - 1)) + (BAIT_GOLD_T if s["bait"] == "bait_gold" else 0) \
                 + (0.10 if "stew" in buffs else 0)
-            odds = grade_odds(wait, bonus)
+            odds = grade_odds(wait, bonus, new_310)
             grade = rng.choices(range(5), weights=odds)[0]
-            key = rng.choice(BY_GRADE[grade])
+            key = rng.choice(by_grade(new_310)[grade])
             rod = self._rod(con, uid)
             size = roll_size(key, rng, RODS[rod][0] if rod else 0)
             xp = catch_xp(key, size, new_xp)
@@ -572,10 +593,10 @@ def odds_line(odds: list[float]) -> str:
     return " · ".join(f"{GRADE_EMOJI[g]} {p * 100:.1f}%" for g, p in enumerate(odds))
 
 
-def expected_value(wait: float) -> float:
+def expected_value(wait: float, new: bool = False) -> float:
     """기다린 시간별 한 마리 평균 기준가 (잡템 제외) — 밸런스 확인용."""
-    odds = grade_odds(wait)
-    return sum(p * sum(FISH[k][4] for k in BY_GRADE[g]) / len(BY_GRADE[g]) for g, p in enumerate(odds))
+    odds, pool = grade_odds(wait, new=new), by_grade(new)
+    return sum(p * sum(FISH[k][4] for k in pool[g]) / len(pool[g]) for g, p in enumerate(odds))
 
 
 def fish_name(key: str) -> str:
@@ -587,5 +608,5 @@ def now() -> int:
     return int(time.time())
 
 
-assert len(FISH) == 40 and [len(b) for b in BY_GRADE] == [13, 11, 8, 5, 3]
-assert math.isclose(sum(ODDS_FAST), 100) and math.isclose(sum(ODDS_SLOW), 100)
+assert len(FISH) == 55 and [len(b) for b in BY_GRADE] == [13, 11, 8, 5, 3] and [len(b) for b in BY_GRADE_310] == [19, 16, 10, 6, 4]
+assert all(math.isclose(sum(o), 100) for o in (ODDS_FAST, ODDS_SLOW, ODDS_FAST_310, ODDS_SLOW_310))

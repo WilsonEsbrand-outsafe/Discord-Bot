@@ -25,6 +25,7 @@ from PIL import Image
 
 from services.economy_db import EconomyDB
 from services import ui
+import release
 
 MIN_BET = 1_000
 TRACK = 12
@@ -295,6 +296,11 @@ POD_SHARE = 0.4      # 포디움(2~3위) 배수 = 우승 배수의 40%
 F1_EDGE = 0.95       # 배당을 손익분기의 95%로
 F1_CAP = 100.0
 F1_SIMS = 6000
+F1_SHAPE = (1.0, 0.4, 0.15)   # 3.1.0: 수익 구간 비율 (우승 · 포디움 · 포인트)
+F1_LOSS = (0, 0, 1, 1, 2)       # 3.1.0: 손실 구간 배수 (포인트 · 11위 이하 1배 · 리타이어 2배)
+F1_EDGE_310 = 0.92
+F1_CAP_310 = 200.0
+F1_RULE_310 = "드라이버마다 예상 순위 구간은 본전 · 그보다 잘하면 수익 · 못하면 1배 손실 · 💥 리타이어 2배 손실"
 F1_RULE = "우승 = 표시 배수 · 포디움(2~3위) = 그 40% · 4~10위 본전 · 11위 이하 1배 손실 · 💥 리타이어 2배 손실"
 F1_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/F1.svg/330px-F1.svg.png"   # 공식 로고 (상표)
 F1_SECTION = "🎙️ F1 중계"
@@ -431,25 +437,25 @@ def f1_sim(grid: list[int], gp: tuple, rain: bool, rng=random, record: bool = Fa
     return sorted((d for d in grid if d not in out), key=T.get), out, snaps
 
 
-def f1_odds(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=None) -> list[tuple[float, float]]:
-    """드라이버별 (우승 배수, 포디움 배수). 결승을 sims 번 돌려 확률을 재고, 기대값이 0 밑이 되게 정한다.
-    기대값 = P(우승)·우승배수 + P(2~3위)·포디움배수 − P(11위 이하) − 2·P(리타이어) ≤ 0
-    시뮬레이션 오차로 배당이 부풀지 않게 이득 쪽은 넉넉히(+2σ), 손실 쪽은 박하게(−2σ) 잡는다 — 롱샷일수록 중요."""
+def f1_counts(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=None) -> list[list[int]]:
+    """결승을 sims 번 돌려 드라이버별 결과 구간 횟수 [우승, 포디움(2~3위), 포인트(4~10위), 11위 이하, 리타이어]."""
     rng = rng or random.Random()
-    c = [[0, 0, 0, 0] for _ in DRIVERS]          # 우승 · 포디움 · 11위 이하 · 리타이어
+    c = [[0] * 5 for _ in DRIVERS]
     for _ in range(sims):
         fin, out, _ = f1_sim(grid, gp, rain, rng)
         for r, d in enumerate(fin):
-            if r == 0:
-                c[d][0] += 1
-            elif r < 3:
-                c[d][1] += 1
-            elif r >= 10:
-                c[d][2] += 1
+            c[d][f1_tier(r)] += 1
         for d in out:
-            c[d][3] += 1
+            c[d][4] += 1
+    return c
+
+
+def f1_odds(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=None, counts=None) -> list[tuple[float, float]]:
+    """3.1.0 전 배당: 드라이버별 (우승 배수, 포디움 배수). 기대값이 0 밑이 되게 정한다.
+    기대값 = P(우승)·우승배수 + P(2~3위)·포디움배수 − P(11위 이하) − 2·P(리타이어) ≤ 0
+    시뮬레이션 오차로 배당이 부풀지 않게 이득 쪽은 넉넉히(+2σ), 손실 쪽은 박하게(−2σ) 잡는다 — 롱샷일수록 중요."""
     res = []
-    for w, p, o, x in c:
+    for w, p, _, o, x in counts or f1_counts(grid, gp, rain, sims, rng):
         up = w + POD_SHARE * p + 2 * math.sqrt(w + POD_SHARE ** 2 * p + 1)
         loss = max(0.0, o + 2 * x - 2 * math.sqrt(o + 4 * x + 1))
         m = min(F1_CAP, F1_EDGE * loss / up)
@@ -458,8 +464,41 @@ def f1_odds(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=Non
     return res
 
 
-def f1_mult(odds: tuple[float, float], rank: int | None) -> float:
-    """rank = 완주 순위(0부터), None = 리타이어."""
+def f1_ladder(counts: list[list[int]]) -> list[tuple[float, ...]]:
+    """3.1.0 배당: 드라이버마다 결과 구간별 배수 (우승, 포디움, 포인트, 11위 이하, 리타이어).
+    그 드라이버의 '예상 구간'(결과 절반이 들어오는 구간, 우승은 빼고) = 본전, 그보다 잘하면 수익, 못하면 손실.
+    강팀은 포디움이 본전이라 4위 밖이면 손실, 하위 팀은 11위 이하가 본전이라 포인트만 따도 수익.
+    수익 비율은 우승 1 : 포디움 0.4 : 포인트 0.15, 기대값은 손익분기의 F1_EDGE_310 배 (오차는 f1_odds 처럼 ±2σ)."""
+    res = []
+    for n in counts:
+        total, cum, m = sum(n) or 1, 0, 3
+        for t in range(4):
+            cum += n[t]
+            if cum * 2 >= total:
+                m = t
+                break
+        m = max(1, m)
+        up = sum(F1_SHAPE[t] * n[t] for t in range(m))
+        up += 2 * math.sqrt(sum(F1_SHAPE[t] ** 2 * n[t] for t in range(m)) + 1)
+        lose = [(F1_LOSS[t], n[t]) for t in range(m + 1, 5)]
+        loss = max(0.0, sum(l * k for l, k in lose) - 2 * math.sqrt(sum(l * l * k for l, k in lose) + 1))
+        w = max(0.01, min(F1_CAP_310, F1_EDGE_310 * loss / up))
+        res.append(tuple(max(0.01, math.floor(w * F1_SHAPE[t] * 100) / 100) if t < m else (0 if t == m else -F1_LOSS[t])
+                         for t in range(5)))
+    return res
+
+
+def f1_tier(rank: int | None) -> int:
+    """완주 순위(0부터, None = 리타이어) → 결과 구간 0 우승 · 1 포디움 · 2 포인트 · 3 11위 이하 · 4 리타이어."""
+    if rank is None:
+        return 4
+    return 0 if rank == 0 else (1 if rank < 3 else (2 if rank < 10 else 3))
+
+
+def f1_mult(odds: tuple, rank: int | None) -> float:
+    """rank = 완주 순위(0부터), None = 리타이어. odds 가 구간 5개면 3.1.0 배당(f1_ladder)."""
+    if len(odds) == 5:
+        return odds[f1_tier(rank)]
     if rank is None:
         return -2
     if rank == 0:
@@ -467,6 +506,12 @@ def f1_mult(odds: tuple[float, float], rank: int | None) -> float:
     if rank < 3:
         return odds[1]
     return 0 if rank < 10 else -1
+
+
+def f1_ladder_text(lad: tuple) -> str:
+    """'우승 +3.2 · 포디움 +1.28 · 4~10위 본전 · 11위~ -1' — 출전표 · 드라이버 목록용."""
+    names = ("우승", "포디움", "4~10위", "11위~")
+    return " · ".join(f"{nm} {'본전' if v == 0 else f'{v:+g}'}" for nm, v in zip(names, lad))
 
 
 def _nm(d: int) -> str:
@@ -690,8 +735,9 @@ class PickView(discord.ui.View):
         if game == "f1":
             opts = [discord.SelectOption(label=f"P{p + 1} {DRIVERS[d][0]} {DRIVERS[d][1]}", value=str(d),
                                          emoji=cog.temoji(DRIVERS[d][3]),
-                                         description=f"{TEAMS[DRIVERS[d][3]][0]} · 우승 +{race['odds'][d][0]:g}배 · "
-                                                     f"포디움 +{race['odds'][d][1]:g}배")
+                                         description=f1_ladder_text(race["odds"][d])[:100] if race.get("new") else
+                                         f"{TEAMS[DRIVERS[d][3]][0]} · 우승 +{race['odds'][d][0]:g}배 · "
+                                         f"포디움 +{race['odds'][d][1]:g}배")
                     for p, d in enumerate(race["grid"])]
             sel = discord.ui.Select(placeholder="🏎️ 드라이버를 고르세요", options=opts)
 
@@ -1002,10 +1048,13 @@ class Race(commands.Cog):
         grid = f1_qualify(rain)
 
         def work():
-            odds = f1_odds(grid, gp, rain)
-            return odds, f1_render(gp, "출발 그리드", dict(f1_grid_snap(grid), wet=rain), -1, None, odds)
-        odds, png = await asyncio.to_thread(work)
-        return {"gp": gp, "rain": rain, "grid": grid, "odds": odds, "png": png}
+            counts = f1_counts(grid, gp, rain)
+            snap = dict(f1_grid_snap(grid), wet=rain)
+            odds, ladder = f1_odds(grid, gp, rain, counts=counts), f1_ladder(counts)   # 3.1.0 전 서버 · 3.1.0 서버
+            return (odds, f1_render(gp, "출발 그리드", snap, -1, None, odds),
+                    ladder, f1_render(gp, "출발 그리드", snap, -1, None, ladder))
+        odds, png, ladder, png310 = await asyncio.to_thread(work)
+        return {"gp": gp, "rain": rain, "grid": grid, "odds": odds, "png": png, "odds310": ladder, "png310": png310}
 
     def _refill(self):
         """준비된 경주가 F1_READY 개가 되게 뒤에서 채운다 (이미 채우는 중이면 그대로)."""
@@ -1024,7 +1073,7 @@ class Race(commands.Cog):
         e = ui.card(f"🏎️ {flag} {name} — 출발 그리드",
                     f'> 🎙️ *"{note}! {laps}랩 레이스가 곧 시작됩니다. 누구에게 거시겠어요?"*\n'
                     f"{weather} · 🟡 세이프티카 {sc_pct}% · {'🏙️ 시가지' if street else '🏁 상설 서킷'} · 추월 {overtake}"
-                    f"\n\n`베팅` **{amount:,}원**\n-# {F1_RULE}", ui.INFO, user, F1_SECTION)
+                    f"\n\n`베팅` **{amount:,}원**\n-# {F1_RULE_310 if race.get('new') else F1_RULE}", ui.INFO, user, F1_SECTION)
         grid, odds = race["grid"], race["odds"]
         for lo, hi in ((0, 11), (11, 22)):
             e.add_field(name=f"우승 배당 · P{lo + 1}~P{hi}", inline=True, value="\n".join(
@@ -1043,6 +1092,8 @@ class Race(commands.Cog):
         async def build():
             race = self.f1_ready.pop(0) if self.f1_ready else await self._prepare_f1()   # 보통은 미리 만들어 둔 경주
             self._refill()
+            if release.preview_310(getattr(getattr(interaction, "guild", None), "id", None)):   # 3.1.0 배당 (예상 순위 구간 = 본전)
+                race = dict(race, odds=race["odds310"], png=race["png310"], new=True)
             return (lambda: PickView(self, "f1", user, amount, race)), self._f1_card(user, amount, race), race["png"]
         await self._bet(interaction, amount, F1_SECTION, build)
 
@@ -1101,11 +1152,12 @@ class Race(commands.Cog):
             if g >= 4:
                 head, caster = "역전 우승!!!", f"P{g}에서 출발해 우승까지!! 이게 F1이죠!!"
         elif rank < 3:
-            emoji, head, caster = "🍾", f"P{rank + 1} 포디움!", "포디움! 샴페인 파티입니다!"
+            emoji, head, caster = "🍾", f"P{rank + 1} 포디움!", "포디움! 샴페인 파티입니다!" + (" 본전이에요." if mult == 0 else "")
         elif rank < 10:
-            emoji, head, caster = "🏁", f"P{rank + 1} 완주", "포인트권 완주 — 본전입니다."
+            emoji, head, caster = "🏁", f"P{rank + 1} 완주", ("포인트권 완주! 예상보다 잘 달렸어요!" if mult > 0 else
+                                                           "포인트권 완주 — 본전입니다." if mult == 0 else "포인트권 완주… 예상보다 뒤라 1배 손실이에요.")
         else:
-            emoji, head, caster = "😶", f"P{rank + 1} 완주", "포인트권 밖… 1배 손실이에요."
+            emoji, head, caster = "😶", f"P{rank + 1} 완주", "예상대로 완주 — 본전입니다." if mult == 0 else "포인트권 밖… 1배 손실이에요."
         move = "" if rank is None else f" (그리드 P{g} → P{rank + 1})"
         podium = " · ".join(f"{PLACES[i]} {DRIVERS[d][0]}" for i, d in enumerate(finish[:3]))
         star = max(finish, key=lambda d: grid.index(d) - finish.index(d))

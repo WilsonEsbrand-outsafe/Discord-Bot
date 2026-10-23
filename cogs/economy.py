@@ -19,6 +19,7 @@ from services.club_db import STEROID_TABLE, ClubDB, hidden_tier
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
 from services import ui
+import release
 
 
 def _format_time_left(seconds: int) -> str:
@@ -1416,11 +1417,17 @@ class Economy(commands.Cog):
         (4, 4, "⭐ 챔피언스리그 진출"), (5, 2, "🌍 유로파리그 진출"), (8, 0, "😐 중상위권"),
         (14, -2, "😶 중위권"), (17, -4, "😰 강등권 싸움"), (20, -6, "⬇️ 강등"),
     ]
+    # 3.1.0: 절반(1~10위)은 수익 · 11~12위 본전 · 13위부터 손실 — 기대값 -5% (배수 합 -1)
+    LEAGUE_PAYOUT_310 = [
+        (1, 10, "🏆 리그 우승"), (2, 6, "⭐ 챔피언스리그 진출"), (3, 4, "⭐ 챔피언스리그 진출"),
+        (4, 3, "⭐ 챔피언스리그 진출"), (6, 2, "🌍 유로파리그 진출"), (10, 1, "🙂 상위권"), (12, 0, "😐 중위권"),
+        (15, -3, "😶 하위권"), (17, -4, "😰 강등권 싸움"), (20, -5, "⬇️ 강등"),
+    ]
     LEAGUE_ROUNDS = (("개막 5라운드", 5), ("전반기 종료", 19), ("30라운드", 30))
 
     @classmethod
-    def league_payout(cls, rank: int) -> tuple[int, str]:
-        return next((m, label) for last, m, label in cls.LEAGUE_PAYOUT if rank <= last)
+    def league_payout(cls, rank: int, new: bool = False) -> tuple[int, str]:
+        return next((m, label) for last, m, label in (cls.LEAGUE_PAYOUT_310 if new else cls.LEAGUE_PAYOUT) if rank <= last)
 
     @staticmethod
     def _league_table(teams: list[str], rng=random) -> list[dict]:
@@ -1454,7 +1461,7 @@ class Economy(commands.Cog):
         rank = random.randint(1, 20)                       # 최종 순위는 완전 랜덤
         order = others[:rank - 1] + [mine] + others[rank - 1:]
         table = self._league_table(order)
-        mult, label = self.league_payout(rank)
+        mult, label = self.league_payout(rank, release.preview_310(getattr(getattr(interaction, "guild", None), "id", None)))
         delta = amount * mult
         try:
             new_bal = await self.db.add_balance(user.id, delta)
@@ -1465,7 +1472,7 @@ class Economy(commands.Cog):
             name = f"**{r['name']}** 👈" if r["name"] == mine else r["name"]
             return f"`{i + 1:>2}` {name} · **{r['pts']}점** · {r['w']}승 {r['d']}무 {r['l']}패 · {r['gd']:+d}"
 
-        color = ui.GOLD if rank == 1 else (ui.DOOM if mult <= -6 else ui.tone(delta))
+        color = ui.GOLD if rank == 1 else (ui.DOOM if rank == 20 else ui.tone(delta))
         final = ui.card(f"{label} — {mine} {rank}위", "\n".join(line(i, r) for i, r in enumerate(table)),
                         color, user, sec)
         final.description += f"\n\n`리그` {league} · `정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**"
