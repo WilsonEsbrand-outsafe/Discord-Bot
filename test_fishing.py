@@ -27,7 +27,9 @@ def test_odds_and_values():
     assert all(min(a, b) - 1e-9 <= m <= max(a, b) + 1e-9 for a, b, m in zip(fast, slow, mid))   # 사이는 직선
     assert F.grade_odds(5) == fast and F.grade_odds(9999) == slow                                  # 범위 밖은 끝값
     assert abs(sum(F.grade_odds(600, 0.4)) - 1) < 1e-9 and F.grade_odds(600, 0.4)[4] > slow[4]     # 보너스는 더 희귀하게
-    assert F.expected_value(600) > 4 * F.expected_value(10)                                        # 오래 기다릴수록 값어치
+    assert F.expected_value(600) > 4 * F.expected_value(10)
+    assert 0.4 < F.expected_value(305, True) / F.expected_value(305) < 0.6                     # 3.1.0: 평균 수입 약 절반
+    assert len(sum(F.by_grade(True), [])) == 55 and not F.NEW_310 & set(sum(F.by_grade(), []))  # 새 15종은 3.1.0 서버만                                        # 오래 기다릴수록 값어치
     rng = random.Random(1)
     for k in F.FISH:
         sizes = [F.roll_size(k, rng) for _ in range(200)]

@@ -15,8 +15,8 @@ from services import ui
 from services.club_db import ClubDB
 from services.economy_db import ITEM_PRICES, ITEMS, SHOP_ONE_ONLY, EconomyDB, give_item
 from services.fishing import (
-    AQUARIUM_MAX, BAG_MAX, BY_GRADE, CATCH_WINDOW, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES,
-    SKIP_PIECES, TRADE_DAILY, fish_name, grade_odds, level_need, odds_line,
+    AQUARIUM_MAX, BAG_MAX, CATCH_WINDOW, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES,
+    SKIP_PIECES, TRADE_DAILY, by_grade, fish_name, grade_odds, level_need, odds_line,
 )
 from services.hub import HubView, Page
 from services.notifier import send_notify
@@ -189,6 +189,10 @@ class Fishing(commands.Cog):
             old.cancel()
         self._tasks[c["user_id"]] = asyncio.create_task(self._bite_task(c))
 
+    def _new(self, c: dict) -> bool:
+        """찌를 던진 채널의 서버가 3.1.0 공개 서버인가."""
+        return release.preview_310(getattr(getattr(self.bot.get_channel(c["channel_id"]), "guild", None), "id", None))
+
     async def _message(self, c: dict):
         ch = self.bot.get_channel(c["channel_id"])
         if ch is None:
@@ -213,7 +217,7 @@ class Fishing(commands.Cog):
             wait = c["bite_ts"] - s["cast_ts"]
             e = ui.card("🐟 입질이다!!", f'> 🎙️ *"찌가 쑥 들어갑니다!! 지금 당겨요!!"*\n\n'
                         f"⏱️ **{_clock(c['window'])}** 안에 [잡기!]를 누르세요 (<t:{c['bite_ts'] + c['window']}:R>)\n"
-                        f"⏳ 기다린 시간 **{_clock(wait)}** — {odds_line(grade_odds(wait))}",
+                        f"⏳ 기다린 시간 **{_clock(wait)}** — {odds_line(grade_odds(wait, new=self._new(c)))}",
                         ui.GOLD, user, SECTION)
             e.set_thumbnail(url=ui.emoji_url("🐟"))
             try:
@@ -254,7 +258,8 @@ class Fishing(commands.Cog):
         if from_bite and not s.get("cast_ts"):
             return await interaction.response.send_message("🙅 이 찌는 주인이 아니거나 이미 끝났어요.", ephemeral=True)
         new = release.preview_291(interaction.guild_id)   # 2.9.1: 경험치 하향 · 결과 남기기 (테스트 서버 먼저)
-        r = await self.db.reel(user.id, int(time.time()), new_xp=new)
+        r = await self.db.reel(user.id, int(time.time()), new_xp=new,
+                               new_310=release.preview_310(interaction.guild_id))   # 3.1.0: 새 물고기 15종 · 희귀 확률 하향
         task = self._tasks.pop(user.id, None)
         if task:
             task.cancel()
@@ -406,7 +411,7 @@ class Fishing(commands.Cog):
         parts = []
         for g in range(5):
             rows = []
-            for k in BY_GRADE[g]:
+            for k in by_grade(release.preview_310(getattr(getattr(user, "guild", None), "id", None)))[g]:
                 v = m[k]
                 d = v["mult"] / v["prev"] - 1 if v["prev"] else 0
                 arrow = "▲" if d > 0.005 else ("▼" if d < -0.005 else "－")
@@ -529,12 +534,13 @@ class Fishing(commands.Cog):
 
     async def _p_dex(self, view: HubView) -> discord.Embed:
         dex = await self.db.dex(view.user.id)
+        pool = by_grade(release.preview_310(getattr(getattr(view.user, "guild", None), "id", None)))
         parts = []
         for g in range(5):
-            cells = [f"{FISH[k][0]} {FISH[k][1]} ×{dex[k][0]} · 최대 {dex[k][1]:g}cm" if k in dex else "❔ ???" for k in BY_GRADE[g]]
-            have = sum(k in dex for k in BY_GRADE[g])
-            parts.append(f"**{GRADE_EMOJI[g]} {GRADES[g]}** {have}/{len(BY_GRADE[g])}\n" + "\n".join(cells))
-        return ui.card(f"📖 도감 · {len(dex)}/{len(FISH)}", "\n\n".join(parts), ui.INFO, view.user, SECTION)
+            cells = [f"{FISH[k][0]} {FISH[k][1]} ×{dex[k][0]} · 최대 {dex[k][1]:g}cm" if k in dex else "❔ ???" for k in pool[g]]
+            have = sum(k in dex for k in pool[g])
+            parts.append(f"**{GRADE_EMOJI[g]} {GRADES[g]}** {have}/{len(pool[g])}\n" + "\n".join(cells))
+        return ui.card(f"📖 도감 · {len(dex)}/{sum(map(len, pool))}", "\n\n".join(parts), ui.INFO, view.user, SECTION)
 
     async def _p_log(self, view: HubView) -> discord.Embed:
         log = await self.db.recent(view.user.id)

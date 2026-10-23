@@ -91,6 +91,8 @@ def test_league():
     mults = [Economy.league_payout(r)[0] for r in range(1, 21)]
     assert sum(mults) == 0 and mults == sorted(mults, reverse=True) and mults[0] == 20 and mults[-1] == -6
     assert all(len(set(t)) == 20 for t in Economy.LEAGUES.values())
+    new = [Economy.league_payout(r, True)[0] for r in range(1, 21)]                  # 3.1.0: 절반은 수익 · 기대값 -5%
+    assert sum(new) == -1 and new == sorted(new, reverse=True) and sum(m > 0 for m in new) == 10 and new[0] == 10
     rng = random.Random(3)
     for _ in range(200):
         t = Economy._league_table([f"t{i}" for i in range(20)], rng)

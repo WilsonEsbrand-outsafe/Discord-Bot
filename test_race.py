@@ -152,6 +152,27 @@ def test_f1_odds_ev():
         assert odds[grid[0]][0] < odds[grid[-1]][0]                                  # 폴시터 배당 < 맨 뒤 배당
 
 
+def test_f1_ladder_310():
+    """3.1.0 배당: 어느 그리드에 걸어도 기대값이 0 밑 · 강팀은 4위 밖이면 손실 · 하위 팀은 포인트만 따도 수익."""
+    rng = random.Random(5)
+    gp = next(c for c in R.CIRCUITS if c[1] == "영국 GP · 실버스톤")
+    grid = R.f1_qualify(False, rng)
+    lad = R.f1_ladder(R.f1_counts(grid, gp, False, rng=random.Random(1)))
+    assert all(len(l) == 5 and l[4] == -2 and l[0] > 0 for l in lad)
+    assert lad[grid[0]][2] < 0 and lad[grid[0]][1] >= 0                       # 폴시터: 포인트권(4~10위)은 손실
+    assert lad[grid[-1]][2] > 0 and lad[grid[-1]][3] == 0                      # 맨 뒤: 포인트면 수익 · 11위 이하 본전
+    assert R.f1_mult(lad[grid[-1]], 5) == lad[grid[-1]][2] and R.f1_mult(lad[grid[-1]], None) == -2
+    ev, sims = [0.0] * 22, 15000
+    for _ in range(sims):
+        fin, out, _ = R.f1_sim(grid, gp, False, rng)
+        for r, d in enumerate(fin):
+            ev[d] += R.f1_mult(lad[d], r)
+        for d in out:
+            ev[d] += R.f1_mult(lad[d], None)
+    assert max(e / sims for e in ev) < 0.01 and min(e / sims for e in ev) > -0.3, [round(e / sims, 3) for e in ev]
+    assert "본전" in R.f1_ladder_text(lad[grid[0]])
+
+
 def test_f1_render():
     rng = random.Random(2)
     for gp in R.CIRCUITS[::6]:
@@ -190,7 +211,7 @@ def test_emoji_and_ready():
         assert cog.temoji("MER").id == 1 and all(cog.temoji(t) is cog.team_emoji[t] for t in R.TEAMS)   # 11팀 모두 로고
 
         race = await cog._prepare_f1()
-        assert set(race) == {"gp", "rain", "grid", "odds", "png"} and race["png"][:4] == b"\x89PNG"
+        assert set(race) == {"gp", "rain", "grid", "odds", "png", "odds310", "png310"} and race["png310"][:4] == b"\x89PNG"
         user = SimpleNamespace(id=5, display_name="a", display_avatar=SimpleNamespace(url="https://x/a.png"))
         card = cog._f1_card(user, 1000, race)
         fields = " ".join(f.value for f in card.fields)
@@ -316,6 +337,7 @@ if __name__ == "__main__":
     test_rowing()
     test_f1_model()
     test_f1_odds_ev()
+    test_f1_ladder_310()
     test_f1_render()
     test_emoji_and_ready()
     test_flows()
