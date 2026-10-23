@@ -336,7 +336,7 @@ async def on_ready():
     ui.BOT_ICON = bot.user.display_avatar.url   # 3.1.0 키코 푸터 아이콘
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dungeon", "cogs.hub")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -479,7 +479,7 @@ async def sync_and_reload(interaction: discord.Interaction):
             print(f"⚠️ {_name} 리로드 실패:", repr(e))
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dungeon", "cogs.hub")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)

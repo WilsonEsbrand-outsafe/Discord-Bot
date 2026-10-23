@@ -63,6 +63,10 @@ GAMES = (
         "`/페널티킥` — 최대 200배 파넨카 ~ 10배 손실\n"
         "`/야구` — 50배 ~ 10배 손실 · `/농구` — 30배 ~ 8배 손실\n"
         "`/ufc` — 100배 ~ 20배 손실")),
+    ("⚽", "드리블", "제칠수록 배당이 오르는 솔로 드리블", (
+        "`/드리블 베팅액` — 수비수마다 [왼쪽] · [오른쪽] (반반)\n"
+        "제칠 때마다 1.9 → 3.8 → 7.6 → 15 → 30 → 60배 · 골키퍼까지 제치면 **120배**\n"
+        "언제든 [슛!]으로 지금 배당을 받고 끝 · 막히면 베팅금을 잃어요")),
     ("🏹", "양궁", "바늘을 가운데에 맞춰 6발", (
         "`/양궁 베팅액` — 궁수와 함께 6발. 조준 바늘이 가운데일 때 [쏘기!]\n"
         "합계 57점 이상 +1.5배 · X(정중앙) 3개 이상 보너스\n"
@@ -189,7 +193,9 @@ class Hubs(commands.Cog):
                 return ui.card(f"{emoji} {title}", body + "\n\n⚠️ 미니게임은 최소 1,000원 · 큰 손실은 잔액이 마이너스가 될 수 있어요.",
                                ui.INFO, view.user, "🎮 게임")
             return r
-        pages = [Page(e, t, render(i), hint) for i, (e, t, hint, _) in enumerate(GAMES)]
+        new = release.preview_310(getattr(getattr(user, "guild", None), "id", None))
+        pages = [Page(e, t, render(i), hint) for i, (e, t, hint, _) in enumerate(GAMES)
+                 if new or t != "드리블"]   # 3.1.0 /드리블 은 공개 서버에만
         return HubView(user, "게임", "🎮 게임", pages, "/게임", page, home_note="해 보고 싶은 게임을 골라 보세요.")
 
     @app_commands.command(name="게임", description="🎮 미니게임 모음 — 레이스 · 한 방 게임 · 양궁 · 리그 · 낚시 · 던전 · 토토")

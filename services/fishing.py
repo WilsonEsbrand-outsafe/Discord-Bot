@@ -106,8 +106,9 @@ FEAST_GIVES = ("grill", "sashimi", "stew", "eel_rice")
 FEED_PROSPECT_XP = (2, 3, 5, 8, 15)
 FEED_FULL_TEAM = 11           # 오늘 선발 11명 모두 먹이면 오늘 경기 전력 +1 (🍽️ 든든한 식단)
 FEED_TEAM_BONUS = 1
-# 3.1.0 🤖 자동 낚시: 사용 후 24시간 동안 30분마다 한 마리 (입질이 가장 빠른 찌와 같은 확률 · 어망이 차면 쉰다)
-AUTO_HOURS, AUTO_EVERY = 24, 1800
+# 3.1.0 🤖 자동 낚시: 상점에선 안 팔고 [잡기!] 때 0.1% 로 얻는다. 사용 후 24시간 동안 5~15분마다 한 마리
+# (입질이 가장 빠른 찌와 같은 확률 · 어망이 차면 쉰다)
+AUTO_HOURS, AUTO_EVERY, AUTO_DROP = 24, (300, 900), 0.001
 SKIP_PIECES = 5               # 스킵권 조각 5개 → 스킵권 1장 (스카우트 · 훈련 · 직관 중 하나)
 
 
@@ -349,7 +350,11 @@ class FishingDB(EconomyDB):
                 return {"ok": True, "kind": "early"}
             if now_ts > s["bite_ts"] + s["window"]:
                 return {"ok": True, "kind": "fled", "wait": s["bite_ts"] - s["cast_ts"]}
-            return self._catch(con, uid, s, s["bite_ts"] - s["cast_ts"], s["bait"], now_ts, rng, new_xp, new_310)
+            r = self._catch(con, uid, s, s["bite_ts"] - s["cast_ts"], s["bait"], now_ts, rng, new_xp, new_310)
+            if new_310 and rng.random() < AUTO_DROP:   # 3.1.0 🤖 자동 낚시 (아주 가끔)
+                give_item(con, uid, "auto_fish")
+                r["auto_drop"] = True
+            return r
         return await self._tx(fn)
 
     def _catch(self, con, uid: int, s: dict, wait: float, bait: Optional[str], now_ts: int, rng,
@@ -397,7 +402,7 @@ class FishingDB(EconomyDB):
             if r and r[0] > now_ts:
                 until, nxt = r[0] + AUTO_HOURS * 3600, r[1]
             else:
-                until, nxt = now_ts + AUTO_HOURS * 3600, now_ts + AUTO_EVERY
+                until, nxt = now_ts + AUTO_HOURS * 3600, now_ts + random.randint(*AUTO_EVERY)
             con.execute("INSERT OR REPLACE INTO fish_auto VALUES(?,?,?)", (uid, until, nxt))
             return {"ok": True, "until": until, "next": nxt}
         return await self._tx(fn)
@@ -417,7 +422,7 @@ class FishingDB(EconomyDB):
                 else:
                     c = self._catch(con, uid, s, BITE_MIN, None, nxt, rng, True, new)
                     (out["fish"] if c["kind"] == "fish" else out["junk"]).append(c)
-                nxt += AUTO_EVERY
+                nxt += rng.randint(*AUTO_EVERY)
             if nxt > until:
                 con.execute("DELETE FROM fish_auto WHERE user_id=?", (uid,))
             else:

@@ -80,6 +80,9 @@ def preview_310(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_310(now)
 
 
+PREVIEW_310: set[str] = {"드리블"}   # 3.1.0 새 명령어 — 공개 전엔 테스트 서버에만 보인다
+
+
 def maintenance(now: Optional[float] = None) -> bool:
     return MAINTENANCE is not None and MAINTENANCE[0] <= _now(now) < MAINTENANCE[1]
 
@@ -87,4 +90,5 @@ def maintenance(now: Optional[float] = None) -> bool:
 def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set[str]:
     """이 서버의 / 목록에서 뺄 명령어."""
     out = set(LEGACY_ONLY if preview(guild_id, now) else PREVIEW_ONLY)
-    return out | LEGACY_2101 if preview_2101(guild_id, now) else out
+    out = out | LEGACY_2101 if preview_2101(guild_id, now) else out
+    return out if preview_310(guild_id, now) else out | PREVIEW_310

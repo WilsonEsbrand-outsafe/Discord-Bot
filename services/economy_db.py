@@ -78,7 +78,7 @@ ITEMS = {
     "special_training": ("🏋️", "특훈권",     "오늘 유스 선수 한 명 훈련 +1번"),
     "scout_coupon": ("🎟️", "스카우트 쿠폰",  "다음 유스 입단 테스트 무료 + 지원자 +2명"),
     # ── 3.1.0 ──
-    "auto_fish":   ("🤖", "자동 낚시",       "사용 후 24시간 동안 30분마다 한 마리씩 자동으로 낚아 어망에 넣어요 (희귀한 물고기는 잘 안 걸려요)"),
+    "auto_fish":   ("🤖", "자동 낚시",       "사용 후 24시간 동안 5~15분마다 한 마리씩 자동으로 낚아 어망에 넣어요 (희귀한 물고기는 잘 안 걸려요 · /낚시 중 아주 가끔)"),
     "lawyer":      ("⚖️", "변호사 선임권",   "나 또는 다른 유저에게 선임 · 파산 탕감 0%가 나오면 다시 변론해 30~70% · 100% 중 하나로"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
@@ -94,7 +94,6 @@ ITEM_PRICES = {
     # 낚시 (낚시터 상점과 같은 가격)
     "bait": 2_000, "bait_gold": 15_000, "rod_carbon": 500_000, "rod_pro": 5_000_000, "rod_legend": 30_000_000,
     "icebox": 2_000_000, "fish_charm": 500_000, "spice": 30_000,
-    "auto_fish": 1_500_000,
     # 양궁
     "bow_pro": 300_000, "windbreaker": 300_000, "focus": 500_000,
     # 유스
@@ -104,11 +103,11 @@ ITEM_PRICES = {
 }
 # 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
-               ("🎣 낚시", ("bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "fish_charm", "spice", "auto_fish")),
+               ("🎣 낚시", ("bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "fish_charm", "spice")),
                ("🏹 양궁", ("bow_pro", "windbreaker", "focus")),
                ("🎓 유스", ("first_team", "special_training", "scout_coupon")),
                ("⚔️ 전술", ("tactic_note", "analysis_report")))
-SHOP_310: set[str] = {"auto_fish"}   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템 (⚖️ 변호사 선임권은 상점에서 팔지 않는다)
+SHOP_310: set[str] = set()   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템 (⚖️ 변호사 선임권 · 🤖 자동 낚시는 상점에서 팔지 않는다)
 SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3}   # 하루(KST) 구매 한도가 있는 아이템
 # 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
 SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST

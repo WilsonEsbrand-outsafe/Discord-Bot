@@ -299,6 +299,12 @@ class Fishing(commands.Cog):
         await interaction.response.edit_message(embed=e, view=CastView(self, user, s, keep=new and r["kind"] in ("fish", "junk")))
 
     def _result_card(self, user, r: dict) -> discord.Embed:
+        e = self._catch_card(user, r)
+        if r.get("auto_drop"):   # 3.1.0 아주 가끔 🤖 자동 낚시
+            e.description += "\n\n🤖 **자동 낚시**도 함께 건졌어요!! (0.1%) — `/가방`에서 쓰면 24시간 동안 5~15분마다 한 마리씩 자동으로 낚아요."
+        return e
+
+    def _catch_card(self, user, r: dict) -> discord.Embed:
         kind = r["kind"]
         if kind in ("early", "fled"):
             e = (ui.card("🪝 찌를 걷었어요", "아직 입질 전이었어요. 미끼는 물고기 밥이 됐어요.", ui.EVEN, user, SECTION) if kind == "early"
@@ -661,7 +667,7 @@ class Fishing(commands.Cog):
             return await interaction.response.send_message("🙅 🤖 자동 낚시가 없어요.", ephemeral=True)
         await interaction.response.send_message(embed=ui.card(
             "🤖 자동 낚시 켜짐!",
-            f"**{AUTO_EVERY // 60}분마다** 한 마리씩 자동으로 낚아 어망에 넣어요.\n"
+            f"**{AUTO_EVERY[0] // 60}~{AUTO_EVERY[1] // 60}분마다** 한 마리씩 자동으로 낚아 어망에 넣어요.\n"
             f"⏰ <t:{r['until']}:f> 까지 · 다음 입질 <t:{r['next']}:R>\n"
             f"🐟 입질이 가장 빠른 찌와 같은 확률이라 희귀한 물고기는 잘 안 걸려요 · 어망이 차면 쉬어요\n"
             f"`/낚시`를 열면 그동안 낚은 물고기가 정리돼요.",
