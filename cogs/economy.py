@@ -606,7 +606,8 @@ class Economy(commands.Cog):
                               f"**{self.train_money_mult(r['level'])}배**")
         if r["used"] >= r["limit"]:
             e.description += "\n\n🔓 오늘 훈련 완료! 이제 `/직관`을 할 수 있어요."
-        e.set_thumbnail(url=ui.emoji_url(ev["emoji"]))
+        e.set_thumbnail(url=ui.result_thumb(ev["emoji"], color, user,
+                                            "levelup" if r["leveled"] else ("train_ok" if info["ok"] else "train_fail")))
         await interaction.followup.send(embed=e)
 
     # ✅ 스카우트: 훈련의 상위 버전 — 쿨타임 60초 · 하루 15회 · 최대 Lv.5 · 드물게 실제 선수 발굴
@@ -692,7 +693,8 @@ class Economy(commands.Cog):
                               f"**{self.scout_money_mult(r['level'])}배** · 선수 발굴 확률과 희귀 선수 비중 상승")
         if r["used"] >= r["limit"]:
             e.description += "\n\n🔓 오늘 스카우트 완료! 이제 `/훈련`을 할 수 있어요."
-        e.set_thumbnail(url=ui.emoji_url("💎" if found else ev["emoji"]))
+        e.set_thumbnail(url=ui.result_thumb("💎" if found else ev["emoji"], color, user,   # 2.10.3 키코 그림
+                                            "scout_found" if found else ("levelup" if r["leveled"] else ("scout_ok" if info["ok"] else "scout_fail"))))
         await interaction.followup.send(embed=e)
 
     # ✅ 직관: 스카우트 → 훈련을 모두 마친 뒤 열리는 세 번째 일과. 쿨타임 10초 · 하루 100회 · 최대 Lv.5

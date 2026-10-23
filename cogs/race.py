@@ -891,13 +891,13 @@ class Race(commands.Cog):
         board = "\n".join(f"{PLACES[r]} {runners[i][0]} " + (f"**{names[i]}** 👈" if i == pick else names[i])
                           for r, i in enumerate(finish))
         await self._result(interaction, f"{emoji} {names[pick]} {headline}", caster, board, place, mult, delta,
-                           new_bal, user, sec, emoji)
+                           new_bal, user, sec, emoji, f"snail_{place}")
 
-    async def _result(self, interaction, title, caster, board, place, mult, delta, new_bal, user, sec, emoji):
+    async def _result(self, interaction, title, caster, board, place, mult, delta, new_bal, user, sec, emoji, scene=None):
         color = ui.GOLD if place == 0 else (ui.DOOM if mult <= -5 else ui.tone(delta))
         e = ui.card(title, f'> 🎙️ *"{caster}"*\n\n{board}\n\n`정산` **{ui.won(delta)}** · {label(mult)}\n`잔액` **{new_bal:,}원**',
                     color, user, sec)
-        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user))   # 2.10.3 키코 그림 (공개 전엔 이모지)
+        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user, scene))   # 2.10.3 결과 장면 키코 그림 (공개 전엔 이모지)
         try:
             await interaction.edit_original_response(embed=e, view=None)
         except discord.HTTPException:
@@ -973,7 +973,8 @@ class Race(commands.Cog):
         emoji, headline, caster = heads[place]
         board = "\n".join(f"{PLACES[r]} {runners[i][0]} " + (f"**{names[i]}** 👈" if i == me else names[i])
                           for r, i in enumerate(finish))
-        await self._result(interaction, f"{emoji} {headline}", caster, board, place, mult, delta, new_bal, user, sec, emoji)
+        await self._result(interaction, f"{emoji} {headline}", caster, board, place, mult, delta, new_bal, user, sec, emoji,
+                           f"row_{place}")
 
     # ───────────── 🏎️ F1 ─────────────
 

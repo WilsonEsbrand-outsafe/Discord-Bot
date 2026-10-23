@@ -70,17 +70,20 @@ def run_embed(user, st: dict, log: list[str] | None = None) -> discord.Embed:
     color = ui.DOOM if ph == "battle" and st["monster"]["boss"] else (ui.DARK if ph == "battle" else ui.INFO)
     e = ui.card(f"{th[0]} {th[1]} · {st['floor']}층", "\n\n".join(parts), color, user, SECTION)
     e.set_footer(text="힌트는 가끔 거짓 · 30분 방치하면 자동 귀환(보상 전부)")
+    scene = "dg_boss" if ph == "battle" and st["monster"]["boss"] else f"dg_{ph}"
+    if url := ui.scene_url(scene, user):   # 2.10.3 장면별 키코 그림 (공개 전 서버는 그림 없음)
+        e.set_thumbnail(url=url)
     return e
 
 
 def result_embed(user, r: dict, log: list[str] | None = None) -> discord.Embed:
     th = THEMES[r.get("theme", 0)]
     if r["phase"] == "clear":
-        title, color = f"🏆 {th[1]} 클리어!", ui.GOLD
+        title, color, scene = f"🏆 {th[1]} 클리어!", ui.GOLD, "dg_clear"
     elif r["phase"] == "dead":
-        title, color = f"💀 {r['floor']}층에서 쓰러졌어요… (보상 {DEATH_KEEP:.0%})", ui.LOSE
+        title, color, scene = f"💀 {r['floor']}층에서 쓰러졌어요… (보상 {DEATH_KEEP:.0%})", ui.LOSE, "dg_dead"
     else:
-        title, color = f"🏃 귀환 · {r['floor']}층까지", ui.WIN
+        title, color, scene = f"🏃 귀환 · {r['floor']}층까지", ui.WIN, "dg_return"
     got = " · ".join(item_name(k) + (f" ×{n}" if n > 1 else "") for k, n in r["items"].items()) or "없음"
     lines = ([*log, ""] if log else []) + [
         f"`아이템` {got}",
@@ -91,6 +94,8 @@ def result_embed(user, r: dict, log: list[str] | None = None) -> discord.Embed:
     lines.append(f"`잔액` {r['balance']:,}원")
     e = ui.card(title, "\n".join(lines), color, user, SECTION)
     e.set_footer(text="보상은 가방에 들어갔어요 · 내일 00시에 다시 열려요")
+    if url := ui.scene_url(scene, user):
+        e.set_thumbnail(url=url)
     return e
 
 

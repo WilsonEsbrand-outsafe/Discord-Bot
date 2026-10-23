@@ -266,19 +266,21 @@ class Fishing(commands.Cog):
 
     def _result_card(self, user, r: dict) -> discord.Embed:
         kind = r["kind"]
-        if kind == "early":
-            return ui.card("🪝 찌를 걷었어요", "아직 입질 전이었어요. 미끼는 물고기 밥이 됐어요.", ui.EVEN, user, SECTION)
-        if kind == "fled":
-            return ui.card("💨 놓쳤어요…", "너무 늦게 당겼어요. 물고기가 도망갔습니다.", ui.EVEN, user, SECTION)
+        if kind in ("early", "fled"):
+            e = (ui.card("🪝 찌를 걷었어요", "아직 입질 전이었어요. 미끼는 물고기 밥이 됐어요.", ui.EVEN, user, SECTION) if kind == "early"
+                 else ui.card("💨 놓쳤어요…", "너무 늦게 당겼어요. 물고기가 도망갔습니다.", ui.EVEN, user, SECTION))
+            if url := ui.scene_url(f"fish_{kind}", user):   # 2.10.3 키코 그림 (공개 전엔 그림 없음)
+                e.set_thumbnail(url=url)
+            return e
         if kind == "junk":
             if r["item"] == "old_boot":
                 e = ui.card("👢 낡은 장화…", '> 🎙️ *"묵직했는데… 장화네요."*\n\n아무것도 얻지 못했어요.', ui.EVEN, user, SECTION)
-                e.set_thumbnail(url=ui.emoji_url("👢"))
+                e.set_thumbnail(url=ui.result_thumb("👢", ui.EVEN, user, "fish_boot"))
                 return e
             emoji, name, desc = ITEMS[r["item"]]
             e = ui.card(f"{emoji} {name}을(를) 건졌어요!", f'> 🎙️ *"물고기는 아니지만 쓸 만한 게 걸렸어요!"*\n\n*{desc}*\n🎒 `/가방`에 넣었어요.',
                         ui.WIN, user, SECTION)
-            e.set_thumbnail(url=ui.emoji_url(emoji))
+            e.set_thumbnail(url=ui.result_thumb(emoji, ui.WIN, user, "fish_item"))
             return e
         e_, n, g, avg, _ = FISH[r["species"]]
         tags = (" · 🆕 도감 등록!" if r["new"] else "") + (" · 📏 내 최고 기록!" if r["record"] else "")
@@ -290,7 +292,7 @@ class Fishing(commands.Cog):
                 + (f"\n🆙 낚시 **Lv.{r['level']}** 달성!" if r["leveled"] else "")
                 + f"\n⏳ 기다린 시간 {_clock(r['wait'])}")
         e = ui.card(f"{e_} {n}을(를) 낚았다!", desc, color, user, SECTION)
-        e.set_thumbnail(url=ui.emoji_url(e_))
+        e.set_thumbnail(url=ui.result_thumb(e_, color, user, f"fish_{g}"))   # 2.10.3 등급별 키코 그림
         return e
 
     # ───────────── 낚시 메뉴 (허브) ─────────────
