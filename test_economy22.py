@@ -98,6 +98,14 @@ async def _flow():
     await db.add_balance(W, -1_000_000)
     r = await db.declare_bankruptcy(W, NOW + 7200)
     assert r["ok"] and r["forgiven"] == 0 and r["balance"] == 2_000_000
+    # 3.1.0: 탕감은 0% · 30~70% · 100% 중 하나
+    rates = set()
+    for k in range(60):
+        await db.set_balance(W, -1_000_000)
+        r = await db.declare_bankruptcy(W, NOW + 10_800 + 3600 * k, _r.Random(k), new=True)
+        assert r["ok"] and (r["rate"] in (0.0, 1.0) or 0.3 <= r["rate"] <= 0.7)
+        rates.add("0" if r["rate"] == 0 else "100" if r["rate"] == 1 else "mid")
+    assert rates == {"0", "mid", "100"}
 
 
 async def _items():

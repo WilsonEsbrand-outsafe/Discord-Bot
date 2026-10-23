@@ -10,7 +10,7 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS, SKIP_ITEMS, shop_open,
+    BANKRUPT_310, BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS, SKIP_ITEMS, shop_open,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
@@ -232,7 +232,8 @@ class BankruptConfirm(discord.ui.View):
     @discord.ui.button(label="파산 신청", style=discord.ButtonStyle.danger, emoji="⚖️")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
-        r = await self.cog.db.declare_bankruptcy(self.user.id, int(time.time()))
+        r = await self.cog.db.declare_bankruptcy(self.user.id, int(time.time()),
+                                                  new=release.preview_310(getattr(interaction, "guild_id", None)))
         if not r["ok"]:
             msg = ("이미 빚이 없어요." if r["reason"] == "not_negative"
                    else f"파산은 한 시간에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>")
@@ -241,7 +242,9 @@ class BankruptConfirm(discord.ui.View):
             e = ui.card("⚖️ 파산 처리 완료",
                         f"`빚` **{r['debt']:,}원**\n"
                         f"`스폰서 강제 해지` **+{r['sponsor']:,}원**\n"
-                        f"`탕감` **{r['forgiven']:,}원** · 남은 빚의 **{r['rate']:.0%}**\n"
+                        f"`탕감` **{r['forgiven']:,}원** · 남은 빚의 **{r['rate']:.0%}**"
+                        + (" 🎉 전액 탕감!" if r["rate"] >= 1 else " 😱 한 푼도 탕감 못 받았어요…" if r["rate"] == 0 and r["debt"] > r["sponsor"] else "")
+                        + "\n"
                         f"`잔액` **{r['balance']:,}원**\n\n"
                         f"⏳ 다음 파산 신청 <t:{r['next']}:R> · `/스카우트` `/훈련` `/직관`으로 다시 일어서 보세요!",
                         ui.DOOM if r["balance"] < 0 else ui.WIN, self.user, "⚖️ 파산")
@@ -480,10 +483,15 @@ class Economy(commands.Cog):
                 "🙅 파산 신청 대상이 아니에요", f"잔액이 마이너스일 때만 신청할 수 있어요.\n`잔액` **{bal:,}원**",
                 ui.EVEN, user, "⚖️ 파산"), ephemeral=True)
         lo, hi = BANKRUPT_FORGIVE
+        if release.preview_310(getattr(interaction, "guild_id", None)):   # 3.1.0
+            (p0, _), (pm, _), (p1, _) = BANKRUPT_310
+            forgive = f"**0%** ({p0:.0%} 확률) · **{lo:.0%} ~ {hi:.0%}** ({pm:.0%}) · **100%** ({p1:.0%}) 중 하나로 탕감돼요"
+        else:
+            forgive = f"**{lo:.0%} ~ {hi:.0%}** 가 랜덤으로 탕감돼요"
         e = ui.card("⚖️ 정말 파산 신청할까요?",
                     f"`현재 빚` **{-bal:,}원**\n\n"
                     "1️⃣ 진행 중인 스폰서 계약을 **모두 강제 해지**하고 원금으로 빚을 갚아요\n"
-                    f"2️⃣ 그래도 남은 빚의 **{lo:.0%} ~ {hi:.0%}** 가 랜덤으로 탕감돼요\n"
+                    f"2️⃣ 그래도 남은 빚은 {forgive}\n"
                     "3️⃣ 보유 선수 카드는 **그대로** 남아요\n"
                     "4️⃣ 파산은 **한 시간에 한 번** 할 수 있어요",
                     ui.DOOM, user, "⚖️ 파산")
@@ -1417,16 +1425,26 @@ class Economy(commands.Cog):
         (4, 4, "⭐ 챔피언스리그 진출"), (5, 2, "🌍 유로파리그 진출"), (8, 0, "😐 중상위권"),
         (14, -2, "😶 중위권"), (17, -4, "😰 강등권 싸움"), (20, -6, "⬇️ 강등"),
     ]
-    # 3.1.0: 절반(1~10위)은 수익 · 11~12위 본전 · 13위부터 손실 — 기대값 -5% (배수 합 -1)
+    # 3.1.0: 결과 구간(우승 · 챔스 · 유로파 · 컨퍼런스 · 중위권 · 하위권 · 강등)별 확률로 배당 — 우승 · 강등은 극단적으로.
+    # 순위는 완전 랜덤이라 구간 확률 = 순위 칸 수 / 20. 기대값 -5% (순위별 배수 합 -1)
     LEAGUE_PAYOUT_310 = [
-        (1, 10, "🏆 리그 우승"), (2, 6, "⭐ 챔피언스리그 진출"), (3, 4, "⭐ 챔피언스리그 진출"),
-        (4, 3, "⭐ 챔피언스리그 진출"), (6, 2, "🌍 유로파리그 진출"), (10, 1, "🙂 상위권"), (12, 0, "😐 중위권"),
-        (15, -3, "😶 하위권"), (17, -4, "😰 강등권 싸움"), (20, -5, "⬇️ 강등"),
+        (1, 20, "🏆 리그 우승"), (4, 3, "⭐ 챔피언스리그 진출"), (6, 1.5, "🌍 유로파리그 진출"),
+        (7, 1, "🎫 컨퍼런스리그 진출"), (12, 0, "😐 중위권"), (17, -2, "😰 하위권"), (20, -8, "⬇️ 강등"),
     ]
+
+    @classmethod
+    def league_odds_text(cls) -> str:
+        """시즌 시작 화면의 구간별 확률 · 배당표 (3.1.0)."""
+        rows, prev = [], 0
+        for last, m, label in cls.LEAGUE_PAYOUT_310:
+            places = f"{last}위" if last == prev + 1 else f"{prev + 1}~{last}위"
+            rows.append(f"{label} `{places}` · **{(last - prev) * 5}%** · {cls._pk_label(m)}")
+            prev = last
+        return "\n".join(rows)
     LEAGUE_ROUNDS = (("개막 5라운드", 5), ("전반기 종료", 19), ("30라운드", 30))
 
     @classmethod
-    def league_payout(cls, rank: int, new: bool = False) -> tuple[int, str]:
+    def league_payout(cls, rank: int, new: bool = False) -> tuple[float, str]:
         return next((m, label) for last, m, label in (cls.LEAGUE_PAYOUT_310 if new else cls.LEAGUE_PAYOUT) if rank <= last)
 
     @staticmethod
@@ -1461,8 +1479,9 @@ class Economy(commands.Cog):
         rank = random.randint(1, 20)                       # 최종 순위는 완전 랜덤
         order = others[:rank - 1] + [mine] + others[rank - 1:]
         table = self._league_table(order)
-        mult, label = self.league_payout(rank, release.preview_310(getattr(getattr(interaction, "guild", None), "id", None)))
-        delta = amount * mult
+        new = release.preview_310(getattr(getattr(interaction, "guild", None), "id", None))
+        mult, label = self.league_payout(rank, new)
+        delta = int(amount * mult)
         try:
             new_bal = await self.db.add_balance(user.id, delta)
         except Exception as ex:
@@ -1472,15 +1491,18 @@ class Economy(commands.Cog):
             name = f"**{r['name']}** 👈" if r["name"] == mine else r["name"]
             return f"`{i + 1:>2}` {name} · **{r['pts']}점** · {r['w']}승 {r['d']}무 {r['l']}패 · {r['gd']:+d}"
 
-        color = ui.GOLD if rank == 1 else (ui.DOOM if rank == 20 else ui.tone(delta))
+        color = ui.GOLD if rank == 1 else (ui.DOOM if rank >= 18 else ui.tone(delta))
         final = ui.card(f"{label} — {mine} {rank}위", "\n".join(line(i, r) for i, r in enumerate(table)),
                         color, user, sec)
         final.description += f"\n\n`리그` {league} · `정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**"
         final.set_thumbnail(url=ui.emoji_url("🏆" if rank == 1 else "⚽"))
         try:
-            msg = await interaction.followup.send(embed=self._caster_card(
+            opening = self._caster_card(
                 user, f"🎲 추첨 결과… {league} 개막!", f"{mine}, {amount:,}원을 걸고 {league}에 뛰어듭니다! 목표는 우승!",
-                ui.DARK, sec), wait=True)
+                ui.DARK, sec)
+            if new:
+                opening.description += "\n\n" + self.league_odds_text()
+            msg = await interaction.followup.send(embed=opening, wait=True)
             for stage, _rnd in self.LEAGUE_ROUNDS:
                 await asyncio.sleep(1.3)
                 mid = max(1, min(20, rank + random.randint(-5, 5)))   # 시즌 중 순위는 오르내린다

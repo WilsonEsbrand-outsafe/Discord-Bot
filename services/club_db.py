@@ -401,10 +401,22 @@ def prospect_age(created_ts: int, at_ts: int) -> int:
     return PROSPECT_START_AGE + max(0, int(at_ts) - int(created_ts)) // PROSPECT_YEAR
 
 
-def prospect_attrs(pid: str, group: str, ovr: int) -> list[tuple[str, int]]:
-    """세부 능력치 6개 = OVR + 포지션 가감 + 선수마다 고정된 ±4. OVR 이 오르면 같이 오른다."""
+PROSPECT_FOCUS_N, PROSPECT_FOCUS_BOOST = 2, 10   # 3.1.0: 만들 때 특화 능력치 2개 +10 (포지션에 크게 안 맞는 능력치는 빼고)
+
+
+def prospect_attrs(pid: str, group: str, ovr: int, focus: str = "") -> list[tuple[str, int]]:
+    """세부 능력치 6개 = OVR + 포지션 가감 + 선수마다 고정된 ±4 (+ 특화 능력치 보너스). OVR 이 오르면 같이 오른다.
+    focus = 특화 능력치 이름들 '슛,드리블' (3.1.0 부터 만든 유망주)."""
     rng = random.Random(zlib.crc32(f"attrs:{pid}".encode()))
-    return [(n, max(20, min(99, int(ovr) + b + rng.randint(-4, 4)))) for n, b in PROSPECT_ATTRS[group]]
+    hot = set(filter(None, (focus or "").split(",")))
+    return [(n, max(20, min(99, int(ovr) + b + rng.randint(-4, 4) + (PROSPECT_FOCUS_BOOST if n in hot else 0))))
+            for n, b in PROSPECT_ATTRS[group]]
+
+
+def pick_focus(position: str, rng=random) -> str:
+    """특화 능력치 랜덤 2개 (포지션 가감 -10 밑인 능력치는 후보에서 뺀다)."""
+    pool = [n for n, b in PROSPECT_ATTRS[SLOT_GROUP[position]] if b > -10]
+    return ",".join(rng.sample(pool, PROSPECT_FOCUS_N))
 
 
 def parse_birthday(text: str) -> Optional[str]:
@@ -446,7 +458,7 @@ def prospect_input(name: str, nation: str, position: str, number: int, birthday:
 _P_COLS = ("id", "user_id", "name", "nation", "position", "number", "birthday", "foot", "height", "ovr", "pot", "xp",
            "aged", "peak_ovr", "peak_age", "apps", "goals", "assists", "day_key", "day_n", "created_ts",
            "retired_ts", "retire_reason", "retired_number",
-           "confidence", "proneness", "pro", "injured_until", "injury", "injuries", "injury_games")
+           "confidence", "proneness", "pro", "injured_until", "injury", "injuries", "injury_games", "focus")
 _P_SELECT = f"SELECT {', '.join(_P_COLS)} FROM prospects"
 
 
@@ -543,7 +555,8 @@ class ClubDB:
             # 히든 능력치 · 부상 (2.4 후반 추가 — 그 전에 만든 유망주는 기본값)
             for col in ("confidence INTEGER NOT NULL DEFAULT 10", "proneness INTEGER NOT NULL DEFAULT 8",
                         "pro INTEGER NOT NULL DEFAULT 10", "injured_until INTEGER NOT NULL DEFAULT 0", "injury TEXT",
-                        "injuries INTEGER NOT NULL DEFAULT 0", "injury_games INTEGER NOT NULL DEFAULT 0"):
+                        "injuries INTEGER NOT NULL DEFAULT 0", "injury_games INTEGER NOT NULL DEFAULT 0",
+                        "focus TEXT NOT NULL DEFAULT ''"):   # 3.1.0 특화 능력치
                 try:
                     con.execute(f"ALTER TABLE prospects ADD COLUMN {col}")
                 except sqlite3.OperationalError:
@@ -672,7 +685,7 @@ class ClubDB:
         p = ClubDB._active_prospect(con, user_id, int(time.time()))
         if p and not p["injured"]:
             squad[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"], "ovr": p["ovr"],
-                               "nation": p["nation"], "number": p["number"], "prospect": True,
+                               "nation": p["nation"], "number": p["number"], "prospect": True, "focus": p["focus"],
                                "conf_mult": 0.6 + p["confidence"] * 0.04}   # 자신감 10 → 1.0
         from services.youth import first_team_squad   # 1군 등록한 유스 (2.8 · 주인 구단 전용)
         squad.update(first_team_squad(con, user_id, int(time.time())))
@@ -1130,7 +1143,7 @@ class ClubDB:
     async def prospect_price(self, user_id: int, now_ts: int) -> int:
         return await self._tx(lambda con: self._prospect_price(con, user_id, now_ts))
 
-    async def create_prospect(self, user_id: int, info: dict, now_ts: int, rng=random) -> dict:
+    async def create_prospect(self, user_id: int, info: dict, now_ts: int, rng=random, focus: bool = False) -> dict:
         """유망주 생성 (PROSPECT_PRICE). info 는 prospect_input 이 정리한 값.
         OVR 50~58 · 잠재력 75~94 에서 시작. 실패 reason: exists(현역 유망주 있음) / retired_number / balance."""
         def fn(con):
@@ -1147,12 +1160,13 @@ class ClubDB:
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (price, int(user_id)))
             ovr, pot = rng.randint(50, 58), min(99, rng.randint(75, 94) + self._facility(con, user_id, "youth"))
             prone, pro = rng.randint(3, 14), rng.randint(4, 17)   # 히든 능력치 (자신감은 10에서 시작)
+            hot = pick_focus(info["position"], rng) if focus else ""   # 3.1.0 공개 서버: 특화 능력치
             cur = con.execute(
                 "INSERT INTO prospects(user_id, name, nation, position, number, birthday, foot, height, ovr, pot, aged, "
-                "peak_ovr, peak_age, created_ts, proneness, pro) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "peak_ovr, peak_age, created_ts, proneness, pro, focus) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (int(user_id), info["name"], info["nation"], info["position"], info["number"], info["birthday"],
                  info["foot"], info["height"], ovr, pot, PROSPECT_START_AGE, ovr, PROSPECT_START_AGE, int(now_ts),
-                 prone, pro))
+                 prone, pro, hot))
             return {"ok": True, "balance": bal - price, "price": price, **self._prospect_by_id(con, cur.lastrowid, now_ts)}
         return await self._tx(fn)
 

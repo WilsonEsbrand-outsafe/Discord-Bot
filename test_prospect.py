@@ -73,6 +73,11 @@ def test_input():
     assert len(attrs) == 6 and attrs == cdb.prospect_attrs("YP1", "FW", 70)                     # 선수마다 고정
     assert [v + 5 for _, v in attrs] == [v for _, v in cdb.prospect_attrs("YP1", "FW", 75)]     # OVR 따라 같이 오른다
     assert dict(attrs)["슛"] > dict(attrs)["수비"]
+    hot = dict(cdb.prospect_attrs("YP1", "FW", 70, "슛,속력"))                                   # 3.1.0 특화 능력치 +10
+    assert hot["슛"] == min(99, dict(attrs)["슛"] + 10) and hot["속력"] == dict(attrs)["속력"] + 10 and hot["패스"] == dict(attrs)["패스"]
+    for _ in range(50):
+        f = cdb.pick_focus("ST", random).split(",")
+        assert len(set(f)) == 2 and "수비" not in f
 
 
 def test_assists():
@@ -109,6 +114,7 @@ async def _flow():
     assert (await clubs.create_prospect(A, INFO, now))["reason"] == "balance"
     await eco.add_balance(A, 6_000_000)
     r = await clubs.create_prospect(A, INFO, now, random.Random(1))
+    assert r["focus"] == ""                                                                  # 3.1.0 전 서버: 특화 없음
     assert r["confidence"] == 10 and 3 <= r["proneness"] <= 14 and 4 <= r["pro"] <= 17 and not r["injured"]
     sql("UPDATE prospects SET pro=10 WHERE id=?", r["id"])                       # 프로 의식 10 = 경험치 그대로
     assert r["ok"] and r["balance"] == 1_000_000 and await eco.get_balance(A) == 1_000_000
