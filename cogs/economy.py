@@ -1513,7 +1513,7 @@ class Economy(commands.Cog):
             gd -= rng.randint(1, 8)
         return rows
 
-    @app_commands.command(name="리그", description="내 구단을 랜덤 리그에 넣고 한 시즌! 우승 20배 수익 ~ 강등 6배 손실 (최소 1,000원)")
+    @app_commands.command(name="리그", description="내 구단을 랜덤 리그에 넣고 한 시즌! 우승 40배 수익 ~ 강등 15배 손실 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def league(self, interaction: discord.Interaction, amount: app_commands.Range[int, LEAGUE_MIN_BET]):
