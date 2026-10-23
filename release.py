@@ -8,7 +8,7 @@ from typing import Optional
 
 TEST_GUILD = 1374213619793006704
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
-MAINTENANCE = (calendar.timegm((2026, 10, 22, 1, 0, 0)), calendar.timegm((2026, 10, 22, 1, 5, 0)))   # 정기점검 2.10.1 (10/22 10:00 ~ 10:05 KST) — 명령어 막음 (2.9.1 은 10/21 14:15 ~ 14:20)
+MAINTENANCE = (calendar.timegm((2026, 10, 23, 7, 30, 0)), calendar.timegm((2026, 10, 23, 7, 35, 0)))   # 정기점검 3.1.0 (10/23 16:30 ~ 16:35 KST) — 명령어 막음 (2.10.1 은 10/22 10:00 ~ 10:05)
 # (2.8 점검은 RELEASE_TS ± 600초였다. 공개를 다시 단계 배포할 땐 MAINTENANCE 를 RELEASE_TS 에 맞춘다)
 
 PREVIEW_ONLY: set[str] = {"낚시", "낚시시세", "양궁", "던전", "오늘", "게임"}   # 공개 전엔 테스트 서버에만 보이는 명령어 (2.8 새 명령어는 만들 때마다 추가)
