@@ -9,8 +9,8 @@ from discord.ext import commands
 import release
 from services import ui
 from services.club_db import (
-    PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_FOCUS_BOOST, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
-    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, ClubDB, hidden_tier, kst_day, prospect_attrs,
+    PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_FOCUS_GROWTH, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
+    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, ClubDB, focus_parts, hidden_tier, kst_day, prospect_attrs,
     prospect_input, prospect_xp_need,
 )
 from services.player_market_db import NATIONS
@@ -59,7 +59,7 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
     e = ui.card(title, _profile(p) + "\n\n" + body, ui.GOLD if retired else ui.INFO, owner, SECTION)
     ovr = p["peak_ovr"] if retired else p["ovr"]
     e.add_field(name="📊 능력치" + (" (전성기)" if retired else ""), inline=True,
-                value="\n".join(f"`{n}` **{v}** {ui.bar(v, 99, 6)}" + (" 🔥" if n in p["focus"].split(",") else "")
+                value="\n".join(f"`{n}` **{v}** {ui.bar(v, 99, 6)}" + (" 🔥" if n in focus_parts(p["focus"])[0] else "")
                                  for n, v in prospect_attrs(p["pid"], p["group"], ovr, p["focus"])))
     apps = p["apps"]
     e.add_field(name="📈 커리어", inline=True, value=(
@@ -113,7 +113,7 @@ class CreateConfirm(_OwnerView):
         e.title = f"🎉 유망주 {r['name']} #{r['number']} 입단!"
         if r["focus"]:
             e.add_field(name="🔥 특화 능력치", inline=False,
-                        value=f"**{r['focus'].replace(',', ' · ')}** 이(가) 집중 강화됐어요 (+{PROSPECT_FOCUS_BOOST})")
+                        value=f"**{' · '.join(sorted(focus_parts(r['focus'])[0]))}** — OVR 이 오를 때 **{PROSPECT_FOCUS_GROWTH:g}배**로 자라요")
         half = " (🚀 신인 반값)" if r["price"] < PROSPECT_PRICE else ""
         e.description = (f"🎉 **{self.user.display_name}**님이 새 유망주를 만들었어요!\n"
                          f"`비용` **-{r['price']:,}원**{half} · `잔액` **{r['balance']:,}원**\n\n" + e.description)

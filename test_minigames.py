@@ -92,7 +92,7 @@ def test_league():
     assert sum(mults) == 0 and mults == sorted(mults, reverse=True) and mults[0] == 20 and mults[-1] == -6
     assert all(len(set(t)) == 20 for t in Economy.LEAGUES.values())
     new = [Economy.league_payout(r, True)[0] for r in range(1, 21)]                  # 3.1.0: 절반은 수익 · 기대값 -5%
-    assert sum(new) == -1 and new == sorted(new, reverse=True) and new[0] == 20 and new[-1] == -8
+    assert sum(new) == -1 and new == sorted(new, reverse=True) and new[0] == 40 and new[-1] == -15
     assert "5%" in Economy.league_odds_text() and "15%" in Economy.league_odds_text()
     rng = random.Random(3)
     for _ in range(200):

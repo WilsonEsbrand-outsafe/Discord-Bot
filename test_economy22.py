@@ -106,6 +106,22 @@ async def _flow():
         assert r["ok"] and (r["rate"] in (0.0, 1.0) or 0.3 <= r["rate"] <= 0.7)
         rates.add("0" if r["rate"] == 0 else "100" if r["rate"] == 1 else "mid")
     assert rates == {"0", "mid", "100"}
+    # 3.1.0 변호사 선임권: 다른 유저에게 선임 → 그 사람의 0% 탕감을 다시 변론 (0% 는 다시 안 나옴) · 한 번 쓰면 사라짐
+    import release
+    L = 6
+    assert (await db.hire_lawyer(L, W))["reason"] == "none"
+    assert not edb.shop_open("lawyer", guild_id=1) and edb.shop_open("lawyer", guild_id=release.TEST_GUILD)
+    await db.give_item(L, "lawyer", 1)
+    assert (await db.hire_lawyer(L, W))["uses"] == 1 and await db.lawyers(W) == 1 and await db.lawyers(L) == 0
+    k, saved = 0, None
+    while saved is None:
+        await db.set_balance(W, -1_000_000)
+        r = await db.declare_bankruptcy(W, NOW + 500_000 + 3600 * k, _r.Random(k), new=True)
+        if r["lawyer"]:
+            saved = r
+        assert r["rate"] != 0 or await db.lawyers(W) == 1      # 변호사가 남아 있으면 0% 가 그대로 나오지 않는다
+        k += 1
+    assert saved["rate"] > 0 and await db.lawyers(W) == 0
 
 
 async def _items():
