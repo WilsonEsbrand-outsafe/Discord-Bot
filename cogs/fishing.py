@@ -269,7 +269,7 @@ class Fishing(commands.Cog):
         if kind in ("early", "fled"):
             e = (ui.card("🪝 찌를 걷었어요", "아직 입질 전이었어요. 미끼는 물고기 밥이 됐어요.", ui.EVEN, user, SECTION) if kind == "early"
                  else ui.card("💨 놓쳤어요…", "너무 늦게 당겼어요. 물고기가 도망갔습니다.", ui.EVEN, user, SECTION))
-            if url := ui.scene_url(f"fish_{kind}", user):   # 2.10.3 키코 그림 (공개 전엔 그림 없음)
+            if url := ui.scene_url(f"fish_{kind}", user):   # 3.1.0 키코 그림 (공개 전엔 그림 없음)
                 e.set_thumbnail(url=url)
             return e
         if kind == "junk":
@@ -292,7 +292,7 @@ class Fishing(commands.Cog):
                 + (f"\n🆙 낚시 **Lv.{r['level']}** 달성!" if r["leveled"] else "")
                 + f"\n⏳ 기다린 시간 {_clock(r['wait'])}")
         e = ui.card(f"{e_} {n}을(를) 낚았다!", desc, color, user, SECTION)
-        e.set_thumbnail(url=ui.result_thumb(e_, color, user, f"fish_{g}"))   # 2.10.3 등급별 키코 그림
+        e.set_thumbnail(url=ui.result_thumb(e_, color, user, f"fish_{g}"))   # 3.1.0 등급별 키코 그림
         return e
 
     # ───────────── 낚시 메뉴 (허브) ─────────────

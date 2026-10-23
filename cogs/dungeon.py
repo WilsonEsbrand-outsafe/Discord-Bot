@@ -71,7 +71,7 @@ def run_embed(user, st: dict, log: list[str] | None = None) -> discord.Embed:
     e = ui.card(f"{th[0]} {th[1]} · {st['floor']}층", "\n\n".join(parts), color, user, SECTION)
     e.set_footer(text="힌트는 가끔 거짓 · 30분 방치하면 자동 귀환(보상 전부)")
     scene = "dg_boss" if ph == "battle" and st["monster"]["boss"] else f"dg_{ph}"
-    if url := ui.scene_url(scene, user):   # 2.10.3 장면별 키코 그림 (공개 전 서버는 그림 없음)
+    if url := ui.scene_url(scene, user):   # 3.1.0 장면별 키코 그림 (공개 전 서버는 그림 없음)
         e.set_thumbnail(url=url)
     return e
 

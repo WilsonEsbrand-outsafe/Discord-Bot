@@ -693,7 +693,7 @@ class Economy(commands.Cog):
                               f"**{self.scout_money_mult(r['level'])}배** · 선수 발굴 확률과 희귀 선수 비중 상승")
         if r["used"] >= r["limit"]:
             e.description += "\n\n🔓 오늘 스카우트 완료! 이제 `/훈련`을 할 수 있어요."
-        e.set_thumbnail(url=ui.result_thumb("💎" if found else ev["emoji"], color, user,   # 2.10.3 키코 그림
+        e.set_thumbnail(url=ui.result_thumb("💎" if found else ev["emoji"], color, user,   # 3.1.0 키코 그림
                                             "scout_found" if found else ("levelup" if r["leveled"] else ("scout_ok" if info["ok"] else "scout_fail"))))
         await interaction.followup.send(embed=e)
 
@@ -1076,7 +1076,7 @@ class Economy(commands.Cog):
             f"\n\n`정산` **{ui.won(delta)}** · {self._pk_label(mult)}"
             f"\n`잔액` **{new_bal:,}원**"
         )
-        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user, f"pk_{idx}"))   # 2.10.3 결과 장면 키코 그림 (공개 전엔 이모지)
+        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user, f"pk_{idx}"))   # 3.1.0 결과 장면 키코 그림 (공개 전엔 이모지)
 
         try:
             ready = self._pk_card(user, "⚽ 키커가 공을 내려놓습니다…",
@@ -1188,7 +1188,7 @@ class Economy(commands.Cog):
         color = ui.GOLD if mult >= 5 else (ui.DOOM if mult <= -5 else ui.tone(delta))
         e = self._caster_card(user, f"{emoji} {headline}", caster, color, section)
         e.description += f"\n\n`정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**"
-        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user, f"{key}_{idx}"))   # 2.10.3 결과 장면 키코 그림 (공개 전엔 이모지)
+        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user, f"{key}_{idx}"))   # 3.1.0 결과 장면 키코 그림 (공개 전엔 이모지)
         try:
             intro = self._caster_card(user, windup[0], windup[1].format(amount=f"{amount:,}"), ui.DARK, section)
             msg = await interaction.followup.send(embed=intro, wait=True)
@@ -1391,7 +1391,7 @@ class Economy(commands.Cog):
                     f'> 🎙️ *"{caster}"*\n\n{board}\n\n'
                     f"`정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**",
                     color, user, sec)
-        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user, f"race_{place}"))   # 2.10.3 결과 장면 키코 그림 (공개 전엔 이모지)
+        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user, f"race_{place}"))   # 3.1.0 결과 장면 키코 그림 (공개 전엔 이모지)
         try:
             await interaction.edit_original_response(embed=e)
         except discord.HTTPException:

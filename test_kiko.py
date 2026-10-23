@@ -1,4 +1,4 @@
-# test_kiko.py — 2.10.3 키코 디자인: 테스트 서버에만 로고 파랑 · 키코 푸터 · 화면 푸터를 달아도 아이콘은 키코
+# test_kiko.py — 3.1.0 키코 디자인: 테스트 서버에만 로고 파랑 · 키코 푸터 · 화면 푸터를 달아도 아이콘은 키코
 # 실행: venv/Scripts/python.exe test_kiko.py
 from types import SimpleNamespace
 
@@ -33,7 +33,7 @@ def test_scene_thumbs():
     assert ui.result_thumb("✅", ui.WIN, m, "ufc_5").endswith("/assets/kiko/scenes/ufc_5.png")
     assert ui.result_thumb("🐛", ui.LOSE, m, "bat_11").endswith("/assets/kiko/scenes/bat_11.png")
     assert ui.result_thumb("✅", ui.WIN, m, "ufc_99").endswith("/assets/kiko/win.png")   # 장면이 없으면 표정 그림
-    assert "twemoji" in ui.result_thumb("✅", ui.WIN, _member(1), "ufc_5") or release.released_2103()
+    assert "twemoji" in ui.result_thumb("✅", ui.WIN, _member(1), "ufc_5") or release.released_310()
 
 
 def test_scene_counts_match_tables():
@@ -53,7 +53,7 @@ def test_scene_url_named():
     assert ui.scene_url("dg_boss", m).endswith("/assets/kiko/scenes/dg_boss.png")
     assert ui.scene_url("fish_4", m).endswith("/assets/kiko/scenes/fish_4.png")
     assert ui.scene_url("dg_nope", m) is None and ui.scene_url(None, m) is None
-    if not release.released_2103():
+    if not release.released_310():
         assert ui.scene_url("dg_boss", _member(1)) is None   # 공개 전 서버엔 그림 없음
 
 
@@ -69,7 +69,7 @@ def test_art_files_exist():
 
 
 def test_other_servers_unchanged_before_release():
-    if release.released_2103():
+    if release.released_310():
         return
     e = ui.card("t", "", ui.INFO, _member(1), "🎒 아이템")
     assert e.color.value == ui.INFO and e.footer.text is None

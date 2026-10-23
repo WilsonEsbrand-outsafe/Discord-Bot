@@ -21,9 +21,9 @@ EVEN = 0x95A5A6   # 본전
 INFO = 0x5865F2   # 안내 · 진행
 DARK = 0x2B2D31   # 연출 중
 DOOM = 0x992D22   # 대참사
-KIKO = 0x3D7BE0   # 2.10.3 키코 디자인의 안내 색 (로고 파랑)
+KIKO = 0x3D7BE0   # 3.1.0 키코 디자인의 안내 색 (로고 파랑)
 
-# 2.10.3 키코: 축구 봇 로고 속 캐릭터. 푸터 아이콘은 봇 프로필 사진(on_ready 에서 채운다).
+# 3.1.0 키코: 축구 봇 로고 속 캐릭터. 푸터 아이콘은 봇 프로필 사진(on_ready 에서 채운다).
 BOT_ICON: str | None = None
 KIKO_LINES = {
     WIN:  ("좋아요, 이득이에요! ⚽", "역시 감이 좋으시네요!", "이 기세 그대로 가요!"),
@@ -67,9 +67,9 @@ KIKO_NAMED = {"fish_early", "fish_fled", "fish_boot", "fish_item",
 
 
 def scene_url(scene: str | None, user=None) -> str | None:
-    """2.10.3 공개 서버에서 그 장면의 키코 그림 주소. 공개 전 서버거나 없는 장면이면 None."""
+    """3.1.0 공개 서버에서 그 장면의 키코 그림 주소. 공개 전 서버거나 없는 장면이면 None."""
     guild = getattr(user, "guild", None)
-    if not scene or not release.preview_2103(getattr(guild, "id", None)):
+    if not scene or not release.preview_310(getattr(guild, "id", None)):
         return None
     game, _, idx = scene.rpartition("_")
     if scene in KIKO_NAMED or (idx.isdigit() and int(idx) < KIKO_SCENES.get(game, 0)):
@@ -78,12 +78,12 @@ def scene_url(scene: str | None, user=None) -> str | None:
 
 
 def result_thumb(emoji: str, color: int, user=None, scene: str | None = None) -> str:
-    """게임 결과 썸네일 (2.10.3): 공개 서버에선 그 결과 장면의 키코 그림(scene) → 없으면 결과 색에 맞는 키코 표정 → 아니면 이모지."""
+    """게임 결과 썸네일 (3.1.0): 공개 서버에선 그 결과 장면의 키코 그림(scene) → 없으면 결과 색에 맞는 키코 표정 → 아니면 이모지."""
     url = scene_url(scene, user)
     if url:
         return url
     guild = getattr(user, "guild", None)
-    if color in KIKO_POSE and release.preview_2103(getattr(guild, "id", None)):
+    if color in KIKO_POSE and release.preview_310(getattr(guild, "id", None)):
         return KIKO_ART.format(KIKO_POSE[color])
     return emoji_url(emoji)
 
@@ -110,9 +110,9 @@ def kiko_line(color: int) -> str:
 
 def card(title: str, desc: str = "", color: int = INFO, user=None, section: str = "") -> discord.Embed:
     """모든 미니게임 임베드의 뼈대: 작성자 줄에 '닉네임 · 섹션'. 도박 계열이면 이름 옆에 칭호.
-    2.10.3 공개 서버에선 키코 디자인: 안내 색은 로고 파랑, 아래에 키코 한마디 (화면이 푸터를 쓰면 아이콘만 키코)."""
+    3.1.0 공개 서버에선 키코 디자인: 안내 색은 로고 파랑, 아래에 키코 한마디 (화면이 푸터를 쓰면 아이콘만 키코)."""
     guild = getattr(user, "guild", None)
-    if release.preview_2103(getattr(guild, "id", None)):
+    if release.preview_310(getattr(guild, "id", None)):
         color = KIKO if color == INFO else color
         e = KikoEmbed(title=title, description=desc, color=color)
         e.set_footer(text=f"키코 · {kiko_line(color)}")
