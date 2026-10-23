@@ -210,7 +210,7 @@ TRANSFER_REQUIRE = [
 BANKRUPT_COOLDOWN = 3600             # 한 시간에 한 번
 BANKRUPT_FORGIVE = (0.3, 0.7)
 BANKRUPT_310 = ((0.25, 0.0), (0.60, None), (0.15, 1.0))   # 3.1.0: 탕감 0% · 30~70%(None = 랜덤) · 100% 확률
-BANKRUPT_FREE_LAWYER = 0.05   # 3.1.0: 0%가 나왔는데 선임한 변호사가 없으면, 아주 가끔 지나가던 변호사가 공짜로 다시 변론
+BANKRUPT_FREE_LAWYER = 0.05   # 3.1.0: 0%가 나왔는데 선임한 변호사가 없으면, 아주 가끔 지나가던 변호사가 선임권을 공짜로 준다
 
 
 def _cook_buff(con, user_id: int, now_ts: int, kind: str) -> bool:
@@ -668,15 +668,14 @@ class EconomyDB:
             lawyer = False
             if new:
                 pick = rng.choices([r for _, r in BANKRUPT_310], weights=[p for p, _ in BANKRUPT_310])[0]
-                if pick == 0.0 and after < 0:   # ⚖️ 변호사가 다시 변론 (0% 빼고) — 선임한 변호사, 없으면 아주 가끔 공짜 변호사
-                    if self._lawyers(con, user_id) > 0:
+                if pick == 0.0 and after < 0:
+                    if self._lawyers(con, user_id) > 0:   # ⚖️ 선임한 변호사가 다시 변론 (0% 빼고)
                         con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
-                        lawyer = True
-                    elif rng.random() < BANKRUPT_FREE_LAWYER:
-                        lawyer = "free"
-                    if lawyer:
                         rest = [(p, r) for p, r in BANKRUPT_310 if r != 0.0]
-                        pick = rng.choices([r for _, r in rest], weights=[p for p, _ in rest])[0]
+                        pick, lawyer = rng.choices([r for _, r in rest], weights=[p for p, _ in rest])[0], True
+                    elif rng.random() < BANKRUPT_FREE_LAWYER:   # 지나가던 변호사가 선임권을 공짜로 (탕감은 0% 그대로)
+                        give_item(con, user_id, "lawyer")
+                        lawyer = "free"
                 rate = rate if pick is None else pick
             forgiven = round(-after * rate) if after < 0 else 0
             new_bal = after + forgiven
