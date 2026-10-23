@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import release
 import services.club_db as cdb
 import services.economy_db as edb
 import services.player_market_db as pmdb
@@ -209,7 +210,7 @@ def test_day_fish_odds():
 
 
 def test_auto_fish():
-    """3.1.0 🤖 자동 낚시: 24시간 동안 30분마다 한 마리 · 어망이 차면 쉰다 · 다시 쓰면 24시간 연장."""
+    """3.1.0 🤖 자동 낚시: 24시간 동안 5~15분마다 한 마리 · 어망이 차면 쉰다 · 다시 쓰면 24시간 연장."""
     db = F.FishingDB()
     U = 77
     rng = random.Random(3)
@@ -219,19 +220,26 @@ def test_auto_fish():
         assert (await db.use_auto(U, now))["reason"] == "none"
         await db.give_item(U, "auto_fish", 2)
         r = await db.use_auto(U, now)
-        assert r["ok"] and r["until"] == now + 24 * 3600 and r["next"] == now + F.AUTO_EVERY
-        a = await db.auto_run(U, now + F.AUTO_EVERY - 1, rng, new=True)
-        assert not a["fish"] and not a["junk"] and a["next"] == now + F.AUTO_EVERY
-        a = await db.auto_run(U, now + 3 * 3600, rng, new=True)           # 3시간 = 6번
-        assert len(a["fish"]) + len(a["junk"]) == 6 and a["full"] == 0
+        assert r["ok"] and r["until"] == now + 24 * 3600 and F.AUTO_EVERY[0] <= r["next"] - now <= F.AUTO_EVERY[1]
+        a = await db.auto_run(U, r["next"] - 1, rng, new=True)
+        assert not a["fish"] and not a["junk"] and a["next"] == r["next"]
+        a = await db.auto_run(U, now + 3 * 3600, rng, new=True)           
+        assert 12 <= len(a["fish"]) + len(a["junk"]) <= 36 and a["full"] == 0   # 3시간 · 5~15분마다
         assert all(f["wait"] == F.BITE_MIN for f in a["fish"])   # 입질이 가장 빠른 찌와 같은 확률
         r = await db.use_auto(U, now + 3 * 3600)                             # 연장
-        assert r["until"] == now + 48 * 3600 and r["next"] == now + 3 * 3600 + F.AUTO_EVERY
+        assert r["until"] == now + 48 * 3600 and r["next"] == a["next"]
         a = await db.auto_run(U, now + 60 * 3600, rng, new=True)           # 끝까지 — 어망 50칸에서 쉰다
         total = (await db.bag(U, now + 60 * 3600, True))
         assert len(total["fish"]) <= total["max"] and a["full"] > 0 and a["next"] is None
-        assert len(a["fish"]) + len(a["junk"]) + a["full"] == 90
+        assert 135 <= len(a["fish"]) + len(a["junk"]) + a["full"] <= 405
         assert (await db.auto_run(U, now + 70 * 3600, rng, new=True))["fish"] == []
+        assert "auto_fish" not in edb.ITEM_PRICES and not edb.shop_open("auto_fish", now, release.TEST_GUILD)   # 상점에선 안 판다
+        drops = 0
+        for i in range(3000):   # [잡기!] 때 0.1% (3.1.0 공개 서버만)
+            await db._tx(lambda con: con.execute("UPDATE fish_state SET cast_ts=?, bite_ts=?, window=600 WHERE user_id=?",
+                                                 (now, now + 10, U)))
+            drops += bool((await db.reel(U, now + 20, random.Random(i), new_310=True)).get("auto_drop"))
+        assert 0 < drops < 12
 
     run(flow())
 
