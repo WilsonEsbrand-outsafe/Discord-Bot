@@ -15,7 +15,7 @@ from services import ui
 from services.club_db import ClubDB
 from services.economy_db import ITEM_PRICES, ITEMS, SHOP_ONE_ONLY, EconomyDB, give_item
 from services.fishing import (
-    AQUARIUM_MAX, BAG_MAX, CATCH_WINDOW, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES,
+    AQUARIUM_MAX, BAG_MAX, CATCH_WINDOW, DAY_FISH_MULT, bag_max, day_fish, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES,
     SKIP_PIECES, TRADE_DAILY, by_grade, fish_name, grade_odds, level_need, odds_line,
 )
 from services.hub import HubView, Page
@@ -118,7 +118,11 @@ class Fishing(commands.Cog):
     # ───────────── 화면 ─────────────
     async def _pond_embed(self, user, s: dict, note: str = "") -> discord.Embed:
         lv = f"`낚시` **Lv.{s['level']}** {ui.bar(s['xp'], s['need'], 8)} {s['xp']}/{s['need']}"
-        bag = f"`어망` **{s['bag']}/{BAG_MAX}** · `오늘 보내기` **{s['used']}/{s['limit']}**포인트"
+        new = self._n(user)
+        bag = f"`어망` **{s['bag']}/{bag_max(s['level'], new)}** · `오늘 보내기` **{s['used']}/{s['limit']}**포인트"
+        if new:   # 3.1.0 오늘의 물고기
+            k = day_fish(int(time.time()))
+            bag += f"\n`오늘의 물고기` {FISH[k][0]} **{FISH[k][1]}** — 오늘 팔면 **{DAY_FISH_MULT:g}배**"
         if s.get("cast_ts"):
             body = (f"> 🎙️ *\"찌가 물 위에 둥둥… 입질이 오면 이 메시지가 바뀌어요!\"*\n\n"
                     f"🎣 **<t:{s['cast_ts']}:R>** 던짐 · 입질은 10초 ~ 10분 사이 랜덤\n"   # 2.82: 디스코드 상대시간이라 저절로 늘어난다
@@ -164,9 +168,11 @@ class Fishing(commands.Cog):
     # ───────────── 던지기 · 입질 · 잡기 ─────────────
     async def do_cast(self, interaction: discord.Interaction, bait, keep: bool = False):
         user = interaction.user
-        r = await self.db.cast(user.id, int(time.time()), bait, interaction.channel_id or 0)
+        r = await self.db.cast(user.id, int(time.time()), bait, interaction.channel_id or 0, new=self._n(user))
         if not r["ok"]:
-            msg = {"busy": "찌가 이미 물에 있어요.", "full": f"어망이 가득 찼어요 ({BAG_MAX}마리). 팔거나 먹이거나 놓아주세요.",
+            msg = {"busy": "찌가 이미 물에 있어요.",
+                   "full": f"어망이 가득 찼어요 ({r.get('max', BAG_MAX)}마리). 팔거나 먹이거나 놓아주세요."
+                           + (" 낚시 레벨이 오르면 어망 칸이 늘어나요." if self._n(user) else ""),
                    "no_bait": "미끼가 없어요."}[r["reason"]]
             return await interaction.response.send_message(msg, ephemeral=True)
         note = "🪱 일반 미끼를 끼웠어요 — 이번엔 잡템이 덜 걸려요." if bait == "bait" else \
@@ -188,6 +194,11 @@ class Fishing(commands.Cog):
         if old:
             old.cancel()
         self._tasks[c["user_id"]] = asyncio.create_task(self._bite_task(c))
+
+    @staticmethod
+    def _n(user) -> bool:
+        """이 유저가 있는 서버가 3.1.0 공개 서버인가."""
+        return release.preview_310(getattr(getattr(user, "guild", None), "id", None))
 
     def _new(self, c: dict) -> bool:
         """찌를 던진 채널의 서버가 3.1.0 공개 서버인가."""
@@ -324,12 +335,17 @@ class Fishing(commands.Cog):
                        home_note=f"판매는 한도 없음 · 다른 유저에게 보내기는 하루 **{TRADE_DAILY}포인트**까지 (흔함 1 · 보통 1 · 희귀 2 · 영웅 3 · 전설 5).\n"
                                  "먹이기 · 요리 · 수족관 · 도감은 한도가 없어요.")
 
-    async def _bag_select(self, view: HubView, fish: list[dict], placeholder: str, row: int, cb, max_values: int = 25):
+    async def _bag_select(self, view: HubView, fish: list[dict], placeholder: str, row: int, cb, max_values: int = 25,
+                          all_label: str = ""):
+        """all_label 이 있으면 맨 위에 '전부' 항목(value 0 — 물고기 id 는 1부터)을 붙인다 (3.1.0 전부 팔기)."""
         opts = [discord.SelectOption(label=f"{FISH[f['species']][1]} {f['size']:g}cm"[:100], value=str(f["id"]),
                                      emoji=GRADE_EMOJI[FISH[f["species"]][2]],
                                      description=(f"{f['price']:,}원 · {GRADE_POINTS[FISH[f['species']][2]]}포인트"
                                                   if "price" in f else None))
-                for f in fish[:25]]
+                for f in fish[:24 if all_label else 25]]
+        if all_label and opts:
+            opts.insert(0, discord.SelectOption(label=all_label[:100], value="0", emoji="💰",
+                                                description="전시 중인 물고기는 빼고 어망을 한 번에 비워요"))
         if not opts:
             return None
         sel = discord.ui.Select(placeholder=placeholder, options=opts, row=row, min_values=1,
@@ -343,16 +359,18 @@ class Fishing(commands.Cog):
 
     async def _p_bag(self, view: HubView) -> discord.Embed:
         user = view.user
-        b = await self.db.bag(user.id, int(time.time()))
+        new = self._n(user)
+        b = await self.db.bag(user.id, int(time.time()), new)
         fish = sorted(b["fish"], key=lambda f: -f["price"])
         free = [f for f in fish if not f["displayed"]]
         lines = [fish_line(f) for f in fish[:20]]
         more = f"\n…외 {len(fish) - 20}마리" if len(fish) > 20 else ""
-        e = ui.card(f"🧺 어망 · {len(fish)}/{BAG_MAX}",
+        e = ui.card(f"🧺 어망 · {len(fish)}/{b['max']}",
                     ("\n".join(lines) + more if lines else "어망이 비어 있어요. `/낚시`로 낚아 보세요!")
                     + f"\n\n`오늘 보내기` **{b['used']}/{b['limit']}**포인트" + (" · 🧊 아이스박스" if b["icebox"] else ""),
                     ui.INFO, user, SECTION)
-        await self._bag_select(view, free, "💰 팔 물고기 고르기 (여러 마리 가능)", 0, self._sell)
+        await self._bag_select(view, free, "💰 팔 물고기 고르기 (여러 마리 가능)", 0, self._sell,
+                               all_label=f"전부 팔기 · {len(free)}마리 · {sum(f['price'] for f in free):,}원" if new else "")
         await self._bag_select(view, free, "🌊 놓아주기 (돈 · 한도 없이 어망 비우기)", 1, self._release)
         if free:
             us = discord.ui.UserSelect(placeholder="🎁 물고기를 보낼 사람 (그다음 물고기 고르기)", row=2)
@@ -369,7 +387,7 @@ class Fishing(commands.Cog):
         return e
 
     async def _sell(self, interaction, view: HubView, ids: list[int]):
-        r = await self.db.sell(view.user.id, ids, int(time.time()))
+        r = await self.db.sell(view.user.id, None if 0 in ids else ids, int(time.time()), self._n(view.user))
         if r["ok"]:
             note = ui.card(f"💰 {r['count']}마리 판매!", f"`정산` **+{r['gain']:,}원** · `잔액` **{r['balance']:,}원**",
                            ui.WIN, view.user, SECTION)
@@ -385,7 +403,7 @@ class Fishing(commands.Cog):
         to = view.ctx.pop("to", None)
         if to is None or getattr(to, "bot", False):
             return await view.refresh(interaction, ui.card("🙅 받을 사람을 다시 골라 주세요", "", ui.LOSE, view.user, SECTION))
-        r = await self.db.give(view.user.id, to.id, ids, int(time.time()))
+        r = await self.db.give(view.user.id, to.id, ids, int(time.time()), self._n(view.user))
         if r["ok"]:
             note = ui.card(f"🎁 {to.display_name}님에게 {r['count']}마리 보냈어요", ", ".join(r["names"])
                            + f"\n`오늘 보내기` **{r['used']}/{r['limit']}**포인트", ui.WIN, view.user, SECTION)
@@ -407,16 +425,19 @@ class Fishing(commands.Cog):
         return await self.market_embed(view.user)
 
     async def market_embed(self, user) -> discord.Embed:
-        m = await self.db.market(int(time.time()))
+        new = self._n(user)
+        m = await self.db.market(int(time.time()), new)
+        today = day_fish(int(time.time())) if new else None
         parts = []
         for g in range(5):
             rows = []
-            for k in by_grade(release.preview_310(getattr(getattr(user, "guild", None), "id", None)))[g]:
+            for k in by_grade(new)[g]:
                 v = m[k]
                 d = v["mult"] / v["prev"] - 1 if v["prev"] else 0
                 arrow = "▲" if d > 0.005 else ("▼" if d < -0.005 else "－")
                 rows.append(f"{FISH[k][0]} {FISH[k][1]} **{v['price']:,}원** {arrow}{abs(d) * 100:.0f}%"
-                            + (" 📉" if v["supply"] < 0.9 else ""))
+                            + (" 📉" if v["supply"] < 0.9 else "")
+                            + (f" ⭐ **오늘의 물고기 {DAY_FISH_MULT:g}배**" if k == today else ""))
             parts.append(f"**{GRADE_EMOJI[g]} {GRADES[g]}**\n" + "\n".join(rows))
         e = ui.card("📈 오늘의 물고기 시세", "\n\n".join(parts), ui.INFO, user, SECTION)
         e.set_footer(text="평균 크기 · 갓 잡은 기준 · 매일 00시 바뀜 · 📉 = 서버에서 많이 팔려 값이 내려감 (매일 조금씩 회복) · 신선도 하루 -10%")
@@ -424,7 +445,7 @@ class Fishing(commands.Cog):
 
     async def _p_feed(self, view: HubView) -> discord.Embed:
         user, now = view.user, int(time.time())
-        b = await self.db.bag(user.id, now)
+        b = await self.db.bag(user.id, now, self._n(user))
         free = sorted((f for f in b["fish"] if not f["displayed"]), key=lambda f: f["price"])
         fed = await self.db.fed_today(user.id, now)
         team = await self.clubs.get_team(user.id)

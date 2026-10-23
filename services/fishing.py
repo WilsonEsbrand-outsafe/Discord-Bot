@@ -74,7 +74,9 @@ JUNK_PROB = 0.12              # 물고기 대신 잡템
 JUNK = {   # 아이템 → 비중 (old_boot = 낡은 장화, 아무것도 아님)
     "old_boot": 20, "bait": 30, "spice": 22, "skip_piece": 15, "bait_gold": 8, "fish_charm": 3, "box": 2,
 }
-BAG_MAX = 100                 # 어망(보관) 한도
+BAG_MAX = 100                 # 어망(보관) 한도 — 3.1.0 공개 서버는 낚시 레벨별 (bag_max)
+BAG_310 = (50, 5)             # 3.1.0: Lv.1 50칸 · 레벨마다 +5 (Lv.11 100 · Lv.30 195)
+DAY_FISH_MULT = 2.0           # 3.1.0 오늘의 물고기: 그 종은 하루 동안 판매가 2배
 TRADE_DAILY = 20              # 하루 보내기 포인트
 RESET_282B_TS = 1792544400    # 2026-10-21 10:00 KST — 2.82b 때 이날 쓴 포인트를 한 번 초기화
 CHARM_BONUS = 5               # 🍀 낚시 부적 1장 = 오늘 한도 +5
@@ -105,6 +107,18 @@ FEED_PROSPECT_XP = (2, 3, 5, 8, 15)
 FEED_FULL_TEAM = 11           # 오늘 선발 11명 모두 먹이면 오늘 경기 전력 +1 (🍽️ 든든한 식단)
 FEED_TEAM_BONUS = 1
 SKIP_PIECES = 5               # 스킵권 조각 5개 → 스킵권 1장 (스카우트 · 훈련 · 직관 중 하나)
+
+
+def bag_max(level: int, new: bool = False) -> int:
+    """어망 칸 수. new = 3.1.0 공개 서버 (낚시 레벨별)."""
+    return BAG_310[0] + BAG_310[1] * (max(1, int(level)) - 1) if new else BAG_MAX
+
+
+def day_fish(now_ts: int) -> str:
+    """오늘의 물고기 (3.1.0) — KST 날짜로 고정. 비싼 물고기일수록 덜 뽑힌다 (가중치 1/√기준가)."""
+    rng = random.Random(f"fish-day-{_kst_day(now_ts)}")
+    keys = list(FISH)
+    return rng.choices(keys, weights=[1 / math.sqrt(FISH[k][4]) for k in keys])[0]
 
 
 def level_need(level: int) -> int:
@@ -260,9 +274,15 @@ class FishingDB(EconomyDB):
                     "ON CONFLICT(user_id, day_key) DO UPDATE SET used = used + excluded.used",
                     (uid, _kst_day(now_ts), pts))
 
-    def _price_row(self, con, fish: dict, market: dict, now_ts: int, icebox: bool) -> int:
+    def _price_row(self, con, fish: dict, market: dict, now_ts: int, icebox: bool, new: bool = False) -> int:
         m = market[fish["species"]]
-        return fish_price(fish["species"], fish["size"], m["mult"], m["supply"], freshness(fish["caught_ts"], now_ts, icebox))
+        day = DAY_FISH_MULT if new and fish["species"] == day_fish(now_ts) else 1.0   # 3.1.0 오늘의 물고기
+        return fish_price(fish["species"], fish["size"], m["mult"] * day, m["supply"], freshness(fish["caught_ts"], now_ts, icebox))
+
+    @staticmethod
+    def _level(con, uid: int) -> int:
+        r = con.execute("SELECT level FROM fish_state WHERE user_id=?", (uid,)).fetchone()
+        return int(r[0]) if r else 1
 
     @staticmethod
     def _fish_rows(con, uid: int, ids: Optional[list[int]] = None) -> list[dict]:
@@ -286,14 +306,14 @@ class FishingDB(EconomyDB):
             return s
         return await self._tx(fn)
 
-    async def cast(self, uid: int, now_ts: int, bait: Optional[str], channel_id: int, rng=random) -> dict:
+    async def cast(self, uid: int, now_ts: int, bait: Optional[str], channel_id: int, rng=random, new: bool = False) -> dict:
         """찌 던지기. 실패 reason: busy(이미 던짐) / full(어망 가득) / no_bait."""
         def fn(con):
             s = self._state(con, uid)
             if s["cast_ts"]:
                 return {"ok": False, "reason": "busy", **s}
-            if con.execute("SELECT COUNT(*) FROM fish_bag WHERE user_id=?", (uid,)).fetchone()[0] >= BAG_MAX:
-                return {"ok": False, "reason": "full"}
+            if con.execute("SELECT COUNT(*) FROM fish_bag WHERE user_id=?", (uid,)).fetchone()[0] >= bag_max(s["level"], new):
+                return {"ok": False, "reason": "full", "max": bag_max(s["level"], new)}
             if bait:
                 if self._qty(con, uid, bait) <= 0:
                     return {"ok": False, "reason": "no_bait"}
@@ -360,29 +380,31 @@ class FishingDB(EconomyDB):
         return await self._tx(fn)
 
     # ───────────── 어망 · 시세 · 판매 · 보내기 ─────────────
-    async def bag(self, uid: int, now_ts: int) -> dict:
-        """어망 [{id, species, size, caught_ts, displayed, price, fresh}] + 거래 한도."""
+    async def bag(self, uid: int, now_ts: int, new: bool = False) -> dict:
+        """어망 [{id, species, size, caught_ts, displayed, price, fresh}] + 거래 한도 · 어망 칸 수."""
         def fn(con):
             market = self._market(con, now_ts)
             ice = self._qty(con, uid, "icebox") > 0
             rows = self._fish_rows(con, uid)
             for f in rows:
                 f["fresh"] = freshness(f["caught_ts"], now_ts, ice)
-                f["price"] = self._price_row(con, f, market, now_ts, ice)
+                f["price"] = self._price_row(con, f, market, now_ts, ice, new)
             used, limit = self._trade(con, uid, now_ts)
-            return {"fish": rows, "used": used, "limit": limit, "icebox": ice}
+            return {"fish": rows, "used": used, "limit": limit, "icebox": ice, "max": bag_max(self._level(con, uid), new)}
         return await self._tx(fn)
 
-    async def market(self, now_ts: int) -> dict[str, dict]:
+    async def market(self, now_ts: int, new: bool = False) -> dict[str, dict]:
         def fn(con):
             m = self._market(con, now_ts)
+            today = day_fish(now_ts) if new else None
             for k, v in m.items():
-                v["price"] = fish_price(k, FISH[k][3], v["mult"], v["supply"], 1.0)
+                v["price"] = fish_price(k, FISH[k][3], v["mult"] * (DAY_FISH_MULT if k == today else 1.0), v["supply"], 1.0)
             return m
         return await self._tx(fn)
 
-    async def sell(self, uid: int, ids: list[int], now_ts: int) -> dict:
-        """판매 — 거래 포인트를 쓰지 않는다 (2.82b: 포인트는 유저 간 보내기에만). 실패 reason: none(없음 · 전시 중)."""
+    async def sell(self, uid: int, ids: Optional[list[int]], now_ts: int, new: bool = False) -> dict:
+        """판매 — 거래 포인트를 쓰지 않는다 (2.82b: 포인트는 유저 간 보내기에만). ids=None 이면 전시 중이 아닌 물고기 전부 (3.1.0).
+        실패 reason: none(없음 · 전시 중)."""
         def fn(con):
             rows = [f for f in self._fish_rows(con, uid, ids) if not f["displayed"]]
             if not rows:
@@ -391,7 +413,7 @@ class FishingDB(EconomyDB):
             ice = self._qty(con, uid, "icebox") > 0
             total = 0
             for f in rows:   # 한 마리씩 팔 때마다 그 종 시세가 내려간다
-                total += self._price_row(con, f, market, now_ts, ice)
+                total += self._price_row(con, f, market, now_ts, ice, new)
                 m = market[f["species"]]
                 m["supply"] = max(SUPPLY_MIN, m["supply"] * (1 - SUPPLY_HIT))
                 con.execute("UPDATE fish_market SET supply=? WHERE species=?", (m["supply"], f["species"]))
@@ -402,7 +424,7 @@ class FishingDB(EconomyDB):
             return {"ok": True, "count": len(rows), "gain": total, "balance": int(bal)}
         return await self._tx(fn)
 
-    async def give(self, uid: int, to_uid: int, ids: list[int], now_ts: int) -> dict:
+    async def give(self, uid: int, to_uid: int, ids: list[int], now_ts: int, new: bool = False) -> dict:
         """다른 유저에게 보내기 (트레이드) — 보내는 쪽 거래 포인트를 쓴다. reason: self / none / limit / full."""
         if uid == to_uid:
             return {"ok": False, "reason": "self"}
@@ -416,7 +438,7 @@ class FishingDB(EconomyDB):
             if used + pts > limit:
                 return {"ok": False, "reason": "limit", "need": pts, "left": limit - used}
             have = con.execute("SELECT COUNT(*) FROM fish_bag WHERE user_id=?", (to_uid,)).fetchone()[0]
-            if have + len(rows) > BAG_MAX:
+            if have + len(rows) > bag_max(self._level(con, to_uid), new):
                 return {"ok": False, "reason": "full"}
             for f in rows:
                 con.execute("UPDATE fish_bag SET user_id=? WHERE id=?", (to_uid, f["id"]))

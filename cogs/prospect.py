@@ -9,8 +9,8 @@ from discord.ext import commands
 import release
 from services import ui
 from services.club_db import (
-    PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_FOCUS_GROWTH, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
-    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, ClubDB, focus_parts, hidden_tier, kst_day, prospect_attrs,
+    PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_FOCUS_GROWTH, PROSPECT_FOCUS_N, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
+    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, ClubDB, focus_parts, focus_pool, hidden_tier, kst_day, prospect_attrs,
     prospect_input, prospect_xp_need,
 )
 from services.player_market_db import NATIONS
@@ -89,17 +89,34 @@ class _OwnerView(discord.ui.View):
 class CreateConfirm(_OwnerView):
     """생성 확인 (본인에게만) → 입단 소식은 채널에 공개."""
 
-    def __init__(self, cog: "Prospect", user, info: dict, price: int = PROSPECT_PRICE):
+    def __init__(self, cog: "Prospect", user, info: dict, price: int = PROSPECT_PRICE, choose: bool = False):
         super().__init__(timeout=180)
         self.cog, self.user, self.info = cog, user, info
         self.confirm.label = f"{price // 10_000:,}만원에 생성"
+        self.focus: list[str] | None = None
+        if choose:   # 3.1.0: 특화 능력치 2개를 직접 고른다
+            self.pick = discord.ui.Select(
+                placeholder=f"🔥 특화 능력치 {PROSPECT_FOCUS_N}개 고르기 (OVR 이 오를 때 {PROSPECT_FOCUS_GROWTH:g}배로 자라요)",
+                min_values=PROSPECT_FOCUS_N, max_values=PROSPECT_FOCUS_N, row=1,
+                options=[discord.SelectOption(label=n, value=n, emoji="🔥") for n in focus_pool(info["position"])])
+            self.pick.callback = self._picked
+            self.add_item(self.pick)
+
+    async def _picked(self, interaction: discord.Interaction):
+        self.focus = list(self.pick.values)
+        for o in self.pick.options:
+            o.default = o.value in self.focus
+        await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label=f"{PROSPECT_PRICE // 10_000:,}만원에 생성", emoji="✅", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if hasattr(self, "pick") and not self.focus:
+            return await interaction.response.send_message(
+                f"🔥 위 메뉴에서 특화 능력치 {PROSPECT_FOCUS_N}개를 먼저 골라 주세요.", ephemeral=True)
         self.stop()
         now = int(time.time())
         r = await self.cog.clubs.create_prospect(self.user.id, self.info, now,
-                                                 focus=release.preview_310(getattr(interaction, "guild_id", None)))
+                                                 focus=self.focus or release.preview_310(getattr(interaction, "guild_id", None)))
         if not r["ok"]:
             msg = {"exists": "이미 현역 유망주가 있어요. 한 번에 한 명만 키울 수 있어요.",
                    "retired_number": f"**#{self.info['number']}**은(는) 영구결번이에요.",
@@ -312,7 +329,11 @@ class Prospect(commands.Cog):
                     "🔒 히든 능력치(자신감 · 부상 빈도 · 프로 의식)도 태어날 때 정해져요\n"
                     "이름 · 등번호 같은 정보는 나중에 바꿀 수 없어요.\n\n"
                     "🔒 이적시장 · 판매 · 트레이드 불가 — 오직 내 구단에서만 뛰어요", ui.INFO, user, SECTION)
-        await interaction.response.send_message(embed=e, view=CreateConfirm(self, user, info, price), ephemeral=True)
+        choose = release.preview_310(interaction.guild_id)
+        if choose:
+            e.description += (f"\n\n🔥 **특화 능력치** {PROSPECT_FOCUS_N}개를 골라 주세요 — "
+                              f"OVR 이 오를 때 그 능력치는 **{PROSPECT_FOCUS_GROWTH:g}배**로 자라요")
+        await interaction.response.send_message(embed=e, view=CreateConfirm(self, user, info, price, choose), ephemeral=True)
 
     # ───────────── 은퇴 · 영구결번 ─────────────
     async def retire(self, interaction: discord.Interaction):
