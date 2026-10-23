@@ -897,7 +897,7 @@ class Race(commands.Cog):
         color = ui.GOLD if place == 0 else (ui.DOOM if mult <= -5 else ui.tone(delta))
         e = ui.card(title, f'> 🎙️ *"{caster}"*\n\n{board}\n\n`정산` **{ui.won(delta)}** · {label(mult)}\n`잔액` **{new_bal:,}원**',
                     color, user, sec)
-        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user, scene))   # 2.10.3 결과 장면 키코 그림 (공개 전엔 이모지)
+        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user, scene))   # 3.1.0 결과 장면 키코 그림 (공개 전엔 이모지)
         try:
             await interaction.edit_original_response(embed=e, view=None)
         except discord.HTTPException:

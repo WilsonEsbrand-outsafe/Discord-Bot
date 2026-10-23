@@ -68,16 +68,16 @@ def preview_2102(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_2102(now)
 
 
-# 2.10.3 — 테스트 서버 먼저. preview_2103(guild): 명령어 화면에 키코(축구 봇 캐릭터) 디자인 — 로고 파랑 · 키코 푸터 · 한마디. None = 아직
-RELEASE_2103_TS: Optional[int] = None
+# 3.1.0 — 테스트 서버 먼저. preview_310(guild): 명령어 화면에 키코(축구 봇 캐릭터) 디자인 — 로고 파랑 · 키코 푸터 · 한마디. None = 아직
+RELEASE_310_TS: Optional[int] = None
 
 
-def released_2103(now: Optional[float] = None) -> bool:
-    return RELEASE_2103_TS is not None and _now(now) >= RELEASE_2103_TS
+def released_310(now: Optional[float] = None) -> bool:
+    return RELEASE_310_TS is not None and _now(now) >= RELEASE_310_TS
 
 
-def preview_2103(guild_id: Optional[int], now: Optional[float] = None) -> bool:
-    return guild_id == TEST_GUILD or released_2103(now)
+def preview_310(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_310(now)
 
 
 def maintenance(now: Optional[float] = None) -> bool:

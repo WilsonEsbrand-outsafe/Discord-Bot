@@ -100,6 +100,13 @@ def test_2102():
     assert not release.maintenance(release.RELEASE_2102_TS)                    # 무점검
 
 
+def test_310():
+    import release
+    note = PATCH_NOTES["3.1.0"]
+    assert "키코" in note and "장부" not in note and "체크리스트" not in note
+    assert release.preview_310(release.TEST_GUILD)
+
+
 if __name__ == "__main__":
     test_28_content()
     test_embeds()
