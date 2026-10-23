@@ -85,6 +85,10 @@ class RaceView(discord.ui.View):
 ITEM_HANDLERS: dict = {}
 
 
+def _gid(user):
+    return getattr(getattr(user, "guild", None), "id", None)
+
+
 class BagView(discord.ui.View):
     """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼. 사용 결과는 채널에 공개로 올린다. (판매는 /아이템상점)"""
 
@@ -278,7 +282,9 @@ class BankruptConfirm(discord.ui.View):
             e = ui.card("⚖️ 파산 처리 완료",
                         f"`빚` **{r['debt']:,}원**\n"
                         f"`스폰서 강제 해지` **+{r['sponsor']:,}원**\n"
-                        + (f"⚖️ 변호사가 다시 변론했어요! 탕감 **0% → {r['rate']:.0%}**\n" if r.get("lawyer") else "")
+                        + (f"⚖️ 지나가던 변호사가 딱하다며 **공짜로** 변론해 줬어요! 탕감 **0% → {r['rate']:.0%}**\n"
+                           if r.get("lawyer") == "free" else
+                           f"⚖️ 변호사가 다시 변론했어요! 탕감 **0% → {r['rate']:.0%}**\n" if r.get("lawyer") else "")
                         + f"`탕감` **{r['forgiven']:,}원** · 남은 빚의 **{r['rate']:.0%}**"
                         + (" 🎉 전액 탕감!" if r["rate"] >= 1 else " 😱 한 푼도 탕감 못 받았어요…" if r["rate"] == 0 and r["debt"] > r["sponsor"] else "")
                         + "\n"
@@ -755,6 +761,7 @@ class Economy(commands.Cog):
     # 이벤트 안에서 나오는 아이템 비중(%) — 직관 연계 아이템은 여기와 WATCH_ITEM_EVENTS 에
     # 하루 100회 기준 이벤트 10번 → 토토 용지 10% 면 하루 1장 · 스테로이드 1.5% 면 이전과 같은 하루 0.15개
     WATCH_ITEM_WEIGHTS = {"muffler": 88.5, "toto_slip": 10, "steroid": 1.5}
+    WATCH_ITEM_WEIGHTS_310 = {"muffler": 87.5, "toto_slip": 10, "steroid": 1.5, "lawyer": 1.0}   # 3.1.0: 가끔 변호사를 만난다
     WATCH_ITEM_EVENTS = {   # 이벤트로 나오는 아이템 → 경기장 이벤트 멘트. 새 아이템은 여기와 WATCH_ITEM_WEIGHTS 에 추가
         "muffler": ("선수가 관중석으로 던진 머플러를 잡았어요!", "옆자리 팬이 우승 기념 머플러를 선물해 줬어요!",
                     "구단 굿즈샵 오픈 기념 선착순 머플러를 받았어요!", "하프타임 경품 추첨에 당첨! 응원 머플러예요!",
@@ -763,6 +770,8 @@ class Economy(commands.Cog):
                       "옆자리 아저씨가 두고 간 토토 용지를 주웠다!"),
         "steroid": ("경기장 화장실에서 수상한 주사기를 주웠다…", "의문의 트레이너가 슬쩍 주사기를 건넸다…",
                     "원정팀 라커룸 앞에 떨어진 주사기를 주웠다…"),
+        "lawyer": ("옆자리 아저씨가 알고 보니 변호사! 명함을 받았다!", "VIP석에서 유명 변호사와 우연히 친해졌다!",
+                   "응원하다 넘어진 사람을 도와줬더니 변호사였다! 한 번 도와주겠대요."),
     }
     _W, _L = (800, 2500), (-600, -200)
     WATCH_EVENTS = [
@@ -800,14 +809,15 @@ class Economy(commands.Cog):
     def watch_tier(cls, level: int) -> str:
         return cls.WATCH_LEVEL_NAMES[min(int(level), WATCH_MAX_LEVEL) - 1]
 
-    def _watch_roll(self, level: int, con, user_id: int):
+    def _watch_roll(self, level: int, con, user_id: int, new: bool = False):
         """(돈 변동, 경험치 변동, 표시 정보). 결과 확률은 WATCH_ODDS (레벨은 보상 배율만).
         이벤트는 돈 대신 아이템 — 같은 트랜잭션에서 지급한다."""
         ev = random.choice(self.WATCH_EVENTS)
         mult = self.watch_money_mult(level)
         kind = random.choices(self.WATCH_KINDS, weights=self.WATCH_ODDS)[0]
         if kind == "이벤트":
-            item = random.choices(list(self.WATCH_ITEM_WEIGHTS), weights=list(self.WATCH_ITEM_WEIGHTS.values()))[0]
+            weights = self.WATCH_ITEM_WEIGHTS_310 if new else self.WATCH_ITEM_WEIGHTS   # new = 3.1.0 공개 서버
+            item = random.choices(list(weights), weights=list(weights.values()))[0]
             give_item(con, user_id, item)
             return 0, 3, {"ev": ev, "kind": kind, "ok": True, "item": item, "base": 0, "mult": mult,
                           "line": random.choice(self.WATCH_ITEM_EVENTS[item])}
@@ -829,8 +839,9 @@ class Economy(commands.Cog):
     async def watch(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user, now_ts = interaction.user, int(time.time())
+        new310 = release.preview_310(interaction.guild_id)   # 3.1.0: 경기장에서 가끔 변호사를 만난다
         try:
-            r = await self.db.play_watch(user.id, now_ts, lambda lv, con: self._watch_roll(lv, con, user.id),
+            r = await self.db.play_watch(user.id, now_ts, lambda lv, con: self._watch_roll(lv, con, user.id, new310),
                                          cooldown_sec=self.WATCH_COOLDOWN)
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
@@ -1009,7 +1020,7 @@ class Economy(commands.Cog):
         what = self.GRIND_NAMES[table]
         roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id),
                 "training": self._train_roll,
-                "spectating": lambda lv, con: self._watch_roll(lv, con, user.id)}[table]
+                "spectating": lambda lv, con: self._watch_roll(lv, con, user.id, release.preview_310(_gid(user)))}[table]
         status = {"scouting": self._scout_status, "training": self._train_status, "spectating": self._watch_status}[table]
         r = await self.db.use_skip(user.id, item, int(time.time()), roll)
         if not r["ok"]:
@@ -1053,7 +1064,7 @@ class Economy(commands.Cog):
     @app_commands.describe(코드="쿠폰 코드")
     async def coupon(self, interaction: discord.Interaction, 코드: str):
         user = interaction.user
-        r = await self.db.redeem_coupon(user.id, 코드, int(time.time()))
+        r = await self.db.redeem_coupon(user.id, 코드, int(time.time()), interaction.guild_id)
         if not r["ok"]:
             msg = {"unknown": "없는 쿠폰 코드예요. 철자를 다시 확인해 주세요.", "expired": "기간이 끝난 쿠폰이에요.",
                    "used": "이미 받은 쿠폰이에요."}[r["reason"]]
