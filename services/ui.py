@@ -58,14 +58,19 @@ def emoji_url(emoji: str) -> str:
 
 KIKO_POSE = {GOLD: "gold", WIN: "win", EVEN: "even", LOSE: "lose", DOOM: "doom"}
 KIKO_ART = "https://raw.githubusercontent.com/WilsonEsbrand-outsafe/Discord-Bot/main/assets/kiko/{}.png"
+# 결과마다 그 장면을 연기하는 키코 그림이 있는 게임: assets/kiko/scenes/{게임}_{결과 번호}.png (번호 = 결과표 순서)
+KIKO_SCENES = {"pk": 10, "bat": 12, "hoop": 12, "ufc": 13, "race": 4}
 
 
-def result_thumb(emoji: str, color: int, user=None) -> str:
-    """게임 결과 썸네일 (2.10.3): 공개 서버에선 결과 색에 맞는 키코 그림(대박 · 승리 · 본전 · 패배 · 대참사), 아니면 이모지."""
+def result_thumb(emoji: str, color: int, user=None, scene: str | None = None) -> str:
+    """게임 결과 썸네일 (2.10.3): 공개 서버에선 그 결과 장면의 키코 그림(scene) → 없으면 결과 색에 맞는 키코 표정 → 아니면 이모지."""
     guild = getattr(user, "guild", None)
-    if color in KIKO_POSE and release.preview_2103(getattr(guild, "id", None)):
-        return KIKO_ART.format(KIKO_POSE[color])
-    return emoji_url(emoji)
+    if not release.preview_2103(getattr(guild, "id", None)):
+        return emoji_url(emoji)
+    game, _, idx = (scene or "").rpartition("_")
+    if idx.isdigit() and int(idx) < KIKO_SCENES.get(game, 0):
+        return KIKO_ART.format(f"scenes/{scene}")
+    return KIKO_ART.format(KIKO_POSE[color]) if color in KIKO_POSE else emoji_url(emoji)
 
 
 def titled(user) -> str:
