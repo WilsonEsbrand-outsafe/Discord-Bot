@@ -99,17 +99,14 @@ ITEM_PRICES = {
     "first_team": 3_000_000, "special_training": 300_000, "scout_coupon": 500_000,
     # 전술
     "tactic_note": 500_000, "analysis_report": 300_000,
-    # 3.1.0
-    "lawyer": 1_000_000,
 }
 # 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
                ("🎣 낚시", ("bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "fish_charm", "spice")),
                ("🏹 양궁", ("bow_pro", "windbreaker", "focus")),
                ("🎓 유스", ("first_team", "special_training", "scout_coupon")),
-               ("⚔️ 전술", ("tactic_note", "analysis_report")),
-               ("⚖️ 파산", ("lawyer",)))
-SHOP_310 = {"lawyer"}   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고판다
+               ("⚔️ 전술", ("tactic_note", "analysis_report")))
+SHOP_310: set[str] = set()   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템 (⚖️ 변호사 선임권은 상점에서 팔지 않는다)
 SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3}   # 하루(KST) 구매 한도가 있는 아이템
 # 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
 SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST
