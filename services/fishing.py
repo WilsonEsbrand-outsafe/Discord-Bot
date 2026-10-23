@@ -106,6 +106,8 @@ FEAST_GIVES = ("grill", "sashimi", "stew", "eel_rice")
 FEED_PROSPECT_XP = (2, 3, 5, 8, 15)
 FEED_FULL_TEAM = 11           # 오늘 선발 11명 모두 먹이면 오늘 경기 전력 +1 (🍽️ 든든한 식단)
 FEED_TEAM_BONUS = 1
+# 3.1.0 🤖 자동 낚시: 사용 후 24시간 동안 30분마다 한 마리 (입질이 가장 빠른 찌와 같은 확률 · 어망이 차면 쉰다)
+AUTO_HOURS, AUTO_EVERY = 24, 1800
 SKIP_PIECES = 5               # 스킵권 조각 5개 → 스킵권 1장 (스카우트 · 훈련 · 직관 중 하나)
 
 
@@ -209,6 +211,7 @@ class FishingDB(EconomyDB):
             con.execute("CREATE TABLE IF NOT EXISTS fish_buffs (user_id INTEGER, kind TEXT, until INTEGER, "
                         "PRIMARY KEY(user_id, kind))")
             # 2.82b 한 번만: 판매로 쓴 10/21 거래 포인트 초기화 (부적 보너스는 그대로)
+            con.execute("CREATE TABLE IF NOT EXISTS fish_auto (user_id INTEGER PRIMARY KEY, until INTEGER, next_ts INTEGER)")
             con.execute("CREATE TABLE IF NOT EXISTS fish_migrations (key TEXT PRIMARY KEY)")
             if con.execute("INSERT OR IGNORE INTO fish_migrations VALUES('reset-trade-2.82b')").rowcount:
                 con.execute("UPDATE fish_trade SET used=0 WHERE day_key=?", (_kst_day(RESET_282B_TS),))
@@ -346,38 +349,85 @@ class FishingDB(EconomyDB):
                 return {"ok": True, "kind": "early"}
             if now_ts > s["bite_ts"] + s["window"]:
                 return {"ok": True, "kind": "fled", "wait": s["bite_ts"] - s["cast_ts"]}
-            wait = s["bite_ts"] - s["cast_ts"]
-            buffs = self._buffs(con, uid, now_ts)
-            junk_p = BAIT_JUNK if s["bait"] == "bait" else JUNK_PROB
-            if rng.random() < junk_p:
-                item = rng.choices(list(JUNK), weights=list(JUNK.values()))[0]
-                if item != "old_boot":
-                    give_item(con, uid, item)
-                return {"ok": True, "kind": "junk", "item": item, "wait": wait}
-            bonus = min(0.174, LEVEL_RARE_STEP * (s["level"] - 1)) + (BAIT_GOLD_T if s["bait"] == "bait_gold" else 0) \
-                + (0.10 if "stew" in buffs else 0)
-            odds = grade_odds(wait, bonus, new_310)
-            grade = rng.choices(range(5), weights=odds)[0]
-            key = rng.choice(by_grade(new_310)[grade])
-            rod = self._rod(con, uid)
-            size = roll_size(key, rng, RODS[rod][0] if rod else 0)
-            xp = catch_xp(key, size, new_xp)
-            if "grill" in buffs:
-                xp = round(xp * 1.3)
-            level, lxp, up = add_xp(s["level"], s["xp"], xp)
-            con.execute("UPDATE fish_state SET level=?, xp=?, caught=caught+1 WHERE user_id=?", (level, lxp, uid))
-            cur = con.execute("INSERT INTO fish_bag(user_id, species, size, caught_ts) VALUES(?,?,?,?)", (uid, key, size, now_ts))
-            best = con.execute("SELECT best FROM fish_dex WHERE user_id=? AND species=?", (uid, key)).fetchone()
-            new_species = best is None
-            con.execute("INSERT INTO fish_dex(user_id, species, cnt, best) VALUES(?,?,1,?) ON CONFLICT(user_id, species) "
-                        "DO UPDATE SET cnt = cnt + 1, best = MAX(best, excluded.best)", (uid, key, size))
-            con.execute("INSERT INTO fish_log VALUES(?,?,?,?,?)", (uid, key, size, now_ts, week_key(now_ts)))
-            market = self._market(con, now_ts)
-            price = fish_price(key, size, market[key]["mult"], market[key]["supply"], 1.0)
-            return {"ok": True, "kind": "fish", "id": cur.lastrowid, "species": key, "grade": grade, "size": size,
-                    "xp": xp, "level": level, "leveled": up, "wait": wait, "odds": odds, "price": price,
-                    "new": new_species, "record": bool(best and size > best[0])}
+            return self._catch(con, uid, s, s["bite_ts"] - s["cast_ts"], s["bait"], now_ts, rng, new_xp, new_310)
         return await self._tx(fn)
+
+    def _catch(self, con, uid: int, s: dict, wait: float, bait: Optional[str], now_ts: int, rng,
+               new_xp: bool = True, new_310: bool = False) -> dict:
+        """입질을 잡은 한 번 — 잡템 또는 물고기를 어망에 넣는다 ([잡기!] · 자동 낚시 공용)."""
+        buffs = self._buffs(con, uid, now_ts)
+        junk_p = BAIT_JUNK if bait == "bait" else JUNK_PROB
+        if rng.random() < junk_p:
+            item = rng.choices(list(JUNK), weights=list(JUNK.values()))[0]
+            if item != "old_boot":
+                give_item(con, uid, item)
+            return {"ok": True, "kind": "junk", "item": item, "wait": wait}
+        bonus = min(0.174, LEVEL_RARE_STEP * (s["level"] - 1)) + (BAIT_GOLD_T if bait == "bait_gold" else 0) \
+            + (0.10 if "stew" in buffs else 0)
+        odds = grade_odds(wait, bonus, new_310)
+        grade = rng.choices(range(5), weights=odds)[0]
+        key = rng.choice(by_grade(new_310)[grade])
+        rod = self._rod(con, uid)
+        size = roll_size(key, rng, RODS[rod][0] if rod else 0)
+        xp = catch_xp(key, size, new_xp)
+        if "grill" in buffs:
+            xp = round(xp * 1.3)
+        level, lxp, up = add_xp(s["level"], s["xp"], xp)
+        con.execute("UPDATE fish_state SET level=?, xp=?, caught=caught+1 WHERE user_id=?", (level, lxp, uid))
+        cur = con.execute("INSERT INTO fish_bag(user_id, species, size, caught_ts) VALUES(?,?,?,?)", (uid, key, size, now_ts))
+        best = con.execute("SELECT best FROM fish_dex WHERE user_id=? AND species=?", (uid, key)).fetchone()
+        new_species = best is None
+        con.execute("INSERT INTO fish_dex(user_id, species, cnt, best) VALUES(?,?,1,?) ON CONFLICT(user_id, species) "
+                    "DO UPDATE SET cnt = cnt + 1, best = MAX(best, excluded.best)", (uid, key, size))
+        con.execute("INSERT INTO fish_log VALUES(?,?,?,?,?)", (uid, key, size, now_ts, week_key(now_ts)))
+        market = self._market(con, now_ts)
+        price = fish_price(key, size, market[key]["mult"], market[key]["supply"], 1.0)
+        return {"ok": True, "kind": "fish", "id": cur.lastrowid, "species": key, "grade": grade, "size": size,
+                "xp": xp, "level": level, "leveled": up, "wait": wait, "odds": odds, "price": price,
+                "new": new_species, "record": bool(best and size > best[0])}
+
+    # ───────────── 🤖 자동 낚시 (3.1.0) ─────────────
+    async def use_auto(self, uid: int, now_ts: int) -> dict:
+        """자동 낚시 사용 — 24시간 켜짐 (켜져 있으면 남은 시간에 24시간 더)."""
+        def fn(con):
+            if self._qty(con, uid, "auto_fish") <= 0:
+                return {"ok": False, "reason": "none"}
+            con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='auto_fish'", (uid,))
+            r = con.execute("SELECT until, next_ts FROM fish_auto WHERE user_id=?", (uid,)).fetchone()
+            if r and r[0] > now_ts:
+                until, nxt = r[0] + AUTO_HOURS * 3600, r[1]
+            else:
+                until, nxt = now_ts + AUTO_HOURS * 3600, now_ts + AUTO_EVERY
+            con.execute("INSERT OR REPLACE INTO fish_auto VALUES(?,?,?)", (uid, until, nxt))
+            return {"ok": True, "until": until, "next": nxt}
+        return await self._tx(fn)
+
+    async def auto_run(self, uid: int, now_ts: int, rng=random, new: bool = False) -> dict:
+        """밀린 자동 낚시를 한꺼번에 처리 → {until, next, fish: [...], junk: [...], full: 어망이 차서 쉰 횟수}."""
+        def fn(con):
+            r = con.execute("SELECT until, next_ts FROM fish_auto WHERE user_id=?", (uid,)).fetchone()
+            out = {"until": 0, "next": None, "fish": [], "junk": [], "full": 0}
+            if not r:
+                return out
+            until, nxt = r
+            while nxt <= min(now_ts, until):
+                s = self._state(con, uid)
+                if con.execute("SELECT COUNT(*) FROM fish_bag WHERE user_id=?", (uid,)).fetchone()[0] >= bag_max(s["level"], new):
+                    out["full"] += 1
+                else:
+                    c = self._catch(con, uid, s, BITE_MIN, None, nxt, rng, True, new)
+                    (out["fish"] if c["kind"] == "fish" else out["junk"]).append(c)
+                nxt += AUTO_EVERY
+            if nxt > until:
+                con.execute("DELETE FROM fish_auto WHERE user_id=?", (uid,))
+            else:
+                con.execute("UPDATE fish_auto SET next_ts=? WHERE user_id=?", (nxt, uid))
+            out.update(until=until if nxt <= until else 0, next=nxt if nxt <= until else None)
+            return out
+        return await self._tx(fn)
+
+    async def auto_users(self) -> list[int]:
+        return await self._tx(lambda con: [r[0] for r in con.execute("SELECT user_id FROM fish_auto")])
 
     # ───────────── 어망 · 시세 · 판매 · 보내기 ─────────────
     async def bag(self, uid: int, now_ts: int, new: bool = False) -> dict:

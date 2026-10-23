@@ -208,6 +208,34 @@ def test_day_fish_odds():
     assert share[0] > share[1] > share[2] > share[3] >= share[4] and share[4] < 0.01
 
 
+def test_auto_fish():
+    """3.1.0 🤖 자동 낚시: 24시간 동안 30분마다 한 마리 · 어망이 차면 쉰다 · 다시 쓰면 24시간 연장."""
+    db = F.FishingDB()
+    U = 77
+    rng = random.Random(3)
+
+    async def flow():
+        now = T0 + 20 * D
+        assert (await db.use_auto(U, now))["reason"] == "none"
+        await db.give_item(U, "auto_fish", 2)
+        r = await db.use_auto(U, now)
+        assert r["ok"] and r["until"] == now + 24 * 3600 and r["next"] == now + F.AUTO_EVERY
+        a = await db.auto_run(U, now + F.AUTO_EVERY - 1, rng, new=True)
+        assert not a["fish"] and not a["junk"] and a["next"] == now + F.AUTO_EVERY
+        a = await db.auto_run(U, now + 3 * 3600, rng, new=True)           # 3시간 = 6번
+        assert len(a["fish"]) + len(a["junk"]) == 6 and a["full"] == 0
+        assert all(f["wait"] == F.BITE_MIN for f in a["fish"])   # 입질이 가장 빠른 찌와 같은 확률
+        r = await db.use_auto(U, now + 3 * 3600)                             # 연장
+        assert r["until"] == now + 48 * 3600 and r["next"] == now + 3 * 3600 + F.AUTO_EVERY
+        a = await db.auto_run(U, now + 60 * 3600, rng, new=True)           # 끝까지 — 어망 50칸에서 쉰다
+        total = (await db.bag(U, now + 60 * 3600, True))
+        assert len(total["fish"]) <= total["max"] and a["full"] > 0 and a["next"] is None
+        assert len(a["fish"]) + len(a["junk"]) + a["full"] == 90
+        assert (await db.auto_run(U, now + 70 * 3600, rng, new=True))["fish"] == []
+
+    run(flow())
+
+
 def test_feed_cook_aquarium_weekly():
     db = F.FishingDB()
     clubs = cdb.ClubDB()
@@ -297,6 +325,10 @@ def test_screens():
         s = await cog.db.status(41, T0)
         e = await cog._pond_embed(user, s)
         assert "낚시터" in e.title
+        s["auto"] = {"until": T0 + 3600, "next": T0 + 600, "full": 1, "junk": [{}],
+                     "fish": [{"species": "goldcarp", "size": 51.2, "price": 9}]}   # 3.1.0 🤖 자동 낚시
+        e = await cog._pond_embed(user, s)
+        assert "자동 낚시가 물고기 **1마리**" in e.description and "`🤖 자동 낚시` 켜짐" in e.description
         for r in ({"kind": "early"}, {"kind": "fled"}, {"kind": "junk", "item": "old_boot"}, {"kind": "junk", "item": "spice"},
                   {"kind": "fish", "species": "goldcarp", "grade": 4, "size": 99, "xp": 150, "level": 3, "leveled": 1,
                    "wait": 600, "price": 700_000, "new": True, "record": False}):
