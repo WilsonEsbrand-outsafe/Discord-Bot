@@ -1074,7 +1074,7 @@ class Economy(commands.Cog):
             f"\n\n`정산` **{ui.won(delta)}** · {self._pk_label(mult)}"
             f"\n`잔액` **{new_bal:,}원**"
         )
-        e.set_thumbnail(url=ui.emoji_url(emoji))
+        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user))   # 2.10.3 키코 그림 (공개 전엔 이모지)
 
         try:
             ready = self._pk_card(user, "⚽ 키커가 공을 내려놓습니다…",
@@ -1186,7 +1186,7 @@ class Economy(commands.Cog):
         color = ui.GOLD if mult >= 5 else (ui.DOOM if mult <= -5 else ui.tone(delta))
         e = self._caster_card(user, f"{emoji} {headline}", caster, color, section)
         e.description += f"\n\n`정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**"
-        e.set_thumbnail(url=ui.emoji_url(emoji))
+        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user))   # 2.10.3 키코 그림 (공개 전엔 이모지)
         try:
             intro = self._caster_card(user, windup[0], windup[1].format(amount=f"{amount:,}"), ui.DARK, section)
             msg = await interaction.followup.send(embed=intro, wait=True)
@@ -1389,7 +1389,7 @@ class Economy(commands.Cog):
                     f'> 🎙️ *"{caster}"*\n\n{board}\n\n'
                     f"`정산` **{ui.won(delta)}** · {self._pk_label(mult)}\n`잔액` **{new_bal:,}원**",
                     color, user, sec)
-        e.set_thumbnail(url=ui.emoji_url(emoji))
+        e.set_thumbnail(url=ui.result_thumb(emoji, e.color.value, user))   # 2.10.3 키코 그림 (공개 전엔 이모지)
         try:
             await interaction.edit_original_response(embed=e)
         except discord.HTTPException:
