@@ -292,6 +292,8 @@ class Dungeon(commands.Cog):
         v.message = interaction.message
 
     async def do_start(self, interaction: discord.Interaction, torch: bool):
+        if release.preview_311(interaction.guild_id):   # 3.1.1: 빈자리는 벤치 선수로 자동으로 채운다
+            await self.clubs.fill_empty(interaction.user.id)
         team = await self.clubs.get_team(interaction.user.id, fill_injured=True)
         if not team:
             return await interaction.response.send_message("🙅 구단이 없어요.", ephemeral=True)

@@ -784,6 +784,12 @@ class PlayerMarketDB:
                     (_p["player_id"], _p["name"], _p["position"]),
                 )
 
+            # 3.1.1: 아마추어 더미는 은퇴하지 않는다 — 예전에 늙거나 은퇴한 아마추어를 봇이 켜질 때 바로 22세 · OVR 50 현역으로
+            # (전엔 다음 달 처리 때에만 되돌렸다)
+            con.execute("UPDATE pm_players SET age=22, ovr=50, pot=50, pot_grade='아마추어', base_value=0, retired=0 "
+                        "WHERE player_id LIKE 'AMT_%' AND (age!=22 OR ovr!=50 OR pot!=50 OR pot_grade!='아마추어' "
+                        "OR base_value!=0 OR retired!=0)")
+
             # ── 기존 구단주 마이그레이션: clubs 테이블의 모든 유저에게 아마추어 스쿼드 일괄 지급
             _clubs_exists = con.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='clubs'"
@@ -797,6 +803,9 @@ class PlayerMarketDB:
                         SELECT player_id FROM pm_players WHERE pot_grade = '아마추어'
                     ) ap
                 """)
+                # 3.1.1: 은퇴했을 때 방출해 버린 아마추어도 구단주에게 다시 (수량 0 으로 남은 것)
+                con.execute("UPDATE pm_holdings SET qty=1 WHERE qty < 1 AND player_id LIKE 'AMT_%' "
+                            "AND user_id IN (SELECT user_id FROM clubs)")
 
             con.execute("CREATE TABLE IF NOT EXISTS pm_id_alias (old TEXT PRIMARY KEY, new TEXT NOT NULL)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_id_alias_new ON pm_id_alias(new)")
@@ -1260,7 +1269,8 @@ class PlayerMarketDB:
                     con.close()
             return await self._run(work)
 
-    async def list_holdings(self, user_id: int, limit: int = 20, offset: int = 0):
+    async def list_holdings(self, user_id: int, limit: int = 20, offset: int = 0, hide_amateur: bool = False):
+        """hide_amateur(3.1.1): 아마추어 더미는 목록에서 뺀다 (보유는 그대로 — 빈자리 자동 채우기용)."""
         limit = max(1, min(10_000, int(limit)))
         offset = max(0, int(offset))
         async with self._lock:
@@ -1274,10 +1284,10 @@ class PlayerMarketDB:
                         FROM pm_holdings h
                         JOIN pm_players p ON p.player_id=h.player_id
                         LEFT JOIN pm_market m ON m.player_id=h.player_id
-                        WHERE h.user_id=? AND h.qty>0
+                        WHERE h.user_id=? AND h.qty>0 {}
                         ORDER BY (h.qty * COALESCE(m.price, 0)) DESC
                         LIMIT ? OFFSET ?
-                        """,
+                        """.format("AND h.player_id NOT LIKE 'AMT_%'" if hide_amateur else ""),
                         (int(user_id), int(limit), int(offset)),
                     ).fetchall()
                 finally:
@@ -1302,13 +1312,14 @@ class PlayerMarketDB:
                     con.close()
             return await self._run(work)
 
-    async def count_holdings(self, user_id: int) -> int:
+    async def count_holdings(self, user_id: int, hide_amateur: bool = False) -> int:
         async with self._lock:
             def work():
                 con = self._connect()
                 try:
                     row = con.execute(
-                        "SELECT COUNT(*) FROM pm_holdings WHERE user_id=? AND qty>0",
+                        "SELECT COUNT(*) FROM pm_holdings WHERE user_id=? AND qty>0"
+                        + (" AND player_id NOT LIKE 'AMT_%'" if hide_amateur else ""),
                         (int(user_id),),
                     ).fetchone()
                     return int(row[0]) if row else 0
@@ -1750,8 +1761,9 @@ class PlayerMarketDB:
                     initial_data = {str(r[0]): {"name": str(r[1]), "ovr": int(r[2])} for r in initial_rows}
                     retired_this_run: set = set()
                     if new:   # 예전엔 아마추어도 나이를 먹어 늙고 은퇴할 수 있었다 → 22세 · OVR 50 현역으로 되돌린다
-                        con.execute("UPDATE pm_players SET age=22, ovr=50, pot=50, base_value=0, retired=0 "
-                                    "WHERE player_id LIKE 'AMT_%' AND (age!=22 OR ovr!=50 OR pot!=50 OR base_value!=0 OR retired!=0)")
+                        con.execute("UPDATE pm_players SET age=22, ovr=50, pot=50, pot_grade='아마추어', base_value=0, retired=0 "
+                                    "WHERE player_id LIKE 'AMT_%' AND (age!=22 OR ovr!=50 OR pot!=50 OR pot_grade!='아마추어' "
+                                    "OR base_value!=0 OR retired!=0)")
 
                     for _ in range(months_due):
                         month_index += 1
@@ -2319,7 +2331,7 @@ class PlayerMarketDB:
                         return None, f"보유 수량이 부족합니다. (보유: {have}장 / 요청: {qty}장)"
                     # 구단 선발 명단에 쓰는 카드 1장은 팔 수 없다 (여분만 판매 가능)
                     if str(player_id) in self._lineup_ids(con, user_id) and have - qty < 1:
-                        return None, f"**{name}** 은(는) 구단 선발 명단에 있어요. `/선발`에서 빼고 판매해 주세요."
+                        return None, f"**{name}** 은(는) 구단 선발 명단에 있어요. `/구단`에서 선발에서 빼고 판매해 주세요."
 
                     payout  = int(int(base_value) * rate) * qty
                     fee_amt = int(int(base_value) * (1.0 - rate)) * qty

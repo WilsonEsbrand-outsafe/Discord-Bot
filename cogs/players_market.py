@@ -826,7 +826,8 @@ class PlayersMarket(commands.Cog):
             페이지 = max(1, 페이지)
             offset = (페이지 - 1) * per_page
 
-            total_count = await self.pm.count_holdings(interaction.user.id)
+            hide = release.preview_311(interaction.guild_id)   # 3.1.1: 아마추어는 보유하되 목록엔 안 보인다
+            total_count = await self.pm.count_holdings(interaction.user.id, hide)
             if total_count == 0:
                 return await interaction.followup.send("보유한 선수가 없습니다.")
 
@@ -834,7 +835,7 @@ class PlayersMarket(commands.Cog):
             if 페이지 > total_pages:
                 return await interaction.followup.send(f"해당 페이지가 없습니다. (최대 {total_pages}페이지)")
 
-            rows = await self.pm.list_holdings(interaction.user.id, limit=per_page, offset=offset)
+            rows = await self.pm.list_holdings(interaction.user.id, limit=per_page, offset=offset, hide_amateur=hide)
             total_value = await self.pm.portfolio_value(interaction.user.id)
 
             lines = []

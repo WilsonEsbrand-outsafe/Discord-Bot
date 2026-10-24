@@ -65,7 +65,7 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
     e.add_field(name="📈 커리어", inline=True, value=(
         f"`출전` **{apps:,}**경기\n`골` **{p['goals']:,}** · `도움` **{p['assists']:,}**\n"
         f"`경기당 공격포인트` {(p['goals'] + p['assists']) / apps:.2f}") if apps
-        else "아직 출전 기록이 없어요.\n`/선발`로 내 구단에 넣고\n`/친선경기` `/공식경기`에 내보내 보세요!")
+        else "아직 출전 기록이 없어요.\n`/구단`에서 선발에 넣고\n`/친선경기` `/공식경기`에 내보내 보세요!")
     e.add_field(name="🔒 히든 능력치", inline=True, value=(
         f"`자신감` {hidden_tier(p['confidence'])}\n`부상 빈도` {hidden_tier(p['proneness'])}\n"
         f"`프로 의식` {hidden_tier(p['pro'])}" + (f"\n`부상 이력` {p['injuries']}회" if p["injuries"] else "")))
