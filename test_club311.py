@@ -35,6 +35,21 @@ def test_auto_assign_fixed():
     assert out[0] == "5" and all(out)
 
 
+def test_stars():
+    Y = CH.Y
+    assert Y.stars(59, 51) == 3 and Y.stars(90, 51) == 5 and Y.stars(40, 80) == 0.5
+    assert Y.star_text(3.5) == "★★★½☆" and Y.star_text(0.5) == "½☆☆☆☆"
+    y = {"id": 7, "pot": 80, "trains": 0}
+    est = {Y.pot_stars(y, 70, None)[0] for _ in range(3)}
+    assert len(est) == 1                                   # 같은 선수 · 같은 스카우터 → 늘 같은 별
+    assert Y.pot_stars({**y, "trains": Y.REVEAL[2]}, 70, None) == (Y.stars(80, 70), True)
+    # 정확도: 수석 스카우터가 동네보다 더 잘 맞힌다
+    def hit(sc):
+        return sum(Y.pot_stars({"id": i, "pot": 75, "trains": 0}, 70, sc)[0] == Y.stars(75, 70) for i in range(2000)) / 2000
+    assert hit("chief") > hit("local") > hit(None)
+    assert abs(hit("chief") - 0.90) < 0.04
+
+
 def test_release_311():
     assert release.LEGACY_311 <= release.hidden_commands(release.TEST_GUILD)
     if release.RELEASE_311_TS is None:
@@ -110,7 +125,7 @@ def test_club_hub_311():
         await find(cv, lambda c: (getattr(c, "label", "") or "").startswith("정말 올리기")).callback(_inter(log))
         assert (await hubs.clubs.facilities(U))["stadium"] == 1
         # 👔 감독 · 의료진: 고르기 → 영입
-        cv.page = [p.title for p in cv.pages].index("감독 · 의료진")
+        cv.page = [p.title for p in cv.pages].index("감독 · 의료진 · 스카우터")
         await cv.build()
         await hubs.db.add_balance(U, cdb.MANAGERS["rookie"][5])
         sel = [c for c in cv.children if isinstance(c, CH.discord.ui.Select)][0]
@@ -118,6 +133,19 @@ def test_club_hub_311():
         await sel.callback(_inter(log))
         await find(cv, lambda c: (getattr(c, "label", "") or "").endswith("영입 (30만원)")).callback(_inter(log))
         assert (await hubs.clubs.get_team(U))["manager"] == "rookie"
+        # 🕵️ 유스 스카우터 고용 → 🎓 유스 화면에 정확도 · 별
+        await hubs.db.add_balance(U, CH.Y.SCOUTERS["pro"][3])
+        sel = [c for c in cv.children if isinstance(c, CH.discord.ui.Select)][2]
+        sel._values = ["pro"]
+        await sel.callback(_inter(log))
+        await find(cv, lambda c: (getattr(c, "label", "") or "").startswith("프로 스카우터 고용")).callback(_inter(log))
+        assert await hubs.youth.scouter(U) == "pro"
+        cv.page = [p.title for p in cv.pages].index("유스")
+        e = await cv.build()
+        assert "프로 스카우터" in e.description and "75%" in e.description
+        await find(cv, lambda c: getattr(c, "label", "") == "지원자 보기").callback(_inter(log))
+        e = await cv.build()
+        assert "잠재 ★" in e.description or "잠재 ½" in e.description
         await _all_pages(cv)
     asyncio.run(flow())
 
@@ -139,6 +167,7 @@ def test_amateur_restore():
 if __name__ == "__main__":
     test_auto_assign_fixed()
     test_release_311()
+    test_stars()
     test_club_hub_311()
     test_amateur_restore()
     print("✅ test_club311 통과")

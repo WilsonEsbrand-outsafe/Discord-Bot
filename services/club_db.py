@@ -520,7 +520,8 @@ class ClubDB:
             for col in (f"formation TEXT NOT NULL DEFAULT '{DEFAULT_FORMATION}'", "captain TEXT",
                         "wins INTEGER NOT NULL DEFAULT 0", "draws INTEGER NOT NULL DEFAULT 0",
                         "losses INTEGER NOT NULL DEFAULT 0", "manager TEXT", "medic TEXT",
-                        "emblem TEXT", "stadium TEXT", "squad_b INTEGER NOT NULL DEFAULT 0"):
+                        "emblem TEXT", "stadium TEXT", "squad_b INTEGER NOT NULL DEFAULT 0",
+                        "scouter TEXT"):   # 3.1.1 유스 스카우터 (services.youth.SCOUTERS)
                 try:
                     con.execute(f"ALTER TABLE clubs ADD COLUMN {col}")
                 except sqlite3.OperationalError:
@@ -1058,6 +1059,11 @@ class ClubDB:
     async def hire_medic(self, user_id: int, key: str) -> dict:
         """의료진 영입 — 감독과 같은 방식."""
         return await self._hire(user_id, "medic", key, MEDICS[key][3])
+
+    async def hire_scouter(self, user_id: int, key: str) -> dict:
+        """3.1.1 유스 스카우터 고용 (감독처럼 영입비 한 번 · 바꾸면 새 영입비)."""
+        from services.youth import SCOUTERS
+        return await self._hire(user_id, "scouter", key, SCOUTERS[key][3])
 
     async def _hire(self, user_id: int, col: str, key: str, fee: int) -> dict:
         def fn(con):
