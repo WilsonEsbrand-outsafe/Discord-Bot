@@ -106,12 +106,25 @@ def test_310():
     assert release.preview_310(release.TEST_GUILD)
     import calendar
     keys = {k: ts for k, ts, *_ in NOTICES}
-    start, end = release.MAINTENANCE
-    assert (start, end) == (calendar.timegm((2026, 10, 23, 7, 30, 0)), calendar.timegm((2026, 10, 23, 7, 35, 0)))   # 16:30 ~ 16:35 KST
+    start = calendar.timegm((2026, 10, 23, 7, 30, 0))   # 3.1.0 점검 16:30 ~ 16:35 KST (지금 MAINTENANCE 는 3.2.0)
     assert keys["maint-3.1.0"] == keys["patch-3.1.0"] == calendar.timegm((2026, 10, 23, 6, 40, 0)) < start   # 15:40 KST 미리 발송
-    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.1.0")
-    assert P.notice_text("maint-3.1.0", title, body, keys["maint-3.1.0"]) == (title, body)
-    assert P.notice_text("maint-3.1.0", title, body, end)[0] == "✅ 점검 완료 안내"
+
+
+def test_320():
+    import calendar
+    import release
+    note = PATCH_NOTES["3.2.0"]
+    assert "3.1.1" not in PATCH_NOTES and "장부" not in note and "체크리스트" not in note and len(note) < 1200
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    start, end = release.MAINTENANCE
+    assert (start, end) == (calendar.timegm((2026, 10, 24, 22, 0, 0)), calendar.timegm((2026, 10, 24, 22, 10, 0)))   # 07:00 ~ 07:10 KST
+    assert keys["maint-3.2.0"] == keys["patch-3.2.0"] == calendar.timegm((2026, 10, 24, 21, 0, 0)) < start   # 06:00 KST 미리 발송
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.2.0")
+    assert "07:00 ~ 07:10" in body
+    assert P.notice_text("maint-3.2.0", title, body, keys["maint-3.2.0"]) == (title, body)
+    assert P.notice_text("maint-3.2.0", title, body, end)[0] == "✅ 점검 완료 안내"
+    # 기능은 점검 시작 전엔 테스트 서버만
+    assert release.RELEASE_311_TS is None or release.RELEASE_311_TS >= start
 
 
 if __name__ == "__main__":
@@ -121,4 +134,6 @@ if __name__ == "__main__":
     test_291()
     test_2101()
     test_2102()
+    test_310()
+    test_320()
     print("OK: patch notes")
