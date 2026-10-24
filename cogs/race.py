@@ -309,7 +309,10 @@ F1_SECTION = "🎙️ F1 중계"
 F1_READY = 2          # 미리 만들어 두는 F1 경주 수 (명령어 치면 바로 뜨게)
 F1_SCENE_SEC = (2.8, 3.5)   # 중계 장면 하나 보여 주는 시간 (보통 · 막판 두 장면) — 그림 보고 순위표 읽을 시간
 LAP_SEC = 88.0       # 그림에서 간격(초) → 트랙 위 거리로 바꿀 때 쓰는 한 랩 시간
-FONT = ["NanumGothic", "Malgun Gothic", "DejaVu Sans"]
+from matplotlib import font_manager as _fm   # noqa: E402
+_HAVE_FONTS = {f.name for f in _fm.fontManager.ttflist}
+# 서버에 없는 글꼴이 목록에 있으면 글자마다 "findfont: … not found" 로그가 수백 줄씩 쌓였다 → 있는 것만
+FONT = [f for f in ("NanumGothic", "Malgun Gothic", "DejaVu Sans") if f in _HAVE_FONTS] or ["DejaVu Sans"]
 BG, PANEL = "#15151E", "#1F1F2B"
 
 
@@ -889,7 +892,7 @@ class Race(commands.Cog):
         e.set_footer(text="60초 안에 고르지 않으면 실격 — 베팅금은 돌려받지 못합니다")
         return e
 
-    @app_commands.command(name="달팽이", description="달팽이 4마리 중 한 마리에 베팅! 1·2위는 수익, 3·4위는 손실 (최소 1,000원)")
+    @app_commands.command(name="달팽이", description="달팽이 4마리 중 한 마리에 베팅! (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def snail(self, interaction: discord.Interaction, amount: app_commands.Range[int, MIN_BET]):
@@ -960,7 +963,7 @@ class Race(commands.Cog):
 
     # ───────────── 🚣 조정 ─────────────
 
-    @app_commands.command(name="조정", description="노를 직접 저어라! [노 젓기] 연타 + 물살 운으로 6척 경주 · 1·2위 수익, 3위 본전, 4~6위 손실 (최소 1,000원)")
+    @app_commands.command(name="조정", description="노를 직접 저어라! [노 젓기] 연타로 6척 경주 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def row(self, interaction: discord.Interaction, amount: app_commands.Range[int, MIN_BET]):
@@ -1059,11 +1062,13 @@ class Race(commands.Cog):
         def work():
             counts = f1_counts(grid, gp, rain)
             snap = dict(f1_grid_snap(grid), wet=rain)
-            odds, ladder = f1_odds(grid, gp, rain, counts=counts), f1_ladder(counts)   # 3.1.0 전 서버 · 3.1.0 서버
             deep = f1_ladder(counts, deep=True)   # 3.1.1 서버 (못할수록 손실 ↑)
+            png311 = f1_render(gp, "출발 그리드", snap, -1, None, deep)
+            if release.released_311():   # 3.2.0 공개 뒤엔 모든 서버가 이것만 쓴다 — 그림 셋 → 하나 (경주 준비 CPU ⅓)
+                return deep, png311, deep, png311, deep, png311
+            odds, ladder = f1_odds(grid, gp, rain, counts=counts), f1_ladder(counts)   # 3.1.0 전 서버 · 3.1.0 서버
             return (odds, f1_render(gp, "출발 그리드", snap, -1, None, odds),
-                    ladder, f1_render(gp, "출발 그리드", snap, -1, None, ladder),
-                    deep, f1_render(gp, "출발 그리드", snap, -1, None, deep))
+                    ladder, f1_render(gp, "출발 그리드", snap, -1, None, ladder), deep, png311)
         odds, png, ladder, png310, deep, png311 = await asyncio.to_thread(work)
         return {"gp": gp, "rain": rain, "grid": grid, "odds": odds, "png": png, "odds310": ladder, "png310": png310,
                 "odds311": deep, "png311": png311}
@@ -1095,7 +1100,7 @@ class Race(commands.Cog):
         e.set_footer(text="아래 목록에서 드라이버를 고르세요 · 60초 안에 안 고르면 실격")
         return e
 
-    @app_commands.command(name="f1", description="2026 F1 그리드에서 드라이버를 골라 베팅! 실제 서킷 · 전력 · 타이어 전략 · 사고 반영 (최소 1,000원)")
+    @app_commands.command(name="f1", description="2026 F1 드라이버를 골라 베팅! 실제 서킷에서 레이스 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def f1(self, interaction: discord.Interaction, amount: app_commands.Range[int, MIN_BET]):

@@ -516,7 +516,7 @@ class Club(commands.Cog):
 
     PICKS = {"W": "승", "D": "무", "L": "패"}
 
-    @app_commands.command(name="공식경기", description="돈을 걸고 공식경기! 전력으로 정한 배당 · 승/무/패 예측이 맞으면 배당 지급 (횟수 제한 없음)")
+    @app_commands.command(name="공식경기", description="돈을 걸고 공식경기! 승 · 무 · 패를 맞혀요")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)", 예측="내 구단 경기 결과 예측 (기본: 승)",
                            상대="상대 구단의 주인 (비우면 비슷한 전력 구단과 자동 매칭)")

@@ -873,6 +873,8 @@ async def main():
 
 if __name__ == "__main__":
     ensure_single_instance()
+    from services import db_maint
+    db_maint.vacuum_if_due()   # 3.2.0: 점검 중이고 DB 빈 공간이 많으면 디스코드에 붙기 전에 정리
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

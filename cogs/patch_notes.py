@@ -29,6 +29,7 @@ def notice_text(key: str, title: str, content, now: int):
 class PatchNotesCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._notices_done: set[str] = set()
         self._init_db()
         self.notice_loop.start()
 
@@ -67,7 +68,11 @@ class PatchNotesCog(commands.Cog):
     async def notice_loop(self):
         now = int(time.time())
         for key, ts, title, content in NOTICES:
-            if ts <= now and await asyncio.to_thread(self._claim_notice, key):
+            if ts > now or key in self._notices_done:
+                continue
+            claimed = await asyncio.to_thread(self._claim_notice, key)
+            self._notices_done.add(key)   # 이미 보낸(맡은) 공지는 다시 DB 에 묻지 않는다 (예전엔 매분 공지마다 쓰기 트랜잭션)
+            if claimed:
                 title, content = notice_text(key, title, content, now)
                 parts = content if isinstance(content, list) else [("", content)]   # [(소제목, 내용), …] 이면 임베드 여러 개
                 es = [discord.Embed(title=f"{title} · {sub}" if sub else title, description=body, color=0xE67E22)
@@ -84,6 +89,7 @@ class PatchNotesCog(commands.Cog):
     def _connect(self):
         con = sqlite3.connect(DB_PATH)
         con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA synchronous=NORMAL;")   # WAL 에선 안전 — 커밋마다 디스크 동기화(fsync)를 하지 않아 명령이 빨라진다
         return con
 
     def _init_db(self):

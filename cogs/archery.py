@@ -239,7 +239,7 @@ class Archery(commands.Cog):
         self.bot = bot
         self.db = EconomyDB()
 
-    @app_commands.command(name="양궁", description="궁수와 함께 6발! 바늘이 가운데일 때 [쏘기!] · 합계 점수 + X 보너스 배당 (최소 1,000원)")
+    @app_commands.command(name="양궁", description="궁수와 함께 6발! 바늘이 가운데일 때 [쏘기!] (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def archery(self, interaction: discord.Interaction, amount: app_commands.Range[int, MIN_BET]):

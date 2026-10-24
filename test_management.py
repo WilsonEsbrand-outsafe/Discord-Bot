@@ -17,6 +17,7 @@ import cogs.hub as CH   # noqa: E402
 import cogs.sponsor as CS   # noqa: E402
 import release   # noqa: E402
 import services.management as M   # noqa: E402
+release.RELEASE_311_TS = None   # 3.2.0 공개 전: 경영 수입은 바로 입금 (묵혀두기는 test_club311)
 
 D = 86400
 T0 = 1_800_000_000

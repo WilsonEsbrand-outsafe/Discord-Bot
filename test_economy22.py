@@ -17,6 +17,7 @@ from cogs.economy import Economy  # noqa: E402
 from services.sponsor_db import SponsorDB  # noqa: E402
 import release  # noqa: E402
 release.RELEASE_TS = release.MAINTENANCE = None   # 2.8 공개 전 상태로 고정: 다른 서버(999 등)는 2.7, 테스트 서버만 2.8
+release.RELEASE_311_TS = None   # 3.2.0(코드 이름 311) 공개 전 상태로 고정: 양궁 아이템이 아직 상점에 있다
 
 D = 86400
 NOW = 1_800_000_000 - 9 * 3600 + 3600   # KST 01:00
@@ -164,7 +165,7 @@ async def _items():
         w = Economy.WATCH_ITEM_WEIGHTS
         return edb.WATCH_DAILY_LIMIT * Economy._WO["이벤트"] * w[item] / sum(w.values())
     assert abs(per_day("toto_slip") - 1) < 1e-9 and abs(per_day("steroid") - 0.15) < 1e-9   # 용지 하루 1장 · 주사기 그대로
-    assert "관람 65% · 실패 25% · 이벤트(아이템) 10%" in Economy.watch.description
+    assert "%" not in Economy.watch.description   # 3.1.1 슬래시 설명에서 확률을 뺐다
     assert not set(Economy.WATCH_ITEM_WEIGHTS) & (set(edb.RESET_ITEMS) | set(edb.SKIP_ITEMS))
     assert set(Economy.WATCH_ITEM_WEIGHTS) <= set(Economy.WATCH_ITEM_EVENTS)
     import random as _r
