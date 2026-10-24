@@ -100,6 +100,11 @@ RECIPES = {
     "eel_rice": ("🍱", "보양 정식", [(3, 1)], 2, "던전 파티 체력 +20"),
     "feast": ("👑", "용궁 만찬", [(4, 1)], 3, "위 네 가지 효과 모두"),
 }
+# 3.1.1 요리 (release.preview_311 서버): 물고기를 직접 고르고 · 재료가 두 배 · 확률로 성공 (실패하면 재료는 타서 사라진다)
+RECIPES_311_NEEDS = {"grill": [(0, 4)], "sashimi": [(1, 4)], "stew": [(2, 2)], "eel_rice": [(3, 2)], "feast": [(4, 2)]}
+COOK_CHANCE_311 = {"grill": 0.85, "sashimi": 0.80, "stew": 0.75, "eel_rice": 0.70, "feast": 0.65}
+# 3.1.1 낚싯대가 좋을수록 희귀한 물고기가 아주 조금 더 ('기다린 시간' 효과 +)
+ROD_RARE_311 = {"rod_carbon": 0.02, "rod_pro": 0.04, "rod_legend": 0.06}
 COOK_HOURS = 24
 FEAST_GIVES = ("grill", "sashimi", "stew", "eel_rice")
 # 먹이기: 유망주 성장 경험치 (하루 유망주 · 선수마다 한 마리) — 경기 출전 한 번 = 10
@@ -339,7 +344,8 @@ class FishingDB(EconomyDB):
                 "SELECT user_id, cast_ts, bite_ts, window, channel_id, message_id FROM fish_state WHERE cast_ts IS NOT NULL")]
         return await self._tx(fn)
 
-    async def reel(self, uid: int, now_ts: int, rng=random, new_xp: bool = True, new_310: bool = False) -> dict:
+    async def reel(self, uid: int, now_ts: int, rng=random, new_xp: bool = True, new_310: bool = False,
+                   new_311: bool = False) -> dict:
         """[잡기!]. 결과 kind: early(아직 입질 전 — 찌만 회수) / fled(늦음) / junk / fish. 실패 reason: idle."""
         def fn(con):
             s = self._state(con, uid)
@@ -350,7 +356,7 @@ class FishingDB(EconomyDB):
                 return {"ok": True, "kind": "early"}
             if now_ts > s["bite_ts"] + s["window"]:
                 return {"ok": True, "kind": "fled", "wait": s["bite_ts"] - s["cast_ts"]}
-            r = self._catch(con, uid, s, s["bite_ts"] - s["cast_ts"], s["bait"], now_ts, rng, new_xp, new_310)
+            r = self._catch(con, uid, s, s["bite_ts"] - s["cast_ts"], s["bait"], now_ts, rng, new_xp, new_310, new_311)
             if new_310 and rng.random() < AUTO_DROP:   # 3.1.0 🤖 자동 낚시 (아주 가끔)
                 give_item(con, uid, "auto_fish")
                 r["auto_drop"] = True
@@ -358,7 +364,7 @@ class FishingDB(EconomyDB):
         return await self._tx(fn)
 
     def _catch(self, con, uid: int, s: dict, wait: float, bait: Optional[str], now_ts: int, rng,
-               new_xp: bool = True, new_310: bool = False) -> dict:
+               new_xp: bool = True, new_310: bool = False, new_311: bool = False) -> dict:
         """입질을 잡은 한 번 — 잡템 또는 물고기를 어망에 넣는다 ([잡기!] · 자동 낚시 공용)."""
         buffs = self._buffs(con, uid, now_ts)
         junk_p = BAIT_JUNK if bait == "bait" else JUNK_PROB
@@ -369,10 +375,12 @@ class FishingDB(EconomyDB):
             return {"ok": True, "kind": "junk", "item": item, "wait": wait}
         bonus = min(0.174, LEVEL_RARE_STEP * (s["level"] - 1)) + (BAIT_GOLD_T if bait == "bait_gold" else 0) \
             + (0.10 if "stew" in buffs else 0)
+        rod = self._rod(con, uid)
+        if new_311 and rod:   # 3.1.1 좋은 낚싯대일수록 희귀 확률 살짝 ↑
+            bonus += ROD_RARE_311[rod]
         odds = grade_odds(wait, bonus, new_310)
         grade = rng.choices(range(5), weights=odds)[0]
         key = rng.choice(by_grade(new_310)[grade])
-        rod = self._rod(con, uid)
         size = roll_size(key, rng, RODS[rod][0] if rod else 0)
         xp = catch_xp(key, size, new_xp)
         if "grill" in buffs:
@@ -586,16 +594,28 @@ class FishingDB(EconomyDB):
         return await self._tx(lambda con: {t for (t,) in con.execute(
             "SELECT target FROM fish_fed WHERE user_id=? AND day_key=?", (uid, day))})
 
-    async def cook(self, uid: int, recipe: str, now_ts: int) -> dict:
-        """요리: 어망에서 재료 등급 물고기를 (가장 싼 것부터) 쓰고 양념을 쓴다. reason: fish(물고기 부족) / spice."""
+    async def cook(self, uid: int, recipe: str, now_ts: int, ids: Optional[list[int]] = None, new: bool = False,
+                   rng=random) -> dict:
+        """요리: 어망에서 재료 등급 물고기를 (가장 싼 것부터) 쓰고 양념을 쓴다. reason: fish(물고기 부족) / spice / pick.
+        new = 3.1.1: 재료 두 배(RECIPES_311_NEEDS) · ids 로 쓸 물고기를 직접 고른다 · COOK_CHANCE_311 확률로 성공
+        (실패하면 재료는 타서 사라지고 효과는 없다 → burnt=True)."""
         _, _, needs, spice, _ = RECIPES[recipe]
+        if new:
+            needs = RECIPES_311_NEEDS[recipe]
 
         def fn(con):
             market = self._market(con, now_ts)
             ice = self._qty(con, uid, "icebox") > 0
             rows = [f for f in self._fish_rows(con, uid) if not f["displayed"]]
             use = []
-            for grade, n in needs:
+            if ids is not None:   # 직접 고른 물고기: 등급 · 마릿수가 정확히 맞아야
+                pick = [f for f in rows if f["id"] in set(ids)]
+                for grade, n in needs:
+                    got = [f for f in pick if FISH[f["species"]][2] == grade]
+                    if len(got) != n or len(pick) != sum(k for _, k in needs):
+                        return {"ok": False, "reason": "pick", "grade": grade, "need": n, "have": len(got)}
+                use = pick
+            for grade, n in needs if ids is None else ():
                 pool = sorted((f for f in rows if FISH[f["species"]][2] == grade and f not in use),
                               key=lambda f: self._price_row(con, f, market, now_ts, ice))
                 if len(pool) < n:
@@ -607,9 +627,12 @@ class FishingDB(EconomyDB):
                 con.execute("DELETE FROM fish_bag WHERE id=?", (f["id"],))
             if spice:
                 con.execute("UPDATE inventory SET qty = qty - ? WHERE user_id=? AND item='spice'", (spice, uid))
+            used = [FISH[f["species"]][1] for f in use]
+            if new and rng.random() >= COOK_CHANCE_311[recipe]:
+                return {"ok": True, "burnt": True, "used": used}
             until = now_ts + COOK_HOURS * 3600
             con.execute("INSERT OR REPLACE INTO fish_buffs VALUES(?,?,?)", (uid, recipe, until))
-            return {"ok": True, "until": until, "used": [FISH[f["species"]][1] for f in use]}
+            return {"ok": True, "burnt": False, "until": until, "used": used}
         return await self._tx(fn)
 
     async def buffs(self, uid: int, now_ts: int) -> dict[str, int]:
