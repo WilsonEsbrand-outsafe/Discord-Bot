@@ -116,7 +116,7 @@ class Hubs(commands.Cog):
     async def mgmt_loop(self):
         if release.released_311():   # 3.1.1 양궁 아이템 삭제 → 공개 뒤 상점 원가로 환불 (한 번만)
             for uid, amount in await self.db.refund_archery():
-                print(f"[3.1.1] 양궁 아이템 환불 {uid} +{amount:,}원")
+                print(f"[3.2.0] 양궁 아이템 환불 {uid} +{amount:,}원")
         for r in await self.mgmt.settle(int(time.time())):
             print(f"[경영] {r['user_id']} 관중 {r['fans']:,} · 순이익 +{r['net']:,} · 만족도 {r['sat_before']}→{r['sat']}")
             await send_notify(self.bot, self.db, r["user_id"], "구단_경영", mgmt_report_card(r, None, "🏟️ 어제 구단 경영 정산"))
