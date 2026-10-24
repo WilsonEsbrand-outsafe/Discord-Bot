@@ -15,7 +15,7 @@ from services import ui
 from services.club_db import ClubDB
 from services.economy_db import ITEM_PRICES, ITEMS, SHOP_ONE_ONLY, EconomyDB, give_item
 from services.fishing import (
-    AQUARIUM_MAX, AUTO_EVERY, BAG_MAX, CATCH_WINDOW, DAY_FISH_MULT, bag_max, day_fish, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES,
+    AQUARIUM_MAX, AUTO_EVERY, BAG_MAX, CATCH_WINDOW, DAY_FISH_MULT, bag_max, day_fish, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES, RECIPES_311_NEEDS, COOK_CHANCE_311,
     SKIP_PIECES, TRADE_DAILY, by_grade, fish_name, grade_odds, level_need, odds_line,
 )
 from services.hub import HubView, Page
@@ -288,7 +288,8 @@ class Fishing(commands.Cog):
             return await interaction.response.send_message("🙅 이 찌는 주인이 아니거나 이미 끝났어요.", ephemeral=True)
         new = release.preview_291(interaction.guild_id)   # 2.9.1: 경험치 하향 · 결과 남기기 (테스트 서버 먼저)
         r = await self.db.reel(user.id, int(time.time()), new_xp=new,
-                               new_310=release.preview_310(interaction.guild_id))   # 3.1.0: 새 물고기 15종 · 희귀 확률 하향
+                               new_310=release.preview_310(interaction.guild_id),   # 3.1.0: 새 물고기 15종 · 희귀 확률 하향
+                               new_311=release.preview_311(interaction.guild_id))   # 3.1.1: 좋은 낚싯대 = 희귀 확률 살짝 ↑
         task = self._tasks.pop(user.id, None)
         if task:
             task.cancel()
@@ -523,6 +524,8 @@ class Fishing(commands.Cog):
         await view.refresh(interaction, note)
 
     async def _p_cook(self, view: HubView) -> discord.Embed:
+        if release.preview_311(getattr(getattr(view.user, "guild", None), "id", None)):
+            return await self._p_cook_311(view)
         user, now = view.user, int(time.time())
         active = await self.db.buffs(user.id, now)
         inv, _ = await self.db.inventory(user.id)
@@ -554,6 +557,61 @@ class Fishing(commands.Cog):
         sel.callback = cook
         view.add_item(sel)
         return e
+
+    async def _p_cook_311(self, view: HubView) -> discord.Embed:
+        """3.1.1 요리: ① 요리 고르기 ② 쓸 물고기 직접 고르기 → 확률로 성공 (실패하면 재료가 타서 사라진다)."""
+        user, now = view.user, int(time.time())
+        active = await self.db.buffs(user.id, now)
+        inv, _ = await self.db.inventory(user.id)
+        lines = []
+        for k, (emoji, name, _, spice, effect) in RECIPES.items():
+            need = " + ".join(f"{GRADE_EMOJI[g]} {GRADES[g]} {n}마리" for g, n in RECIPES_311_NEEDS[k]) \
+                + (f" + 🧂 양념 {spice}" if spice else "")
+            on = f" · ✅ <t:{active[k]}:R> 끝" if k in active else ""
+            lines.append(f"{emoji} **{name}** — {effect}{on}\n　 재료: {need} · 성공 **{COOK_CHANCE_311[k]:.0%}**")
+        e = ui.card("🍳 요리", "요리하면 **24시간** 효과가 생겨요. 같은 요리를 또 하면 시간이 새로 24시간이 돼요.\n"
+                    "① 요리를 고르고 ② 쓸 물고기를 직접 골라요. 실패하면 재료가 타 버려요!\n\n" + "\n".join(lines)
+                    + f"\n\n🧂 가진 양념 **{inv.get('spice', 0)}개** — 낚시 잡템 · 던전에서 얻어요", ui.INFO, user, SECTION)
+        k = view.ctx.get("recipe")
+        sel = discord.ui.Select(placeholder="① 만들 요리 고르기", row=0, options=[
+            discord.SelectOption(label=name, value=key, emoji=emoji, description=effect[:100], default=key == k)
+            for key, (emoji, name, _, _, effect) in RECIPES.items()])
+
+        async def pick(interaction: discord.Interaction):
+            view.ctx["recipe"] = sel.values[0]
+            await view.refresh(interaction)
+        sel.callback = pick
+        view.add_item(sel)
+        if k not in RECIPES:
+            return e
+        (grade, n), = RECIPES_311_NEEDS[k]
+        b = await self.db.bag(user.id, now, self._n(user))
+        pool = sorted((f for f in b["fish"] if not f["displayed"] and FISH[f["species"]][2] == grade), key=lambda f: f["price"])
+        if len(pool) < n:
+            e.description += f"\n\n🙅 {RECIPES[k][1]}에는 {GRADES[grade]} 물고기 **{n}마리**가 필요해요 (지금 {len(pool)}마리 · 전시 중 제외)."
+            return e
+        fsel = await self._bag_select(view, pool, f"② {RECIPES[k][1]}에 쓸 {GRADES[grade]} 물고기 {n}마리 고르기 (싼 것부터)",
+                                      1, self._cook_go, max_values=n)
+        if fsel:
+            fsel.min_values = fsel.max_values = n
+        return e
+
+    async def _cook_go(self, interaction, view: HubView, ids: list[int]):
+        user, k = view.user, view.ctx.get("recipe")
+        r = await self.db.cook(user.id, k, int(time.time()), ids=ids, new=True)
+        emoji, name, *_ = RECIPES[k]
+        if r["ok"] and not r["burnt"]:
+            note = ui.card(f"{emoji} {name} 완성!", f"{RECIPES[k][4]} — <t:{r['until']}:R> 까지\n재료: {', '.join(r['used'])}",
+                           ui.GOLD, user, SECTION)
+        elif r["ok"]:
+            note = ui.card(f"🔥 {name}을(를) 태워 버렸어요…", f"재료가 타서 사라졌어요: {', '.join(r['used'])}\n다시 도전해 보세요!",
+                           ui.LOSE, user, SECTION)
+        elif r["reason"] == "spice":
+            note = ui.card("🙅 양념이 모자라요", f"🧂 양념 {r['need']}개가 필요해요 (지금 {r['have']}개).", ui.LOSE, user, SECTION)
+        else:
+            note = ui.card("🙅 물고기를 다시 골라 주세요", f"{GRADES[r['grade']]} 물고기 **{r['need']}마리**를 골라 주세요.",
+                           ui.LOSE, user, SECTION)
+        await view.refresh(interaction, note)
 
     async def _p_aquarium(self, view: HubView) -> discord.Embed:
         user = view.user

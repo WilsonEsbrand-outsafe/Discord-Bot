@@ -96,7 +96,57 @@ def test_lawyer_anytime():
     asyncio.run(flow())
 
 
+def test_fishing_311():
+    import services.fishing as F
+    db = F.FishingDB()
+    U = 900
+
+    class Rng(random.Random):
+        def __init__(self, x):
+            super().__init__(1)
+            self.x = x
+
+        def random(self):
+            return self.x
+
+    async def flow():
+        def put(con, species, n):
+            return [con.execute("INSERT INTO fish_bag(user_id, species, size, caught_ts) VALUES(?,?,?,?)",
+                                (U, species, 20.0, 1_000)).lastrowid for _ in range(n)]
+        ids = await db._tx(lambda con: put(con, "crucian", 5) + put(con, "jacopever", 1))
+        # 예전: 흔함 2마리 자동 · 3.1.1: 4마리를 직접 골라야
+        assert (await db.cook(U, "grill", 2_000, ids=ids[:2], new=True))["reason"] == "pick"
+        assert (await db.cook(U, "grill", 2_000, ids=ids[:3] + [ids[5]], new=True))["reason"] == "pick"   # 등급이 다른 물고기
+        r = await db.cook(U, "grill", 2_000, ids=ids[:4], new=True, rng=Rng(0.99))   # 실패 → 재료만 사라진다
+        assert r["ok"] and r["burnt"] and len(r["used"]) == 4 and "grill" not in await db.buffs(U, 2_000)
+        ids2 = await db._tx(lambda con: put(con, "crucian", 4))
+        r = await db.cook(U, "grill", 2_000, ids=ids2, new=True, rng=Rng(0.0))
+        assert r["ok"] and not r["burnt"] and "grill" in await db.buffs(U, 2_000)
+        left = await db.bag(U, 2_000)
+        assert sorted(f["id"] for f in left["fish"]) == [ids[4], ids[5]]
+        # 화면: ① 요리 → ② 물고기 4마리 고르기 (정확히 4마리)
+        import cogs.fishing as cf
+        import services.club_db as cdb
+        from types import SimpleNamespace
+        cdb.DB_PATH = edb.DB_PATH
+        cog = cf.Fishing.__new__(cf.Fishing)
+        cog.db, cog.clubs, cog._tasks = db, cdb.ClubDB(), {}
+        user = SimpleNamespace(id=U, display_name="요리사", display_avatar=SimpleNamespace(url="https://x/a.png"),
+                               guild=SimpleNamespace(id=T))
+        await db._tx(lambda con: put(con, "crucian", 4))
+        view = cog.menu_view(user, [p.title for p in cog.menu_view(user).pages].index("요리"))
+        e = await view.build()
+        assert "성공" in e.description and len([c for c in view.children if isinstance(c, cf.discord.ui.Select)]) == 1
+        view.ctx["recipe"] = "grill"
+        await view.build()
+        sel = [c for c in view.children if isinstance(c, cf.discord.ui.Select)]
+        assert len(sel) == 2 and sel[1].min_values == sel[1].max_values == 4
+    asyncio.run(flow())
+    assert F.ROD_RARE_311["rod_legend"] > F.ROD_RARE_311["rod_pro"] > F.ROD_RARE_311["rod_carbon"] > 0
+
+
 if __name__ == "__main__":
+    test_fishing_311()
     test_lawyer_anytime()
     test_spam()
     test_archery_items()
