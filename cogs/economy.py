@@ -132,8 +132,8 @@ class BagView(discord.ui.View):
             if key == "lawyer":      # 3.1.0: 누구에게 선임할지 고른다 (나 · 다른 유저)
                 return await interaction.response.send_message(
                     embed=ui.card("⚖️ 누구에게 변호사를 선임할까요?",
-                                  ("나 또는 다른 유저를 고르세요. 그 사람이 `/파산신청`에서 탕감 **100%**가 아니면\n"
-                                   "변호사가 다시 변론해 더 나은 쪽으로 바꿔 줘요. (한 번 쓰면 사라져요)"
+                                  ("나 또는 다른 유저를 고르세요. 그 사람이 빚이 있을 때 `/파산신청`을\n"
+                                   "한 시간 기다리지 않고 **한 번 더** 할 수 있어요. (한 번 쓰면 사라져요)"
                                    if release.preview_311(_gid(self.user)) else
                                    "나 또는 다른 유저를 고르세요. 그 사람이 `/파산신청`에서 탕감 **0%**가 나오면\n"
                                    "변호사가 다시 변론해 **30~70% · 100%** 중 하나로 바꿔 줘요. (한 번 쓰면 사라져요)"),
@@ -234,7 +234,7 @@ class LawyerView(discord.ui.View):
         who = "자기 자신" if target.id == self.user.id else f"{target.mention}님"
         await interaction.followup.send(embed=ui.card(
             "⚖️ 변호사 선임!", f"**{self.user.display_name}**님이 {who}에게 변호사를 붙였어요.\n"
-            + ("파산 탕감이 **100%**가 아니면 다시 변론해 줘요." if release.preview_311(_gid(self.user)) else
+            + ("빚이 있으면 기다리지 않고 파산 신청을 **한 번 더** 할 수 있어요." if release.preview_311(_gid(self.user)) else
                "파산 탕감 **0%**가 나오면 다시 변론해 줘요.")
             + f" (선임된 변호사 **{r['uses']}명**)", ui.GOLD, self.user, "🎒 아이템"))
 
@@ -279,15 +279,19 @@ class BankruptConfirm(discord.ui.View):
         self.stop()
         gid = getattr(interaction, "guild_id", None)
         r = await self.cog.db.declare_bankruptcy(self.user.id, int(time.time()), new=release.preview_310(gid),
-                                                  v311=release.preview_311(gid))   # 3.1.1 변호사는 100%가 아니면 언제든
+                                                  v311=release.preview_311(gid))   # 3.2.0 변호사 = 기다리지 않고 한 번 더
         if not r["ok"]:
             msg = ("이미 빚이 없어요." if r["reason"] == "not_negative"
-                   else f"파산은 한 시간에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>")
+                   else f"파산은 한 시간에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>"
+                   + ("\n⚖️ **변호사 선임권**이 있으면 `/가방`에서 나에게 선임하고 바로 한 번 더 신청할 수 있어요."
+                      if release.preview_311(gid) else ""))
             e = ui.card("❌ 파산 신청 불가", msg, ui.LOSE, self.user, "⚖️ 파산")
         else:
             e = ui.card("⚖️ 파산 처리 완료",
                         f"`빚` **{r['debt']:,}원**\n"
                         f"`스폰서 강제 해지` **+{r['sponsor']:,}원**\n"
+                        + (f"⚖️ 변호사 덕분에 기다리지 않고 **한 번 더** 신청했어요! (남은 변호사 {r['lawyers']}명)\n"
+                           if r.get("extra") else "")
                         + (f"⚖️ 변호사가 다시 변론했어요! 탕감 **{r.get('before', 0):.0%} → {r['rate']:.0%}**\n"
                            if r.get("lawyer") is True else "")
                         + f"`탕감` **{r['forgiven']:,}원** · 남은 빚의 **{r['rate']:.0%}**"
@@ -539,7 +543,7 @@ class Economy(commands.Cog):
             forgive = f"**0%** ({p0:.0%} 확률) · **{lo:.0%} ~ {hi:.0%}** ({pm:.0%}) · **100%** ({p1:.0%}) 중 하나로 탕감돼요"
             if n := await self.db.lawyers(user.id):
                 forgive += (f"\n　⚖️ 선임된 변호사 **{n}명** — "
-                            + ("100%가 아니면 다시 변론해 더 나은 쪽으로 바꿔 줘요" if release.preview_311(getattr(interaction, "guild_id", None))
+                            + ("한 시간이 안 지났어도 한 번 더 신청할 수 있어요" if release.preview_311(getattr(interaction, "guild_id", None))
                                else "0%가 나오면 다시 변론해 줘요"))
         else:
             forgive = f"**{lo:.0%} ~ {hi:.0%}** 가 랜덤으로 탕감돼요"
@@ -548,7 +552,8 @@ class Economy(commands.Cog):
                     "1️⃣ 진행 중인 스폰서 계약을 **모두 강제 해지**하고 원금으로 빚을 갚아요\n"
                     f"2️⃣ 그래도 남은 빚은 {forgive}\n"
                     "3️⃣ 보유 선수 카드는 **그대로** 남아요\n"
-                    "4️⃣ 파산은 **한 시간에 한 번** 할 수 있어요",
+                    "4️⃣ 파산은 **한 시간에 한 번** 할 수 있어요"
+                    + (" · ⚖️ 선임된 변호사가 있으면 기다리지 않고 한 번 더" if release.preview_311(getattr(interaction, "guild_id", None)) else ""),
                     ui.DOOM, user, "⚖️ 파산")
         await interaction.response.send_message(embed=e, view=BankruptConfirm(self, user))
 
