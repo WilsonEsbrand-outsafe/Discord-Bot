@@ -88,7 +88,7 @@ async def _club_flow():
     team = await clubs.get_team(U1)
     assert team["filled"] == 0 and team["captain"] is None
     e = _team_embed(team, owner)
-    assert "주장` 없음" in e.description and "/자동편성" in e.description
+    assert "주장` 없음" in e.description and "[자동편성]" in e.description
     assert (await clubs.set_formation(U1, "4-3-3"))[0]                          # 빈 명단 포메이션 변경
     _team_embed(await clubs.get_team(U1), owner)
     assert (await clubs.set_formation(U1, "4-4-2"))[0]

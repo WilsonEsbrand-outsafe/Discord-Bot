@@ -1,5 +1,6 @@
 # cogs/club.py
 # 구단: 생성·삭제·이름 / 포메이션·선발·자동편성·주장 / 구단 보기 / 친선경기
+# 3.1.1: /포메이션 · /선발 · /자동편성 · /주장 · /감독 · /의료진 은 /구단 화면으로 (release.LEGACY_311 — 공개 전까지 다른 서버에만)
 import asyncio
 import random
 import time
@@ -61,7 +62,7 @@ def _team_embed(team: dict, owner: discord.abc.User) -> discord.Embed:
         body.append(f"**{label}**\n" + " · ".join(row))
     desc = head + "\n\n" + "\n".join(body)
     if team["filled"] == 0:
-        desc += "\n\n선발 명단이 비어 있습니다. `/자동편성`으로 바로 채울 수 있어요."
+        desc += "\n\n선발 명단이 비어 있습니다. `/구단` [자동편성]으로 바로 채울 수 있어요."
     if any(s.get("injured") for s in team["lineup"]):
         desc += "\n\n🚑 부상 중인 유망주는 복귀할 때까지 빈자리로 계산돼요. (자리는 그대로 지켜요)"
     e = ui.card(f"{team.get('emblem') or '🏟️'} {team['name']}", desc, ui.INFO, owner, "🏟️ 구단")
@@ -179,7 +180,7 @@ class Club(commands.Cog):
             new_bal = await self.money.add_balance(user.id, self.BONUS)
             lines.append(f"\n`보너스` **+{self.BONUS:,}원** · `잔액` **{new_bal:,}원**")
         e = ui.card("🏟️ 구단 창단", "\n".join(lines), ui.WIN, user, "🏟️ 구단")
-        e.set_footer(text="/구단 으로 스쿼드를 보고 /선발 · /포메이션 · /주장 으로 꾸며 보세요")
+        e.set_footer(text="/구단 에서 스쿼드를 보고 편성을 바꿔 보세요")
         await interaction.followup.send(embed=e)
 
     # 2.10.1: /구단 → 🎨 꾸미기 · 설정으로 옮김 — 공개 전까지 다른 서버에만 남는다 (release.LEGACY_2101)
@@ -317,13 +318,14 @@ class Club(commands.Cog):
     @staticmethod
     def _not_ready_msg(team: dict, who: str) -> str:
         if not team["filled"]:
-            return f"{who} 선발 명단이 비어 있습니다. `/자동편성`을 먼저 해 주세요."
+            return f"{who} 선발 명단이 비어 있습니다. `/구단`에서 [자동편성]을 먼저 해 주세요."
         return (f"{who} 선발이 **{team['filled']}/11명**이에요. 11명이 꽉 차야 경기할 수 있어요.\n"
-                "`/자동편성`으로 채워 주세요.")
+                "`/구단`에서 [자동편성]으로 채워 주세요.")
 
     async def _load_sides(self, interaction, user, home_id: int, away_id: int, away_label: str, section: str):
         """두 구단을 불러오고 문제가 있으면 안내 후 None."""
-        home, away = await self.clubs.match_team(home_id), await self.clubs.match_team(away_id)
+        fill = release.preview_311(interaction.guild_id)   # 3.1.1: 빈자리는 벤치 선수로 자동으로 채운다
+        home, away = await self.clubs.match_team(home_id, fill), await self.clubs.match_team(away_id, fill)
         if not home or not away:
             who = "내" if not home else f"{away_label}의"
             await interaction.followup.send(embed=ui.card("❌ 경기 불가", f"{who} 구단이 없습니다.", ui.LOSE, user, section))
@@ -548,7 +550,7 @@ class Club(commands.Cog):
                 return
             (me, opp), opp_id = sides, opp_user.id
         else:
-            me = await self.clubs.match_team(user.id)
+            me = await self.clubs.match_team(user.id, release.preview_311(interaction.guild_id))
             if not me or not self._ready(me):
                 return await interaction.followup.send(embed=ui.card(
                     "❌ 경기 불가", _NO_CLUB if not me else self._not_ready_msg(me, "내"), ui.LOSE, user, sec))

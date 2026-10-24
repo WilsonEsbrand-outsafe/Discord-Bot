@@ -155,7 +155,12 @@ def test_release():
     new310 = set() if release.released_310(before) else release.PREVIEW_310   # 3.1.0 새 명령어는 공개 전까지 다른 서버에서 빠진다
     assert release.hidden_commands(other, before) == release.PREVIEW_ONLY | new310
     assert release.hidden_commands(other, after) - release.PREVIEW_310 == release.LEGACY_ONLY
-    assert release.hidden_commands(T, before) == release.LEGACY_ONLY | release.LEGACY_2101   # 2.10.1 없어지는 명령어는 테스트 서버부터
+    assert release.hidden_commands(T, before) == release.LEGACY_ONLY | release.LEGACY_2101 | release.LEGACY_311   # 없어지는 명령어는 테스트 서버부터
+    # 3.1.1: /구단 으로 합친 명령어는 테스트 서버에서 먼저 빠지고, RELEASE_311_TS 전까지 다른 서버엔 남는다
+    if release.RELEASE_311_TS is None:
+        assert release.LEGACY_311 <= release.hidden_commands(T) and not release.LEGACY_311 & release.hidden_commands(other)
+    else:
+        assert release.LEGACY_311 <= release.hidden_commands(other, release.RELEASE_311_TS)
     # 2.10.1: 공개 전엔 다른 서버에 예전 명령어가 남고, RELEASE_2101_TS 뒤엔 모든 서버에서 빠진다
     if release.RELEASE_2101_TS is None:
         assert release.preview_2101(T) and not release.preview_2101(other)

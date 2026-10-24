@@ -68,21 +68,28 @@ def team_rating(lineup: list[dict], captain: Optional[str]) -> dict:
             "captain_bonus": captain_bonus, "chem": chem}
 
 
-def auto_assign(players: list[dict], formation: str) -> list[Optional[str]]:
+def auto_assign(players: list[dict], formation: str, fixed: tuple = (),
+                current: Optional[list[Optional[str]]] = None) -> list[Optional[str]]:
     """가진 선수로 가장 강한 11명 배치. players: [{player_id, pos, ovr}]. 슬롯별 player_id 목록을 돌려준다.
-    모든 (자리, 선수) 조합을 유효 능력치 높은 순으로 채운다. 같으면 제 포지션 선수가 먼저다."""
+    모든 (자리, 선수) 조합을 유효 능력치 높은 순으로 채운다. 같으면 제 포지션 선수가 먼저다.
+    fixed(3.1.1): 먼저 앉힐 선수 (유망주 고정). current: 이미 앉은 자리는 두고 빈자리만 채운다."""
     slots = FORMATIONS[formation]
-    pairs = sorted(
-        ((effective_ovr(p["ovr"], p["pos"], s), p["pos"] == SLOT_GROUP[s], p["ovr"], i, p["player_id"])
-         for i, s in enumerate(slots) for p in players),
-        reverse=True,
-    )
-    out: list[Optional[str]] = [None] * len(slots)
-    used = set()
-    for _eff, _natural, _ovr, i, pid in pairs:
-        if out[i] is None and pid not in used:
-            out[i] = pid
-            used.add(pid)
+    out: list[Optional[str]] = list(current) if current else [None] * len(slots)
+    used = {pid for pid in out if pid}
+
+    def place(pool):
+        pairs = sorted(
+            ((effective_ovr(p["ovr"], p["pos"], s), p["pos"] == SLOT_GROUP[s], p["ovr"], i, p["player_id"])
+             for i, s in enumerate(slots) for p in pool),
+            reverse=True,
+        )
+        for _eff, _natural, _ovr, i, pid in pairs:
+            if out[i] is None and pid not in used:
+                out[i] = pid
+                used.add(pid)
+
+    place([p for p in players if p["player_id"] in fixed])
+    place(players)
     return out
 
 
@@ -768,9 +775,11 @@ class ClubDB:
             return club
         return await self._tx(fn)
 
-    async def match_team(self, user_id: int) -> Optional[dict]:
+    async def match_team(self, user_id: int, auto_fill: bool = False) -> Optional[dict]:
         """경기에 나갈 팀: 스쿼드 B(명문 구단)를 골랐고 아직 주인이면 그 구단, 아니면 내 구단(스쿼드 A).
-        부상 유망주 자리는 벤치 최고 선수가 대신 뛴다."""
+        부상 유망주 자리는 벤치 최고 선수가 대신 뛴다. auto_fill(3.1.1): 빈자리를 먼저 벤치 선수로 채운다."""
+        if auto_fill:
+            await self.fill_empty(user_id)
         team = await self.get_team(user_id, fill_injured=True)
         if team and team["squad_b"] and team["elite"]:
             b = elite_team(team["elite"])
@@ -969,7 +978,8 @@ class ClubDB:
             return True, f"**{slots[slot_index]}** 자리에 **{p['name']}** 배치{note}"
         return await self._tx(fn)
 
-    async def auto_lineup(self, user_id: int) -> tuple[bool, str]:
+    async def auto_lineup(self, user_id: int, keep_prospect: bool = False) -> tuple[bool, str]:
+        """가장 강한 11명. keep_prospect(3.1.1): 현역 유망주는 OVR 이 낮아도 언제나 선발에 넣는다."""
         def fn(con):
             club = con.execute("SELECT formation FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
             if not club:
@@ -978,11 +988,40 @@ class ClubDB:
             squad = self._squad(con, user_id)
             if not squad:
                 return False, "뛸 수 있는 선수가 없습니다."
-            placed = auto_assign(list(squad.values()), formation)
+            fixed = tuple(pid for pid, p in squad.items() if p.get("prospect")) if keep_prospect else ()
+            placed = auto_assign(list(squad.values()), formation, fixed)
             con.execute("DELETE FROM club_lineup WHERE user_id=?", (int(user_id),))
             con.executemany("INSERT INTO club_lineup(user_id, slot, player_id) VALUES(?, ?, ?)",
                             [(int(user_id), i, pid) for i, pid in enumerate(placed) if pid])
-            return True, "가장 강한 11명으로 자동 편성했습니다."
+            return True, "가장 강한 11명으로 자동 편성했습니다." + (" (🌟 유망주 고정)" if fixed else "")
+        return await self._tx(fn)
+
+    async def clear_lineup(self, user_id: int) -> int:
+        """3.1.1 선발 11명을 한 번에 다 뺀다 (주장도). 뺀 인원을 돌려준다."""
+        def fn(con):
+            n = con.execute("DELETE FROM club_lineup WHERE user_id=?", (int(user_id),)).rowcount
+            con.execute("UPDATE clubs SET captain=NULL WHERE user_id=?", (int(user_id),))
+            return n
+        return await self._tx(fn)
+
+    async def fill_empty(self, user_id: int) -> int:
+        """3.1.1 선발에 빈자리가 있고 벤치에 선수가 있으면 빈자리만 가장 잘 맞는 선수로 채운다. 채운 인원을 돌려준다.
+        부상 유망주 자리는 비워 두지 않고 지킨다 (경기 때만 벤치 선수가 대신 뛴다)."""
+        def fn(con):
+            club = con.execute("SELECT formation FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
+            if not club:
+                return 0
+            formation = club[0] if club[0] in FORMATIONS else DEFAULT_FORMATION
+            squad = self._squad(con, user_id)
+            p = self._active_prospect(con, user_id, int(time.time()))
+            lineup = self._lineup(con, user_id, formation, squad, p if p and p["injured"] else None)
+            current = [s.get("player_id") or s.get("injured_id") for s in lineup]
+            if all(current):
+                return 0
+            placed = auto_assign(list(squad.values()), formation, current=current)
+            new = [(int(user_id), i, pid) for i, pid in enumerate(placed) if pid and not current[i]]
+            con.executemany("INSERT INTO club_lineup(user_id, slot, player_id) VALUES(?, ?, ?)", new)
+            return len(new)
         return await self._tx(fn)
 
     async def set_captain(self, user_id: int, player_id: str) -> tuple[bool, str]:

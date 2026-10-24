@@ -204,8 +204,11 @@ class Hubs(commands.Cog):
 
     # ───────────── /구단 허브 (2.8 서버 · 내 구단) ─────────────
     def club_view(self, user, page: int = 0, guild_id: int | None = None) -> HubView:
-        pages = [Page("🏟️", "구단", self._p_club, "선발 명단 · 전력 · 전적"),
-                 Page("🌟", "유망주", self._p_prospect, "나만의 선수"),
+        g311 = release.preview_311(guild_id)   # 3.1.1: /포메이션 · /선발 · /주장 · /감독 · /의료진 · /시설 을 이 화면으로
+        pages = [Page("🏟️", "구단", self._p_club, "선발 명단 · 전력 · 전적")]
+        if g311:
+            pages.append(Page("📋", "편성", self._p_lineup, "포메이션 · 선발 · 주장"))
+        pages += [Page("🌟", "유망주", self._p_prospect, "나만의 선수"),
                  Page("🏗️", "시설", self._p_facility, "경기장 · 훈련장 · 유스 · 메디컬"),
                  Page("👔", "감독 · 의료진", self._p_staff, "전력 보너스 · 부상 치료"),
                  Page("⚔️", "전술", self._p_tactics, "기본 전술 · 적응도 · 하프타임 규칙"),
@@ -214,7 +217,7 @@ class Hubs(commands.Cog):
                  Page("💼", "경영", self._p_mgmt, "관중 수입 · 팬 만족도 · 티켓 가격")]
         if release.preview_2101(guild_id):   # 2.10.1 (테스트 서버 먼저)
             pages.append(Page("🎨", "꾸미기 · 설정", self._p_decor, "구단명 · 엠블럼 · 경기장 이름 · 구단 삭제"))
-        return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page)
+        return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page, ctx={"g311": g311})
 
     # ───────────── 🎨 꾸미기 · 설정 (2.10.1: /구단명변경 · /구단꾸미기 · /구단삭제 를 여기로) ─────────────
     async def _p_decor(self, view: HubView) -> discord.Embed:
@@ -504,7 +507,7 @@ class Hubs(commands.Cog):
                                    ui.GOLD, user, "🎓 유스") if r["ok"] else ui.card("🙅 판매", "선수를 찾지 못했어요.", ui.LOSE, user, "🎓 유스")
                 else:
                     r = await self.youth.register(user.id, yid, now)
-                    note = ui.card(f"📝 {r['name']} 1군 등록!", f"OVR **{r['ovr']}**로 내 구단 명단에 들어왔어요. `/선발`로 넣어 보세요.\n"
+                    note = ui.card(f"📝 {r['name']} 1군 등록!", f"OVR **{r['ovr']}**로 내 구단 명단에 들어왔어요. 선발에 넣어 보세요.\n"
                                    f"(내 구단 전용 · 팔거나 넘길 수 없어요 · 7일 = 1살 · 35세 은퇴)", ui.GOLD, user, "🎓 유스") \
                         if r["ok"] else ui.card("🙅 1군 등록", {
                             "cap": f"OVR이 상한 {r.get('cap')}을 넘어요. 유스 아카데미를 올리면 상한이 올라가요.",
@@ -560,17 +563,115 @@ class Hubs(commands.Cog):
 
     async def _p_club(self, view: HubView) -> discord.Embed:
         from cogs.club import _team_embed
+        g311 = view.ctx.get("g311")
         team = await self.clubs.get_team(view.user.id)
         e = _team_embed(team, view.user)
         b = discord.ui.Button(label="자동편성", emoji="🔁", style=discord.ButtonStyle.primary, row=0)
 
         async def auto(interaction: discord.Interaction):
-            ok, msg = await self.clubs.auto_lineup(view.user.id)
+            ok, msg = await self.clubs.auto_lineup(view.user.id, keep_prospect=g311)
             await view.refresh(interaction, ui.card("🔁 자동편성" if ok else "❌ 자동편성", msg,
                                                     ui.WIN if ok else ui.LOSE, view.user, "🏟️ 구단"))
         b.callback = auto
         view.add_item(b)
-        e.set_footer(text="/포메이션 · /선발 · /주장 으로 직접 바꿀 수 있어요")
+        if not g311:
+            e.set_footer(text="/포메이션 · /선발 · /주장 으로 직접 바꿀 수 있어요")
+            return e
+        sure = view.ctx.get("confirm") == ("clear", 0)
+        c = discord.ui.Button(label="정말 다 빼기" if sure else "선발 전부 빼기", emoji="🧹", row=0,
+                              style=discord.ButtonStyle.danger if sure else discord.ButtonStyle.secondary,
+                              disabled=not team["filled"] and not any(s.get("injured") for s in team["lineup"]))
+
+        async def clear(interaction: discord.Interaction):
+            if not sure:   # 한 번 더 눌러야 실행
+                view.ctx["confirm"] = ("clear", 0)
+                return await view.refresh(interaction)
+            view.ctx.pop("confirm", None)
+            n = await self.clubs.clear_lineup(view.user.id)
+            await view.refresh(interaction, ui.card("🧹 선발 전부 빼기", f"선발 **{n}명**을 모두 뺐어요. (주장도 해제)\n"
+                                                    "📋 편성 화면에서 다시 넣거나 [자동편성]을 눌러 주세요.",
+                                                    ui.EVEN, view.user, "🏟️ 구단"))
+        c.callback = clear
+        view.add_item(c)
+        e.set_footer(text="자동편성은 🌟 유망주를 언제나 선발에 넣어요 · 빈자리는 경기 전에 벤치 선수로 자동으로 채워요 · "
+                          "▶ 📋 편성에서 포메이션 · 선발 · 주장")
+        return e
+
+    # ───────────── 📋 편성 (3.1.1: /포메이션 · /선발 · /주장 을 여기로) ─────────────
+    async def _p_lineup(self, view: HubView) -> discord.Embed:
+        from cogs.club import _slot_text
+        from services.club_db import FORMATIONS, effective_ovr
+        user = view.user
+        team = await self.clubs.get_team(user.id)
+        lineup = team["lineup"]
+        idx = view.ctx.get("slot")
+        if idx is None or idx >= len(lineup):
+            idx = view.ctx["slot"] = next((s["index"] for s in lineup if not s.get("player_id")), 0)
+        cur = lineup[idx]
+        lines = [("▶ " if s["index"] == idx else "") + _slot_text(s, team["captain"]) for s in lineup]
+        e = ui.card("📋 편성", f"`포메이션` **{team['formation']}** · `전력` **{team['rating']}** · `선발` {team['filled']}/11명\n\n"
+                    + "\n".join(lines), ui.INFO, user, "🏟️ 구단")
+        e.set_footer(text="① 포메이션 ② 바꿀 자리 ③ 넣을 선수 ④ 주장 순서로 골라요 · 같은 선수를 다른 자리에 넣으면 그 자리로 옮겨요")
+        # 0줄: 포메이션
+        form = discord.ui.Select(placeholder=f"① 포메이션 — 지금 {team['formation']}", row=0, options=[
+            discord.SelectOption(label=f, value=f, default=f == team["formation"]) for f in list(FORMATIONS)[:25]])
+
+        async def set_form(interaction: discord.Interaction):
+            ok, msg = await self.clubs.set_formation(user.id, form.values[0])
+            await view.refresh(interaction, ui.card("📋 포메이션" if ok else "❌ 포메이션", msg,
+                                                    ui.WIN if ok else ui.LOSE, user, "🏟️ 구단"))
+        form.callback = set_form
+        view.add_item(form)
+        # 1줄: 자리
+        slot = discord.ui.Select(placeholder="② 바꿀 자리", row=1, options=[
+            discord.SelectOption(label=f"{s['index'] + 1}번 {s['slot']} — "
+                                       f"{s['name'] + ' (' + str(s['ovr']) + ')' if s.get('player_id') else '비어 있음'}"[:100],
+                                 value=str(s["index"]), default=s["index"] == idx) for s in lineup])
+
+        async def pick_slot(interaction: discord.Interaction):
+            view.ctx["slot"] = int(slot.values[0])
+            await view.refresh(interaction)
+        slot.callback = pick_slot
+        view.add_item(slot)
+        # 2줄: 넣을 선수 (고른 자리에 잘 맞는 순)
+        where = {s.get("player_id"): s["slot"] for s in lineup if s.get("player_id")}
+        squad = sorted(await self.clubs.squad(user.id),
+                       key=lambda p: (-effective_ovr(p["ovr"], p["pos"], cur["slot"]), -p["ovr"]))
+        opts = [discord.SelectOption(label=f"{cur['slot']} 자리 비우기", value="-", emoji="➖")] if cur.get("player_id") else []
+        for p in squad:
+            if p["player_id"] == cur.get("player_id"):
+                continue
+            eff = effective_ovr(p["ovr"], p["pos"], cur["slot"])
+            star = "🌟 " if p.get("prospect") else "🎓 " if p.get("youth") else ""
+            opts.append(discord.SelectOption(
+                label=f"{star}{p['name']} · {p['pos']} · OVR {p['ovr']}" + (f" → {eff}" if eff != p["ovr"] else ""),
+                value=p["player_id"], description=f"지금 선발 {where[p['player_id']]}" if p["player_id"] in where else None))
+            if len(opts) >= 25:
+                break
+        if opts:
+            put = discord.ui.Select(placeholder=f"③ {idx + 1}번 {cur['slot']} 자리에 넣을 선수", row=2, options=opts)
+
+            async def put_player(interaction: discord.Interaction):
+                v = put.values[0]
+                ok, msg = await self.clubs.set_slot(user.id, idx, None if v == "-" else v)
+                await view.refresh(interaction, ui.card("📋 선발 변경" if ok else "❌ 선발", msg,
+                                                        ui.WIN if ok else ui.LOSE, user, "🏟️ 구단"))
+            put.callback = put_player
+            view.add_item(put)
+        # 3줄: 주장
+        xi = [s for s in lineup if s.get("player_id")]
+        if xi:
+            cap = discord.ui.Select(placeholder="④ 주장 (전력 +1)", row=3, options=[
+                discord.SelectOption(label=f"{s['slot']} {s['name']} ({s['ovr']})"[:100], value=s["player_id"],
+                                     emoji="©️" if s["player_id"] == team["captain"] else None,
+                                     default=s["player_id"] == team["captain"]) for s in xi])
+
+            async def set_cap(interaction: discord.Interaction):
+                ok, msg = await self.clubs.set_captain(user.id, cap.values[0])
+                await view.refresh(interaction, ui.card("©️ 주장 임명" if ok else "❌ 주장", msg,
+                                                        ui.WIN if ok else ui.LOSE, user, "🏟️ 구단"))
+            cap.callback = set_cap
+            view.add_item(cap)
         return e
 
     async def _p_prospect(self, view: HubView) -> discord.Embed:
@@ -590,8 +691,36 @@ class Hubs(commands.Cog):
             nxt = f"다음 **{_won(FACILITY_COSTS[lv[k]])}원** → {facility_effect(k, lv[k] + 1)}" if lv[k] < FACILITY_MAX else "최고 레벨"
             lines.append(f"{e_} **{n_}** Lv.{lv[k]}/{FACILITY_MAX} · {facility_effect(k, lv[k])}\n　{nxt}")
         e = ui.card("🏗️ 시설", "\n".join(lines), ui.INFO, view.user, "🏗️ 시설")
-        e.set_footer(text="/시설 업그레이드:<시설> 로 한 단계 올려요")
+        if not view.ctx.get("g311"):
+            e.set_footer(text="/시설 업그레이드:<시설> 로 한 단계 올려요")
+            return e
+        e.set_footer(text="버튼을 두 번 누르면 한 단계 올려요 · 시설은 구단을 지워도 남아요")
+        for k, (e_, n_, _, _) in FACILITIES.items():   # 3.1.1: /시설 을 여기로
+            sure = view.ctx.get("confirm") == ("facility", k)
+            top = lv[k] >= FACILITY_MAX
+            b = discord.ui.Button(label=f"{n_} 최고" if top else
+                                  (f"정말 올리기 {_won(FACILITY_COSTS[lv[k]])}원" if sure else f"{n_} Lv.{lv[k] + 1}"),
+                                  emoji=e_, row=0, disabled=top,
+                                  style=discord.ButtonStyle.danger if sure else discord.ButtonStyle.primary)
+            b.callback = self._facility_cb(view, k)
+            view.add_item(b)
         return e
+
+    def _facility_cb(self, view: HubView, key: str):
+        async def cb(interaction: discord.Interaction):
+            if view.ctx.get("confirm") != ("facility", key):   # 한 번 더 눌러야 실행 (비싸다)
+                view.ctx["confirm"] = ("facility", key)
+                return await view.refresh(interaction)
+            view.ctx.pop("confirm", None)
+            r = await self.clubs.upgrade_facility(view.user.id, key)
+            e_, n_ = FACILITIES[key][:2]
+            note = ui.card(f"🏗️ {e_} {n_} Lv.{r['level']} 완공!", f"`비용` **-{r['fee']:,}원** · `잔액` **{r['balance']:,}원**\n"
+                           f"`효과` {facility_effect(key, r['level'])}", ui.GOLD, view.user, "🏗️ 시설") if r["ok"] else ui.card(
+                "❌ 업그레이드 실패", {"no_club": "구단이 없어요.", "max": f"{e_} {n_}은(는) 이미 최고 레벨이에요.",
+                                   "balance": f"업그레이드 비용 **{r.get('fee', 0):,}원**이 필요해요."}[r["reason"]],
+                ui.LOSE, view.user, "🏗️ 시설")
+            await view.refresh(interaction, note)
+        return cb
 
     async def _p_staff(self, view: HubView) -> discord.Embed:
         team = await self.clubs.get_team(view.user.id)
@@ -603,8 +732,55 @@ class Hubs(commands.Cog):
         for k, (e_, n_, heal, fee, _) in MEDICS.items():
             lines.append(f"　{e_} {n_} · 치료 {heal}% · {_won(fee)}원")
         e = ui.card("👔 감독 · 의료진", "\n".join(lines), ui.INFO, view.user, "🏟️ 구단")
-        e.set_footer(text="/감독 · /의료진 으로 영입해요")
+        if not view.ctx.get("g311"):
+            e.set_footer(text="/감독 · /의료진 으로 영입해요")
+            return e
+        e.set_footer(text="고른 뒤 [영입]을 누르면 영입비를 내요 · 영입비는 한 번만 · 바꾸면 새 영입비 · 부상은 유망주만 당해요")
+        pick = view.ctx.get("hire")   # 3.1.1: /감독 · /의료진 을 여기로 — (col, key)
+        for row, col, table, label in ((0, "manager", MANAGERS, "👔 감독 고르기"), (1, "medic", MEDICS, "🩺 의료진 고르기")):
+            cur = team.get(col)
+            sel = discord.ui.Select(placeholder=label, row=row, options=[
+                discord.SelectOption(label=f"{v[1]} · {_won(v[5] if col == 'manager' else v[3])}원"
+                                           + (" (지금)" if k == cur else ""), value=k, emoji=v[0],
+                                     default=pick == (col, k)) for k, v in table.items()])
+            sel.callback = self._hire_pick(view, col, sel)
+            view.add_item(sel)
+        if pick:
+            col, k = pick
+            v = (MANAGERS if col == "manager" else MEDICS)[k]
+            b = discord.ui.Button(label=f"{v[1]} 영입 ({_won(v[5] if col == 'manager' else v[3])}원)", emoji="🤝",
+                                  style=discord.ButtonStyle.success, row=2, disabled=team.get(col) == k)
+            b.callback = self._hire_go(view)
+            view.add_item(b)
         return e
+
+    def _hire_pick(self, view: HubView, col: str, sel):
+        async def cb(interaction: discord.Interaction):
+            view.ctx["hire"] = (col, sel.values[0])
+            await view.refresh(interaction)
+        return cb
+
+    def _hire_go(self, view: HubView):
+        async def cb(interaction: discord.Interaction):
+            col, k = view.ctx.pop("hire")
+            user = view.user
+            if col == "manager":
+                r = await self.clubs.hire_manager(user.id, k)
+                e_, n_, fav, base, extra, fee, desc = MANAGERS[k]
+                eff = f"전력 +{base}" + (f" · **{fav}** 포메이션이면 +{extra} 추가" if fav else "")
+                title = f"🤝 {e_} {n_} 감독 부임!"
+            else:
+                r = await self.clubs.hire_medic(user.id, k)
+                e_, n_, heal, fee, desc = MEDICS[k]
+                eff = f"유망주 부상 결장 기간 **-{heal}%**"
+                title = f"🤝 {e_} {n_} 합류!"
+            note = ui.card(title, f"> 💬 *\"{desc}\"*\n\n`영입비` **-{fee:,}원** · `잔액` **{r['balance']:,}원**\n`효과` {eff}",
+                           ui.WIN, user, "🏟️ 구단") if r["ok"] else ui.card(
+                "❌ 영입 실패", {"no_club": "구단이 없어요.", "same": f"이미 {e_} {n_}와(과) 함께하고 있어요.",
+                               "balance": f"영입비 **{fee:,}원**이 필요해요. (잔액 {r.get('balance', 0):,}원)"}[r["reason"]],
+                ui.LOSE, user, "🏟️ 구단")
+            await view.refresh(interaction, note)
+        return cb
 
     # ───────────── /시장 허브 (2.8 서버) ─────────────
     def market_view(self, user, page: int = 0) -> HubView:
