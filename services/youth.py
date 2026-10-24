@@ -45,6 +45,61 @@ _SCOUT = {   # 등급 → 스카우터 한마디 (가끔은 빗나간다)
     "S": ("이런 애는 처음 봅니다.", "놓치면 평생 후회할 거예요!", "괴물이 나타났어요."),
 }
 POS = ("GK", "DF", "DF", "MF", "MF", "MF", "FW", "FW")
+# 3.1.1 유스 스카우터 (/구단 → 👔 감독 · 의료진 · 스카우터, 감독처럼 영입비 한 번): key → (이모지, 이름, 정확도, 영입비)
+# 정확도 = 스카우터가 매기는 잠재력 별이 맞을 확률 (틀리면 ½ · 1 · 1½개 빗나간다). 없으면 NO_SCOUT_ACC.
+SCOUTERS = {
+    "local": ("🧢", "동네 스카우터", 0.55, 3_000_000),
+    "pro": ("🔭", "프로 스카우터", 0.75, 15_000_000),
+    "chief": ("🕵️", "수석 스카우터", 0.90, 50_000_000),
+}
+NO_SCOUT_ACC = 0.30
+# 별(FM 식): 내 구단 전력 + STAR_CENTER 면 ★3, STAR_STEP 만큼 높을 때마다 ★1 더 (½ 단위 · ★½ ~ ★5)
+# — 약한 구단엔 웬만한 유스가 별이 많고, 강한 구단일수록 별이 짜다
+STAR_CENTER, STAR_STEP = 8, 5
+STAR_MISS = ((0.5, 6), (1.0, 3), (1.5, 1))   # 빗나갈 때 (차이, 비중)
+
+
+def scout_acc(scouter) -> float:
+    return SCOUTERS[scouter][2] if scouter in SCOUTERS else NO_SCOUT_ACC
+
+
+def stars(value: float, club: float) -> float:
+    return max(0.5, min(5.0, round((3 + (value - club - STAR_CENTER) / STAR_STEP) * 2) / 2))
+
+
+def cur_stars(ovr: float, club: float) -> float:
+    """지금 실력 별 — 내 구단 전력과 같으면 ★3."""
+    return stars(ovr + STAR_CENTER, club)
+
+
+def scout_stars(true: float, seed: int, acc: float) -> float:
+    """스카우터 눈으로 본 별 — 같은 선수 · 같은 스카우터면 늘 같은 값 (seed)."""
+    rng = random.Random(seed)
+    if rng.random() < acc:
+        return true
+    miss = rng.choices([d for d, _ in STAR_MISS], weights=[w for _, w in STAR_MISS])[0]
+    return max(0.5, min(5.0, true + miss * rng.choice((-1, 1))))
+
+
+def star_text(n: float) -> str:
+    full = int(n)
+    return "★" * full + ("½" if n - full else "") + "☆" * (5 - full - (1 if n - full else 0))
+
+
+def pot_stars(y: dict, club: float, scouter) -> tuple[float, bool]:
+    """유스 선수 잠재력 별 (추정, 정확한가). 훈련을 많이 할수록 스카우터 말이 정확해지고, REVEAL[2]번이면 진짜 별."""
+    true = stars(y["pot"], club)
+    if y["trains"] >= REVEAL[2]:
+        return true, True
+    acc = scout_acc(scouter)
+    if y["trains"] >= REVEAL[1]:
+        acc += (1 - acc) / 2
+    return scout_stars(true, zlib.crc32(f"youth-star:{y['id']}:{scouter}".encode()), acc), False
+
+
+def applicant_stars(a: dict, club: float, scouter) -> float:
+    seed = a.get("seed") or zlib.crc32(f"{a['name']}:{a['nick']}:{a['ovr']}".encode())
+    return scout_stars(stars(a["pot"], club), zlib.crc32(f"app-star:{seed}:{scouter}".encode()), scout_acc(scouter))
 
 
 def grade_odds(level: int) -> list[float]:
@@ -57,14 +112,15 @@ def grade_of(pot: int) -> str:
     return next(g for g, lo, hi in GRADES if lo <= pot <= hi) if pot >= 60 else "C"
 
 
-def make_applicant(level: int, rng) -> dict:
+def make_applicant(level: int, rng, acc: float = 0.7) -> dict:
+    """acc = 스카우터 한마디가 맞을 확률 (3.1.1: 고용한 스카우터 정확도 · 예전엔 70%)."""
     gi = rng.choices(range(4), weights=grade_odds(level))[0]
     g, lo, hi = GRADES[gi]
     pot = rng.randint(lo, hi)
-    shown = g if rng.random() < 0.7 else rng.choice([x[0] for x in GRADES])   # 스카우터 말은 70% 만 맞다
+    shown = g if rng.random() < acc else rng.choice([x[0] for x in GRADES])
     return {"name": rng.choice(_SUR) + rng.choice(_GIVEN), "nick": rng.choice(_NICKS), "pos": rng.choice(POS),
             "age": rng.choice((15, 16)), "ovr": rng.randint(42, 55), "pot": pot, "grade": g,
-            "personality": rng.choice(list(PERSONALITIES)), "scout": rng.choice(_SCOUT[shown])}
+            "personality": rng.choice(list(PERSONALITIES)), "scout": rng.choice(_SCOUT[shown]), "seed": rng.randrange(1 << 30)}
 
 
 def tryout_scenes(grade: str, rng) -> list[bool]:
@@ -190,6 +246,17 @@ class YouthDB(EconomyDB):
     def _take_item(con, uid, item) -> bool:
         return con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item=? AND qty>0", (uid, item)).rowcount > 0
 
+    @staticmethod
+    def _scouter(con, uid):
+        try:
+            r = con.execute("SELECT scouter FROM clubs WHERE user_id=?", (uid,)).fetchone()
+            return r[0] if r else None
+        except Exception:
+            return None
+
+    async def scouter(self, uid: int):
+        return await self._tx(lambda con: self._scouter(con, uid))
+
     async def status(self, uid: int, now_ts: int) -> dict:
         day, wk = _kst_day(now_ts), week_key(now_ts)
 
@@ -202,7 +269,7 @@ class YouthDB(EconomyDB):
                 y["age"] = age_of(y, now_ts)
                 y["price"] = sell_price(y, now_ts)
                 y["trains_left"] = (TRAIN_DAILY + y["day_bonus"] - y["day_trains"]) if y["day_key"] == day else TRAIN_DAILY
-            return {"level": lv, "slots": SLOTS[lv], "cap": REGISTER_CAP[lv], "youth": youth,
+            return {"level": lv, "slots": SLOTS[lv], "cap": REGISTER_CAP[lv], "youth": youth, "scouter": self._scouter(con, uid),
                     "tried": bool(d and d[0]), "applicants": json.loads(d[1]) if d and d[1] else None,
                     "matched": bool(w and w[0]), "registered": bool(w and w[1]), "heat": heat(now_ts),
                     "first": self._youth(con, uid, "first"),
@@ -210,7 +277,7 @@ class YouthDB(EconomyDB):
                                                  (uid, k)).fetchone()[0]) for k in ("scout_coupon", "special_training", "first_team")}}
         return await self._tx(fn)
 
-    async def open_tryout(self, uid: int, now_ts: int, rng=random, coupon: bool = False) -> dict:
+    async def open_tryout(self, uid: int, now_ts: int, rng=random, coupon: bool = False, v311: bool = False) -> dict:
         """오늘 지원자 카드 (한 번 뽑으면 그날은 그대로). reason: done / full / coupon."""
         day = _kst_day(now_ts)
 
@@ -229,7 +296,8 @@ class YouthDB(EconomyDB):
                 if not self._take_item(con, uid, "scout_coupon"):
                     return {"ok": False, "reason": "coupon"}
                 n, free = n + 2, True
-            apps = [make_applicant(lv, rng) for _ in range(n)]
+            acc = scout_acc(self._scouter(con, uid)) if v311 else 0.7   # 3.1.1 스카우터 정확도
+            apps = [make_applicant(lv, rng, acc) for _ in range(n)]
             for a in apps:
                 a["free"] = free
             con.execute("INSERT INTO youth_daily(user_id, day_key, tryout, applicants) VALUES(?,?,0,?) "

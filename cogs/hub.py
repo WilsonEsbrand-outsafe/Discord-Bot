@@ -213,7 +213,8 @@ class Hubs(commands.Cog):
             pages.append(Page("📋", "편성", self._p_lineup, "포메이션 · 선발 · 주장"))
         pages += [Page("🌟", "유망주", self._p_prospect, "나만의 선수"),
                  Page("🏗️", "시설", self._p_facility, "경기장 · 훈련장 · 유스 · 메디컬"),
-                 Page("👔", "감독 · 의료진", self._p_staff, "전력 보너스 · 부상 치료"),
+                 Page("👔", "감독 · 의료진" + (" · 스카우터" if g311 else ""), self._p_staff,
+                      "전력 보너스 · 부상 치료" + (" · 유스 스카우터" if g311 else "")),
                  Page("⚔️", "전술", self._p_tactics, "기본 전술 · 적응도 · 하프타임 규칙"),
                  Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술"),
                  Page("🎓", "유스", self._p_youth, "입단 테스트 · 훈련 · 판매 · 1군 등록"),
@@ -398,26 +399,42 @@ class Hubs(commands.Cog):
         user, now = view.user, int(time.time())
         st = await self.youth.status(user.id, now)
         youth, items = st["youth"], st["items"]
+        g311 = view.ctx.get("g311")   # 3.1.1 별(구단 전력 기준) · 스카우터 정확도
+        if g311:
+            team = await self.clubs.get_team(user.id)
+            club, sc = (team["rating"] if team else 50), st["scouter"]
         ids = {y["id"] for y in youth}
         if view.ctx.get("yid") not in ids:
             view.ctx["yid"] = youth[0]["id"] if youth else None
         sel_y = next((y for y in youth if y["id"] == view.ctx["yid"]), None)
         head = (f"아카데미 Lv.{st['level']} · 슬롯 **{len(youth)}/{st['slots']}** · 1군 상한 OVR {st['cap']}\n"
                 + " ".join([_check(st["tried"], "테스트"), _check(st["matched"], "연습경기"), _check(st["registered"], "1군 등록")]))
+        if g311:
+            s_ = Y.SCOUTERS.get(sc)
+            head += (f"\n🕵️ {s_[0] + ' ' + s_[1] if s_ else '스카우터 없음'} · 정확도 **{Y.scout_acc(sc):.0%}** · "
+                     f"별은 내 구단 전력 **{club}** 기준")
         lines = []
         for y in youth:
             pick = "▶ " if y["id"] == view.ctx["yid"] else ""
             grad = " 🎓졸업" if y["age"] >= Y.GRAD_AGE else ""
-            lines.append(f"{pick}**{y['name']}** {y['pos']} {y['age']}세{grad} · OVR **{y['ovr']:.1f}** · 잠재력 {Y.pot_text(y)} · "
+            if g311:
+                ps, exact = Y.pot_stars(y, club, sc)
+                pot = (f"현재 {Y.star_text(Y.cur_stars(y['ovr'], club))} · 잠재 {Y.star_text(ps)}"
+                       + (f" ({y['pot']})" if exact else " (추정)"))
+            else:
+                pot = f"잠재력 {Y.pot_text(y)}"
+            lines.append(f"{pick}**{y['name']}** {y['pos']} {y['age']}세{grad} · OVR **{y['ovr']:.1f}** · {pot} · "
                          f"{Y.PERSONALITIES[y['personality']][0]} · 훈련 {y['trains_left']}")
         body = head + "\n\n" + ("\n".join(lines) if lines else "유스 선수가 없어요. **지원자 보기**로 첫 선수를 뽑아 보세요!")
         if st["first"]:
             body += "\n\n**1군** " + " · ".join(f"🎓 {y['name']} OVR {y['first_ovr']}" for y in st["first"])
         apps = view.ctx.get("apps") if not st["tried"] else None
         if apps:
-            body += "\n\n**🔎 오늘의 지원자** (잠재력은 비밀)\n" + "\n".join(
-                f"{i}. **{a['name']}** {a['pos']} {a['age']}세 · OVR {a['ovr']} · {Y.PERSONALITIES[a['personality']][0]} — "
-                f"\"{a['scout']}\"" for i, a in enumerate(apps, 1))
+            body += ("\n\n**🔎 오늘의 지원자** (잠재력 별은 스카우터 추정)\n" if g311 else
+                     "\n\n**🔎 오늘의 지원자** (잠재력은 비밀)\n") + "\n".join(
+                f"{i}. **{a['name']}** {a['pos']} {a['age']}세 · OVR {a['ovr']} · "
+                + (f"잠재 {Y.star_text(Y.applicant_stars(a, club, sc))} · " if g311 else "")
+                + f"{Y.PERSONALITIES[a['personality']][0]} — \"{a['scout']}\"" for i, a in enumerate(apps, 1))
         e = ui.card("🎓 유스", body, ui.INFO, user, "🎓 유스")
         e.set_footer(text=f"테스트 {_won(Y.TRYOUT_FEE)}원(불합격 시 절반 환불) · 훈련 하루 {Y.TRAIN_DAILY}번 · "
                           f"{Y.GRAD_AGE}세 졸업 · 성격: 📚성실 ✨천재 🌱대기만성 🔥승부사")
@@ -476,7 +493,7 @@ class Hubs(commands.Cog):
             user, now, yid = view.user, int(time.time()), view.ctx.get("yid")
             note = None
             if key in ("tryout", "coupon"):
-                r = await self.youth.open_tryout(user.id, now, coupon=key == "coupon")
+                r = await self.youth.open_tryout(user.id, now, coupon=key == "coupon", v311=bool(view.ctx.get("g311")))
                 if r["ok"]:
                     view.ctx["apps"] = r["applicants"]
                 else:
@@ -740,19 +757,26 @@ class Hubs(commands.Cog):
             return e
         e.set_footer(text="고른 뒤 [영입]을 누르면 영입비를 내요 · 영입비는 한 번만 · 바꾸면 새 영입비 · 부상은 유망주만 당해요")
         pick = view.ctx.get("hire")   # 3.1.1: /감독 · /의료진 을 여기로 — (col, key)
-        for row, col, table, label in ((0, "manager", MANAGERS, "👔 감독 고르기"), (1, "medic", MEDICS, "🩺 의료진 고르기")):
-            cur = team.get(col)
+        sc = await self.youth.scouter(view.user.id)
+        e.description += ("\n\n**🕵️ 유스 스카우터** — 지금: " + (f"{Y.SCOUTERS[sc][0]} {Y.SCOUTERS[sc][1]}" if sc in Y.SCOUTERS else "없음")
+                          + f" (정확도 {Y.scout_acc(sc):.0%})\n" + "\n".join(
+                              f"　{v[0]} {v[1]} · 정확도 {v[2]:.0%} · {_won(v[3])}원" for v in Y.SCOUTERS.values())
+                          + "\n-# 스카우터가 정확할수록 🎓 유스 지원자 · 선수의 잠재력 별과 한마디가 잘 맞아요")
+        fees = {"manager": lambda v: v[5], "medic": lambda v: v[3], "scouter": lambda v: v[3]}
+        tables = {"manager": MANAGERS, "medic": MEDICS, "scouter": Y.SCOUTERS}
+        for row, col, label in ((0, "manager", "👔 감독 고르기"), (1, "medic", "🩺 의료진 고르기"), (3, "scouter", "🕵️ 유스 스카우터 고르기")):
+            cur = sc if col == "scouter" else team.get(col)
             sel = discord.ui.Select(placeholder=label, row=row, options=[
-                discord.SelectOption(label=f"{v[1]} · {_won(v[5] if col == 'manager' else v[3])}원"
-                                           + (" (지금)" if k == cur else ""), value=k, emoji=v[0],
-                                     default=pick == (col, k)) for k, v in table.items()])
+                discord.SelectOption(label=f"{v[1]} · {_won(fees[col](v))}원" + (" (지금)" if k == cur else ""), value=k,
+                                     emoji=v[0], default=pick == (col, k)) for k, v in tables[col].items()])
             sel.callback = self._hire_pick(view, col, sel)
             view.add_item(sel)
         if pick:
             col, k = pick
-            v = (MANAGERS if col == "manager" else MEDICS)[k]
-            b = discord.ui.Button(label=f"{v[1]} 영입 ({_won(v[5] if col == 'manager' else v[3])}원)", emoji="🤝",
-                                  style=discord.ButtonStyle.success, row=2, disabled=team.get(col) == k)
+            v = tables[col][k]
+            cur = sc if col == "scouter" else team.get(col)
+            b = discord.ui.Button(label=f"{v[1]} {'고용' if col == 'scouter' else '영입'} ({_won(fees[col](v))}원)", emoji="🤝",
+                                  style=discord.ButtonStyle.success, row=2, disabled=cur == k)
             b.callback = self._hire_go(view)
             view.add_item(b)
         return e
@@ -767,7 +791,12 @@ class Hubs(commands.Cog):
         async def cb(interaction: discord.Interaction):
             col, k = view.ctx.pop("hire")
             user = view.user
-            if col == "manager":
+            if col == "scouter":
+                r = await self.clubs.hire_scouter(user.id, k)
+                e_, n_, acc, fee = Y.SCOUTERS[k]
+                desc, eff = "좋은 재능은 제가 먼저 알아봅니다", f"유스 잠재력 별 · 한마디 정확도 **{acc:.0%}**"
+                title = f"🤝 {e_} {n_} 합류!"
+            elif col == "manager":
                 r = await self.clubs.hire_manager(user.id, k)
                 e_, n_, fav, base, extra, fee, desc = MANAGERS[k]
                 eff = f"전력 +{base}" + (f" · **{fav}** 포메이션이면 +{extra} 추가" if fav else "")
