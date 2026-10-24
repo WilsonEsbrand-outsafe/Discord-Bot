@@ -48,8 +48,10 @@ def _mgmt_lines(r: dict) -> str:
 
 
 def mgmt_report_card(r: dict, user, title: str) -> discord.Embed:
-    return ui.card(title, _mgmt_lines(r) + f"\n\n😊 팬 만족도 {r['sat_before']:.0f} → **{r['sat']:.0f}** (목표 {r['target']:.0f})",
-                   ui.WIN, user, "💼 경영")
+    held = (f"\n\n💰 쌓아 둔 수입 **{r['stored']:,}원** ({r['stored_days']}일치) — `/구단` → 💼 경영 → **[정산하기]**로 받아요"
+            if r.get("held") else "")   # 3.1.1 묵혀두기
+    return ui.card(title, _mgmt_lines(r) + f"\n\n😊 팬 만족도 {r['sat_before']:.0f} → **{r['sat']:.0f}** (목표 {r['target']:.0f})"
+                   + held, ui.WIN, user, "💼 경영")
 
 
 # /게임 페이지: (이모지, 제목, 한 줄, 본문)
@@ -356,8 +358,8 @@ class Hubs(commands.Cog):
 
     # ───────────── 💼 경영 (2.8) ─────────────
     async def _p_mgmt(self, view: HubView) -> discord.Embed:
-        user = view.user
-        await self.mgmt.join(user.id, int(time.time()))
+        user, g311 = view.user, view.ctx.get("g311")
+        await self.mgmt.join(user.id, int(time.time()), hold=bool(g311))   # 3.1.1 테스트 서버에서 열면 묵혀두기 시작
         p = await self.mgmt.preview(user.id)
         if not p:
             return ui.card("💼 경영", "구단이 있어야 경영을 할 수 있어요. `/구단생성`을 먼저 해 주세요.", ui.EVEN, user, "💼 경영")
@@ -376,15 +378,33 @@ class Hubs(commands.Cog):
                 f"**🌙 오늘 밤 예상** (지금 전력 {t['rating']:.0f} 기준)\n" + _mgmt_lines(t))
         if p["last"]:
             body += "\n\n**📒 지난 정산**\n" + _mgmt_lines(p["last"])
+        held = g311 or p["hold"] or p["stored"] > 0
+        if held:
+            body = (f"**💰 쌓인 수입** **{p['stored']:,}원**" + (f" ({p['stored_days']}일치)" if p["stored_days"] else "")
+                    + " — **[정산하기]**를 눌러 받아요\n\n" + body)
         e = ui.card("💼 구단 경영", body, ui.INFO, user, "💼 경영")
-        e.set_footer(text="매일 00시(KST) 정산 · 관중 = 경기장 수용 한도까지 · 비용은 그날 수입까지만 (마이너스 없음) · "
-                          "/알림설정 → 구단 경영 정산 DM")
+        e.set_footer(text=("매일 00시(KST) 수입이 쌓여요 (상한 없음) · " if held else "매일 00시(KST) 정산 · ")
+                          + "관중 = 경기장 수용 한도까지 · 비용은 그날 수입까지만 (마이너스 없음) · /알림설정 → 구단 경영 정산 DM")
         for k, (e_, n_, pr, mult, _) in M.TICKETS.items():
             b = discord.ui.Button(label=f"{n_} {pr}원 (관중 ×{mult:g})", emoji=e_, row=0, disabled=k == p["ticket"],
                                   style=discord.ButtonStyle.success if k == p["ticket"] else discord.ButtonStyle.secondary)
             b.callback = self._ticket_cb(view, k)
             view.add_item(b)
+        if held:
+            b = discord.ui.Button(label=f"정산하기 (+{_won(p['stored'])}원)" if p["stored"] else "정산하기 (쌓인 돈 없음)",
+                                  emoji="💰", style=discord.ButtonStyle.primary, row=1, disabled=p["stored"] <= 0)
+            b.callback = self._collect_cb(view)
+            view.add_item(b)
         return e
+
+    def _collect_cb(self, view: HubView):
+        async def cb(interaction: discord.Interaction):
+            r = await self.mgmt.collect(view.user.id)
+            note = (ui.card("💰 경영 수입 정산!", f"`받은 돈` **+{r['amount']:,}원** ({r['days']}일치)\n`잔액` **{r['balance']:,}원**",
+                            ui.GOLD, view.user, "💼 경영") if r["ok"] else
+                    ui.card("💰 정산할 돈이 없어요", "매일 00시(KST)에 수입이 쌓여요.", ui.EVEN, view.user, "💼 경영"))
+            await view.refresh(interaction, note)
+        return cb
 
     def _ticket_cb(self, view: HubView, key: str):
         async def cb(interaction: discord.Interaction):

@@ -4,7 +4,10 @@
 # 팬 만족도(0~100, 처음 50)는 매일 목표치 쪽으로 20%씩: 50 + 최근 10경기 (승−패)×3(±20) + 시설 레벨 합(최대 20)
 #   + 티켓(저가 +10 · 보통 0 · 고가 −15) + 수족관 점수 ÷ 16(최대 10). 70↑ 스폰서 +3% · 명문 수입 +5%, 85↑ +5% · +10%.
 # 정산 대상: 공개 전에는 2.8 서버에서 경영 화면을 한 번 연 구단만, 공개 뒤에는 모든 구단 (내 구단 = 스쿼드 A 기준).
+# 3.1.1 묵혀두기: 순이익을 지갑 대신 club_mgmt.stored 에 쌓고, /구단 → 💼 경영 [정산하기]로 받는다 (상한 없음).
+#   공개 전에는 3.1.1 테스트 서버에서 경영 화면을 연 구단만 (hold=1), 공개 뒤에는 모든 구단.
 import json
+import sqlite3
 from typing import Optional
 
 import release
@@ -78,22 +81,31 @@ class MgmtDB(EconomyDB):
         try:
             con.execute("CREATE TABLE IF NOT EXISTS club_mgmt (user_id INTEGER PRIMARY KEY, ticket TEXT NOT NULL DEFAULT 'normal', "
                         "sat REAL NOT NULL DEFAULT 50, settled_day INTEGER NOT NULL DEFAULT 0, last TEXT)")
+            for col in ("stored INTEGER NOT NULL DEFAULT 0", "stored_days INTEGER NOT NULL DEFAULT 0",
+                        "hold INTEGER NOT NULL DEFAULT 0"):   # 3.1.1 묵혀두기
+                try:
+                    con.execute(f"ALTER TABLE club_mgmt ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
             con.commit()
         finally:
             con.close()
 
     @staticmethod
     def _row(con, uid) -> Optional[dict]:
-        r = con.execute("SELECT ticket, sat, settled_day, last FROM club_mgmt WHERE user_id=?", (uid,)).fetchone()
+        r = con.execute("SELECT ticket, sat, settled_day, last, stored, stored_days, hold FROM club_mgmt WHERE user_id=?",
+                        (uid,)).fetchone()
         if not r:
             return None
         return {"ticket": r[0] if r[0] in TICKETS else DEFAULT_TICKET, "sat": float(r[1]), "settled_day": int(r[2]),
-                "last": json.loads(r[3]) if r[3] else None}
+                "last": json.loads(r[3]) if r[3] else None, "stored": int(r[4]), "stored_days": int(r[5]), "hold": bool(r[6])}
 
-    async def join(self, uid: int, now_ts: int) -> dict:
-        """경영 시작 (첫 정산은 다음 00시). 이미 있으면 그대로."""
+    async def join(self, uid: int, now_ts: int, hold: bool = False) -> dict:
+        """경영 시작 (첫 정산은 다음 00시). 이미 있으면 그대로. hold = 3.1.1 묵혀두기 켜기."""
         def fn(con):
             con.execute("INSERT OR IGNORE INTO club_mgmt(user_id, sat, settled_day) VALUES(?,?,?)", (uid, SAT_START, kst_day(now_ts)))
+            if hold:
+                con.execute("UPDATE club_mgmt SET hold=1 WHERE user_id=?", (uid,))
             return self._row(con, uid)
         return await self._tx(fn)
 
@@ -156,14 +168,32 @@ class MgmtDB(EconomyDB):
                 sat = st["sat"] + SAT_MOVE * (target - st["sat"]) + (SELLOUT_SAT if rep["sellout"] else 0)
                 sat = round(max(0.0, min(100.0, sat)), 1)
                 rep.update(user_id=u, sat_before=st["sat"], sat=sat, target=target, parts=parts, day=today)
-                con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (u,))
-                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (rep["net"], u))
+                if st["hold"] or release.released_311(now_ts):   # 3.1.1 묵혀두기 → [정산하기]로 받는다
+                    con.execute("UPDATE club_mgmt SET stored = stored + ?, stored_days = stored_days + 1 WHERE user_id=?",
+                                (rep["net"], u))
+                    rep.update(held=True, stored=st["stored"] + rep["net"], stored_days=st["stored_days"] + 1)
+                else:
+                    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (u,))
+                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (rep["net"], u))
                 con.execute("UPDATE club_mgmt SET sat=?, settled_day=?, last=? WHERE user_id=?", (sat, today, json.dumps(rep), u))
                 return rep
             r = await self._tx(pay)
             if r:
                 out.append(r)
         return out
+
+    async def collect(self, uid: int) -> dict:
+        """3.1.1 [정산하기] — 쌓아 둔 경영 수입을 지갑으로. {ok, amount, days, balance}."""
+        def fn(con):
+            st = self._row(con, uid)
+            if not st or st["stored"] <= 0:
+                return {"ok": False, "amount": 0, "days": 0}
+            con.execute("UPDATE club_mgmt SET stored=0, stored_days=0 WHERE user_id=?", (uid,))
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (uid,))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (st["stored"], uid))
+            bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (uid,)).fetchone()[0]
+            return {"ok": True, "amount": st["stored"], "days": st["stored_days"], "balance": int(bal)}
+        return await self._tx(fn)
 
     async def fan_bonus(self, uid: int) -> tuple[float, float]:
         st = await self.state(uid)
