@@ -22,6 +22,7 @@ KST_OFFSET = 9 * 3600
 MARKET_OPEN_HOUR = 9
 MARKET_CLOSE_HOUR = 23
 TICK_SECONDS = 600  # 10분
+_DB_STAT_SHOWN = False
 
 REAL_SECONDS_PER_MONTH = 4 * 3600  # 4시간 = 1개월 → 실제 이틀에 1살 (2.9.1: 2시간 · 하루에 1살에서 늦춤)
 REAL_SECONDS_PER_MONTH_OLD = 2 * 3600   # 2.9.1 공개(release.RELEASE_291_TS) 전
@@ -627,6 +628,7 @@ class PlayerMarketDB:
     def _connect(self):
         con = sqlite3.connect(DB_PATH)
         con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA synchronous=NORMAL;")   # WAL 에선 안전 — 커밋마다 디스크 동기화(fsync)를 하지 않아 명령이 빨라진다
         con.execute("PRAGMA foreign_keys=ON;")
         return con
 
@@ -690,7 +692,8 @@ class PlayerMarketDB:
                 )
                 """
             )
-            con.execute("CREATE INDEX IF NOT EXISTS idx_pm_price_hist_pid ON pm_price_history(player_id)")
+            # (player_id) 색인은 기본 키(player_id, tick_ts) 와 겹쳐 쓰기만 느리게 했다 (3.2.0: 수백만 행) → 지운다
+            con.execute("DROP INDEX IF EXISTS idx_pm_price_hist_pid")
             con.execute("CREATE INDEX IF NOT EXISTS idx_pm_price_hist_ts ON pm_price_history(tick_ts)")
 
             con.execute(
@@ -817,6 +820,11 @@ class PlayerMarketDB:
                     print(f"[PM] 선수 ID 단순화: {migrated}명")
             except Exception as e:   # 실패해도 봇은 긴 ID 그대로 동작한다. 다음 부팅에 다시 시도.
                 print(f"[PM] 선수 ID 단순화 실패(다음 부팅에 재시도): {e!r}")
+            global _DB_STAT_SHOWN
+            if not _DB_STAT_SHOWN:   # 3.2.0: DB 크기 · 빈 공간 (VACUUM 이 필요한지 로그로 본다) — 부팅 때 한 번
+                _DB_STAT_SHOWN = True
+                pc, fl, ps = (con.execute(f"PRAGMA {k}").fetchone()[0] for k in ("page_count", "freelist_count", "page_size"))
+                print(f"[DB] 크기 {pc * ps / 1e6:,.0f}MB · 빈 공간 {fl * ps / 1e6:,.0f}MB")
         finally:
             con.close()
 

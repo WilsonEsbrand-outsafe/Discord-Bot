@@ -264,6 +264,7 @@ class EconomyDB:
     def _connect(self):
         con = sqlite3.connect(DB_PATH)
         con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA synchronous=NORMAL;")   # WAL 에선 안전 — 커밋마다 디스크 동기화(fsync)를 하지 않아 명령이 빨라진다
         con.execute("PRAGMA foreign_keys=ON;")
         return con
 
