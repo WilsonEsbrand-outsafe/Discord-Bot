@@ -164,7 +164,7 @@ async def _items():
         w = Economy.WATCH_ITEM_WEIGHTS
         return edb.WATCH_DAILY_LIMIT * Economy._WO["이벤트"] * w[item] / sum(w.values())
     assert abs(per_day("toto_slip") - 1) < 1e-9 and abs(per_day("steroid") - 0.15) < 1e-9   # 용지 하루 1장 · 주사기 그대로
-    assert "관람 65% · 실패 25% · 이벤트(아이템) 10%" in Economy.watch.description
+    assert "%" not in Economy.watch.description   # 3.1.1 슬래시 설명에서 확률을 뺐다
     assert not set(Economy.WATCH_ITEM_WEIGHTS) & (set(edb.RESET_ITEMS) | set(edb.SKIP_ITEMS))
     assert set(Economy.WATCH_ITEM_WEIGHTS) <= set(Economy.WATCH_ITEM_EVENTS)
     import random as _r

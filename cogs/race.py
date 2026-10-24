@@ -889,7 +889,7 @@ class Race(commands.Cog):
         e.set_footer(text="60초 안에 고르지 않으면 실격 — 베팅금은 돌려받지 못합니다")
         return e
 
-    @app_commands.command(name="달팽이", description="달팽이 4마리 중 한 마리에 베팅! 1·2위는 수익, 3·4위는 손실 (최소 1,000원)")
+    @app_commands.command(name="달팽이", description="달팽이 4마리 중 한 마리에 베팅! (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def snail(self, interaction: discord.Interaction, amount: app_commands.Range[int, MIN_BET]):
@@ -960,7 +960,7 @@ class Race(commands.Cog):
 
     # ───────────── 🚣 조정 ─────────────
 
-    @app_commands.command(name="조정", description="노를 직접 저어라! [노 젓기] 연타 + 물살 운으로 6척 경주 · 1·2위 수익, 3위 본전, 4~6위 손실 (최소 1,000원)")
+    @app_commands.command(name="조정", description="노를 직접 저어라! [노 젓기] 연타로 6척 경주 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def row(self, interaction: discord.Interaction, amount: app_commands.Range[int, MIN_BET]):
@@ -1095,7 +1095,7 @@ class Race(commands.Cog):
         e.set_footer(text="아래 목록에서 드라이버를 고르세요 · 60초 안에 안 고르면 실격")
         return e
 
-    @app_commands.command(name="f1", description="2026 F1 그리드에서 드라이버를 골라 베팅! 실제 서킷 · 전력 · 타이어 전략 · 사고 반영 (최소 1,000원)")
+    @app_commands.command(name="f1", description="2026 F1 드라이버를 골라 베팅! 실제 서킷에서 레이스 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def f1(self, interaction: discord.Interaction, amount: app_commands.Range[int, MIN_BET]):

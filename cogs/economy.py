@@ -529,7 +529,7 @@ class Economy(commands.Cog):
         await send_notify(self.bot, self.db, to_user.id, "송금_수신", dm_embed)
 
     # ✅ 파산 신청: 잔액이 마이너스일 때 스폰서 강제 해지 → 남은 빚 30~70% 랜덤 탕감 (한 시간에 한 번 · 선수는 그대로)
-    @app_commands.command(name="파산신청", description="잔액이 마이너스일 때: 스폰서 강제 해지 후 빚 30~70% 랜덤 탕감 (한 시간에 1회)")
+    @app_commands.command(name="파산신청", description="잔액이 마이너스일 때 빚을 랜덤으로 탕감받아요 (스폰서 강제 해지)")
     async def bankruptcy(self, interaction: discord.Interaction):
         user = interaction.user
         bal = await self.db.get_balance(user.id)
@@ -632,7 +632,7 @@ class Economy(commands.Cog):
     def _train_card(user, title: str, caster: str, color: int) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 훈련장 리포트")
 
-    @app_commands.command(name="훈련", description="랜덤 훈련으로 돈과 경험치를 얻습니다. (오늘 스카우트 15회 완료 후 열림 · 쿨타임 30초 · 하루 30회)")
+    @app_commands.command(name="훈련", description="랜덤 훈련으로 돈과 경험치를 얻어요 (오늘 스카우트를 다 하면 열림)")
     async def training(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user = interaction.user
@@ -718,7 +718,7 @@ class Economy(commands.Cog):
     def _scout_card(user, title: str, caster: str, color: int) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 스카우트 리포트")
 
-    @app_commands.command(name="스카우트", description="세계를 돌며 선수를 찾습니다. 돈을 벌고, 드물게 실제 선수를 영입! (쿨타임 60초 · 하루 15회 · 최대 Lv.5)")
+    @app_commands.command(name="스카우트", description="세계를 돌며 선수를 찾아요 — 돈을 벌고, 드물게 실제 선수를 영입!")
     async def scout(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user = interaction.user
@@ -853,8 +853,7 @@ class Economy(commands.Cog):
     def _watch_card(user, title: str, caster: str, color: int) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 직관 일지")
 
-    @app_commands.command(name="직관", description=f"경기장에 직접 가서 응원! 관람 {_WO['관람']:.0%} · 실패 {_WO['실패']:.0%} · "
-                                                f"이벤트(아이템) {_WO['이벤트']:.0%} (훈련 30회 후 · 하루 {WATCH_DAILY_LIMIT}회)")
+    @app_commands.command(name="직관", description="경기장에 직접 가서 응원! 가끔 이벤트 아이템도 (오늘 훈련을 다 하면 열림)")
     async def watch(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user, now_ts = interaction.user, int(time.time())
@@ -1112,7 +1111,7 @@ class Economy(commands.Cog):
         """페널티킥 화면의 공통 틀: '닉네임 · 🎙️ 페널티킥 중계' + 캐스터 멘트."""
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, "🎙️ 페널티킥 중계")
 
-    @app_commands.command(name="페널티킥", description="돈을 걸고 슛! 최대 200배 수익, 최악은 10배 손실 (최소 1,000원)")
+    @app_commands.command(name="페널티킥", description="돈을 걸고 슛! (최소 1,000원)")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def penalty_kick(self, interaction: discord.Interaction, amount: app_commands.Range[int, PK_MIN_BET]):
         user = interaction.user
@@ -1278,7 +1277,7 @@ class Economy(commands.Cog):
         except discord.HTTPException:
             await interaction.followup.send(embed=e)
 
-    @app_commands.command(name="야구", description="타석에 서서 한 방! 장외홈런 50배 수익, 트리플 플레이 10배 손실 (최소 1,000원)")
+    @app_commands.command(name="야구", description="타석에 서서 한 방! (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def batting(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
@@ -1287,7 +1286,7 @@ class Economy(commands.Cog):
                                broke=("🙅 타석에 설 수 없어요", "잔액이 부족해 대기 타석에서 돌아갑니다!"),
                                windup=("⚾ 투수, 와인드업…", "{amount}원이 걸린 한 타석! 던졌습니다—"))
 
-    @app_commands.command(name="농구", description="마지막 슛 한 방! 하프라인 버저비터 30배 수익, 에어볼 8배 손실 (최소 1,000원)")
+    @app_commands.command(name="농구", description="마지막 슛 한 방! (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def basketball(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
@@ -1296,7 +1295,7 @@ class Economy(commands.Cog):
                                broke=("🙅 코트에 들어갈 수 없어요", "잔액이 부족해 벤치로 돌아갑니다!"),
                                windup=("🏀 공을 잡았습니다…", "{amount}원이 걸린 마지막 공격! 슛—"))
 
-    @app_commands.command(name="ufc", description="옥타곤 한 판! 플라잉 니킥 KO 100배 수익, 실신 KO 20배 손실 (최소 1,000원)")
+    @app_commands.command(name="ufc", description="옥타곤 한 판! (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def ufc_fight(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
@@ -1398,7 +1397,7 @@ class Economy(commands.Cog):
                        f'> 🎙️ *"잔액이 부족해 매표소에서 돌려보냈습니다!"*\n\n`베팅` **{amount:,}원**\n`잔액` **{bal:,}원**',
                        ui.LOSE, user, self.RACE_SECTION)
 
-    @app_commands.command(name="경마", description="출주마 4마리 중 한 마리에 베팅! 1·2위는 수익, 3·4위는 손실 (최소 1,000원)")
+    @app_commands.command(name="경마", description="출주마 4마리 중 한 마리에 베팅! (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def horse_race(self, interaction: discord.Interaction, amount: app_commands.Range[int, RACE_MIN_BET]):
@@ -1535,7 +1534,7 @@ class Economy(commands.Cog):
             gd -= rng.randint(1, 8)
         return rows
 
-    @app_commands.command(name="리그", description="내 구단을 랜덤 리그에 넣고 한 시즌! 우승 40배 수익 ~ 강등 15배 손실 (최소 1,000원)")
+    @app_commands.command(name="리그", description="내 구단을 랜덤 리그에 넣고 한 시즌! (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def league(self, interaction: discord.Interaction, amount: app_commands.Range[int, LEAGUE_MIN_BET]):

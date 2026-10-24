@@ -145,7 +145,7 @@ class Dribble(commands.Cog):
         e.set_thumbnail(url=ui.result_thumb(emoji, color, user))
         return e
 
-    @app_commands.command(name="드리블", description="키코의 솔로 드리블! 수비수마다 왼쪽 · 오른쪽 — 제칠수록 어렵고 배당 ↑ 언제든 슛, 골이면 140배 (최소 1,000원)")
+    @app_commands.command(name="드리블", description="키코의 솔로 드리블! 수비수를 제치고 원할 때 슛 (최소 1,000원)")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def dribble(self, interaction: discord.Interaction, amount: app_commands.Range[int, D.MIN_BET]):
