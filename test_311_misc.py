@@ -74,25 +74,38 @@ def test_f1_loss():
 
 
 def test_lawyer_anytime():
+    """3.2.0: 변호사 선임권 = 빚이 있으면 한 시간 안 기다리고 파산 신청 한 번 더 (다시 변론은 없음)."""
     db = edb.EconomyDB()
 
     async def flow():
-        seen = set()
-        for k in range(60):
-            uid = 100 + k
-            await db.add_balance(uid, -1_000_000)
-            await db._tx(lambda con: edb.give_item(con, uid, "lawyer"))
-            assert (await db.hire_lawyer(uid, uid))["ok"]
-            r = await db.declare_bankruptcy(uid, 1_000_000 + k, random.Random(k), new=True, v311=True)
-            # 변호사가 있으면 100%가 아닌 결과는 언제나 다시 변론 → 0% 는 남지 않는다 · 더 나은 쪽
-            assert r["rate"] > 0
-            if r["lawyer"] is True:
-                assert r["rate"] >= r["before"] and r["before"] < 1
-                seen.add(r["before"] > 0)
-                assert await db.lawyers(uid) == 0
-            else:
-                assert r["rate"] == 1.0 and await db.lawyers(uid) == 1   # 처음부터 100% 면 변호사는 남는다
-        assert seen == {True, False}   # 0% 에서도, 30~70% 에서도 변론했다
+        uid, t = 100, 1_000_000
+        await db.add_balance(uid, -1_000_000)
+        await db._tx(lambda con: edb.give_item(con, uid, "lawyer"))
+        assert (await db.hire_lawyer(uid, uid))["ok"] and await db.lawyers(uid) == 1
+        r = await db.declare_bankruptcy(uid, t, random.Random(1), new=True, v311=True)
+        assert r["ok"] and not r["extra"] and r["lawyer"] is not True and await db.lawyers(uid) == 1   # 쿨타임 아니면 변호사 안 씀
+        await db.add_balance(uid, -500_000 - max(0, r["balance"]))
+        r = await db.declare_bankruptcy(uid, t + 60, random.Random(2), new=True, v311=True)
+        assert r["ok"] and r["extra"] and r["lawyers"] == 0 and await db.lawyers(uid) == 0   # 쿨타임인데 변호사 덕분에 한 번 더
+        await db.add_balance(uid, -500_000 - max(0, r["balance"]))
+        r = await db.declare_bankruptcy(uid, t + 120, random.Random(3), new=True, v311=True)
+        assert not r["ok"] and r["reason"] == "cooldown"   # 변호사가 없으면 그대로 한 시간
+        # 예전(3.1.0) 서버는 쿨타임에 변호사를 쓰지 않는다
+        uid2 = 101
+        await db.add_balance(uid2, -1_000_000)
+        await db._tx(lambda con: edb.give_item(con, uid2, "lawyer"))
+        await db.hire_lawyer(uid2, uid2)
+        await db.declare_bankruptcy(uid2, t, random.Random(4), new=True)
+        await db.add_balance(uid2, -1_000_000)
+        assert (await db.declare_bankruptcy(uid2, t + 60, random.Random(5), new=True))["reason"] == "cooldown"
+        # 3.2.0 에선 0% 가 나와도 다시 변론하지 않는다
+        for k in range(40):
+            u = 200 + k
+            await db.add_balance(u, -1_000_000)
+            await db._tx(lambda con: edb.give_item(con, u, "lawyer"))
+            await db.hire_lawyer(u, u)
+            r = await db.declare_bankruptcy(u, t, random.Random(k), new=True, v311=True)
+            assert r["lawyer"] is not True and await db.lawyers(u) == 1
     asyncio.run(flow())
 
 

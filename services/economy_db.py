@@ -674,15 +674,20 @@ class EconomyDB:
         """파산: 진행 중 스폰서 계약을 강제 해지해 원금으로 빚을 갚고, 남은 빚의 30~70% 를 랜덤 탕감한다.
         선수 카드는 건드리지 않는다. 실패 reason: not_negative / cooldown(until).
         new = 3.1.0: 탕감이 0% · 30~70% · 100% 중 하나 (BANKRUPT_310).
-        v311 = 3.1.1: 선임한 변호사는 0% 뿐 아니라 100% 가 아니면 언제든 다시 변론한다 (더 나은 쪽)."""
+        v311 = 3.2.0: 선임한 변호사는 다시 변론하지 않고, 한 시간이 안 지났어도 파산 신청을 한 번 더 하게 해 준다
+        (쿨타임일 때만 변호사 한 명을 쓴다 · extra=True)."""
         def fn(con):
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
             if bal >= 0:
                 return {"ok": False, "reason": "not_negative", "balance": bal}
             row = con.execute("SELECT last_ts FROM bankruptcy WHERE user_id=?", (user_id,)).fetchone()
+            extra = False
             if row and now_ts - int(row[0]) < BANKRUPT_COOLDOWN:
-                return {"ok": False, "reason": "cooldown", "until": int(row[0]) + BANKRUPT_COOLDOWN}
+                if not (v311 and self._lawyers(con, user_id) > 0):
+                    return {"ok": False, "reason": "cooldown", "until": int(row[0]) + BANKRUPT_COOLDOWN}
+                con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
+                extra = True   # ⚖️ 3.2.0 변호사 덕분에 기다리지 않고 한 번 더
 
             sponsor = 0
             if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sponsor_contracts'").fetchone():
@@ -695,15 +700,8 @@ class EconomyDB:
             lawyer, before = False, 0.0
             if new:
                 pick = rng.choices([r for _, r in BANKRUPT_310], weights=[p for p, _ in BANKRUPT_310])[0]
-                if v311 and pick != 1.0 and after < 0 and self._lawyers(con, user_id) > 0:
-                    first = rate if pick is None else pick
-                    con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
-                    rest = [(p, r) for p, r in BANKRUPT_310 if r != 0.0]
-                    again = rng.choices([r for _, r in rest], weights=[p for p, _ in rest])[0]
-                    again = rng.uniform(*BANKRUPT_FORGIVE) if again is None else again
-                    pick, lawyer, before = max(first, again), True, first   # before = 변론 전 탕감률 (화면에 '30% → 55%')
-                elif pick == 0.0 and after < 0:
-                    if self._lawyers(con, user_id) > 0:   # ⚖️ 선임한 변호사가 다시 변론 (0% 빼고)
+                if pick == 0.0 and after < 0:
+                    if not v311 and self._lawyers(con, user_id) > 0:   # ⚖️ 3.1.0: 선임한 변호사가 다시 변론 (0% 빼고)
                         con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
                         rest = [(p, r) for p, r in BANKRUPT_310 if r != 0.0]
                         pick, lawyer = rng.choices([r for _, r in rest], weights=[p for p, _ in rest])[0], True
@@ -717,6 +715,7 @@ class EconomyDB:
             con.execute("INSERT INTO bankruptcy(user_id, last_ts, times) VALUES(?, ?, 1) "
                         "ON CONFLICT(user_id) DO UPDATE SET last_ts=excluded.last_ts, times=times+1", (user_id, now_ts))
             return {"ok": True, "debt": -bal, "sponsor": sponsor, "rate": rate if after < 0 else 0.0, "lawyer": lawyer, "before": before,
+                    "extra": extra, "lawyers": self._lawyers(con, user_id),
                     "forgiven": forgiven, "balance": new_bal, "next": now_ts + BANKRUPT_COOLDOWN}
         return await self._tx(fn)
 
