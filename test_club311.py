@@ -156,6 +156,7 @@ def test_mgmt_hold():
     hubs.dungeon, hubs.pm, hubs.tac, hubs.youth = CH.DungeonDB(), pmdb.PlayerMarketDB(), CH.TacticsDB(), CH.YouthDB()
     hubs.mgmt = CH.MgmtDB()
     other = 7311
+    keep, release.RELEASE_311_TS = release.RELEASE_311_TS, None   # 공개 전: 테스트 서버에서 연 구단만 묵혀두기
 
     def bal(uid):
         con = sqlite3.connect(pmdb.DB_PATH)
@@ -196,7 +197,14 @@ def test_mgmt_hold():
         await btn.callback(_inter(log))
         assert bal(U) == b0 + st["stored"] and (await hubs.mgmt.state(U))["stored"] == 0
         assert (await hubs.mgmt.collect(U))["ok"] is False   # 두 번 받기 X
-    asyncio.run(flow())
+        # 공개 뒤에는 모든 구단이 묵혀두기
+        release.RELEASE_311_TS = now
+        r = (await hubs.mgmt.settle(now + 3 * 86400, other))[0]
+        assert r["held"] and (await hubs.mgmt.state(other))["stored"] == r["net"]
+    try:
+        asyncio.run(flow())
+    finally:
+        release.RELEASE_311_TS = keep
 
 
 def test_amateur_restore():
