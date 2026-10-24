@@ -84,7 +84,7 @@ PREVIEW_310: set[str] = {"드리블"}   # 3.1.0 새 명령어 — 공개 전엔 
 
 
 # 3.1.1 — 테스트 서버 먼저. preview_311(guild): /구단 화면에서 편성 · 감독 · 의료진 · 시설을 바로 바꾼다. None = 아직
-RELEASE_311_TS: Optional[int] = calendar.timegm((2026, 10, 24, 22, 0, 0))   # 3.2.0 공개: 2026-10-25 07:00 KST (점검 시작과 함께)
+RELEASE_311_TS: Optional[int] = calendar.timegm((2026, 10, 24, 21, 30, 0))   # 3.2.0 공개: 2026-10-25 06:30 KST (점검 시작과 함께)
 
 
 def released_311(now: Optional[float] = None) -> bool:
