@@ -1,5 +1,5 @@
 # test_club311.py — 3.1.1 /구단 통합: 📋 편성(포메이션 · 자리 · 선수 · 주장) · 선발 전부 빼기 · 빈자리 자동 채우기 ·
-# 유망주 고정 자동편성 · 🏗️ 시설 · 👔 감독/의료진 버튼 · 아마추어 복구 · 명령어 숨김(테스트 서버 먼저)
+# 유망주 고정 자동편성 · 🏗️ 시설 · 👔 감독/의료진 버튼 · 아마추어 복구 · 명령어 숨김(테스트 서버 먼저) · 💼 경영 묵혀두기
 # 실행: venv/Scripts/python.exe test_club311.py
 import asyncio
 import sqlite3
@@ -150,6 +150,55 @@ def test_club_hub_311():
     asyncio.run(flow())
 
 
+def test_mgmt_hold():
+    hubs = CH.Hubs.__new__(CH.Hubs)
+    hubs.bot, hubs.db, hubs.clubs, hubs.fish = None, edb.EconomyDB(), cdb.ClubDB(), CH.FishingDB()
+    hubs.dungeon, hubs.pm, hubs.tac, hubs.youth = CH.DungeonDB(), pmdb.PlayerMarketDB(), CH.TacticsDB(), CH.YouthDB()
+    hubs.mgmt = CH.MgmtDB()
+    other = 7311
+
+    def bal(uid):
+        con = sqlite3.connect(pmdb.DB_PATH)
+        r = con.execute("SELECT balance FROM wallets WHERE user_id=?", (uid,)).fetchone()
+        con.close()
+        return r[0] if r else 0
+
+    async def flow():
+        log = []
+        cv = hubs.club_view(USER, guild_id=release.TEST_GUILD)
+        cv.page = [p.title for p in cv.pages].index("경영")
+        e = await cv.build()
+        assert "쌓인 수입" in e.description and (await hubs.mgmt.state(U))["hold"]
+        btn = next(c for c in cv.children if (getattr(c, "label", "") or "").startswith("정산하기"))
+        assert btn.disabled   # 아직 쌓인 돈 없음
+        # 다른 서버(공개 전)에서만 연 구단은 예전처럼 바로 입금
+        await hubs.clubs.create_club(other, "바로 FC", 1)
+        await hubs.pm.give_amateur_squad(other)
+        await hubs.clubs.auto_lineup(other)
+        ov = hubs.club_view(SimpleNamespace(id=other, display_name="o", display_avatar=USER.display_avatar), guild_id=1)
+        ov.page = [p.title for p in ov.pages].index("경영")
+        e = await ov.build()
+        assert "쌓인 수입" not in e.description
+        now = int(CH.time.time())
+        b0, o0 = bal(U), bal(other)
+        for d in (1, 2):
+            for uid in (U, other):
+                r = (await hubs.mgmt.settle(now + d * 86400, uid))[0]
+                if uid == U:
+                    assert r["held"] and r["stored_days"] == d
+                    assert "정산하기" in CH.mgmt_report_card(r, None, "t").description
+        st = await hubs.mgmt.state(U)
+        assert bal(U) == b0 and st["stored"] > 0 and st["stored_days"] == 2
+        assert bal(other) > o0 and (await hubs.mgmt.state(other))["stored"] == 0
+        await cv.build()
+        btn = next(c for c in cv.children if (getattr(c, "label", "") or "").startswith("정산하기"))
+        assert not btn.disabled and f"{st['stored']:,}"[:1] in btn.label
+        await btn.callback(_inter(log))
+        assert bal(U) == b0 + st["stored"] and (await hubs.mgmt.state(U))["stored"] == 0
+        assert (await hubs.mgmt.collect(U))["ok"] is False   # 두 번 받기 X
+    asyncio.run(flow())
+
+
 def test_amateur_restore():
     con = sqlite3.connect(pmdb.DB_PATH)
     con.execute("UPDATE pm_players SET age=40, ovr=45, pot_grade='C', retired=1 WHERE player_id='AMT_FW_01'")
@@ -169,5 +218,6 @@ if __name__ == "__main__":
     test_release_311()
     test_stars()
     test_club_hub_311()
+    test_mgmt_hold()
     test_amateur_restore()
     print("✅ test_club311 통과")
