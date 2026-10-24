@@ -132,8 +132,11 @@ class BagView(discord.ui.View):
             if key == "lawyer":      # 3.1.0: 누구에게 선임할지 고른다 (나 · 다른 유저)
                 return await interaction.response.send_message(
                     embed=ui.card("⚖️ 누구에게 변호사를 선임할까요?",
-                                  "나 또는 다른 유저를 고르세요. 그 사람이 `/파산신청`에서 탕감 **0%**가 나오면\n"
-                                  "변호사가 다시 변론해 **30~70% · 100%** 중 하나로 바꿔 줘요. (한 번 쓰면 사라져요)",
+                                  ("나 또는 다른 유저를 고르세요. 그 사람이 `/파산신청`에서 탕감 **100%**가 아니면\n"
+                                   "변호사가 다시 변론해 더 나은 쪽으로 바꿔 줘요. (한 번 쓰면 사라져요)"
+                                   if release.preview_311(_gid(self.user)) else
+                                   "나 또는 다른 유저를 고르세요. 그 사람이 `/파산신청`에서 탕감 **0%**가 나오면\n"
+                                   "변호사가 다시 변론해 **30~70% · 100%** 중 하나로 바꿔 줘요. (한 번 쓰면 사라져요)"),
                                   ui.INFO, self.user, "🎒 아이템"),
                     view=LawyerView(self.cog, self.user), ephemeral=True)
             handler = ITEM_HANDLERS.get(key)   # 2.8 새 기능 아이템 (낚시 · 던전 …) — 그 기능의 cog 가 등록한다
@@ -231,7 +234,9 @@ class LawyerView(discord.ui.View):
         who = "자기 자신" if target.id == self.user.id else f"{target.mention}님"
         await interaction.followup.send(embed=ui.card(
             "⚖️ 변호사 선임!", f"**{self.user.display_name}**님이 {who}에게 변호사를 붙였어요.\n"
-            f"파산 탕감 **0%**가 나오면 다시 변론해 줘요. (선임된 변호사 **{r['uses']}명**)", ui.GOLD, self.user, "🎒 아이템"))
+            + ("파산 탕감이 **100%**가 아니면 다시 변론해 줘요." if release.preview_311(_gid(self.user)) else
+               "파산 탕감 **0%**가 나오면 다시 변론해 줘요.")
+            + f" (선임된 변호사 **{r['uses']}명**)", ui.GOLD, self.user, "🎒 아이템"))
 
 
 class SteroidView(discord.ui.View):
@@ -272,8 +277,9 @@ class BankruptConfirm(discord.ui.View):
     @discord.ui.button(label="파산 신청", style=discord.ButtonStyle.danger, emoji="⚖️")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
-        r = await self.cog.db.declare_bankruptcy(self.user.id, int(time.time()),
-                                                  new=release.preview_310(getattr(interaction, "guild_id", None)))
+        gid = getattr(interaction, "guild_id", None)
+        r = await self.cog.db.declare_bankruptcy(self.user.id, int(time.time()), new=release.preview_310(gid),
+                                                  v311=release.preview_311(gid))   # 3.1.1 변호사는 100%가 아니면 언제든
         if not r["ok"]:
             msg = ("이미 빚이 없어요." if r["reason"] == "not_negative"
                    else f"파산은 한 시간에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>")
@@ -282,7 +288,8 @@ class BankruptConfirm(discord.ui.View):
             e = ui.card("⚖️ 파산 처리 완료",
                         f"`빚` **{r['debt']:,}원**\n"
                         f"`스폰서 강제 해지` **+{r['sponsor']:,}원**\n"
-                        + (f"⚖️ 변호사가 다시 변론했어요! 탕감 **0% → {r['rate']:.0%}**\n" if r.get("lawyer") is True else "")
+                        + (f"⚖️ 변호사가 다시 변론했어요! 탕감 **{r.get('before', 0):.0%} → {r['rate']:.0%}**\n"
+                           if r.get("lawyer") is True else "")
                         + f"`탕감` **{r['forgiven']:,}원** · 남은 빚의 **{r['rate']:.0%}**"
                         + (" 🎉 전액 탕감!" if r["rate"] >= 1 else " 😱 한 푼도 탕감 못 받았어요…" if r["rate"] == 0 and r["debt"] > r["sponsor"] else "")
                         + "\n"
@@ -307,6 +314,7 @@ class Economy(commands.Cog):
     # 성공률은 레벨당 +1%p 오르지만 화면에는 표시하지 않는다.
     TRAIN_RATE_PER_LV = 0.01
     TRAIN_RATE_CAP    = 0.95
+    TRAIN_MULT_STEP_311 = 0.5   # 3.1.1 훈련 보상 배율: 레벨마다 +0.5배 (예전엔 +1배)
     TRAIN_TIERS = [             # (시작 레벨, 등급) — 표시용
         (1, "🌱 유스"), (3, "🥉 2군"), (5, "🥈 1군"), (7, "🥇 주전"), (9, "⭐ 에이스"), (10, "👑 레전드"),
     ]
@@ -530,7 +538,9 @@ class Economy(commands.Cog):
             (p0, _), (pm, _), (p1, _) = BANKRUPT_310
             forgive = f"**0%** ({p0:.0%} 확률) · **{lo:.0%} ~ {hi:.0%}** ({pm:.0%}) · **100%** ({p1:.0%}) 중 하나로 탕감돼요"
             if n := await self.db.lawyers(user.id):
-                forgive += f"\n　⚖️ 선임된 변호사 **{n}명** — 0%가 나오면 다시 변론해 줘요"
+                forgive += (f"\n　⚖️ 선임된 변호사 **{n}명** — "
+                            + ("100%가 아니면 다시 변론해 더 나은 쪽으로 바꿔 줘요" if release.preview_311(getattr(interaction, "guild_id", None))
+                               else "0%가 나오면 다시 변론해 줘요"))
         else:
             forgive = f"**{lo:.0%} ~ {hi:.0%}** 가 랜덤으로 탕감돼요"
         e = ui.card("⚖️ 정말 파산 신청할까요?",
@@ -544,31 +554,32 @@ class Economy(commands.Cog):
 
     # ✅ 훈련: 쿨타임 30초 + 하루 30회 + 레벨(Lv.N = 보상 N배)
     @staticmethod
-    def train_money_mult(level: int) -> int:
-        """보상·손실 배율 = 레벨 (Lv.1 1배 … Lv.10 10배)."""
-        return min(int(level), TRAIN_MAX_LEVEL)
+    def train_money_mult(level: int, v311: bool = False) -> float:
+        """보상·손실 배율 = 레벨 (Lv.1 1배 … Lv.10 10배). 3.1.1: 레벨마다 0.5배씩 (Lv.10 5.5배)."""
+        lv = min(int(level), TRAIN_MAX_LEVEL)
+        return 1 + (lv - 1) * Economy.TRAIN_MULT_STEP_311 if v311 else lv
 
     @classmethod
     def train_tier(cls, level: int) -> str:
         return [name for start, name in cls.TRAIN_TIERS if level >= start][-1]
 
-    def _train_roll(self, level: int, con=None):
+    def _train_roll(self, level: int, con=None, v311: bool = False):
         """(돈 변동, 경험치 변동, 표시 정보). 성공 +3 XP · 실패 -1 XP. 성공률은 레벨마다 조금씩 오르지만 화면엔 안 보인다."""
         ev = random.choice(self.TRAIN_EVENTS)
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
-        mult = self.train_money_mult(level)
+        mult = self.train_money_mult(level, v311)
         if random.random() >= rate:
             base = random.randint(*ev["lose"])
-            return base * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "base": base, "mult": mult}
+            return int(base * mult), -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "base": base, "mult": mult}
         base = random.randint(*ev["win"])
-        return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "base": base, "mult": mult}
+        return int(base * mult), 3, {"ev": ev, "ok": True, "line": ev["success_text"], "base": base, "mult": mult}
 
     @staticmethod
     def _settle_line(delta: int, info: dict, boost: bool = False) -> str:
         """`정산` 줄 — 레벨 배율이 붙으면 원금(기본 금액)도, 신인 부스트면 ×2 도 함께 보여준다."""
         line = f"`정산` **{ui.won(delta)}**"
         if info.get("mult", 1) > 1:
-            line += f" · 기본 {ui.won(info['base'])} × {info['mult']}배"
+            line += f" · 기본 {ui.won(info['base'])} × {info['mult']:g}배"
         if boost:
             line += f" · 🚀 신인 부스트 ×{ROOKIE_GRIND_MULT}"
         return line
@@ -583,13 +594,14 @@ class Economy(commands.Cog):
             xp = f"`{ui.bar(r['xp'], r['need'])}` {r['xp']}/{r['need']}"
             if xp_gain is not None:
                 xp += f" ({xp_gain:+d})"
-        return (f"`레벨` **Lv.{lv}** {tier} · 보상 **{mult}배**\n"
+        return (f"`레벨` **Lv.{lv}** {tier} · 보상 **{mult:g}배**\n"
                 f"`경험` {xp}\n"
                 f"`오늘` {r['used']}/{r['limit']}회")
 
     def _train_status(self, r: dict, xp_gain: int | None = None) -> str:
         lv = r["level"]
-        return self._grind_status(r, TRAIN_MAX_LEVEL, self.train_tier(lv), self.train_money_mult(lv), xp_gain)
+        return self._grind_status(r, TRAIN_MAX_LEVEL, self.train_tier(lv), self.train_money_mult(lv, r.get("v311", False)),
+                                  xp_gain)
 
     async def _grind_blocked(self, interaction, r: dict, now_ts: int, card, status: str,
                              limit_text: tuple, wait_text: tuple, ready_text: tuple):
@@ -621,7 +633,9 @@ class Economy(commands.Cog):
         user = interaction.user
         now_ts = int(time.time())
         try:
-            r = await self.db.play_training(user.id, now_ts, self._train_roll, cooldown_sec=self.TRAIN_COOLDOWN)
+            v311 = release.preview_311(getattr(interaction, "guild_id", None))   # 3.1.1 레벨 간격 2배 · 배율 낮춤
+            r = await self.db.play_training(user.id, now_ts, lambda lv, con=None: self._train_roll(lv, con, v311),
+                                            cooldown_sec=self.TRAIN_COOLDOWN, v311=v311)
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
 
@@ -656,8 +670,8 @@ class Economy(commands.Cog):
         if r["leveled"]:
             new_tier = self.train_tier(r["level"])
             promo = f"**{new_tier} 승격!** " if new_tier != self.train_tier(old_lv) else ""
-            e.description += (f"\n\n🆙 {promo}보상 {self.train_money_mult(old_lv)}배 → "
-                              f"**{self.train_money_mult(r['level'])}배**")
+            e.description += (f"\n\n🆙 {promo}보상 {self.train_money_mult(old_lv, r['v311']):g}배 → "
+                              f"**{self.train_money_mult(r['level'], r['v311']):g}배**")
         if r["used"] >= r["limit"]:
             e.description += "\n\n🔓 오늘 훈련 완료! 이제 `/직관`을 할 수 있어요."
         e.set_thumbnail(url=ui.result_thumb(ev["emoji"], color, user,
@@ -1020,11 +1034,12 @@ class Economy(commands.Cog):
         emoji, name, _ = ITEMS[item]
         table = SKIP_ITEMS[item]
         what = self.GRIND_NAMES[table]
+        v311 = release.preview_311(_gid(user))   # 3.1.1 훈련 레벨 간격 · 배율
         roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id),
-                "training": self._train_roll,
+                "training": lambda lv, con=None: self._train_roll(lv, con, v311),
                 "spectating": lambda lv, con: self._watch_roll(lv, con, user.id, release.preview_310(_gid(user)))}[table]
         status = {"scouting": self._scout_status, "training": self._train_status, "spectating": self._watch_status}[table]
-        r = await self.db.use_skip(user.id, item, int(time.time()), roll)
+        r = await self.db.use_skip(user.id, item, int(time.time()), roll, v311)
         if not r["ok"]:
             if r["reason"] == "none":
                 return self._no_item_card(user, item), False
@@ -1484,6 +1499,8 @@ class Economy(commands.Cog):
         (7, 1, "🎫 컨퍼런스리그 진출"), (12, 0, "😐 중위권"), (17, -3, "😰 하위권"), (20, -15, "⬇️ 강등"),
     ]
 
+    LEAGUE_GAPS_311 = (5.0, 3.0, 3.5)   # 3.1.1 /리그 화면 간격(초): 개막(배당표) 뒤 · 중간 순위 사이 · 최종 순위 전
+
     @classmethod
     def league_odds_text(cls) -> str:
         """시즌 시작 화면의 구간별 확률 · 배당표 (3.1.0)."""
@@ -1555,12 +1572,14 @@ class Economy(commands.Cog):
             if new:
                 opening.description += "\n\n" + self.league_odds_text()
             msg = await interaction.followup.send(embed=opening, wait=True)
-            for stage, _rnd in self.LEAGUE_ROUNDS:
-                await asyncio.sleep(1.3)
+            slow = release.preview_311(getattr(getattr(interaction, "guild", None), "id", None))   # 3.1.1: 화면마다 읽을 시간을 더 준다
+            first, gap, last = self.LEAGUE_GAPS_311 if slow else (1.3, 1.3, 1.5)
+            for i, (stage, _rnd) in enumerate(self.LEAGUE_ROUNDS):
+                await asyncio.sleep(first if i == 0 else gap)
                 mid = max(1, min(20, rank + random.randint(-5, 5)))   # 시즌 중 순위는 오르내린다
                 await msg.edit(embed=self._caster_card(
                     user, f"📊 {stage} — {mine} {mid}위", f"{league} {stage}! 현재 {mid}위를 달리고 있습니다.", ui.DARK, sec))
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(last)
             await msg.edit(embed=final)
         except discord.HTTPException:
             await interaction.followup.send(embed=final)

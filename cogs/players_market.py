@@ -190,6 +190,11 @@ class _SkipView(discord.ui.View):
 
 
 SHOP_SECTION = {"pack": "🃏 선수팩 상점", "item": "🎒 아이템 상점"}
+
+
+def _short_won(n: int) -> str:
+    """30000000 → '3,000만원' · 2000 → '2,000원'."""
+    return f"{n // 10_000:,}만원" if n >= 10_000 and n % 10_000 == 0 else f"{n:,}원"
 SHOP_COMMAND = {"pack": "/선수팩상점", "item": "/아이템상점"}
 
 
@@ -911,7 +916,8 @@ class PlayersMarket(commands.Cog):
     @app_commands.command(name="아이템상점", description="아이템을 사고팝니다 (판매는 원가의 50%)")
     async def item_shop(self, interaction: discord.Interaction):
         e, view = await self._shop_screen(interaction.user, "item")
-        await interaction.response.send_message(embed=e, view=view)
+        # 3.1.1: 상점 화면은 나만 보이고, 사고판 결과만 채널에 올라간다
+        await interaction.response.send_message(embed=e, view=view, ephemeral=release.preview_311(interaction.guild_id))
 
     async def _shop_screen(self, user, kind: str) -> tuple[discord.Embed, ShopView]:
         """선수팩 상점: 잔액 · 팩 목록. 아이템 상점: 잔액 · 살 것(아이템) · 팔 것(가진 아이템). + 메뉴."""
@@ -924,6 +930,18 @@ class PlayersMarket(commands.Cog):
             e.set_footer(text=f"아래 메뉴에서 팩을 고르면 1~{PACK_MAX_PULLS}장 선택 · 팩별 가격대 · 잭팟은 /팩정보 · 아이템은 /아이템상점")
             return e, ShopView(self, user, inv, kind)
         bought = await self.money.shop_bought_today(user.id, int(time.time()))
+        if release.preview_311(_gid(user)):   # 3.1.1 보기 편하게: 묶음마다 한 줄씩 (설명은 아래 메뉴에)
+            for group, keys in SHOP_GROUPS:
+                keys = [k for k in keys if shop_open(k, guild_id=_gid(user))]
+                if keys:
+                    e.add_field(name=group, inline=True, value="\n".join(
+                        f"{ITEMS[k][0]} {ITEMS[k][1]} **{_short_won(SHOP_PRICES[k])}**"
+                        + (f" ({bought.get(k, 0)}/{SHOP_DAILY_LIMITS[k]})" if k in SHOP_DAILY_LIMITS else "") for k in keys))
+            have = [f"{ITEMS[k][0]} {ITEMS[k][1]} ×{inv[k]}" for k in SELL_PRICES if inv.get(k) and shop_open(k, guild_id=_gid(user))]
+            e.add_field(name="🎒 내 가방 (팔면 원가의 50%)", value=(" · ".join(have))[:1024] or "팔 수 있는 아이템이 없어요.",
+                        inline=False)
+            e.set_footer(text="🛒 메뉴에서 고르면 설명과 함께 몇 개 살지 정해요 · 💸 팔기는 아래 메뉴 · 이 화면은 나만 보여요")
+            return e, ShopView(self, user, inv, kind)
         for group, keys in SHOP_GROUPS:
             keys = [k for k in keys if shop_open(k, guild_id=_gid(user))]
             if not keys:

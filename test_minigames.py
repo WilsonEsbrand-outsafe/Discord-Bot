@@ -123,7 +123,7 @@ def test_league():
                 await Economy.league.callback(eco, inter, 10_000)
                 final = sent[-1]
                 rank = int(final.title.rsplit(" ", 1)[1].rstrip("위"))
-                assert await eco.db.get_balance(user.id) - before == 10_000 * Economy.league_payout(rank)[0]
+                assert await eco.db.get_balance(user.id) - before == 10_000 * Economy.league_payout(rank, ce.release.released_310())[0]
                 assert "감독 FC** 👈" in final.description and len(sent) >= 5    # 개막 + 3장면 + 최종
                 leagues.add(final.description.split("`리그` ")[1].split(" ·")[0])
             assert len(leagues) > 1 and leagues <= set(Economy.LEAGUES)          # 리그는 매번 랜덤

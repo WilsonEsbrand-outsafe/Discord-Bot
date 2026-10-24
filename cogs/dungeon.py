@@ -298,7 +298,8 @@ class Dungeon(commands.Cog):
         if not team:
             return await interaction.response.send_message("🙅 구단이 없어요.", ephemeral=True)
         new = release.preview_2101(interaction.guild_id)   # 2.10.1 던전 난이도 · 보상 (테스트 서버 먼저)
-        r = await self.db.start(interaction.user.id, team_stats(team["lineup"], new), int(time.time()), torch, self.rng, new)
+        r = await self.db.start(interaction.user.id, team_stats(team["lineup"], new), int(time.time()), torch, self.rng, new,
+                                v311=release.preview_311(interaction.guild_id))   # 3.1.1 보상 · 난이도 너프
         if not r["ok"]:
             return await self.show_entry(interaction, edit=True,
                                          note="⏸️ 이미 진행 중이에요." if r["reason"] == "active" else "😴 오늘은 다 들어갔어요.")
