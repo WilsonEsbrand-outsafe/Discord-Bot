@@ -117,10 +117,10 @@ def test_320():
     assert "3.1.1" not in PATCH_NOTES and "장부" not in note and "체크리스트" not in note and len(note) < 1200
     keys = {k: ts for k, ts, *_ in NOTICES}
     start, end = release.MAINTENANCE
-    assert (start, end) == (calendar.timegm((2026, 10, 24, 22, 0, 0)), calendar.timegm((2026, 10, 24, 22, 10, 0)))   # 07:00 ~ 07:10 KST
+    assert (start, end) == (calendar.timegm((2026, 10, 24, 21, 30, 0)), calendar.timegm((2026, 10, 24, 22, 0, 0)))   # 06:30 ~ 07:00 KST
     assert keys["maint-3.2.0"] == keys["patch-3.2.0"] == calendar.timegm((2026, 10, 24, 21, 0, 0)) < start   # 06:00 KST 미리 발송
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.2.0")
-    assert "07:00 ~ 07:10" in body
+    assert "06:30 ~ 07:00" in body
     assert P.notice_text("maint-3.2.0", title, body, keys["maint-3.2.0"]) == (title, body)
     assert P.notice_text("maint-3.2.0", title, body, end)[0] == "✅ 점검 완료 안내"
     # 기능은 점검 시작 전엔 테스트 서버만
