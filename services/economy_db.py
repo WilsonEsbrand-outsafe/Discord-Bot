@@ -17,6 +17,7 @@ TRAIN_MAX_LEVEL = 10
 TRAIN_DAILY_LIMIT = 30
 # Lv.N → Lv.N+1 에 필요한 XP. 레벨이 오를수록 크게 늘어난다 (만렙까지 합계 10,410 XP ≈ 하루 약 65 XP 기준 5개월 남짓).
 TRAIN_XP_NEED = (60, 150, 300, 500, 800, 1200, 1700, 2400, 3300)
+TRAIN_XP_NEED_311 = (120, 300, 600, 1000, 1600, 2400, 3400, 4800, 6600)   # 3.1.1: 레벨 간격 2배 (release.preview_311 서버)
 
 # 스카우트: 훈련의 상위 버전 — 하루 15회, 최대 Lv.5.
 # 만렙까지 합계 4,920 XP ≈ 하루 약 30 XP 기준 5개월 남짓.
@@ -114,9 +115,14 @@ SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST
 SHOP_BASE = ("muffler", "steroid")
 
 
+ARCHERY_ITEMS = ("bow_pro", "windbreaker", "focus")   # 3.1.1 에 없어진 양궁 아이템 — 공개 때 가진 만큼 상점 원가로 돈 환불
+
+
 def shop_open(item: str, now_ts: Optional[float] = None, guild_id: Optional[int] = None) -> bool:
     """/아이템상점에서 지금 사고팔 수 있는 아이템인가 (3.1.0 새 아이템은 그 서버가 3.1.0 공개 서버일 때만)."""
     if item in SHOP_310 and not release.preview_310(guild_id, now_ts):
+        return False
+    if item in ARCHERY_ITEMS and release.preview_311(guild_id, now_ts):   # 3.1.1 양궁 아이템 삭제
         return False
     return item in ITEM_PRICES and (item in SHOP_BASE or (time.time() if now_ts is None else now_ts) >= SHOP_281_TS)
 
@@ -227,8 +233,10 @@ def _kst_day(ts: int) -> int:
     return (int(ts) + 9 * 3600) // 86400
 
 
-def grind_xp_need(table: str, level: int) -> int:
+def grind_xp_need(table: str, level: int, v311: bool = False) -> int:
     max_level, _, need = GRIND_RULES[table]
+    if v311 and table == "training":
+        need = TRAIN_XP_NEED_311
     return need[min(int(level), max_level - 1) - 1]
 
 
@@ -236,12 +244,12 @@ def train_xp_need(level: int) -> int:
     return grind_xp_need("training", level)
 
 
-def grind_add_xp(table: str, level: int, xp: int, gain: int) -> tuple[int, int, int]:
+def grind_add_xp(table: str, level: int, xp: int, gain: int, v311: bool = False) -> tuple[int, int, int]:
     """경험치 반영 → (레벨, 경험치, 오른 레벨 수). 레벨 안에서 0 아래로는 안 내려가고(레벨 다운 없음), 만렙이면 0."""
     max_level = GRIND_RULES[table][0]
     xp, leveled = max(0, xp + int(gain)), 0
-    while level < max_level and xp >= grind_xp_need(table, level):
-        xp -= grind_xp_need(table, level)
+    while level < max_level and xp >= grind_xp_need(table, level, v311):
+        xp -= grind_xp_need(table, level, v311)
         level += 1
         leveled += 1
     return level, (0 if level >= max_level else xp), leveled
@@ -629,6 +637,23 @@ class EconomyDB:
         row = con.execute("SELECT uses FROM buffs WHERE user_id=? AND item='lawyer'", (user_id,)).fetchone()
         return int(row[0]) if row else 0
 
+    async def refund_archery(self) -> list[tuple[int, int]]:
+        """3.1.1 양궁 아이템 삭제: 가진 고급 활 · 바람막이 · 집중 물약을 상점 원가로 돈 환불하고 가방에서 지운다.
+        여러 번 불러도 한 번만 환불된다 (지운 뒤엔 남은 게 없다). [(user_id, 환불액)]."""
+        def fn(con):
+            marks = ",".join("?" * len(ARCHERY_ITEMS))
+            rows = con.execute(f"SELECT user_id, item, qty FROM inventory WHERE item IN ({marks}) AND qty > 0",
+                               ARCHERY_ITEMS).fetchall()
+            pay: dict[int, int] = {}
+            for uid, item, qty in rows:
+                pay[uid] = pay.get(uid, 0) + int(qty) * ITEM_PRICES[item]
+            for uid, amount in pay.items():
+                con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (uid,))
+                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, uid))
+            con.execute(f"DELETE FROM inventory WHERE item IN ({marks})", ARCHERY_ITEMS)
+            return sorted(pay.items())
+        return await self._tx(fn)
+
     async def lawyers(self, user_id: int) -> int:
         """나에게 선임된 변호사 수 (3.1.0)."""
         return await self._tx(lambda con: self._lawyers(con, user_id))
@@ -645,10 +670,11 @@ class EconomyDB:
             return {"ok": True, "uses": self._lawyers(con, target_id)}
         return await self._tx(fn)
 
-    async def declare_bankruptcy(self, user_id: int, now_ts: int, rng=random, new: bool = False) -> dict:
+    async def declare_bankruptcy(self, user_id: int, now_ts: int, rng=random, new: bool = False, v311: bool = False) -> dict:
         """파산: 진행 중 스폰서 계약을 강제 해지해 원금으로 빚을 갚고, 남은 빚의 30~70% 를 랜덤 탕감한다.
         선수 카드는 건드리지 않는다. 실패 reason: not_negative / cooldown(until).
-        new = 3.1.0: 탕감이 0% · 30~70% · 100% 중 하나 (BANKRUPT_310)."""
+        new = 3.1.0: 탕감이 0% · 30~70% · 100% 중 하나 (BANKRUPT_310).
+        v311 = 3.1.1: 선임한 변호사는 0% 뿐 아니라 100% 가 아니면 언제든 다시 변론한다 (더 나은 쪽)."""
         def fn(con):
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
@@ -666,10 +692,17 @@ class EconomyDB:
                             "WHERE user_id=? AND status='active'", (user_id,))
             after = bal + sponsor
             rate = rng.uniform(*BANKRUPT_FORGIVE)
-            lawyer = False
+            lawyer, before = False, 0.0
             if new:
                 pick = rng.choices([r for _, r in BANKRUPT_310], weights=[p for p, _ in BANKRUPT_310])[0]
-                if pick == 0.0 and after < 0:
+                if v311 and pick != 1.0 and after < 0 and self._lawyers(con, user_id) > 0:
+                    first = rate if pick is None else pick
+                    con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
+                    rest = [(p, r) for p, r in BANKRUPT_310 if r != 0.0]
+                    again = rng.choices([r for _, r in rest], weights=[p for p, _ in rest])[0]
+                    again = rng.uniform(*BANKRUPT_FORGIVE) if again is None else again
+                    pick, lawyer, before = max(first, again), True, first   # before = 변론 전 탕감률 (화면에 '30% → 55%')
+                elif pick == 0.0 and after < 0:
                     if self._lawyers(con, user_id) > 0:   # ⚖️ 선임한 변호사가 다시 변론 (0% 빼고)
                         con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
                         rest = [(p, r) for p, r in BANKRUPT_310 if r != 0.0]
@@ -683,7 +716,7 @@ class EconomyDB:
             con.execute("UPDATE wallets SET balance=? WHERE user_id=?", (new_bal, user_id))
             con.execute("INSERT INTO bankruptcy(user_id, last_ts, times) VALUES(?, ?, 1) "
                         "ON CONFLICT(user_id) DO UPDATE SET last_ts=excluded.last_ts, times=times+1", (user_id, now_ts))
-            return {"ok": True, "debt": -bal, "sponsor": sponsor, "rate": rate if after < 0 else 0.0, "lawyer": lawyer,
+            return {"ok": True, "debt": -bal, "sponsor": sponsor, "rate": rate if after < 0 else 0.0, "lawyer": lawyer, "before": before,
                     "forgiven": forgiven, "balance": new_bal, "next": now_ts + BANKRUPT_COOLDOWN}
         return await self._tx(fn)
 
@@ -1524,9 +1557,9 @@ class EconomyDB:
             return await self._run(work)
 
     # ✅ 훈련: 하루 횟수 제한 + 레벨(성공률·보상 증가)
-    async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30) -> dict:
-        """훈련은 그날 스카우트를 전부(15회) 마쳐야 열린다."""
-        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec)
+    async def play_training(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 30, v311: bool = False) -> dict:
+        """훈련은 그날 스카우트를 전부(15회) 마쳐야 열린다. v311: 3.1.1 레벨 간격 (TRAIN_XP_NEED_311)."""
+        return await self._play_grind("training", user_id, now_ts, roll, cooldown_sec, v311=v311)
 
     async def play_scout(self, user_id: int, now_ts: int, roll, cooldown_sec: int = 60) -> dict:
         return await self._play_grind("scouting", user_id, now_ts, roll, cooldown_sec)
@@ -1535,9 +1568,9 @@ class EconomyDB:
         """직관은 그날 훈련을 전부(30회) 마쳐야 열린다 (훈련은 스카우트 15회 뒤) — 스카우트 → 훈련 → 직관."""
         return await self._play_grind("spectating", user_id, now_ts, roll, cooldown_sec)
 
-    async def use_skip(self, user_id: int, item: str, now_ts: int, roll) -> dict:
+    async def use_skip(self, user_id: int, item: str, now_ts: int, roll, v311: bool = False) -> dict:
         """스킵권: 오늘 남은 횟수를 쿨타임 없이 한 번에 돌려 결과(돈 · 경험치 · 선수 · 아이템)를 그대로 받는다."""
-        return await self._play_grind(SKIP_ITEMS[item], user_id, now_ts, roll, 0, skip_item=item)
+        return await self._play_grind(SKIP_ITEMS[item], user_id, now_ts, roll, 0, skip_item=item, v311=v311)
 
     # ───────────── 아이템 ─────────────
     async def inventory(self, user_id: int) -> tuple[dict[str, int], dict[str, int]]:
@@ -1728,7 +1761,7 @@ class EconomyDB:
         return await self._tx(fn)
 
     async def _play_grind(self, table: str, user_id: int, now_ts: int, roll, cooldown_sec: int,
-                          skip_item: str | None = None) -> dict:
+                          skip_item: str | None = None, v311: bool = False) -> dict:
         """
         레벨·경험치·일일 횟수가 있는 반복 콘텐츠(스카우트·훈련·직관) 공용.
         roll(level, con) -> (delta, xp_gain, info) 를 트랜잭션 안에서 호출해 결과를 반영한다.
@@ -1760,7 +1793,7 @@ class EconomyDB:
                     cap = limit + (int(bonus) if today_bonus else 0)   # 리셋권으로 늘어난 오늘 횟수
                     # 화면의 `오늘 N/M` 은 마지막 리셋권 이후 기준 (15/15 에서 리셋 → 0/15)
                     off = int(bonus_from) if today_bonus else 0
-                    base = {"ok": False, "level": level, "xp": xp, "need": grind_xp_need(table, level),
+                    base = {"ok": False, "level": level, "xp": xp, "need": grind_xp_need(table, level, v311), "v311": v311,
                             "used": used - off, "limit": cap - off}
 
                     def fail(**why):
@@ -1795,7 +1828,7 @@ class EconomyDB:
                         delta, xp_gain, info = roll(level, con)
                         total, gained = total + int(delta), gained + int(xp_gain)
                         infos.append(info)
-                        level, xp, up = grind_add_xp(table, level, xp, xp_gain)
+                        level, xp, up = grind_add_xp(table, level, xp, xp_gain, v311)
                         leveled += up
                     used += plays
                     # 신인 부스트: 처음 시작하고 ROOKIE_DAYS 일 동안 +보상 ×2 (손실은 그대로)
@@ -1812,7 +1845,7 @@ class EconomyDB:
                     )
                     new_bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
                     con.execute("COMMIT;")
-                    return {"ok": True, "level": level, "xp": xp, "need": grind_xp_need(table, level),
+                    return {"ok": True, "level": level, "xp": xp, "need": grind_xp_need(table, level, v311), "v311": v311,
                             "used": used - off, "limit": cap - off, "leveled": leveled, "new_bal": int(new_bal),
                             "delta": total, "info": infos[-1], "infos": infos, "plays": plays, "xp_gain": gained,
                             "boost": boost}

@@ -15,6 +15,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 import release
+from services import spam
 from auth import OWNER_ID, collect_owner_commands, is_owner_command, owner_only, owner_only_error
 
 # ───────────────── 설정 ─────────────────
@@ -300,6 +301,9 @@ async def _tree_check(interaction: discord.Interaction) -> bool:
             f"🔧 정기점검 중입니다. (<t:{start}:t> ~ <t:{end}:t>) 점검이 끝나면 다시 이용해 주세요.", ephemeral=True)
         return False
     name = (interaction.command.qualified_name if interaction.command else "").split(" ")[0]
+    if release.preview_311(interaction.guild_id) and not spam.check(interaction.user.id, name):   # 3.1.1 연타 막기
+        await interaction.response.send_message(spam.line(), ephemeral=True)
+        return False
     if release.preview(interaction.guild_id):   # 2.8: 새 유저는 🎓 입문 튜토리얼부터 (구단도 그 안에서 만든다)
         if name not in ONBOARD_FREE and await asyncio.to_thread(_onboard_state, interaction.user.id) == "tutorial":
             await interaction.response.send_message(
@@ -354,6 +358,11 @@ async def on_ready():
     for gid in ORDERED_GUILD_IDS:
         await sync_guild(discord.Object(id=gid))
         await asyncio.sleep(1.5)
+    # 3.1.1: 목록에 없는 서버도 켤 때마다 동기화 — 안 하면 없어진 명령어가 그 서버 / 목록에 계속 남는다
+    for guild in bot.guilds:
+        if guild.id not in ORDERED_GUILD_IDS:
+            await sync_guild(guild)
+            await asyncio.sleep(1.5)
     
     # ───────────────── 시장/월 처리 루프 시작 ─────────────────
     # 중복 실행 방지
@@ -777,13 +786,14 @@ def _flatten_commands(cmds: list[app_commands.Command]) -> list[tuple[str, str, 
 
     return out
 
-def build_user_help_embeds(bot: commands.Bot) -> list[discord.Embed]:
+def build_user_help_embeds(bot: commands.Bot, guild_id: Optional[int] = None) -> list[discord.Embed]:
     raw_cmds = bot.tree.get_commands()
     flat = _flatten_commands(raw_cmds)
+    gone = release.hidden_commands(guild_id)   # 3.1.1: 이 서버에서 없어진(또는 아직 안 나온) 명령어는 안내에서도 뺀다
 
     filtered = [
         (n, d, c) for (n, d, c) in flat
-        if not is_owner_command(c) and c.name not in HIDDEN_COMMANDS
+        if not is_owner_command(c) and c.name not in HIDDEN_COMMANDS and c.name not in gone
     ]
 
     buckets: dict[str, list[tuple[str, str]]] = {}
@@ -844,7 +854,7 @@ class UserHelpView(discord.ui.View):
 
 @bot.tree.command(name="명령어", description="일반 유저용 축구 봇 명령어 안내(드롭다운)")
 async def user_help(interaction: discord.Interaction):
-    embeds = build_user_help_embeds(bot)
+    embeds = build_user_help_embeds(bot, interaction.guild_id)
     view = UserHelpView(embeds)
 
     if not interaction.channel or not isinstance(interaction.channel, discord.abc.Messageable):

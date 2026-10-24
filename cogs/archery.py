@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw
 
+import release
 from services import archery as A
 from services import ui
 from services.economy_db import ITEMS, EconomyDB
@@ -251,6 +252,8 @@ class Archery(commands.Cog):
                 ui.LOSE, user, SECTION))
         archer = A.pick_archer()
         inv, _ = await self.db.inventory(user.id)
+        if release.preview_311(interaction.guild_id):   # 3.1.1 양궁 아이템 삭제 — 고를 아이템 없이 바로
+            inv = {k: v for k, v in inv.items() if k not in ITEM_KEYS}
         await self.db.add_balance(user.id, -amount)
         view = StartView(self, user, amount, archer, inv)
         try:
