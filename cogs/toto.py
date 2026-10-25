@@ -475,7 +475,7 @@ class Toto(commands.Cog):
         now_ts = int(time.time())
         rows = await self.db.toto_list_open_matches(now_ts, limit=15)
         live = await self.db.toto_list_in_progress(now_ts, limit=10)
-        fights = (await upcoming_fights(ufc_only=new))[:25 if release.preview_2101(interaction.guild_id) else 8]   # 2.9.1: 대진 전체 (메뉴는 종목별로 나눠 25개씩)
+        fights = (await upcoming_fights(ufc_only=new, pairs=release.preview_321(interaction.guild_id)))[:25 if release.preview_2101(interaction.guild_id) else 8]   # 2.9.1: 대진 전체 (메뉴는 종목별로 나눠 25개씩)
 
         games, options = {}, []
         soccer, ufc = [], []   # [(시각, 2.9.1 줄, 예전 줄)]
