@@ -112,7 +112,7 @@ async def _fetch_ufc_names() -> set[str]:
     return _ufc_cache["names"]
 
 
-FIGHTS_CACHE_TTL = 300  # 초 — 짧은 시간 내 중복 호출로 크레딧 낭비 방지
+FIGHTS_CACHE_TTL = 3 * 3600  # 초 — 3.2.1: 5분 → 3시간. 무료 월 500 크레딧을 /토토 열 때마다 UFC 배당이 깎아 먹었다
 _fights_cache: dict = {"data": [], "ts": 0.0}
 
 
@@ -183,6 +183,10 @@ async def upcoming_fights(ufc_only: bool = True, pairs: bool = False) -> list[di
     except Exception as e:
         log.warning(f"[UFC] 경기 조회 실패: {e}")
         return []
+
+
+# 3.2.1: Odds API 결과 조회는 30분마다 2크레딧(하루 최대 96)이라 끈다 — 정산은 ESPN 결과(무료)로 한다.
+ODDS_SCORES = False
 
 
 async def _fetch_scores() -> list[dict]:
@@ -280,15 +284,14 @@ class UfcToto(commands.Cog):
 
     @tasks.loop(minutes=30)
     async def _auto_settle_poll(self):
-        if not ODDS_API_KEY:
-            return
         if not await self.db.has_unsettled_bets():
             return  # 베팅이 없으면 API 호출 자체를 건너뛰어 크레딧 절약
-        try:
-            scores = await _fetch_scores()
-        except Exception as e:
-            log.warning(f"[UFC] 스코어 조회 실패: {e}")
-            scores = []
+        scores = []
+        if ODDS_API_KEY and ODDS_SCORES:
+            try:
+                scores = await _fetch_scores()
+            except Exception as e:
+                log.warning(f"[UFC] 스코어 조회 실패: {e}")
 
         for event in scores:
             if not event.get("completed"):
