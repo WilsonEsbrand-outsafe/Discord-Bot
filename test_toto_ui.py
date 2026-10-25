@@ -38,7 +38,7 @@ async def _flow():
     await cog.db.add_balance(U, 100_000)
     fight = {"event_id": "e1", "match_id": "A|B", "home": "A", "away": "B", "home_odds": 1.5, "away_odds": 2.6,
              "commence_time": "2099-01-01T00:00:00Z"}
-    async def fake_fights(ufc_only=True):
+    async def fake_fights(ufc_only=True, pairs=False):
         return [fight]
     ct.upcoming_fights = fake_fights
 
@@ -128,6 +128,21 @@ def test_by_day_and_ufc_filter():
     assert is_ufc_fight({"home": "Jose Aldo", "away": "X"}, names)                    # 악센트 · Jr 무시
     assert is_ufc_fight({"home": "Patricio Freire", "away": "A. Pereira"}, names)     # 이름 첫 글자만
     assert not is_ufc_fight({"home": "Patricio Freire", "away": "Usman Nurmagomedov"}, names)   # 다른 단체
+    # 3.2.1: 두 선수가 같은 대진에 잡혀 있어야 한다 (한 선수만 UFC 대진에 있으면 예정 안 된 경기)
+    from cogs.ufc_toto import _pair_keys, is_card_fight, espn_results, match_result
+    pairs = _pair_keys("José Aldo Jr.", "Alex Pereira")
+    assert is_card_fight({"home": "A. Pereira", "away": "Jose Aldo"}, pairs)
+    assert not is_card_fight({"home": "Jose Aldo", "away": "Patricio Freire"}, pairs)
+    ev = [{"competitions": [
+        {"status": {"type": {"completed": True}}, "competitors": [
+            {"athlete": {"displayName": "José Aldo Jr."}, "winner": False},
+            {"athlete": {"displayName": "Alex Pereira"}, "winner": True}]},
+        {"status": {"type": {"completed": False}}, "competitors": [
+            {"athlete": {"displayName": "Jon Jones"}}, {"athlete": {"displayName": "Tom Aspinall"}}]}]}]
+    res = espn_results(ev)
+    assert match_result("Alex Pereira|Jose Aldo", "Alex Pereira", res) == "won"
+    assert match_result("Alex Pereira|Jose Aldo", "Jose Aldo", res) == "lost"
+    assert match_result("Jon Jones|Tom Aspinall", "Jon Jones", res) is None        # 아직 안 끝남
     from cogs.ufc_toto import card_rank
     rank = {**dict.fromkeys(_name_keys("Alex Pereira"), 13), **dict.fromkeys(_name_keys("Jose Aldo"), 2)}
     assert card_rank({"home": "Alex Pereira", "away": "X"}, rank) == 13 and card_rank({"home": "A", "away": "B"}, rank) == -1

@@ -28,6 +28,9 @@ def main():
         old = await db.get_bet("A|B", 1)                                     # 예전 베팅도 옮겨졌다
         assert old and old["amount"] == 1000 and old["match_id"] == "A|B"
         assert await db.is_settled("C|D") and await db.has_unsettled_bets()
+        # 3.2.1: 베팅 하나씩 정산 — 두 번째는 False (두 번 지급 막기)
+        bet = (await db.list_unsettled())[0]
+        assert await db.settle_bet(bet["id"], True) and not await db.settle_bet(bet["id"], True)
     asyncio.run(flow())
 
     con = sqlite3.connect(path)

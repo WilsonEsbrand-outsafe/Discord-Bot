@@ -27,7 +27,10 @@ MMA_COLOR      = 0xE8003D
 UFC_CARD_URL = "https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard"
 UFC_CARD_DAYS = 30
 UFC_CARD_TTL = 6 * 3600
-_ufc_cache: dict = {"names": set(), "rank": {}, "ts": 0.0}   # rank: 이름 키 → 대진표 순서 (클수록 메인이벤트 쪽)
+UFC_SETTLE_DAYS = 30   # 3.2.1: 정산 때 ESPN 결과를 며칠 전까지 본다
+_ufc_cache: dict = {"names": set(), "rank": {}, "pairs": set(), "ts": 0.0}   # rank: 이름 키 → 대진표 순서 (클수록 메인이벤트 쪽)
+# 3.2.1: pairs = 대진표에 같이 잡힌 두 선수의 이름 키 쌍. 한 선수만 UFC 대진에 있어도 통과시키던 탓에
+# Odds API 에 미리 올라온 (아직 잡히지 않은 · 다른 날 · 다른 단체) 경기가 /토토 에 섞여 나왔다.
 
 
 def _norm(name: str) -> str:
@@ -57,35 +60,55 @@ def is_ufc_fight(fight: dict, ufc_names: set[str]) -> bool:
     return any(_name_keys(fight[k]) & ufc_names for k in ("home", "away"))
 
 
-async def _fetch_ufc_names() -> set[str]:
-    now = time.monotonic()
-    if _ufc_cache["ts"] and now - _ufc_cache["ts"] < UFC_CARD_TTL:
-        return _ufc_cache["names"]
+def _pair_keys(a: str, b: str) -> set[frozenset]:
+    return {frozenset((x, y)) for x in _name_keys(a) for y in _name_keys(b)}
+
+
+def is_card_fight(fight: dict, pairs: set[frozenset]) -> bool:
+    """3.2.1: 두 선수가 ESPN 대진표의 같은 경기에 잡혀 있어야 한다."""
+    return bool(_pair_keys(fight["home"], fight["away"]) & pairs)
+
+
+def _athlete_names(c: dict) -> list[str]:
+    a = c.get("athlete") or {}
+    return [n for n in (a.get("displayName"), a.get("fullName"), c.get("displayName")) if n]
+
+
+async def _fetch_espn(days_back: int, days_ahead: int) -> list[dict] | None:
     today = datetime.now(timezone.utc)
-    params = {"dates": f"{(today - timedelta(days=1)):%Y%m%d}-{(today + timedelta(days=UFC_CARD_DAYS)):%Y%m%d}", "limit": 100}
+    params = {"dates": f"{(today - timedelta(days=days_back)):%Y%m%d}-{(today + timedelta(days=days_ahead)):%Y%m%d}", "limit": 100}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(UFC_CARD_URL, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     log.warning(f"[UFC] ESPN 대진표 응답 오류: {resp.status}")
-                    return _ufc_cache["names"]
-                data = await resp.json()
+                    return None
+                return (await resp.json()).get("events", [])
     except Exception as e:
         log.warning(f"[UFC] ESPN 대진표 조회 실패: {e}")
+        return None
+
+
+async def _fetch_ufc_names() -> set[str]:
+    now = time.monotonic()
+    if _ufc_cache["ts"] and now - _ufc_cache["ts"] < UFC_CARD_TTL:
+        return _ufc_cache["names"]
+    events = await _fetch_espn(1, UFC_CARD_DAYS)
+    if events is None:
         return _ufc_cache["names"]
     names: set[str] = set()
     rank: dict[str, int] = {}
-    for ev in data.get("events", []):
+    pairs: set[frozenset] = set()
+    for ev in events:
         for i, comp in enumerate(ev.get("competitions", [])):   # ESPN 은 언더카드 → 메인이벤트 순서
-            for c in comp.get("competitors", []):
-                a = c.get("athlete") or {}
-                for n in (a.get("displayName"), a.get("fullName"), c.get("displayName")):
-                    if n:
-                        keys = _name_keys(n)
-                        names |= keys
-                        rank.update(dict.fromkeys(keys, i))
+            sides = [set().union(*(_name_keys(n) for n in _athlete_names(c))) for c in comp.get("competitors", [])]
+            for keys in sides:
+                names |= keys
+                rank.update(dict.fromkeys(keys, i))
+            if len(sides) == 2:
+                pairs |= {frozenset((x, y)) for x in sides[0] for y in sides[1]}
     if names:
-        _ufc_cache.update(names=names, rank=rank, ts=now)
+        _ufc_cache.update(names=names, rank=rank, pairs=pairs, ts=now)
     return _ufc_cache["names"]
 
 
@@ -145,9 +168,9 @@ async def _fetch_fights() -> list[dict]:
     return fights
 
 
-async def upcoming_fights(ufc_only: bool = True) -> list[dict]:
+async def upcoming_fights(ufc_only: bool = True, pairs: bool = False) -> list[dict]:
     """베팅 가능한(시작 전) UFC 경기 — 다른 MMA 단체 경기는 뺀다 (ufc_only=False 면 2.9.1 전처럼 MMA 전부).
-    API 키가 없거나 조회에 실패하면 빈 목록."""
+    pairs=True(3.2.1) 면 두 선수가 같은 대진으로 잡힌 경기만. API 키가 없거나 조회에 실패하면 빈 목록."""
     if not ODDS_API_KEY:
         return []
     try:
@@ -155,7 +178,7 @@ async def upcoming_fights(ufc_only: bool = True) -> list[dict]:
         if not ufc_only:
             return fights
         ufc = await _fetch_ufc_names() if fights else set()
-        fights = [f for f in fights if is_ufc_fight(f, ufc)]
+        fights = [f for f in fights if (is_card_fight(f, _ufc_cache["pairs"]) if pairs else is_ufc_fight(f, ufc))]
         return sorted(fights, key=lambda f: (_kst_day(f), -card_rank(f, _ufc_cache["rank"]), f["commence_time"]))   # 같은 날은 메인이벤트부터
     except Exception as e:
         log.warning(f"[UFC] 경기 조회 실패: {e}")
@@ -167,6 +190,7 @@ async def _fetch_scores() -> list[dict]:
     async with aiohttp.ClientSession() as session:
         async with session.get(SCORES_API_URL, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:
+                log.warning(f"[UFC] 스코어 API 응답 오류: {resp.status}")   # 3.2.1: 조용히 빈 목록을 돌려줘 정산이 왜 안 되는지 안 보였다
                 return []
             return await resp.json()
 
@@ -184,6 +208,32 @@ def _determine_winner(event: dict) -> str | None:
         return max(numeric, key=lambda x: x[1])[0]
     except Exception:
         return None
+
+
+def espn_results(events: list[dict]) -> list[dict]:
+    """3.2.1: ESPN 대진표에서 승자가 나온 경기 → [{"pairs", "winner"(이름 키)}]. 무승부 · 무효는 건너뛴다."""
+    out = []
+    for ev in events:
+        for comp in ev.get("competitions", []):
+            st = (comp.get("status") or {}).get("type") or {}
+            cs = comp.get("competitors", [])
+            if not st.get("completed") or len(cs) != 2:
+                continue
+            sides = [set().union(*(_name_keys(n) for n in _athlete_names(c))) for c in cs]
+            win = next((k for c, k in zip(cs, sides) if c.get("winner")), None)
+            if win:
+                out.append({"pairs": {frozenset((x, y)) for x in sides[0] for y in sides[1]}, "winner": win})
+    return out
+
+
+def match_result(match_id: str, fighter: str, results: list[dict]) -> str | None:
+    """베팅 하나('홈|원정', 고른 선수) → 'won' · 'lost' · None(아직 결과 없음)."""
+    home, _, away = match_id.partition("|")
+    keys = _pair_keys(home, away)
+    for r in results:
+        if keys & r["pairs"]:
+            return "won" if _name_keys(fighter) & r["winner"] else "lost"
+    return None
 
 
 # ── 베팅 공통 로직 (/토토 에서 사용) ──────────────────────────────────────────
@@ -238,7 +288,7 @@ class UfcToto(commands.Cog):
             scores = await _fetch_scores()
         except Exception as e:
             log.warning(f"[UFC] 스코어 조회 실패: {e}")
-            return
+            scores = []
 
         for event in scores:
             if not event.get("completed"):
@@ -278,6 +328,37 @@ class UfcToto(commands.Cog):
                     embed.add_field(name="손실", value=f"{r['amount']:,}원", inline=True)
                 embed.add_field(name="내 픽", value=f"{r['fighter']} ({r['odds']:.2f}x)", inline=False)
                 await send_notify(self.bot, self.eco, r["user_id"], "UFC_결과", embed)
+        await self._settle_from_espn()
+
+    async def _settle_from_espn(self):
+        """3.2.1: Odds API 결과가 비거나 3일이 지나 사라진 경기는 ESPN 결과로 정산한다."""
+        bets = await self.db.list_unsettled()
+        if not bets:
+            return
+        events = await _fetch_espn(UFC_SETTLE_DAYS, 1)
+        if events is None:
+            return
+        results = espn_results(events)
+        for b in bets:
+            res = match_result(b["match_id"], b["fighter"], results)
+            if res is None:
+                continue
+            payout = int(b["amount"] * b["odds"]) if res == "won" else 0
+            if not await self.db.settle_bet(b["id"], res == "won"):
+                continue   # 그 사이 다른 정산이 먼저 했다
+            if payout:
+                await self.eco.add_balance(b["user_id"], payout)
+            home, _, away = b["match_id"].partition("|")
+            log.info(f"[UFC] ESPN 정산: {home} vs {away} · {b['fighter']} → {res}")
+            embed = discord.Embed(title="🥊 UFC 베팅 정산", description=f"**{home} vs {away}**", color=MMA_COLOR)
+            if res == "won":
+                embed.add_field(name="결과",   value="✅ 당첨!",            inline=True)
+                embed.add_field(name="수령액", value=f"**+{payout:,}원**", inline=True)
+            else:
+                embed.add_field(name="결과", value="❌ 낙첨",             inline=True)
+                embed.add_field(name="손실", value=f"{b['amount']:,}원", inline=True)
+            embed.add_field(name="내 픽", value=f"{b['fighter']} ({b['odds']:.2f}x)", inline=False)
+            await send_notify(self.bot, self.eco, b["user_id"], "UFC_결과", embed)
 
     @_auto_settle_poll.before_loop
     async def _before_poll(self):

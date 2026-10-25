@@ -114,6 +114,24 @@ class UfcDB:
             return row is not None
         return await self._run(_fn)
 
+    async def list_unsettled(self) -> list[sqlite3.Row]:
+        def _fn():
+            con = _connect()
+            rows = con.execute("SELECT * FROM ufc_bets WHERE settled=0 ORDER BY id").fetchall()
+            con.close()
+            return rows
+        return await self._run(_fn)
+
+    async def settle_bet(self, bet_id: int, won: bool) -> bool:
+        """3.2.1: 베팅 하나만 정산 표시. 이미 정산됐으면 False (두 번 지급 막기)."""
+        def _fn(bet_id, won):
+            con = _connect()
+            cur = con.execute("UPDATE ufc_bets SET settled=1, won=? WHERE id=? AND settled=0", (1 if won else 0, bet_id))
+            con.commit()
+            con.close()
+            return cur.rowcount == 1
+        return await self._run(_fn, bet_id, won)
+
     async def list_bets_for_user(self, user_id: int) -> list[sqlite3.Row]:
         def _fn(user_id):
             con = _connect()

@@ -98,6 +98,18 @@ def preview_311(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 LEGACY_311: set[str] = {"감독", "시설", "의료진", "선발", "주장", "포메이션", "자동편성"}   # 3.1.1 /구단 으로 합친 명령어
 
 
+# 3.2.1 — 테스트 서버 먼저. preview_321(guild): /토토 UFC 목록에 ESPN 대진표에 실제로 잡힌 대진(두 선수 모두)만. None = 아직
+RELEASE_321_TS: Optional[int] = None
+
+
+def released_321(now: Optional[float] = None) -> bool:
+    return RELEASE_321_TS is not None and _now(now) >= RELEASE_321_TS
+
+
+def preview_321(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_321(now)
+
+
 def maintenance(now: Optional[float] = None) -> bool:
     return MAINTENANCE is not None and MAINTENANCE[0] <= _now(now) < MAINTENANCE[1]
 
