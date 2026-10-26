@@ -152,7 +152,9 @@ COUPONS = {
     "PATCH25": ({"box": 1}, calendar.timegm((2026, 10, 8, 15, 0, 0))),   # 2.5 점검 보상 · 2026-10-09 00:00 KST 만료
     "PATCH310": ({"lawyer": 1}, calendar.timegm((2026, 11, 6, 15, 0, 0))),   # 3.1.0 변호사 선임권 · 2026-11-07 00:00 KST 만료
 }
+COUPONS["LEGALTOTO"] = ({"lawyer": 1}, calendar.timegm((2026, 11, 1, 15, 0, 0)))   # 3.3.0 점검 보상 · 2026-11-02 00:00 KST 만료
 COUPONS_310 = {"PATCH310"}   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 받는다
+COUPONS_321 = {"LEGALTOTO"}  # 3.3.0 공개(점검 시작) 뒤에만
 
 
 # 창단 멤버 영구 칭호 (2.8) — 마이그레이션으로 한 번만 지급 (eco_migrations 에 'founder-2.8' 표시)
@@ -1705,7 +1707,8 @@ class EconomyDB:
     async def redeem_coupon(self, user_id: int, code: str, now_ts: int, guild_id: Optional[int] = None) -> dict:
         """쿠폰 사용: 계정당 한 번. 실패 reason: unknown / expired / used."""
         code = (code or "").strip().upper()
-        if code not in COUPONS or (code in COUPONS_310 and not release.preview_310(guild_id, now_ts)):
+        if code not in COUPONS or (code in COUPONS_310 and not release.preview_310(guild_id, now_ts)) \
+                or (code in COUPONS_321 and not release.preview_321(guild_id, now_ts)):
             return {"ok": False, "reason": "unknown"}
         items, expires = COUPONS[code]
         if now_ts >= expires:

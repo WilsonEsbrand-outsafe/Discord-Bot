@@ -110,19 +110,32 @@ def test_310():
     assert keys["maint-3.1.0"] == keys["patch-3.1.0"] == calendar.timegm((2026, 10, 23, 6, 40, 0)) < start   # 15:40 KST 미리 발송
 
 
+def test_330():
+    import calendar
+    import release
+    note = PATCH_NOTES["3.3.0"]
+    assert "3.2.1" not in PATCH_NOTES and "장부" not in note and "KBO" not in note and len(note) < 1000
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    start, end = release.MAINTENANCE
+    assert (start, end) == (calendar.timegm((2026, 10, 26, 0, 20, 0)), calendar.timegm((2026, 10, 26, 0, 25, 0)))   # 09:20 ~ 09:25 KST
+    assert keys["maint-3.3.0"] == keys["patch-3.3.0"] < start == release.RELEASE_321_TS   # 미리 발송 · 점검 시작에 공개
+    assert "LEGALTOTO" in note
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.3.0")
+    assert P.notice_text("maint-3.3.0", title, body, keys["maint-3.3.0"]) == (title, body)
+    assert P.notice_text("maint-3.3.0", title, body, end)[0] == "✅ 점검 완료 안내"   # 늦게 배포되면 점검 완료로
+
+
 def test_320():
     import calendar
     import release
     note = PATCH_NOTES["3.2.0"]
     assert "3.1.1" not in PATCH_NOTES and "장부" not in note and "체크리스트" not in note and len(note) < 1200
     keys = {k: ts for k, ts, *_ in NOTICES}
-    start, end = release.MAINTENANCE
-    assert (start, end) == (calendar.timegm((2026, 10, 24, 21, 30, 0)), calendar.timegm((2026, 10, 24, 22, 0, 0)))   # 06:30 ~ 07:00 KST
+    start, end = calendar.timegm((2026, 10, 24, 21, 30, 0)), calendar.timegm((2026, 10, 24, 22, 0, 0))   # 3.2.0 점검 06:30 ~ 07:00 KST
     assert keys["maint-3.2.0"] == keys["patch-3.2.0"] == calendar.timegm((2026, 10, 24, 21, 0, 0)) < start   # 06:00 KST 미리 발송
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.2.0")
     assert "06:30 ~ 07:00" in body
     assert P.notice_text("maint-3.2.0", title, body, keys["maint-3.2.0"]) == (title, body)
-    assert P.notice_text("maint-3.2.0", title, body, end)[0] == "✅ 점검 완료 안내"
     # 기능은 점검 시작 전엔 테스트 서버만
     assert release.RELEASE_311_TS is None or release.RELEASE_311_TS >= start
 
@@ -136,4 +149,5 @@ if __name__ == "__main__":
     test_2102()
     test_310()
     test_320()
+    test_330()
     print("OK: patch notes")
