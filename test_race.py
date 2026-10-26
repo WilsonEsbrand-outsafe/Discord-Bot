@@ -211,7 +211,7 @@ def test_emoji_and_ready():
         assert cog.temoji("MER").id == 1 and all(cog.temoji(t) is cog.team_emoji[t] for t in R.TEAMS)   # 11팀 모두 로고
 
         race = await cog._prepare_f1()
-        assert set(race) == {"gp", "rain", "grid", "odds", "png", "odds310", "png310", "odds311", "png311"} and race["png310"][:4] == b"\x89PNG"
+        assert set(race) == {"gp", "rain", "grid", "odds", "png", "odds310", "png310", "odds311", "png311", "odds340", "png340"} and race["png310"][:4] == b"\x89PNG"
         user = SimpleNamespace(id=5, display_name="a", display_avatar=SimpleNamespace(url="https://x/a.png"))
         card = cog._f1_card(user, 1000, race)
         fields = " ".join(f.value for f in card.fields)

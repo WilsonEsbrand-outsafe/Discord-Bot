@@ -146,3 +146,14 @@ def test_screens_340():
                   {"kind": "junk", "item": "spice", "rod": {"rod": "rod_pro", "dur": 0, "max": 300, "broke": True}}):
             assert cog._result_card(user, r).title
     run(go())
+
+
+def test_f1_soft():
+    """3.4.0 F1: 예상 구간보다 한 칸 못하면 0.5배 (예전 1배) · 리타이어 1.5배 (예전 3배) — 기대값은 그대로 손해 쪽."""
+    import cogs.race as R
+    c = [[60, 30, 8, 1, 1], [1, 4, 30, 50, 15], [0, 2, 10, 60, 28]]
+    old, new = R.f1_ladder(c, True), R.f1_ladder(c, True, True)
+    assert old[0][2] == -1 and new[0][2] == -0.5 and new[0][4] == -1.5
+    for n, lad in zip(c, new):
+        assert sum(k * v for k, v in zip(n, lad)) < 0
+    assert "0.5배" in R.F1_RULE_340
