@@ -75,7 +75,7 @@ def _ts(iso: str) -> int:
 
 async def _get(url: str, params: dict) -> tuple[int, object]:
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
             rem = resp.headers.get("x-requests-remaining")
             if rem is not None and "the-odds-api" in url:
                 try:
@@ -246,7 +246,7 @@ class SportsToto(commands.Cog):
         _last_odds[sport] = now
         odds = parse_odds(data)
         await self.db.set_odds(odds, now)
-        log.info(f"[SPORTS] {sport} 배당 {len(odds)}경기 · 남은 크레딧 {_credits['remaining']}")
+        print(f"[SPORTS] {sport} 배당 {len(odds)}경기 · 남은 크레딧 {_credits['remaining']}")   # info 로그는 서버에 안 남는다
 
     async def games(self, sport: str) -> list[dict]:
         """/토토 목록 — 표만 읽는다 (API 호출 없음)."""
@@ -281,7 +281,7 @@ class SportsToto(commands.Cog):
             try:
                 finals = await self._finals(sport, min(b["commence_ts"] for b in mine))
             except Exception as e:
-                log.warning(f"[SPORTS] {sport} 결과 조회 실패: {e}")
+                log.warning(f"[SPORTS] {sport} 결과 조회 실패: {e!r}")
                 continue
             for b in mine:
                 res = bet_result(b, finals) if finals is not None else None
@@ -297,7 +297,7 @@ class SportsToto(commands.Cog):
         if payout:
             await self.eco.add_balance(b["user_id"], payout)
         _, _, label, color = SPORTS[b["sport"]]
-        log.info(f"[SPORTS] 정산: {b['sport']} {b['home']} vs {b['away']} · {b['pick']} → {res}")
+        print(f"[SPORTS] 정산: {b['sport']} {b['home']} vs {b['away']} · {b['pick']} → {res}")
         e = discord.Embed(title=f"{label} 베팅 정산", description=f"**{b['home']} vs {b['away']}**", color=color)
         if res == "won":
             e.add_field(name="결과", value="✅ 당첨!", inline=True)
@@ -317,11 +317,11 @@ class SportsToto(commands.Cog):
             try:
                 await self.refresh(sport)
             except Exception as e:
-                log.warning(f"[SPORTS] {sport} 갱신 실패: {e}")
+                log.warning(f"[SPORTS] {sport} 갱신 실패: {e!r}")
         try:
             await self.settle()   # 꺼 둔 종목도 이미 걸린 베팅은 정산한다
         except Exception as e:
-            log.warning(f"[SPORTS] 정산 실패: {e}")
+            log.warning(f"[SPORTS] 정산 실패: {e!r}")
 
     @_poll.before_loop
     async def _before(self):

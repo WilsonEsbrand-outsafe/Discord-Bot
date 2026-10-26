@@ -291,7 +291,7 @@ class UfcToto(commands.Cog):
             try:
                 scores = await _fetch_scores()
             except Exception as e:
-                log.warning(f"[UFC] 스코어 조회 실패: {e}")
+                log.warning(f"[UFC] 스코어 조회 실패: {e!r}")
 
         for event in scores:
             if not event.get("completed"):
