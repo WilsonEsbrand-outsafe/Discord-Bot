@@ -617,10 +617,18 @@ class Economy(commands.Cog):
             e = card(interaction.user, *limit_text, ui.DARK)
             e.description += "\n\n" + status
             return await interaction.followup.send(embed=e)
-        e = card(interaction.user, *wait_text, ui.DARK)
-        e.description += f"\n\n`다음` <t:{now_ts + r['remaining']}:R>\n" + status
-        msg = await interaction.followup.send(embed=e, wait=True)
-        await asyncio.sleep(r["remaining"])
+        until = now_ts + r["remaining"]
+        live = release.preview_340(getattr(interaction, "guild_id", None))   # 3.4.0 남은 시간을 5초마다 글자로
+
+        def waiting(t: float) -> discord.Embed:
+            e = card(interaction.user, *wait_text, ui.DARK)
+            left = f"**{ui.clock(until - t)}** 남음" if live else f"<t:{until}:R>"
+            e.description += f"\n\n`다음` {left}\n" + status
+            return e
+        msg = await interaction.followup.send(embed=waiting(now_ts), wait=True)
+        if live:
+            await ui.tick(msg, waiting, until)
+        await asyncio.sleep(max(0, until - time.time()))
         ready = card(interaction.user, *ready_text, ui.WIN)
         ready.description += "\n\n" + status
         try:

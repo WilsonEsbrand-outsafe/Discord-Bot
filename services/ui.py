@@ -1,5 +1,7 @@
 # services/ui.py — 미니게임 임베드 공통 디자인 (색 · 게이지 · 카드)
+import asyncio
 import random
+import time
 
 import discord
 
@@ -123,3 +125,37 @@ def card(title: str, desc: str = "", color: int = INFO, user=None, section: str 
         name = titled(user) if section in GAMBLE_SECTIONS else user.display_name
         e.set_author(name=f"{name} · {section}" if section else name, icon_url=user.display_avatar.url)
     return e
+
+
+# ───────────── 3.4.0 남은 시간 · 지난 시간을 글자로 (모바일은 디스코드 상대 시간이 초 단위로 안 흘러간다) ─────────────
+TICK = 5   # 몇 초마다 메시지를 고칠지 — 디스코드 수정 한도 때문에 1초는 무리
+
+
+def clock(sec: float) -> str:
+    """초 → 'N분 N초' (1시간 넘으면 'N시간 N분')."""
+    sec = max(0, int(sec))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}시간 {m}분"
+    return f"{m}분 {s}초" if m else f"{s}초"
+
+
+async def tick(msg, render, until: float, every: int = TICK, alive=None) -> None:
+    """until 시각 전까지 every 초마다 msg.edit(embed=render(지금)) — render 는 async 여도 된다.
+    alive() 가 False 를 주면 멈춘다 (찌를 걷었다 등).
+    수정이 실패하면(메시지 삭제 등) 조용히 멈춘다."""
+    while True:
+        left = until - time.time()
+        if left <= every:   # 마지막 몇 초는 원래 화면(준비 완료 · 입질 등)이 이어받는다
+            return
+        await asyncio.sleep(every)
+        if alive is not None and not await alive():
+            return
+        e = render(time.time())
+        if asyncio.iscoroutine(e):
+            e = await e
+        try:
+            await msg.edit(embed=e)
+        except discord.HTTPException:
+            return

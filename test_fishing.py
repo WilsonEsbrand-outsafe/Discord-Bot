@@ -349,7 +349,7 @@ def test_screens():
         from services.notifier import NOTIFY_EVENTS
         assert "낚시_입질" in NOTIFY_EVENTS and len(NOTIFY_EVENTS) <= 15   # /알림설정 버튼 3개씩 5줄 한도
         me = await cog.market_embed(user)
-        assert me.description.count("원") == len(cf.FISH)   # 3.1.0: 55종
+        assert me.description.count("원") == len(cf.FISH) - len(F.NEW_340)   # 3.1.0: 55종 (3.4.0 서버는 100종)
         # 2.10.1 보내기: 내 화면은 그대로 새로고침 + 채널 맨 아래에 모두에게 보이는 새 메시지 (받는 사람 멘션)
         to = SimpleNamespace(id=42, display_name="받는이", mention="<@42>", bot=False)
         log, sent = [], []

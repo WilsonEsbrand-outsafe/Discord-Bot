@@ -81,11 +81,13 @@ ITEMS = {
     # ── 3.1.0 ──
     "auto_fish":   ("🤖", "자동 낚시",       "사용 후 24시간 동안 5~15분마다 한 마리씩 자동으로 낚아 어망에 넣어요 (희귀한 물고기는 잘 안 걸려요 · /낚시 중 아주 가끔)"),
     "lawyer":      ("⚖️", "변호사 선임권",   "나 또는 다른 유저에게 선임 · 빚이 있으면 한 시간 안 기다리고 파산 신청 한 번 더"),
+    # ── 3.4.0 ──
+    "enh_stone":   ("🔷", "강화석",          "유망주 강화 재료 · /유망주 → [강화]"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
                  "bow_pro", "windbreaker", "focus", "torch", "potion", "antidote", "dkey", "scroll", "feather",
-                 "first_team", "special_training", "scout_coupon"}
+                 "first_team", "special_training", "scout_coupon", "enh_stone"}
 # 점검 보상 상자: 6종을 한 장씩 뒤집어 섞고, 고른 한 장을 받는다
 BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
 BOX_CHOICES = len(BOX_REWARDS)
@@ -101,14 +103,18 @@ ITEM_PRICES = {
     "first_team": 3_000_000, "special_training": 300_000, "scout_coupon": 500_000,
     # 전술
     "tactic_note": 500_000, "analysis_report": 300_000,
+    # 3.4.0 유망주 강화
+    "enh_stone": 300_000,
 }
 # 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
                ("🎣 낚시", ("bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "fish_charm", "spice")),
                ("🏹 양궁", ("bow_pro", "windbreaker", "focus")),
                ("🎓 유스", ("first_team", "special_training", "scout_coupon")),
-               ("⚔️ 전술", ("tactic_note", "analysis_report")))
+               ("⚔️ 전술", ("tactic_note", "analysis_report")),
+               ("🌟 유망주", ("enh_stone",)))
 SHOP_310: set[str] = set()   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템 (⚖️ 변호사 선임권 · 🤖 자동 낚시는 상점에서 팔지 않는다)
+SHOP_340: set[str] = {"enh_stone"}   # 3.4.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템
 SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3}   # 하루(KST) 구매 한도가 있는 아이템
 # 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
 SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST
@@ -121,6 +127,8 @@ ARCHERY_ITEMS = ("bow_pro", "windbreaker", "focus")   # 3.1.1 에 없어진 양�
 def shop_open(item: str, now_ts: Optional[float] = None, guild_id: Optional[int] = None) -> bool:
     """/아이템상점에서 지금 사고팔 수 있는 아이템인가 (3.1.0 새 아이템은 그 서버가 3.1.0 공개 서버일 때만)."""
     if item in SHOP_310 and not release.preview_310(guild_id, now_ts):
+        return False
+    if item in SHOP_340 and not release.preview_340(guild_id, now_ts):
         return False
     if item in ARCHERY_ITEMS and release.preview_311(guild_id, now_ts):   # 3.1.1 양궁 아이템 삭제
         return False
