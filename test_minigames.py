@@ -102,6 +102,21 @@ def test_table_games():
     asyncio.run(flow())
 
 
+
+def test_table_games_341():
+    """3.4.1: 야구 · 농구 · UFC 도 1배를 줄이고 2배 이상을 늘림 — 배수 · 멘트 · 합계 · 기대값은 그대로."""
+    ev = lambda tb: sum(r[0] * float(Fraction(r[1])) for r in tb)
+    side = lambda tb, f: sum(r[0] for r in tb if f(Fraction(r[1])))
+    for old, t in ((Economy.BAT_TABLE, Economy.BAT_TABLE_341), (Economy.HOOP_TABLE, Economy.HOOP_TABLE_341),
+                   (Economy.UFC_TABLE, Economy.UFC_TABLE_341)):
+        assert [r[1:] for r in t] == [r[1:] for r in old]
+        assert abs(sum(r[0] for r in t) - 1) < 1e-9 and min(r[0] for r in t) > 0
+        assert -0.02 < ev(t) < 0 and abs(ev(t) - ev(old)) < 0.003
+        for f in (lambda m: m > 0, lambda m: m == 0, lambda m: m < 0):
+            assert abs(side(t, f) - side(old, f)) < 1e-9
+        assert side(t, lambda m: abs(m) == 1) < side(old, lambda m: abs(m) == 1) - 0.1   # 1배가 확 줄었다
+        assert side(t, lambda m: m >= 2) > side(old, lambda m: m >= 2)
+
 def test_league():
     """리그: 20팀 · 순위별 배수 합 0(기대값 0) · 순위표는 승점 내림차순 · 명령 정산이 순위와 맞는다."""
     mults = [Economy.league_payout(r)[0] for r in range(1, 21)]
