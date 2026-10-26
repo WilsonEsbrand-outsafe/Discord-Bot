@@ -14,6 +14,7 @@ from services.club_db import (
     prospect_input, prospect_xp_need,
 )
 from services.player_market_db import NATIONS
+from services import enhance as EH
 
 SECTION = "🌟 유망주"
 RETIRE_WHY = {"self": "👋 은퇴 선언", "age": f"👴 {PROSPECT_RETIRE_AGE}세 은퇴", "steroid": "💉 부작용 은퇴"}
@@ -40,7 +41,7 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
                 f"`은퇴` {RETIRE_WHY.get(p['retire_reason'], '은퇴')} · {p['age']}세 · <t:{p['retired_ts']}:D>"
                 + (" · 🏅 **영구결번**" if p["retired_number"] else ""))
     else:
-        title = f"🌟 {p['name']} #{p['number']}"
+        title = f"🌟 {p['name']} #{p['number']}" + (f" +{p['enh']}" if p.get("enh") else "")
         need = prospect_xp_need(p["ovr"])
         if p["age"] > PROSPECT_PRIME_END:
             grow = f"📉 {PROSPECT_PRIME_END + 1}세부터는 성장이 멈추고 해마다 OVR이 1~3 떨어져요 ({PROSPECT_RETIRE_AGE}세 은퇴)"
@@ -52,6 +53,7 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
         body = (f"`나이` **{p['age']}세** · `OVR` **{p['ovr']}** · `잠재력` **{p['pot']}** ({p['pot_grade']}) · "
                 f"`최고` {p['peak_ovr']}\n{grow}\n"
                 f"`오늘 성장 경기` {min(played, PROSPECT_DAILY_GROWTH)}/{PROSPECT_DAILY_GROWTH}"
+                + _enh_line(p)
                 + (f"\n🚑 **부상** — {p['injury']} · "
                    + (f"복귀까지 공식경기 **{p['injury_games']}경기** (내 구단이 공식경기를 치를 때마다 1경기씩)"
                       if p["injury_games"] else f"복귀 <t:{p['injured_until']}:R> (그때까지 경기에 못 나가요)")
@@ -71,6 +73,16 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
         f"`프로 의식` {hidden_tier(p['pro'])}" + (f"\n`부상 이력` {p['injuries']}회" if p["injuries"] else "")))
     e.set_footer(text=RULES)
     return e
+
+
+def _enh_line(p: dict) -> str:
+    """3.4.0 강화 · 특성 한 줄 (강화한 적 없으면 빈 줄)."""
+    traits = EH.parse_traits(p.get("traits", ""))
+    if not p.get("enh") and not traits:
+        return ""
+    t = " · ".join(f"{EH.TRAITS[k][0]} {EH.TRAITS[k][1]}" for k in traits)
+    return (f"\n🔷 `강화` **+{p['enh']}** (경기 OVR **{min(99, p['ovr'] + EH.enh_ovr(p['enh'], p.get('traits', '')))}**)"
+            + (f" · `특성` {t}" if t else ""))
 
 
 def _legend_line(p: dict) -> str:
@@ -203,6 +215,73 @@ class DeleteConfirm(_OwnerView):
             embed=ui.card("유망주 삭제 취소", "아무것도 바뀌지 않았어요.", ui.EVEN, self.user, SECTION), view=None)
 
 
+class EnhanceView(_OwnerView):
+    """3.4.0 유망주 강화 — [🔷 강화석으로] 또는 선수 카드 고르기 → 결과를 이 메시지에. +5 · +10 이면 특성 고르기."""
+
+    def __init__(self, cog: "Prospect", user, p: dict, mat: dict):
+        super().__init__(timeout=600)
+        self.cog, self.user, self.p = cog, user, p
+        lv = p["enh"]
+        if lv < EH.ENH_MAX:
+            need = EH.ENH_STONES[lv]
+            b = discord.ui.Button(label=f"강화석 {need}개로 강화 (보유 {mat['stones']})", emoji="🔷", row=0,
+                                  style=discord.ButtonStyle.success, disabled=mat["stones"] < need)
+            b.callback = self._stone
+            self.add_item(b)
+            k = EH.ENH_PLAYERS[lv]
+            cards = mat["cards"][:25]
+            if len(cards) >= k:
+                self.cards = discord.ui.Select(
+                    placeholder=f"🃏 재료로 쓸 선수 카드 {k}장 고르기 (평균 OVR {EH.STAR_OVR}↑ 성공 +{EH.STAR_BONUS:.0%}p)",
+                    min_values=k, max_values=k, row=1, options=[
+                        discord.SelectOption(label=f"{c['name']} · OVR {c['ovr']}"[:100], value=c["player_id"],
+                                             description=f"보유 {c['qty']}장 · 한 장만 사라져요")
+                        for c in cards])
+                self.cards.callback = self._players
+                self.add_item(self.cards)
+        have = EH.parse_traits(p["traits"])
+        if len(have) < EH.trait_slots(lv):
+            self.trait = discord.ui.Select(placeholder="✨ 특성 고르기 (한 번 고르면 못 바꿔요)", row=2, options=[
+                discord.SelectOption(label=f"{n} — {d}"[:100], value=k, emoji=e)
+                for k, (e, n, d) in EH.TRAITS.items() if k not in have])
+            self.trait.callback = self._trait
+            self.add_item(self.trait)
+
+    async def _stone(self, interaction: discord.Interaction):
+        await self.cog.do_enhance(interaction, None)
+
+    async def _players(self, interaction: discord.Interaction):
+        await self.cog.do_enhance(interaction, list(self.cards.values))
+
+    async def _trait(self, interaction: discord.Interaction):
+        r = await self.cog.clubs.pick_trait(self.user.id, self.trait.values[0], int(time.time()))
+        e_, n_, d_ = EH.TRAITS[self.trait.values[0]]
+        note = (f"✨ 특성 **{e_} {n_}** 획득! — {d_}" if r["ok"] else "🙅 지금은 특성을 고를 수 없어요.")
+        await self.cog.show_enhance(interaction, note, edit=True)
+
+
+def enhance_embed(p: dict, user, mat: dict, note: str = "") -> discord.Embed:
+    lv = p["enh"]
+    lines = [f"`지금` **+{lv}** / +{EH.ENH_MAX} · 경기 OVR **{min(99, p['ovr'] + EH.enh_ovr(lv, p['traits']))}** "
+             f"(기본 {p['ovr']} + 강화 {EH.enh_ovr(lv, p['traits'])})"]
+    if lv < EH.ENH_MAX:
+        lines.append(f"`다음` **+{lv + 1}** 성공 확률 **{EH.chance(lv):.0%}** · 재료 🔷 강화석 **{EH.ENH_STONES[lv]}개** "
+                     f"또는 🃏 선수 카드 **{EH.ENH_PLAYERS[lv]}장**")
+        if lv >= EH.ENH_DROP_FROM:
+            lines.append(f"⚠️ +{EH.ENH_DROP_FROM} 부터는 실패하면 **{EH.ENH_DROP_P:.0%}** 확률로 한 단계 내려가요")
+    else:
+        lines.append("🏆 최고 단계예요!")
+    traits = EH.parse_traits(p["traits"])
+    lines.append("`특성` " + (" · ".join(f"{EH.TRAITS[k][0]} {EH.TRAITS[k][1]} ({EH.TRAITS[k][2]})" for k in traits) or "없음")
+                 + f" — +{EH.TRAIT_AT[0]} · +{EH.TRAIT_AT[1]}에 하나씩")
+    lines.append(f"\n🔷 강화석 **{mat['stones']}개** (`/아이템상점`) · 🃏 재료로 쓸 수 있는 선수 카드 **{len(mat['cards'])}종**"
+                 " (선발에 한 장뿐인 선수는 빠져요)")
+    e = ui.card(f"🔷 {p['name']} #{p['number']} 강화", (note + "\n\n" if note else "") + "\n".join(lines),
+                ui.GOLD if "성공" in note else ui.LOSE if "실패" in note else ui.INFO, user, SECTION)
+    e.set_footer(text="단계마다 OVR +1 · 은퇴하면 강화도 함께 끝나요")
+    return e
+
+
 class ProspectPanel(_OwnerView):
     """2.10.1 /유망주 (내 화면) — 현역이 없으면 포지션 메뉴 → 입력창으로 만들기, 있으면 [은퇴] [삭제],
     은퇴한 선수가 있으면 🏅 영구결번 메뉴."""
@@ -211,6 +290,10 @@ class ProspectPanel(_OwnerView):
         super().__init__(timeout=600)
         self.cog, self.user = cog, user
         if data["active"]:
+            if release.preview_340(getattr(getattr(user, "guild", None), "id", None)):   # 3.4.0 강화
+                b = discord.ui.Button(label="강화", emoji="🔷", style=discord.ButtonStyle.success, row=1)
+                b.callback = cog.enhance
+                self.add_item(b)
             for label, emoji, style, fn in (("은퇴", "👋", discord.ButtonStyle.primary, cog.retire),
                                             ("삭제", "🗑️", discord.ButtonStyle.danger, cog.delete)):
                 b = discord.ui.Button(label=label, emoji=emoji, style=style, row=1)
@@ -334,6 +417,37 @@ class Prospect(commands.Cog):
             e.description += (f"\n\n🔥 **특화 능력치** {PROSPECT_FOCUS_N}개를 골라 주세요 — "
                               f"OVR 이 오를 때 그 능력치는 **{PROSPECT_FOCUS_GROWTH:g}배**로 자라요")
         await interaction.response.send_message(embed=e, view=CreateConfirm(self, user, info, price, choose), ephemeral=True)
+
+    # ───────────── 3.4.0 강화 ─────────────
+    async def enhance(self, interaction: discord.Interaction):
+        await self.show_enhance(interaction)
+
+    async def show_enhance(self, interaction: discord.Interaction, note: str = "", edit: bool = False):
+        user, now = interaction.user, int(time.time())
+        p = (await self.clubs.prospects(user.id, now))["active"]
+        if not p:
+            return await interaction.response.send_message("🙅 현역 유망주가 없어요.", ephemeral=True)
+        mat = await self.clubs.enhance_materials(user.id)
+        e, view = enhance_embed(p, user, mat, note), EnhanceView(self, user, p, mat)
+        if edit:
+            await interaction.response.edit_message(embed=e, view=view)
+        else:
+            await interaction.response.send_message(embed=e, view=view)
+
+    async def do_enhance(self, interaction: discord.Interaction, players: Optional[list[str]]):
+        r = await self.clubs.enhance_prospect(interaction.user.id, int(time.time()), players)
+        if not r["ok"]:
+            note = {"none": "🙅 현역 유망주가 없어요.", "max": "🏆 이미 최고 단계예요.",
+                    "stones": f"🙅 🔷 강화석이 모자라요 (필요 {r.get('need')} · 보유 {r.get('have')}).",
+                    "players": f"🙅 선수 카드를 {r.get('need')}장 골라 주세요.", "lineup": "🙅 선발에 한 장뿐인 선수는 못 써요.",
+                    "missing": "🙅 그 선수 카드가 없어요."}[r["reason"]]
+        elif r["success"]:
+            note = (f"🎉 **강화 성공!** +{r['before']} → **+{r['enh']}** (확률 {r['chance']:.0%})"
+                    + ("\n✨ 특성을 하나 고를 수 있어요! 아래 메뉴에서 골라 주세요." if r["slot"] else ""))
+        else:
+            note = (f"💥 **강화 실패…** (확률 {r['chance']:.0%})"
+                    + (f" 한 단계 내려갔어요: +{r['before']} → **+{r['enh']}**" if r["dropped"] else " 단계는 그대로예요."))
+        await self.show_enhance(interaction, note, edit=True)
 
     # ───────────── 은퇴 · 영구결번 ─────────────
     async def retire(self, interaction: discord.Interaction):

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Optional
 
 from services.economy_db import rookie_until
+from services.enhance import ENH_DROP_FROM, ENH_DROP_P, ENH_MAX, ENH_PLAYERS, ENH_STONES, STAR_OVR, TRAITS, enh_ovr, parse_traits, trait_slots
+from services.enhance import chance as enh_chance
 from services.player_market_db import pot_grade_for_value
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
@@ -479,7 +481,8 @@ def prospect_input(name: str, nation: str, position: str, number: int, birthday:
 _P_COLS = ("id", "user_id", "name", "nation", "position", "number", "birthday", "foot", "height", "ovr", "pot", "xp",
            "aged", "peak_ovr", "peak_age", "apps", "goals", "assists", "day_key", "day_n", "created_ts",
            "retired_ts", "retire_reason", "retired_number",
-           "confidence", "proneness", "pro", "injured_until", "injury", "injuries", "injury_games", "focus")
+           "confidence", "proneness", "pro", "injured_until", "injury", "injuries", "injury_games", "focus",
+           "enh", "traits")
 _P_SELECT = f"SELECT {', '.join(_P_COLS)} FROM prospects"
 
 
@@ -579,7 +582,8 @@ class ClubDB:
             for col in ("confidence INTEGER NOT NULL DEFAULT 10", "proneness INTEGER NOT NULL DEFAULT 8",
                         "pro INTEGER NOT NULL DEFAULT 10", "injured_until INTEGER NOT NULL DEFAULT 0", "injury TEXT",
                         "injuries INTEGER NOT NULL DEFAULT 0", "injury_games INTEGER NOT NULL DEFAULT 0",
-                        "focus TEXT NOT NULL DEFAULT ''"):   # 3.1.0 특화 능력치
+                        "focus TEXT NOT NULL DEFAULT ''",   # 3.1.0 특화 능력치
+                        "enh INTEGER NOT NULL DEFAULT 0", "traits TEXT NOT NULL DEFAULT ''"):   # 3.4.0 강화 · 특성
                 try:
                     con.execute(f"ALTER TABLE prospects ADD COLUMN {col}")
                 except sqlite3.OperationalError:
@@ -707,7 +711,8 @@ class ClubDB:
         squad = {r[0]: {"player_id": r[0], "name": r[1], "pos": r[2], "ovr": int(r[3]), "nation": r[4]} for r in rows}
         p = ClubDB._active_prospect(con, user_id, int(time.time()))
         if p and not p["injured"]:
-            squad[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"], "ovr": p["ovr"],
+            squad[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"],
+                               "ovr": min(99, p["ovr"] + enh_ovr(p["enh"], p["traits"])),   # 3.4.0 강화 · 특성
                                "nation": p["nation"], "number": p["number"], "prospect": True, "focus": p["focus"],
                                "conf_mult": 0.6 + p["confidence"] * 0.04}   # 자신감 10 → 1.0
         from services.youth import first_team_squad   # 1군 등록한 유스 (2.8 · 주인 구단 전용)
@@ -1229,6 +1234,89 @@ class ClubDB:
                  info["foot"], info["height"], ovr, pot, PROSPECT_START_AGE, ovr, PROSPECT_START_AGE, int(now_ts),
                  prone, pro, hot))
             return {"ok": True, "balance": bal - price, "price": price, **self._prospect_by_id(con, cur.lastrowid, now_ts)}
+        return await self._tx(fn)
+
+    # ───────────── 3.4.0 유망주 강화 ─────────────
+    async def enhance_prospect(self, user_id: int, now_ts: int, players: Optional[list[str]] = None, rng=random) -> dict:
+        """현역 유망주 +1 도전. players=None 이면 🔷 강화석, 아니면 그 선수 카드를 한 장씩 재료로.
+        실패 reason: none(유망주 없음) / max / stones(need, have) / players(need) / lineup(선발 선수) / missing(없는 카드).
+        → {ok, success, before, enh, chance, dropped, slot(특성 고를 칸이 새로 생김)}."""
+        def fn(con):
+            p = self._active_prospect(con, user_id, now_ts)
+            if not p:
+                return {"ok": False, "reason": "none"}
+            lv = p["enh"]
+            if lv >= ENH_MAX:
+                return {"ok": False, "reason": "max"}
+            star = False
+            if players is None:
+                need = ENH_STONES[lv]
+                r = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='enh_stone'", (int(user_id),)).fetchone()
+                have = int(r[0]) if r else 0
+                if have < need:
+                    return {"ok": False, "reason": "stones", "need": need, "have": have}
+                con.execute("UPDATE inventory SET qty = qty - ? WHERE user_id=? AND item='enh_stone'", (need, int(user_id)))
+            else:
+                need = ENH_PLAYERS[lv]
+                ids = list(dict.fromkeys(players))
+                if len(ids) != need:
+                    return {"ok": False, "reason": "players", "need": need}
+                lineup = {pid for (pid,) in con.execute("SELECT player_id FROM club_lineup WHERE user_id=?", (int(user_id),))}
+                ovrs = []
+                for pid in ids:
+                    r = con.execute("SELECT h.qty, p.ovr FROM pm_holdings h JOIN pm_players p ON p.player_id=h.player_id "
+                                    "WHERE h.user_id=? AND h.player_id=? AND h.qty>0", (int(user_id), pid)).fetchone()
+                    if not r:
+                        return {"ok": False, "reason": "missing"}
+                    if pid in lineup and r[0] <= 1:
+                        return {"ok": False, "reason": "lineup"}
+                    ovrs.append(int(r[1]))
+                for pid in ids:
+                    con.execute("UPDATE pm_holdings SET qty = qty - 1 WHERE user_id=? AND player_id=? AND qty>0",
+                                (int(user_id), pid))
+                star = sum(ovrs) / len(ovrs) >= STAR_OVR
+            p_win = enh_chance(lv, star)
+            success = rng.random() < p_win
+            dropped = not success and lv >= ENH_DROP_FROM and rng.random() < ENH_DROP_P
+            new = lv + 1 if success else lv - 1 if dropped else lv
+            con.execute("UPDATE prospects SET enh=? WHERE id=?", (new, p["id"]))
+            slot = success and trait_slots(new) > trait_slots(lv) and len(parse_traits(p["traits"])) < trait_slots(new)
+            return {"ok": True, "success": success, "before": lv, "enh": new, "chance": p_win, "dropped": dropped,
+                    "slot": slot, "star": star, "name": p["name"]}
+        return await self._tx(fn)
+
+    async def enhance_materials(self, user_id: int) -> dict:
+        """강화 재료: {stones: 🔷 개수, cards: [{player_id, name, ovr, qty}] (선발에 한 장뿐인 선수는 뺀다 · OVR 낮은 순)}."""
+        def fn(con):
+            try:
+                r = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='enh_stone'", (int(user_id),)).fetchone()
+            except sqlite3.OperationalError:
+                r = None
+            lineup = {pid for (pid,) in con.execute("SELECT player_id FROM club_lineup WHERE user_id=?", (int(user_id),))}
+            cards = [{"player_id": pid, "name": name, "ovr": int(ovr), "qty": int(qty)} for pid, name, ovr, qty in con.execute(
+                "SELECT p.player_id, p.name, p.ovr, h.qty FROM pm_holdings h JOIN pm_players p ON p.player_id=h.player_id "
+                "WHERE h.user_id=? AND h.qty>0 ORDER BY p.ovr, p.name", (int(user_id),))
+                if not (pid in lineup and qty <= 1)]
+            return {"stones": int(r[0]) if r else 0, "cards": cards}
+        return await self._tx(fn)
+
+    async def pick_trait(self, user_id: int, key: str, now_ts: int) -> dict:
+        """+5 · +10 특성 고르기 — 고르는 순간 효과. reason: none / slot(고를 칸 없음) / have(이미 있음)."""
+        def fn(con):
+            p = self._active_prospect(con, user_id, now_ts)
+            if not p or key not in TRAITS:
+                return {"ok": False, "reason": "none"}
+            have = parse_traits(p["traits"])
+            if key in have:
+                return {"ok": False, "reason": "have"}
+            if len(have) >= trait_slots(p["enh"]):
+                return {"ok": False, "reason": "slot"}
+            sets = {"iron": "proneness = MAX(1, proneness - 6)", "leader": "confidence = MIN(20, confidence + 6)",
+                    "pro": "pro = MIN(20, pro + 6)", "wonder": "pot = MIN(99, pot + 3)"}
+            if key in sets:
+                con.execute(f"UPDATE prospects SET {sets[key]} WHERE id=?", (p["id"],))
+            con.execute("UPDATE prospects SET traits=? WHERE id=?", (",".join(have + [key]), p["id"]))
+            return {"ok": True, "trait": key}
         return await self._tx(fn)
 
     async def record_prospects(self, sides: list[tuple], goals: list[dict], now_ts: int,

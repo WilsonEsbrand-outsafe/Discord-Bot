@@ -169,3 +169,76 @@ def test_mgmt_screen():
     assert "받을 돈 0원" in body and "관중이 안 와요" in body and "전력 **45**" in body and len(body) < 4096
     p["today"] = M.day_report(80, [70] * 11, {"stadium": 0}, 90, "low")
     assert "꽉 찼어요" in _mgmt_body_340(p)
+
+
+def test_enhance():
+    """3.4.0 유망주 강화: 강화석 · 선수 카드 · 실패 하락 · +5 특성 · 경기 OVR 반영."""
+    import services.enhance as EH
+    from services.player_market_db import PlayerMarketDB
+    INFO = {"name": "강화왕", "nation": "대한민국", "position": "ST", "number": 9, "birthday": "03-15", "foot": "오른발", "height": 180}
+
+    class Always:
+        def __init__(self, *v):
+            self.v = list(v)
+
+        def random(self):
+            return self.v.pop(0) if len(self.v) > 1 else self.v[0]
+
+    async def go():
+        eco, _, clubs = edb.EconomyDB(), PlayerMarketDB(), cdb.ClubDB()
+        A = 901
+        await eco.add_balance(A, 10_000_000)
+        p = await clubs.create_prospect(A, INFO, T0, random.Random(1))
+        assert p["ok"] and p["enh"] == 0 and p["traits"] == ""
+        assert (await clubs.enhance_prospect(A, T0))["reason"] == "stones"
+        await eco.give_item(A, "enh_stone", 30)
+        for _ in range(5):
+            r = await clubs.enhance_prospect(A, T0, rng=Always(0.0))
+            assert r["ok"] and r["success"]
+        assert r["enh"] == 5 and r["slot"]
+        # 특성: 원더키드 = 잠재력 +3 · 두 번째는 칸이 없다
+        pot = (await clubs.prospects(A, T0))["active"]["pot"]
+        assert (await clubs.pick_trait(A, "wonder", T0))["ok"]
+        assert (await clubs.pick_trait(A, "ace", T0))["reason"] == "slot"
+        a = (await clubs.prospects(A, T0))["active"]
+        assert a["pot"] == min(99, pot + 3) and EH.parse_traits(a["traits"]) == ["wonder"]
+        # +6 이상 실패는 절반 확률로 하락
+        con = cdb.ClubDB()._connect()
+        con.execute("UPDATE prospects SET enh=7 WHERE id=?", (a["id"],))
+        con.commit()
+        r = await clubs.enhance_prospect(A, T0, rng=Always(0.99, 0.0))
+        assert r["ok"] and not r["success"] and r["dropped"] and r["enh"] == 6
+        # 선수 카드 재료: 선발에 한 장뿐인 선수는 못 쓴다
+        for i in range(6):
+            con.execute("INSERT OR IGNORE INTO pm_players(player_id, name, nation, position, age, ovr, pot, pot_grade, base_value) "
+                        "VALUES(?,?,?,?,?,?,?,?,?)", (f"E{i}", f"선수{i}", "KOR", "ST", 25, 85, 85, "A", 1000))
+            con.execute("INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(?,?,1)", (A, f"E{i}"))
+        con.commit()
+        con.close()
+        mat = await clubs.enhance_materials(A)
+        assert len(mat["cards"]) == 6
+        r = await clubs.enhance_prospect(A, T0, players=["E0", "E1"], rng=Always(0.0))
+        assert r["reason"] == "players"
+        r = await clubs.enhance_prospect(A, T0, players=[f"E{i}" for i in range(5)], rng=Always(0.0))
+        assert r["ok"] and r["success"] and r["star"] and r["enh"] == 7
+        assert len((await clubs.enhance_materials(A))["cards"]) == 1
+        # 경기 OVR = 기본 + 강화
+        squad = {}
+        con = cdb.ClubDB()._connect()
+        squad = cdb.ClubDB._squad(con, A)
+        con.close()
+        yp = next(v for k, v in squad.items() if k.startswith("YP"))
+        assert yp["ovr"] == min(99, a["ovr"] + 7)
+    run(go())
+
+
+def test_enhance_screen():
+    import cogs.prospect as cp
+    user = SimpleNamespace(id=1, display_name="규완", display_avatar=SimpleNamespace(url="https://x/a.png"),
+                           guild=SimpleNamespace(id=release.TEST_GUILD))
+    p = {"name": "강화왕", "number": 9, "enh": 5, "ovr": 60, "traits": ""}
+    mat = {"stones": 3, "cards": [{"player_id": str(i), "name": f"선수{i}", "ovr": 70, "qty": 1} for i in range(30)]}
+    e = cp.enhance_embed(p, user, mat, "🎉 **강화 성공!**")
+    assert "+5" in e.description and "55%" in e.description
+    v = cp.EnhanceView(SimpleNamespace(), user, p, mat)
+    assert [type(c).__name__ for c in v.children] == ["Button", "Select", "Select"]
