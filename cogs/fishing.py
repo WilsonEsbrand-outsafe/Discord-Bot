@@ -3,6 +3,7 @@
 #   입질 알림 · 도망 처리는 봇이 시각에 맞춰 직접 고친다 (재시작해도 DB 에서 다시 예약).
 # [🧺 어망] = 모두에게 보이는 낚시 메뉴(허브, 2.10.1 · 버튼은 연 사람만): 어망 · 시세 · 도감 · 수족관 · 요리 · 먹이기 · 상점 · 주간 최대어 — ◀ 🏠 ▶.
 import asyncio
+import re
 import time
 
 import discord
@@ -124,8 +125,11 @@ class Fishing(commands.Cog):
             k = day_fish(int(time.time()))
             bag += f"\n`오늘의 물고기` {FISH[k][0]} **{FISH[k][1]}** — 오늘 팔면 **{DAY_FISH_MULT:g}배**"
         if s.get("cast_ts"):
+            # 2.82: 디스코드 상대시간이라 저절로 늘어난다 · 3.4.0: 모바일은 안 흘러가서 봇이 5초마다 글자로 고친다
+            since = (f"던진 지 **{ui.clock(time.time() - s['cast_ts'])}**" if self._live(user)
+                     else f"**<t:{s['cast_ts']}:R>** 던짐")
             body = (f"> 🎙️ *\"찌가 물 위에 둥둥… 입질이 오면 이 메시지가 바뀌어요!\"*\n\n"
-                    f"🎣 **<t:{s['cast_ts']}:R>** 던짐 · 입질은 10초 ~ 10분 사이 랜덤\n"   # 2.82: 디스코드 상대시간이라 저절로 늘어난다
+                    f"🎣 {since} · 입질은 10초 ~ 10분 사이 랜덤\n"
                     f"⏳ 오래 기다린 입질일수록 희귀한 물고기가 걸려요")
             color = ui.DARK
         else:
@@ -205,7 +209,8 @@ class Fishing(commands.Cog):
         msg = await interaction.original_response()
         await self.db.set_message(user.id, msg.id)
         self._schedule({"user_id": user.id, "bite_ts": r["bite_ts"], "window": r["window"],
-                        "channel_id": interaction.channel_id, "message_id": msg.id})
+                        "channel_id": interaction.channel_id, "message_id": msg.id,
+                        "pond": msg if self._live(user) else None})   # 3.4.0 던진 지 N초 — 5초마다
 
     def _schedule(self, c: dict):
         old = self._tasks.pop(c["user_id"], None)
@@ -217,6 +222,11 @@ class Fishing(commands.Cog):
     def _n(user) -> bool:
         """이 유저가 있는 서버가 3.1.0 공개 서버인가."""
         return release.preview_310(getattr(getattr(user, "guild", None), "id", None))
+
+    @staticmethod
+    def _live(user) -> bool:
+        """3.4.0 공개 서버 — 지난 시간 · 남은 시간을 5초마다 글자로 고친다."""
+        return release.preview_340(getattr(getattr(user, "guild", None), "id", None))
 
     def _new(self, c: dict) -> bool:
         """찌를 던진 채널의 서버가 3.1.0 공개 서버인가."""
@@ -235,6 +245,19 @@ class Fishing(commands.Cog):
         """입질 시각에 메시지를 [잡기!]로 · 기다려 주는 시간이 끝나면 '도망'으로 (그때까지 안 잡았으면)."""
         try:
             uid = c["user_id"]
+
+            async def mine() -> bool:   # 아직 이 찌가 물에 있나 (찌 걷기 · 잡기 · 새로 던지기면 멈춘다)
+                return (await self.db.status(uid, int(time.time()))).get("message_id") == c["message_id"]
+            if pond := c.get("pond"):   # 3.4.0 던진 지 N초 — 처음 화면을 그대로 두고 그 줄만 고친다
+                first = pond.embeds[0] if pond.embeds else None
+                cast_ts = (await self.db.status(uid, int(time.time()))).get("cast_ts") or time.time()
+
+                def waiting(t: float):
+                    e = first.copy()
+                    e.description = re.sub(r"던진 지 \*\*[^*]+\*\*", f"던진 지 **{ui.clock(t - cast_ts)}**", e.description or "")
+                    return e
+                if first is not None:
+                    await ui.tick(pond, waiting, c["bite_ts"], alive=mine)
             await asyncio.sleep(max(0, c["bite_ts"] - time.time()))
             s = await self.db.status(uid, int(time.time()))
             if s.get("message_id") != c["message_id"]:
@@ -244,17 +267,25 @@ class Fishing(commands.Cog):
                 return
             user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
             wait = c["bite_ts"] - s["cast_ts"]
-            e = ui.card("🐟 입질이다!!", f'> 🎙️ *"찌가 쑥 들어갑니다!! 지금 당겨요!!"*\n\n'
-                        f"⏱️ **{_clock(c['window'])}** 안에 [잡기!]를 누르세요 (<t:{c['bite_ts'] + c['window']}:R>)\n"
-                        f"⏳ 기다린 시간 **{_clock(wait)}** — {odds_line(grade_odds(wait, new=self._new(c)))}",
-                        ui.GOLD, user, SECTION)
-            e.set_thumbnail(url=ui.emoji_url("🐟"))
+            end = c["bite_ts"] + c["window"]
+            live = release.preview_340(getattr(getattr(self.bot.get_channel(c["channel_id"]), "guild", None), "id", None))
+
+            def bite(t: float) -> discord.Embed:
+                left = (f"⏱️ **{ui.clock(end - t)}** 남았어요 — 그 안에 [잡기!]를 누르세요" if live   # 3.4.0 5초마다
+                        else f"⏱️ **{_clock(c['window'])}** 안에 [잡기!]를 누르세요 (<t:{end}:R>)")
+                e = ui.card("🐟 입질이다!!", f'> 🎙️ *"찌가 쑥 들어갑니다!! 지금 당겨요!!"*\n\n{left}\n'
+                            f"⏳ 기다린 시간 **{_clock(wait)}** — {odds_line(grade_odds(wait, new=self._new(c)))}",
+                            ui.GOLD, user, SECTION)
+                e.set_thumbnail(url=ui.emoji_url("🐟"))
+                return e
             try:
-                await msg.edit(embed=e, view=ReelView(self))
+                await msg.edit(embed=bite(time.time()), view=ReelView(self))
             except discord.HTTPException:
                 pass
             await send_notify(self.bot, self.econ, uid, "낚시_입질", self._bite_dm(c, user))
-            await asyncio.sleep(max(0, c["bite_ts"] + c["window"] - time.time()) + 1)
+            if live:
+                await ui.tick(msg, bite, end, alive=mine)
+            await asyncio.sleep(max(0, end - time.time()) + 1)
             s = await self.db.status(uid, int(time.time()))
             if s.get("message_id") != c["message_id"]:
                 return

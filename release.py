@@ -110,6 +110,19 @@ def preview_321(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_321(now)
 
 
+# 3.4.0 — 테스트 서버 먼저. preview_340(guild): 남은 시간 5초마다 글자로 · 낚시(새 물고기 · 랜덤 시세 · 확률 · 낚싯대 내구도 · 장비 상향 ·
+# 요리 확률) · F1 토토 순위 배당 완화 · 구단 경영 화면 · 유망주 강화. None = 아직
+RELEASE_340_TS: Optional[int] = None
+
+
+def released_340(now: Optional[float] = None) -> bool:
+    return RELEASE_340_TS is not None and _now(now) >= RELEASE_340_TS
+
+
+def preview_340(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_340(now)
+
+
 def maintenance(now: Optional[float] = None) -> bool:
     return MAINTENANCE is not None and MAINTENANCE[0] <= _now(now) < MAINTENANCE[1]
 
