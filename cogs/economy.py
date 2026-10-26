@@ -1243,6 +1243,15 @@ class Economy(commands.Cog):
         (0.342,  "-1",  "❌", "만장일치 판정패",    "끝까지 버텼지만 판정은 상대 편이었습니다."),
     ]
 
+    # 3.4.1 (release.preview_341 서버): 1배(안타 · 레이업 · 스플릿 판정승 / 1배 손실)를 줄이고 2배 · 3배 이상을 늘림.
+    # 줄 순서 · 배수 · 멘트는 그대로(장면 그림 그대로), 수익 · 본전 · 손실 합계와 기대값(약 -1.1%)도 그대로.
+    BAT_TABLE_341 = [(p, *rest) for p, (_, *rest) in zip(
+        (0.001, 0.005, 0.020, 0.050, 0.130, 0.190, 0.080, 0.150, 0.130, 0.033, 0.003, 0.208), BAT_TABLE)]
+    HOOP_TABLE_341 = [(p, *rest) for p, (_, *rest) in zip(
+        (0.002, 0.006, 0.025, 0.070, 0.150, 0.140, 0.070, 0.170, 0.179, 0.0417, 0.004, 0.1423), HOOP_TABLE)]
+    UFC_TABLE_341 = [(p, *rest) for p, (_, *rest) in zip(
+        (0.0005, 0.003, 0.012, 0.045, 0.135, 0.160, 0.050, 0.170, 0.0635, 0.040, 0.014, 0.001, 0.306), UFC_TABLE)]
+
     @staticmethod
     def _caster_card(user, title: str, caster: str, color: int, section: str) -> discord.Embed:
         return ui.card(title, f"> 🎙️ *\"{caster}\"*", color, user, section)
@@ -1294,7 +1303,8 @@ class Economy(commands.Cog):
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def batting(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
-        await self._play_table(interaction, amount, key="bat", table=self.BAT_TABLE, section="🎙️ 야구 중계",
+        await self._play_table(interaction, amount, key="bat", table=self.BAT_TABLE_341 if release.preview_341(getattr(interaction, "guild_id", None)) else self.BAT_TABLE,
+                               section="🎙️ 야구 중계",
                                spam_lines=self.BAT_SPAM_LINES,
                                broke=("🙅 타석에 설 수 없어요", "잔액이 부족해 대기 타석에서 돌아갑니다!"),
                                windup=("⚾ 투수, 와인드업…", "{amount}원이 걸린 한 타석! 던졌습니다—"))
@@ -1303,7 +1313,8 @@ class Economy(commands.Cog):
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def basketball(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
-        await self._play_table(interaction, amount, key="hoop", table=self.HOOP_TABLE, section="🎙️ 농구 중계",
+        await self._play_table(interaction, amount, key="hoop", table=self.HOOP_TABLE_341 if release.preview_341(getattr(interaction, "guild_id", None)) else self.HOOP_TABLE,
+                               section="🎙️ 농구 중계",
                                spam_lines=self.HOOP_SPAM_LINES,
                                broke=("🙅 코트에 들어갈 수 없어요", "잔액이 부족해 벤치로 돌아갑니다!"),
                                windup=("🏀 공을 잡았습니다…", "{amount}원이 걸린 마지막 공격! 슛—"))
@@ -1312,7 +1323,8 @@ class Economy(commands.Cog):
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def ufc_fight(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
-        await self._play_table(interaction, amount, key="ufc", table=self.UFC_TABLE, section="🎙️ UFC 중계",
+        await self._play_table(interaction, amount, key="ufc", table=self.UFC_TABLE_341 if release.preview_341(getattr(interaction, "guild_id", None)) else self.UFC_TABLE,
+                               section="🎙️ UFC 중계",
                                spam_lines=self.UFC_SPAM_LINES,
                                broke=("🙅 옥타곤에 오를 수 없어요", "잔액이 부족해 계체량에서 탈락했습니다!"),
                                windup=("🥊 옥타곤 입장…", "{amount}원이 걸린 한 판! 공이 울립니다—"))
