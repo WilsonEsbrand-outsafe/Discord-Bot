@@ -148,15 +148,18 @@ def test_screens_340():
     run(go())
 
 
-def test_f1_soft():
-    """3.4.0 F1: 예상 구간보다 한 칸 못하면 0.5배 (예전 1배) · 리타이어 1.5배 (예전 3배) — 기대값은 그대로 손해 쪽."""
+def test_f1_fourth():
+    """3.4.0 F1: 4위는 언제나 본전 이상 · 나머지는 3.1.1 그대로 · 기대값은 손해 쪽."""
     import cogs.race as R
-    c = [[60, 30, 8, 1, 1], [1, 4, 30, 50, 15], [0, 2, 10, 60, 28]]
-    old, new = R.f1_ladder(c, True), R.f1_ladder(c, True, True)
-    assert old[0][2] == -1 and new[0][2] == -0.5 and new[0][4] == -1.5
-    for n, lad in zip(c, new):
+    c6 = [[60, 30, 5, 3, 1, 1], [1, 4, 6, 24, 50, 15], [0, 2, 3, 7, 60, 28]]
+    old, new = R.f1_ladder(R.f1_merge(c6), True), R.f1_ladder6(c6)
+    assert old[0][2] == -1 and new[0][2] == 0 and new[0][3] == -1 and new[0][5] == -3   # 강팀 4위: -1 → 본전
+    assert new[0][0] < old[0][0]                                                     # 그만큼 우승 배당만 조금 ↓
+    assert new[1][0] == old[1][0] and new[2][0] == old[2][0]                         # 다른 드라이버는 그대로
+    for n, lad in zip(c6, new):
         assert sum(k * v for k, v in zip(n, lad)) < 0
-    assert "0.5배" in R.F1_RULE_340
+    assert R.f1_tier6(3) == 2 and R.f1_tier6(4) == 3 and R.f1_tier6(None) == 5
+    assert R.f1_mult(new[0], 3) == 0 and "4위 본전" in R.f1_ladder_text(new[0])
 
 
 def test_mgmt_screen():
@@ -190,6 +193,11 @@ def test_enhance():
         await eco.add_balance(A, 10_000_000)
         p = await clubs.create_prospect(A, INFO, T0, random.Random(1))
         assert p["ok"] and p["enh"] == 0 and p["traits"] == ""
+        assert (await clubs.enhance_prospect(A, T0))["reason"] == "ovr"          # 기본 OVR 70 부터
+        con = cdb.ClubDB()._connect()
+        con.execute("UPDATE prospects SET ovr=72 WHERE id=?", (p["id"],))
+        con.commit()
+        con.close()
         assert (await clubs.enhance_prospect(A, T0))["reason"] == "stones"
         await eco.give_item(A, "enh_stone", 30)
         for _ in range(5):
@@ -236,9 +244,15 @@ def test_enhance_screen():
     import cogs.prospect as cp
     user = SimpleNamespace(id=1, display_name="규완", display_avatar=SimpleNamespace(url="https://x/a.png"),
                            guild=SimpleNamespace(id=release.TEST_GUILD))
-    p = {"name": "강화왕", "number": 9, "enh": 5, "ovr": 60, "traits": ""}
+    p = {"name": "강화왕", "number": 9, "enh": 5, "ovr": 72, "traits": ""}
     mat = {"stones": 3, "cards": [{"player_id": str(i), "name": f"선수{i}", "ovr": 70, "qty": 1} for i in range(30)]}
     e = cp.enhance_embed(p, user, mat, "🎉 **강화 성공!**")
     assert "+5" in e.description and "55%" in e.description
+    table = e.fields[0].value                                                       # 확률표 공개
+    assert e.fields[0].name == "📊 강화 확률표" and table.count("%") >= 10 and "▶ `+5→+6` **55%**" in table
+    assert len(table) <= 1024
     v = cp.EnhanceView(SimpleNamespace(), user, p, mat)
     assert [type(c).__name__ for c in v.children] == ["Button", "Select", "Select"]
+    low = dict(p, ovr=65)
+    assert "🔒" in cp.enhance_embed(low, user, mat).description
+    assert [type(c).__name__ for c in cp.EnhanceView(SimpleNamespace(), user, low, mat).children] == ["Select"]   # 특성만

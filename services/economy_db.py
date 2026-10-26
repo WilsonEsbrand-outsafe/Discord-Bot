@@ -104,7 +104,7 @@ ITEM_PRICES = {
     # 전술
     "tactic_note": 500_000, "analysis_report": 300_000,
     # 3.4.0 유망주 강화
-    "enh_stone": 300_000,
+    "enh_stone": 1_000_000,
 }
 # 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),

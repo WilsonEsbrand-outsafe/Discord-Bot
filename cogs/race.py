@@ -301,8 +301,9 @@ F1_LOSS = (0, 0, 1, 1, 2)       # 3.1.0: 손실 구간 배수 (포인트 · 11�
 F1_EDGE_310 = 0.92
 F1_CAP_310 = 200.0
 F1_RETIRE_311 = 3   # 3.1.1: 예상 구간보다 한 칸 못하면 1배 · 두 칸 2배 손실 · 💥 리타이어 3배 손실 (예전엔 최대 1배 · 리타이어 2배)
-F1_SOFT_340 = (0.5, 1.5)   # 3.4.0: 예상 구간보다 한 칸 못하면 0.5배 · 두 칸 1배 손실 · 💥 리타이어 1.5배 (3.1.1 은 1 · 2 · 3배)
-F1_RULE_340 = "예상 순위 구간은 본전 · 잘하면 수익 · 한 구간 못하면 0.5배 손실 · 💥 리타이어 1.5배 손실"
+# 3.4.0: 포인트권에서 4위를 따로 떼어 4위는 언제나 본전 이상 (강팀이 4위를 해도 손실이 아니다). 나머지 구간 · 손실은 3.1.1 그대로,
+# 4위 손실이 없어진 만큼 강팀(예상 구간이 포디움)의 우승 배당만 조금 낮아진다
+F1_RULE_340 = "예상 순위 구간은 본전 · 4위는 언제나 본전 이상 · 잘하면 수익 · 못할수록 손실이 커져요 · 💥 리타이어 3배 손실"
 F1_RULE_311 = "드라이버마다 예상 순위 구간은 본전 · 잘하면 수익 · 못할수록 손실이 커져요 · 💥 리타이어 3배 손실"
 F1_RULE_310 = "드라이버마다 예상 순위 구간은 본전 · 그보다 잘하면 수익 · 못하면 1배 손실 · 💥 리타이어 2배 손실"
 F1_RULE = "우승 = 표시 배수 · 포디움(2~3위) = 그 40% · 4~10위 본전 · 11위 이하 1배 손실 · 💥 리타이어 2배 손실"
@@ -444,17 +445,24 @@ def f1_sim(grid: list[int], gp: tuple, rain: bool, rng=random, record: bool = Fa
     return sorted((d for d in grid if d not in out), key=T.get), out, snaps
 
 
-def f1_counts(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=None) -> list[list[int]]:
-    """결승을 sims 번 돌려 드라이버별 결과 구간 횟수 [우승, 포디움(2~3위), 포인트(4~10위), 11위 이하, 리타이어]."""
+def f1_counts(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=None, fine: bool = False) -> list[list[int]]:
+    """결승을 sims 번 돌려 드라이버별 결과 구간 횟수 [우승, 포디움(2~3위), 포인트(4~10위), 11위 이하, 리타이어].
+    fine = 3.4.0 구간 6개 (포인트를 4위 · 5~10위로 나눈다) — f1_merge 로 5개로 줄일 수 있다."""
     rng = rng or random.Random()
-    c = [[0] * 5 for _ in DRIVERS]
+    tier, n = (f1_tier6, 6) if fine else (f1_tier, 5)
+    c = [[0] * n for _ in DRIVERS]
     for _ in range(sims):
         fin, out, _ = f1_sim(grid, gp, rain, rng)
         for r, d in enumerate(fin):
-            c[d][f1_tier(r)] += 1
+            c[d][tier(r)] += 1
         for d in out:
-            c[d][4] += 1
+            c[d][n - 1] += 1
     return c
+
+
+def f1_merge(counts6: list[list[int]]) -> list[list[int]]:
+    """구간 6개 → 5개 (4위 + 5~10위 = 포인트)."""
+    return [[a, b, c + d, e, f] for a, b, c, d, e, f in counts6]
 
 
 def f1_odds(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=None, counts=None) -> list[tuple[float, float]]:
@@ -471,16 +479,14 @@ def f1_odds(grid: list[int], gp: tuple, rain: bool, sims: int = F1_SIMS, rng=Non
     return res
 
 
-def f1_loss(t: int, m: int, deep: bool, soft: bool = False) -> float:
-    """예상 구간 m 보다 못한 구간 t 의 손실 배수. deep = 3.1.1 (못할수록 크게) · soft = 3.4.0 (그 절반 정도로 완화)."""
-    if soft:
-        return F1_SOFT_340[1] if t == 4 else F1_SOFT_340[0] * (t - m)
+def f1_loss(t: int, m: int, deep: bool) -> int:
+    """예상 구간 m 보다 못한 구간 t 의 손실 배수. deep = 3.1.1 (못할수록 크게)."""
     if not deep:
         return F1_LOSS[t]
     return F1_RETIRE_311 if t == 4 else t - m
 
 
-def f1_ladder(counts: list[list[int]], deep: bool = False, soft: bool = False) -> list[tuple[float, ...]]:
+def f1_ladder(counts: list[list[int]], deep: bool = False) -> list[tuple[float, ...]]:
     """3.1.0 배당: 드라이버마다 결과 구간별 배수 (우승, 포디움, 포인트, 11위 이하, 리타이어).
     그 드라이버의 '예상 구간'(결과 절반이 들어오는 구간, 우승은 빼고) = 본전, 그보다 잘하면 수익, 못하면 손실.
     강팀은 포디움이 본전이라 4위 밖이면 손실, 하위 팀은 11위 이하가 본전이라 포인트만 따도 수익.
@@ -496,12 +502,47 @@ def f1_ladder(counts: list[list[int]], deep: bool = False, soft: bool = False) -
         m = max(1, m)
         up = sum(F1_SHAPE[t] * n[t] for t in range(m))
         up += 2 * math.sqrt(sum(F1_SHAPE[t] ** 2 * n[t] for t in range(m)) + 1)
-        lose = [(f1_loss(t, m, deep, soft), n[t]) for t in range(m + 1, 5)]
+        lose = [(f1_loss(t, m, deep), n[t]) for t in range(m + 1, 5)]
         loss = max(0.0, sum(l * k for l, k in lose) - 2 * math.sqrt(sum(l * l * k for l, k in lose) + 1))
         w = max(0.01, min(F1_CAP_310, F1_EDGE_310 * loss / up))
-        res.append(tuple(max(0.01, math.floor(w * F1_SHAPE[t] * 100) / 100) if t < m else (0 if t == m else -f1_loss(t, m, deep, soft))
+        res.append(tuple(max(0.01, math.floor(w * F1_SHAPE[t] * 100) / 100) if t < m else (0 if t == m else -f1_loss(t, m, deep))
                          for t in range(5)))
     return res
+
+
+def f1_ladder6(counts6: list[list[int]]) -> list[tuple[float, ...]]:
+    """3.4.0 배당: 구간 6개 (우승, 포디움, 4위, 5~10위, 11위 이하, 리타이어). f1_ladder(deep) 와 같은데 4위만 손실이 없다.
+    예상 구간 m 은 3.1.1 처럼 5구간(4~10위를 한 구간)으로 정하고, 기대값은 손해 쪽 (오차 ±2σ)."""
+    res = []
+    for n in counts6:
+        old = [n[0], n[1], n[2] + n[3], n[4], n[5]]
+        total, cum, m = sum(old) or 1, 0, 3
+        for t in range(4):
+            cum += old[t]
+            if cum * 2 >= total:
+                m = t
+                break
+        m = max(1, m)
+        tier = (0, 1, 2, 2, 3, 4)   # 6구간 → 3.1.1 구간
+
+        def loss(t: int) -> int:
+            o = tier[t]
+            return 0 if o <= m or t == 2 else f1_loss(o, m, True)   # 4위(t=2)는 손실 없음
+        up = sum(F1_SHAPE[tier[t]] * n[t] for t in range(5) if tier[t] < m)
+        up += 2 * math.sqrt(sum(F1_SHAPE[tier[t]] ** 2 * n[t] for t in range(5) if tier[t] < m) + 1)
+        lose = [(loss(t), n[t]) for t in range(6) if loss(t)]
+        lost = max(0.0, sum(l * k for l, k in lose) - 2 * math.sqrt(sum(l * l * k for l, k in lose) + 1))
+        w = max(0.01, min(F1_CAP_310, F1_EDGE_310 * lost / up))
+        res.append(tuple(max(0.01, math.floor(w * F1_SHAPE[tier[t]] * 100) / 100) if tier[t] < m else -loss(t)
+                         for t in range(6)))
+    return res
+
+
+def f1_tier6(rank: int | None) -> int:
+    """3.4.0 결과 구간 0 우승 · 1 포디움 · 2 4위 · 3 5~10위 · 4 11위 이하 · 5 리타이어."""
+    if rank is None:
+        return 5
+    return 0 if rank == 0 else (1 if rank < 3 else (2 if rank == 3 else (3 if rank < 10 else 4)))
 
 
 def f1_tier(rank: int | None) -> int:
@@ -513,6 +554,8 @@ def f1_tier(rank: int | None) -> int:
 
 def f1_mult(odds: tuple, rank: int | None) -> float:
     """rank = 완주 순위(0부터), None = 리타이어. odds 가 구간 5개면 3.1.0 배당(f1_ladder)."""
+    if len(odds) == 6:   # 3.4.0
+        return odds[f1_tier6(rank)]
     if len(odds) == 5:
         return odds[f1_tier(rank)]
     if rank is None:
@@ -526,6 +569,9 @@ def f1_mult(odds: tuple, rank: int | None) -> float:
 
 def f1_ladder_text(lad: tuple) -> str:
     """'우승 +3.2 · 포디움 +1.28 · 4~10위 본전 · 11위~ -1' — 출전표 · 드라이버 목록용."""
+    if len(lad) == 6:   # 3.4.0
+        return " · ".join(f"{nm} {'본전' if v == 0 else f'{v:+g}'}"
+                          for nm, v in zip(("우승", "포디움", "4위", "5~10위", "11위~", "💥"), lad))
     names = ("우승", "포디움", "4~10위", "11위~", "💥")
     return " · ".join(f"{nm} {'본전' if v == 0 else f'{v:+g}'}" for nm, v in zip(names, lad[:4] if lad[4] == -2 else lad))
 
@@ -1064,9 +1110,10 @@ class Race(commands.Cog):
         grid = f1_qualify(rain)
 
         def work():
-            counts = f1_counts(grid, gp, rain)
+            counts6 = f1_counts(grid, gp, rain, fine=True)
+            counts = f1_merge(counts6)
             snap = dict(f1_grid_snap(grid), wet=rain)
-            soft = f1_ladder(counts, deep=True, soft=True)   # 3.4.0 서버 (손실 완화)
+            soft = f1_ladder6(counts6)   # 3.4.0 서버 (4위는 언제나 본전 이상)
             png340 = f1_render(gp, "출발 그리드", snap, -1, None, soft)
             if release.released_340():   # 3.4.0 공개 뒤엔 모든 서버가 이것만 쓴다
                 return soft, png340, soft, png340, soft, png340, soft, png340
