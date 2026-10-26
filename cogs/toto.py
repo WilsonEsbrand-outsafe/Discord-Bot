@@ -482,14 +482,18 @@ class Toto(commands.Cog):
         await interaction.response.send_message(embed=e, view=PickView(self, game, picks), ephemeral=True)
 
     # ───────────── 유저 ─────────────
-    @app_commands.command(name="토토", description="축구·UFC 경기 목록과 배당 — 메뉴에서 골라 바로 베팅")
-    async def toto_list(self, interaction: discord.Interaction):
+    @app_commands.command(name="토토", description="축구·UFC·야구·농구 경기 목록과 배당 — 메뉴에서 골라 바로 베팅")
+    @app_commands.describe(종목="이 종목만 보기 (비우면 전체)")
+    @app_commands.choices(종목=[app_commands.Choice(name="⚽ 축구", value="soccer"), app_commands.Choice(name="🥊 UFC", value="ufc")]
+                          + [app_commands.Choice(name=SPORTS[k][2], value=k) for k in enabled_sports()])
+    async def toto_list(self, interaction: discord.Interaction, 종목: Optional[str] = None):
         await interaction.response.defer()
+        want = lambda k: 종목 is None or 종목 == k   # noqa: E731 — 3.3.0 /토토 종목
         new = release.preview_291(interaction.guild_id)   # 2.9.1: UFC만 · 새 목록 화면 (테스트 서버 먼저)
         now_ts = int(time.time())
-        rows = await self.db.toto_list_open_matches(now_ts, limit=15)
-        live = await self.db.toto_list_in_progress(now_ts, limit=10)
-        fights = (await upcoming_fights(ufc_only=new, pairs=release.preview_321(interaction.guild_id)))[:25 if release.preview_2101(interaction.guild_id) else 8]   # 2.9.1: 대진 전체 (메뉴는 종목별로 나눠 25개씩)
+        rows = await self.db.toto_list_open_matches(now_ts, limit=15) if want("soccer") else []
+        live = await self.db.toto_list_in_progress(now_ts, limit=10) if want("soccer") else []
+        fights = [] if not want("ufc") else (await upcoming_fights(ufc_only=new, pairs=release.preview_321(interaction.guild_id)))[:25 if release.preview_2101(interaction.guild_id) else 8]   # 2.9.1: 대진 전체 (메뉴는 종목별로 나눠 25개씩)
 
         games, options = {}, []
         soccer, ufc = [], []   # [(시각, 2.9.1 줄, 예전 줄)]
@@ -519,6 +523,8 @@ class Toto(commands.Cog):
                         f"　 {f['home']} **{f['home_odds']:.2f}** · {f['away']} **{f['away_odds']:.2f}**"))
         sports = {}   # 3.2.1: 종목 → [(시각, 줄)] (테스트 서버 먼저)
         for sport in (enabled_sports() if new and release.preview_321(interaction.guild_id) else []):
+            if not want(sport):
+                continue
             for g in (await self._sports_games(sport))[:25]:
                 n += 1
                 key = f"b:{sport}:{g['event_id']}"

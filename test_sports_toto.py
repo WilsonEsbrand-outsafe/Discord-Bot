@@ -139,9 +139,15 @@ async def _flow():
     menu = out[-1]["view"]
     assert [o.value for o in menu.selects[0].options] == ["b:mlb:g1", "b:mlb:g2"]
     assert "⚾ MLB" in out[-1]["embeds"][0].title
+    await ct.Toto.toto_list.callback(toto, inter, 종목="nba")   # 3.3.0 /토토 종목 — 다른 종목은 빠진다
+    assert "view" not in out[-1]
+    await ct.Toto.toto_list.callback(toto, inter, 종목="mlb")
+    assert [o.value for m in out[-1]["view"].selects for o in m.options] == ["b:mlb:g1", "b:mlb:g2"]
+    rel, ct.release.RELEASE_321_TS = ct.release.RELEASE_321_TS, None
     inter.guild_id = 1                                   # 공개 전 서버엔 안 보인다
     await ct.Toto.toto_list.callback(toto, inter)
     assert "view" not in out[-1] or not any(o.value.startswith("b:") for m in out[-1]["view"].selects for o in m.options)
+    ct.release.RELEASE_321_TS = rel
     inter.guild_id = ct.release.TEST_GUILD
     await ct.Toto.my_bets.callback(toto, inter)
     assert "Los Angeles Dodgers vs Toronto Blue Jays" in out[-1]["embed"].description
