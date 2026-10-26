@@ -8,7 +8,7 @@ from typing import Optional
 
 TEST_GUILD = 1374213619793006704
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
-MAINTENANCE = (calendar.timegm((2026, 10, 26, 4, 20, 0)), calendar.timegm((2026, 10, 26, 4, 30, 0)))   # 정기점검 3.4.0 (10/26 13:20 ~ 13:30 KST) — 명령어 막음 (3.3.0 은 10/26 09:20 ~ 09:25)
+MAINTENANCE = (calendar.timegm((2026, 10, 26, 7, 30, 0)), calendar.timegm((2026, 10, 26, 7, 35, 0)))   # 정기점검 3.4.1 (10/26 16:30 ~ 16:35 KST) — 명령어 · 버튼 막음 (3.4.0 은 10/26 13:20 ~ 13:30)
 # (2.8 점검은 RELEASE_TS ± 600초였다. 공개를 다시 단계 배포할 땐 MAINTENANCE 를 RELEASE_TS 에 맞춘다)
 
 PREVIEW_ONLY: set[str] = {"낚시", "낚시시세", "양궁", "던전", "오늘", "게임"}   # 공개 전엔 테스트 서버에만 보이는 명령어 (2.8 새 명령어는 만들 때마다 추가)
@@ -125,7 +125,7 @@ def preview_340(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 
 
 # 3.4.1 — 테스트 서버 먼저. preview_341(guild): 페널티킥 1배(골 · 선방)를 줄이고 2배 · 5배를 늘림. None = 아직
-RELEASE_341_TS: Optional[int] = None
+RELEASE_341_TS: Optional[int] = calendar.timegm((2026, 10, 26, 7, 30, 0))   # 3.4.1 공개: 2026-10-26 16:30 KST (점검 시작과 함께)
 
 
 def released_341(now: Optional[float] = None) -> bool:
