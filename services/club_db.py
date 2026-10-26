@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from services.economy_db import rookie_until
-from services.enhance import ENH_DROP_FROM, ENH_DROP_P, ENH_MAX, ENH_PLAYERS, ENH_STONES, STAR_OVR, TRAITS, enh_ovr, parse_traits, trait_slots
+from services.enhance import ENH_DROP_FROM, ENH_DROP_P, ENH_MAX, ENH_MIN_OVR, ENH_PLAYERS, ENH_STONES, STAR_OVR, TRAITS, enh_ovr, parse_traits, trait_slots
 from services.enhance import chance as enh_chance
 from services.player_market_db import pot_grade_for_value
 
@@ -1239,13 +1239,15 @@ class ClubDB:
     # ───────────── 3.4.0 유망주 강화 ─────────────
     async def enhance_prospect(self, user_id: int, now_ts: int, players: Optional[list[str]] = None, rng=random) -> dict:
         """현역 유망주 +1 도전. players=None 이면 🔷 강화석, 아니면 그 선수 카드를 한 장씩 재료로.
-        실패 reason: none(유망주 없음) / max / stones(need, have) / players(need) / lineup(선발 선수) / missing(없는 카드).
+        실패 reason: none(유망주 없음) / ovr(기본 OVR 이 ENH_MIN_OVR 밑) / max / stones(need, have) / players(need) / lineup(선발 선수) / missing(없는 카드).
         → {ok, success, before, enh, chance, dropped, slot(특성 고를 칸이 새로 생김)}."""
         def fn(con):
             p = self._active_prospect(con, user_id, now_ts)
             if not p:
                 return {"ok": False, "reason": "none"}
             lv = p["enh"]
+            if p["ovr"] < ENH_MIN_OVR:
+                return {"ok": False, "reason": "ovr", "need": ENH_MIN_OVR, "ovr": p["ovr"]}
             if lv >= ENH_MAX:
                 return {"ok": False, "reason": "max"}
             star = False

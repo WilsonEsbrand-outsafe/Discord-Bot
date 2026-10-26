@@ -222,7 +222,7 @@ class EnhanceView(_OwnerView):
         super().__init__(timeout=600)
         self.cog, self.user, self.p = cog, user, p
         lv = p["enh"]
-        if lv < EH.ENH_MAX:
+        if lv < EH.ENH_MAX and p["ovr"] >= EH.ENH_MIN_OVR:
             need = EH.ENH_STONES[lv]
             b = discord.ui.Button(label=f"강화석 {need}개로 강화 (보유 {mat['stones']})", emoji="🔷", row=0,
                                   style=discord.ButtonStyle.success, disabled=mat["stones"] < need)
@@ -264,7 +264,9 @@ def enhance_embed(p: dict, user, mat: dict, note: str = "") -> discord.Embed:
     lv = p["enh"]
     lines = [f"`지금` **+{lv}** / +{EH.ENH_MAX} · 경기 OVR **{min(99, p['ovr'] + EH.enh_ovr(lv, p['traits']))}** "
              f"(기본 {p['ovr']} + 강화 {EH.enh_ovr(lv, p['traits'])})"]
-    if lv < EH.ENH_MAX:
+    if p["ovr"] < EH.ENH_MIN_OVR:
+        lines.append(f"🔒 기본 OVR **{EH.ENH_MIN_OVR}**부터 강화할 수 있어요 (지금 {p['ovr']}) — 경기에 내보내 키워 주세요")
+    elif lv < EH.ENH_MAX:
         lines.append(f"`다음` **+{lv + 1}** 성공 확률 **{EH.chance(lv):.0%}** · 재료 🔷 강화석 **{EH.ENH_STONES[lv]}개** "
                      f"또는 🃏 선수 카드 **{EH.ENH_PLAYERS[lv]}장**")
         if lv >= EH.ENH_DROP_FROM:
@@ -278,6 +280,10 @@ def enhance_embed(p: dict, user, mat: dict, note: str = "") -> discord.Embed:
                  " (선발에 한 장뿐인 선수는 빠져요)")
     e = ui.card(f"🔷 {p['name']} #{p['number']} 강화", (note + "\n\n" if note else "") + "\n".join(lines),
                 ui.GOLD if "성공" in note else ui.LOSE if "실패" in note else ui.INFO, user, SECTION)
+    e.add_field(name="📊 강화 확률표", inline=False, value="\n".join(   # 3.4.0 확률 공개
+        f"{'▶' if i == lv else '　'} `+{i}→+{i + 1}` **{EH.ENH_CHANCE[i]:.0%}** · 🔷 {EH.ENH_STONES[i]}개 또는 🃏 {EH.ENH_PLAYERS[i]}장"
+        + (f" · 실패 시 {EH.ENH_DROP_P:.0%} 하락" if i >= EH.ENH_DROP_FROM else "") for i in range(EH.ENH_MAX))
+        + f"\n🃏 재료 선수 평균 OVR {EH.STAR_OVR} 이상이면 성공 확률 +{EH.STAR_BONUS:.0%}p")
     e.set_footer(text="단계마다 OVR +1 · 은퇴하면 강화도 함께 끝나요")
     return e
 
@@ -290,8 +296,10 @@ class ProspectPanel(_OwnerView):
         super().__init__(timeout=600)
         self.cog, self.user = cog, user
         if data["active"]:
-            if release.preview_340(getattr(getattr(user, "guild", None), "id", None)):   # 3.4.0 강화
-                b = discord.ui.Button(label="강화", emoji="🔷", style=discord.ButtonStyle.success, row=1)
+            if release.preview_340(getattr(getattr(user, "guild", None), "id", None)):   # 3.4.0 강화 (OVR 70 부터)
+                locked = data["active"]["ovr"] < EH.ENH_MIN_OVR
+                b = discord.ui.Button(label=f"강화 (OVR {EH.ENH_MIN_OVR}부터)" if locked else "강화", emoji="🔷", row=1,
+                                      style=discord.ButtonStyle.secondary if locked else discord.ButtonStyle.success)
                 b.callback = cog.enhance
                 self.add_item(b)
             for label, emoji, style, fn in (("은퇴", "👋", discord.ButtonStyle.primary, cog.retire),
@@ -439,6 +447,7 @@ class Prospect(commands.Cog):
         if not r["ok"]:
             note = {"none": "🙅 현역 유망주가 없어요.", "max": "🏆 이미 최고 단계예요.",
                     "stones": f"🙅 🔷 강화석이 모자라요 (필요 {r.get('need')} · 보유 {r.get('have')}).",
+                    "ovr": f"🔒 기본 OVR **{r.get('need')}**부터 강화할 수 있어요 (지금 {r.get('ovr')}).",
                     "players": f"🙅 선수 카드를 {r.get('need')}장 골라 주세요.", "lineup": "🙅 선발에 한 장뿐인 선수는 못 써요.",
                     "missing": "🙅 그 선수 카드가 없어요."}[r["reason"]]
         elif r["success"]:
