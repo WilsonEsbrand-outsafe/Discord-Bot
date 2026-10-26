@@ -157,3 +157,15 @@ def test_f1_soft():
     for n, lad in zip(c, new):
         assert sum(k * v for k, v in zip(n, lad)) < 0
     assert "0.5배" in R.F1_RULE_340
+
+
+def test_mgmt_screen():
+    from cogs.hub import _mgmt_body_340
+    import services.management as M
+    t = M.day_report(30, [], {"training": 4}, 60, "normal")
+    p = {"today": t, "parts": {"form": 9, "facility": 4, "ticket": 0, "aquarium": 0}, "ticket": "normal", "stored": 0,
+         "stored_days": 1, "sat": 60, "target": 63, "last": t}
+    body = _mgmt_body_340(p)
+    assert "받을 돈 0원" in body and "관중이 안 와요" in body and "전력 **45**" in body and len(body) < 4096
+    p["today"] = M.day_report(80, [70] * 11, {"stadium": 0}, 90, "low")
+    assert "꽉 찼어요" in _mgmt_body_340(p)

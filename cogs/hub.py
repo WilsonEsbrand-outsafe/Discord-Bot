@@ -47,6 +47,39 @@ def _mgmt_lines(r: dict) -> str:
             + (" (수입까지만)" if r["cost"] < r["wage"] + r["upkeep"] else "") + f"\n　순이익 **+{r['net']:,}원**")
 
 
+def _mgmt_body_340(p: dict) -> str:
+    """3.4.0 경영 화면 — 받을 돈 → 오늘 밤 수입 → 왜 그런지 · 늘리는 법 순서로, 쉬운 말로."""
+    t, parts = p["today"], p["parts"]
+    te, tn, price, _, _ = M.TICKETS[p["ticket"]]
+    lines = ["매일 밤 12시(KST)에 경기장 관중 수입이 쌓여요. 쌓인 돈은 아래 **[정산하기]**로 받아요.\n",
+             f"💰 **받을 돈 {p['stored']:,}원**" + (f" ({p['stored_days']}일치)" if p["stored_days"] else ""),
+             f"\n🌙 **오늘 밤 예상 수입 +{t['net']:,}원**",
+             f"　👥 관중 **{t['fans']:,}명** / {t['capacity']:,}석" + (" 🎉 매진!" if t["sellout"] else ""),
+             f"　💵 티켓 수입 {t['gross']:,}원 ({te} {tn} {price}원 × {t['fans']:,}명)",
+             f"　💸 비용 −{t['cost']:,}원 (선수 월급 {t['wage']:,} · 시설 관리비 {t['upkeep']:,})"
+             + (" — 수입보다 많이 나가진 않아요" if t["cost"] < t["wage"] + t["upkeep"] else "")]
+    zero = M.BASE_DEMAND / M.DEMAND_PER_RATING
+    if t["fans"] == 0:
+        tip = (f"구단 전력 **{t['rating']:.0f}**이 너무 낮아서 관중이 안 와요. "
+               f"전력 **{50 - zero:.0f}** 넘으면 오기 시작해요 — `/구단`에서 선발을 강하게 바꿔 보세요.")
+    elif t["sellout"]:
+        tip = "경기장이 꽉 찼어요! 시설에서 **경기장**을 올리면 자리가 늘어나요."
+    else:
+        tip = "관중 늘리기: 구단 전력 ↑ · 팬 만족도 ↑ · 티켓 값 ↓"
+    lines.append(f"\n💡 {tip}")
+    arrow = "↗️ 오르는 중" if p["target"] > p["sat"] + 0.5 else "↘️ 내리는 중" if p["target"] < p["sat"] - 0.5 else "➡️ 그대로"
+    sp, el = M.fan_bonus(p["sat"])
+    lines += [f"\n😊 **팬 만족도 {p['sat']:.0f}/100** {arrow} (매일 {p['target']:.0f} 쪽으로)",
+              "　높을수록 관중이 많이 와요"
+              + (f" · 지금 보너스: 스폰서 +{sp:.0%} · 명문 구단 +{el:.0%}" if sp else
+                 f" · **{M.BONUS[1][0]}** 넘으면 스폰서 +{M.BONUS[1][1]:.0%} · 명문 구단 +{M.BONUS[1][2]:.0%}"),
+              f"　올리는 법: 경기 이기기 ({parts['form']:+d}) · 시설 ({parts['facility']:+d}) · "
+              f"싼 티켓 ({parts['ticket']:+d}) · 🐠 수족관 ({parts['aquarium']:+d})"]
+    if p["last"]:
+        lines.append(f"\n📒 지난 밤: 관중 {p['last']['fans']:,}명 · **+{p['last']['net']:,}원**")
+    return "\n".join(lines)
+
+
 def mgmt_report_card(r: dict, user, title: str) -> discord.Embed:
     held = (f"\n\n💰 쌓아 둔 수입 **{r['stored']:,}원** ({r['stored_days']}일치) — `/구단` → 💼 경영 → **[정산하기]**로 받아요"
             if r.get("held") else "")   # 3.1.1 묵혀두기
@@ -364,6 +397,11 @@ class Hubs(commands.Cog):
         if not p:
             return ui.card("💼 경영", "구단이 있어야 경영을 할 수 있어요. `/구단생성`을 먼저 해 주세요.", ui.EVEN, user, "💼 경영")
         t, parts = p["today"], p["parts"]
+        if release.preview_340(getattr(getattr(user, "guild", None), "id", None)):   # 3.4.0 알기 쉬운 경영 화면
+            e = ui.card("💼 구단 경영", _mgmt_body_340(p), ui.INFO, user, "💼 경영")
+            e.set_footer(text="🎟️ 티켓: 싸면 관중 · 만족도 ↑ / 비싸면 1명당 수입 ↑ — 바꾸면 다음 정산부터")
+            self._mgmt_buttons(view, p, True)
+            return e
         sp, el = M.fan_bonus(p["sat"])
         bonus = (f"스폰서 플러스 수익 **+{sp:.0%}** · 명문 구단 하루 수입 **+{el:.0%}**" if sp else
                  f"없음 (70 이상: 스폰서 +{M.BONUS[1][1]:.0%} · 명문 구단 +{M.BONUS[1][2]:.0%} / "
@@ -385,6 +423,10 @@ class Hubs(commands.Cog):
         e = ui.card("💼 구단 경영", body, ui.INFO, user, "💼 경영")
         e.set_footer(text=("매일 00시(KST) 수입이 쌓여요 (상한 없음) · " if held else "매일 00시(KST) 정산 · ")
                           + "관중 = 경기장 수용 한도까지 · 비용은 그날 수입까지만 (마이너스 없음) · /알림설정 → 구단 경영 정산 DM")
+        self._mgmt_buttons(view, p, held)
+        return e
+
+    def _mgmt_buttons(self, view: HubView, p: dict, held: bool):
         for k, (e_, n_, pr, mult, _) in M.TICKETS.items():
             b = discord.ui.Button(label=f"{n_} {pr}원 (관중 ×{mult:g})", emoji=e_, row=0, disabled=k == p["ticket"],
                                   style=discord.ButtonStyle.success if k == p["ticket"] else discord.ButtonStyle.secondary)
@@ -395,7 +437,6 @@ class Hubs(commands.Cog):
                                   emoji="💰", style=discord.ButtonStyle.primary, row=1, disabled=p["stored"] <= 0)
             b.callback = self._collect_cb(view)
             view.add_item(b)
-        return e
 
     def _collect_cb(self, view: HubView):
         async def cb(interaction: discord.Interaction):
