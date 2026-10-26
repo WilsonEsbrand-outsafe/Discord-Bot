@@ -5,6 +5,7 @@ import tempfile
 from fractions import Fraction
 from pathlib import Path
 
+import release
 import services.economy_db as edb
 import services.quiz as Q
 from cogs.economy import Economy
@@ -35,6 +36,21 @@ def test_penalty_table():
     label = Economy._pk_label
     assert [label(Fraction(m)) for m in ("200", "1", "0", "-1", "-10")] == ["200배 수익", "1배 수익", "본전", "1배 손실", "10배 손실"]
 
+
+
+def test_penalty_table_341():
+    old, t = Economy.PK_TABLE, Economy.PK_TABLE_341
+    assert [r[1:] for r in t] == [r[1:] for r in old]          # 줄 순서 · 배수 · 멘트 그대로 (장면 그림 pk_0~9)
+    assert abs(sum(p for p, *_ in t) - 1) < 1e-9
+    ev = lambda tb: sum(p * float(Fraction(m)) for p, m, *_ in tb)
+    assert -0.03 < ev(t) < 0 and abs(ev(t) - ev(old)) < 0.002   # 기대값 그대로
+    p, q = {r[3]: r[0] for r in t}, {r[3]: r[0] for r in old}
+    assert p["골"] < q["골"] and p["선방"] < q["선방"]                 # 1배는 덜
+    assert p["골대 맞고 인"] > q["골대 맞고 인"] and p["노룩 킥"] > q["노룩 킥"]   # 2배 · 5배 수익은 더
+    assert abs(sum(r[0] for r in t if Fraction(r[1]) > 0) - sum(r[0] for r in old if Fraction(r[1]) > 0)) < 1e-9
+    assert max(t, key=lambda r: r[0])[3] == "선방" and abs(p["선방"] - p["골"]) <= 0.03
+    assert 0 < p["골대 강타"] - p["골대 맞고 인"] <= 0.03
+    assert release.preview_341(release.TEST_GUILD) and release.preview_341(123) == release.released_341()
 
 def test_batting_table():
     t = Economy.BAT_TABLE
