@@ -53,6 +53,22 @@ def prizes(n: int, rng=random) -> list[int]:
     return [top, s - top] + [0] * (n - 2 - k) + [-x for x in loss]
 
 
+
+def prizes_341(n: int, rng=random) -> list[int]:
+    """3.4.1 (release.preview_341 서버): prizes 와 같은 모양인데 1배 칸이 없다 — 수익 · 손실 모두 2배부터.
+    1위 > 2위 ≥ 2 · 손실 칸도 모두 2배 이상(4명이면 꼴찌 > 3위). 기대값은 0 근처(6명은 손실 합이 최소 6이라 살짝 -)."""
+    s = rng.choices(range(5, 11), weights=(25, 25, 18, 14, 10, 8))[0]
+    top = rng.randint(s // 2 + 1, s - 2)
+    k = n // 2                                         # 손실 칸 수
+    if k == 2:
+        worst = rng.randint(s // 2 + 1, s - 2)
+        loss = [s - worst, worst]
+    else:
+        left = max(s, 2 * k) - 2 * k                   # 칸마다 2배를 먼저 깔고 남는 몫을 나눈다
+        cuts = sorted(rng.randint(0, left) for _ in range(k - 1))
+        loss = sorted(2 + b - a for a, b in zip([0] + cuts, cuts + [left]))
+    return [top, s - top] + [0] * (n - 2 - k) + [-x for x in loss]
+
 def prize_lines(amount: int, table: list[int]) -> str:
     return "\n".join(f"{PLACES[i]} {i + 1}위 **{ui.won(amount * m)}** · {label(m)}" for i, m in enumerate(table))
 
@@ -949,7 +965,7 @@ class Race(commands.Cog):
         user, amount = interaction.user, int(amount)
 
         async def build():
-            race = {"no": random.randint(1, 12), "runners": SNAIL.runners(random), "prizes": prizes(SNAIL.n)}
+            race = {"no": random.randint(1, 12), "runners": SNAIL.runners(random), "prizes": (prizes_341 if release.preview_341(getattr(interaction, "guild_id", None)) else prizes)(SNAIL.n)}
             return (lambda: PickView(self, SNAIL, user, amount, race)), self._snail_card(user, amount, race), None
         await self._bet(interaction, amount, SNAIL.section, build)
 
@@ -1023,7 +1039,7 @@ class Race(commands.Cog):
             me = random.randrange(ROW_N)
             rivals = iter(random.sample(ROWERS, ROW_N - 1))
             boats = [None if i == me else next(rivals) for i in range(ROW_N)]
-            race = {"no": random.randint(1, 12), "me": me, "boats": boats, "prizes": prizes(ROW_N),
+            race = {"no": random.randint(1, 12), "me": me, "boats": boats, "prizes": (prizes_341 if release.preview_341(interaction.guild_id) else prizes)(ROW_N),
                     "rules": row_rules(interaction.guild_id)}
             lines = [f"`{i + 1}` 🚣 **{user.display_name}** 👈 · 내 보트" if b is None else
                      f"`{i + 1}` {b[0]} **{b[1]}** · {b[2]}kg · {random.choice(MOODS)}\n　 *{b[3]}*" for i, b in enumerate(boats)]
