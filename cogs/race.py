@@ -53,10 +53,15 @@ def prizes(n: int, rng=random) -> list[int]:
     return [top, s - top] + [0] * (n - 2 - k) + [-x for x in loss]
 
 
+PRIZE_OLD_341 = 0.35   # 3.4.1: 이 비율만큼은 예전 상금표 (1배 칸이 가끔은 나오게)
+
 
 def prizes_341(n: int, rng=random) -> list[int]:
-    """3.4.1 (release.preview_341 서버): prizes 와 같은 모양인데 1배 칸이 없다 — 수익 · 손실 모두 2배부터.
-    1위 > 2위 ≥ 2 · 손실 칸도 모두 2배 이상(4명이면 꼴찌 > 3위). 기대값은 0 근처(6명은 손실 합이 최소 6이라 살짝 -)."""
+    """3.4.1 (release.preview_341 서버): prizes 와 같은 모양인데 1배 칸이 드물다 — 대부분 수익 · 손실 모두 2배부터.
+    1위 > 2위 ≥ 2 · 손실 칸도 모두 2배 이상(4명이면 꼴찌 > 3위). 기대값은 0 근처(6명은 손실 합이 최소 6이라 살짝 -).
+    다만 1배가 아예 없으면 어색해서 PRIZE_OLD_341 비율은 예전 상금표(1배 칸이 자주 있다)를 그대로 쓴다 → 1배 있는 판 약 30%."""
+    if rng.random() < PRIZE_OLD_341:
+        return prizes(n, rng)
     s = rng.choices(range(5, 11), weights=(25, 25, 18, 14, 10, 8))[0]
     top = rng.randint(s // 2 + 1, s - 2)
     k = n // 2                                         # 손실 칸 수
