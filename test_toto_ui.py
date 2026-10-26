@@ -7,10 +7,12 @@ from types import SimpleNamespace
 
 import services.economy_db as edb
 import services.ufc_db as udb
+import services.sports_db as sdb
 
 TMP = Path(tempfile.mkdtemp())
 edb.DB_PATH = TMP / "e.sqlite3"
 udb.DB_PATH = str(TMP / "u.sqlite3")
+sdb.DB_PATH = str(TMP / "s.sqlite3")
 
 import cogs.toto as ct  # noqa: E402
 from cogs.toto import Toto  # noqa: E402
@@ -32,6 +34,7 @@ def _inter(sent, user):
 async def _flow():
     cog = Toto.__new__(Toto)
     cog.db, cog.ufc, cog.api, cog.odds = edb.EconomyDB(), udb.UfcDB(), None, None
+    cog.sports, cog.bot = sdb.SportsDB(), None   # 3.2.1 야구 · 농구 (경기 없음)
     now = int(time.time())
     await cog.db.toto_upsert_match(match_id="m1", home="아스날", away="첼시", kickoff_ts=now + 86400,
                                    base_home=1.5, base_draw=3.2, base_away=2.4)
