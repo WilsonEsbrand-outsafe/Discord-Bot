@@ -27,6 +27,16 @@ def test_prizes_frames():
             seen.add(tuple(p))
         assert len(seen) > 10                                                        # 상금표가 경주마다 다양하다
     assert R.prizes(6, random.Random(1))[2] == 0                                     # 조정 3위는 본전
+    for n in (4, 6):                                                                 # 3.4.1: 1배 칸 없음
+        seen = set()
+        for _ in range(3000):
+            p = R.prizes_341(n, rng)
+            assert len(p) == n and p[0] > p[1] >= 2 and all(x == 0 or abs(x) >= 2 for x in p), p
+            assert p[2:] == sorted(p[2:], reverse=True) and p[-1] <= -2 and -2 <= sum(p) <= 0, p
+            assert n != 4 or p[3] < p[2], p                                          # 꼴찌가 3위보다 더 잃는다
+            seen.add(tuple(p))
+        assert len(seen) > 10
+    assert R.prizes_341(6, random.Random(1))[2] == 0
     for _ in range(300):
         finish = rng.sample(range(4), 4)
         fr = R.frames(finish, rng)

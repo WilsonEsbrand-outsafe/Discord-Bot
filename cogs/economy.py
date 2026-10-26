@@ -1375,6 +1375,12 @@ class Economy(commands.Cog):
         worst = rng.randint(s // 2 + 1, s - 1)   # 4위 손실
         return [top, s - top, -(s - worst), -worst]
 
+    @staticmethod
+    def _race_prizes_341(rng=random) -> list[int]:
+        """3.4.1: 1배 칸 없는 상금표 (수익 · 손실 모두 2배부터) — 달팽이 · 조정과 같은 규칙."""
+        from cogs.race import prizes_341
+        return prizes_341(4, rng)
+
     @classmethod
     def _race_frames(cls, finish: list[int], rng=random, comeback: int | None = None) -> list[list[int]]:
         """장면마다 말 위치(출주 번호순). 초반엔 뒤섞이고, 갈수록 최종 순위대로 벌어진다.
@@ -1434,7 +1440,7 @@ class Economy(commands.Cog):
 
         horses = random.sample(self.RACE_HORSES, 4)
         race = {"no": random.randint(1, 12), "horses": horses,
-                "moods": [random.choice(self.RACE_MOODS) for _ in horses], "prizes": self._race_prizes()}
+                "moods": [random.choice(self.RACE_MOODS) for _ in horses], "prizes": self._race_prizes_341() if release.preview_341(getattr(interaction, "guild_id", None)) else self._race_prizes()}
         await self.db.add_balance(user.id, -amount)   # 마권 발매: 베팅금 먼저 차감
         view = RaceView(self, user, amount, race)
         try:
