@@ -297,8 +297,7 @@ async def _tree_check(interaction: discord.Interaction) -> bool:
         return True
     if release.maintenance():
         start, end = release.MAINTENANCE
-        await interaction.response.send_message(
-            f"🔧 정기점검 중입니다. (<t:{start}:t> ~ <t:{end}:t>) 점검이 끝나면 다시 이용해 주세요.", ephemeral=True)
+        await interaction.response.send_message(_MAINT_TEXT.format(start, end), ephemeral=True)
         return False
     name = (interaction.command.qualified_name if interaction.command else "").split(" ")[0]
     if release.preview_311(interaction.guild_id) and not spam.check(interaction.user.id, name):   # 3.1.1 연타 막기
@@ -319,6 +318,27 @@ async def _tree_check(interaction: discord.Interaction) -> bool:
     return True
 
 bot.tree.interaction_check = _tree_check
+
+
+# 3.4.1: 점검 중엔 / 명령어뿐 아니라 이미 떠 있는 화면의 버튼 · 메뉴 · 모달도 막는다.
+# (tree.interaction_check 는 / 명령어에만 걸려서, 3.4.0 점검 때 [게임] 허브 버튼 등으로는 계속 플레이가 됐다)
+_MAINT_TEXT = "🔧 정기점검 중입니다. (<t:{0}:t> ~ <t:{1}:t>) 점검이 끝나면 다시 이용해 주세요."
+
+
+def _maint_blocked(interaction: discord.Interaction) -> bool:
+    if interaction.user.id == OWNER_ID or not release.maintenance():
+        return False
+    asyncio.create_task(interaction.response.send_message(_MAINT_TEXT.format(*release.MAINTENANCE), ephemeral=True))
+    return True
+
+
+_dispatch_view, _dispatch_modal = discord.ui.view.ViewStore.dispatch_view, discord.ui.view.ViewStore.dispatch_modal
+discord.ui.view.ViewStore.dispatch_view = (
+    lambda self, component_type, custom_id, interaction:
+    None if _maint_blocked(interaction) else _dispatch_view(self, component_type, custom_id, interaction))
+discord.ui.view.ViewStore.dispatch_modal = (
+    lambda self, custom_id, interaction, *a:
+    None if _maint_blocked(interaction) else _dispatch_modal(self, custom_id, interaction, *a))
 
 
 async def _release_sync():
