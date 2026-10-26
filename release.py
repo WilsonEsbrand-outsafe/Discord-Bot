@@ -8,7 +8,7 @@ from typing import Optional
 
 TEST_GUILD = 1374213619793006704
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
-MAINTENANCE = (calendar.timegm((2026, 10, 26, 0, 20, 0)), calendar.timegm((2026, 10, 26, 0, 25, 0)))   # 정기점검 3.3.0 (10/26 09:20 ~ 09:25 KST) — 명령어 막음 (3.2.0 은 10/25 06:30 ~ 07:00)
+MAINTENANCE = (calendar.timegm((2026, 10, 26, 4, 20, 0)), calendar.timegm((2026, 10, 26, 4, 30, 0)))   # 정기점검 3.4.0 (10/26 13:20 ~ 13:30 KST) — 명령어 막음 (3.3.0 은 10/26 09:20 ~ 09:25)
 # (2.8 점검은 RELEASE_TS ± 600초였다. 공개를 다시 단계 배포할 땐 MAINTENANCE 를 RELEASE_TS 에 맞춘다)
 
 PREVIEW_ONLY: set[str] = {"낚시", "낚시시세", "양궁", "던전", "오늘", "게임"}   # 공개 전엔 테스트 서버에만 보이는 명령어 (2.8 새 명령어는 만들 때마다 추가)
@@ -112,7 +112,7 @@ def preview_321(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 
 # 3.4.0 — 테스트 서버 먼저. preview_340(guild): 남은 시간 5초마다 글자로 · 낚시(새 물고기 · 랜덤 시세 · 확률 · 낚싯대 내구도 · 장비 상향 ·
 # 요리 확률) · F1 토토 순위 배당 완화 · 구단 경영 화면 · 유망주 강화. None = 아직
-RELEASE_340_TS: Optional[int] = None
+RELEASE_340_TS: Optional[int] = calendar.timegm((2026, 10, 26, 4, 20, 0))   # 3.4.0 공개: 2026-10-26 13:20 KST (점검 시작과 함께)
 
 
 def released_340(now: Optional[float] = None) -> bool:

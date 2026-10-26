@@ -116,13 +116,29 @@ def test_330():
     note = PATCH_NOTES["3.3.0"]
     assert "3.2.1" not in PATCH_NOTES and "장부" not in note and "KBO" not in note and len(note) < 1000
     keys = {k: ts for k, ts, *_ in NOTICES}
-    start, end = release.MAINTENANCE
-    assert (start, end) == (calendar.timegm((2026, 10, 26, 0, 20, 0)), calendar.timegm((2026, 10, 26, 0, 25, 0)))   # 09:20 ~ 09:25 KST
+    start, end = calendar.timegm((2026, 10, 26, 0, 20, 0)), calendar.timegm((2026, 10, 26, 0, 25, 0))   # 3.3.0 점검 09:20 ~ 09:25 KST
     assert keys["maint-3.3.0"] == keys["patch-3.3.0"] < start == release.RELEASE_321_TS   # 미리 발송 · 점검 시작에 공개
     assert "LEGALTOTO" in note
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.3.0")
     assert P.notice_text("maint-3.3.0", title, body, keys["maint-3.3.0"]) == (title, body)
-    assert P.notice_text("maint-3.3.0", title, body, end)[0] == "✅ 점검 완료 안내"   # 늦게 배포되면 점검 완료로
+
+
+def test_340():
+    import calendar
+    import release
+    from services.economy_db import COUPONS, COUPONS_340
+    note = PATCH_NOTES["3.4.0"]
+    assert "장부" not in note and "체크리스트" not in note and "%" not in note and len(note) < 1000
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    start, end = release.MAINTENANCE
+    assert (start, end) == (calendar.timegm((2026, 10, 26, 4, 20, 0)), calendar.timegm((2026, 10, 26, 4, 30, 0)))   # 13:20 ~ 13:30 KST
+    assert keys["maint-3.4.0"] == keys["patch-3.4.0"] < start == release.RELEASE_340_TS   # 미리 발송 · 점검 시작에 공개
+    assert "UPGRADEBOT" in note and COUPONS["UPGRADEBOT"][0] == {"enh_stone": 1} and "UPGRADEBOT" in COUPONS_340
+    assert not release.preview_340(123, start - 1) and release.preview_340(123, start)
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.4.0")
+    assert "13:20 ~ 13:30" in body
+    assert P.notice_text("maint-3.4.0", title, body, keys["maint-3.4.0"]) == (title, body)
+    assert P.notice_text("maint-3.4.0", title, body, end)[0] == "✅ 점검 완료 안내"   # 늦게 배포되면 점검 완료로
 
 
 def test_320():
@@ -150,4 +166,5 @@ if __name__ == "__main__":
     test_310()
     test_320()
     test_330()
+    test_340()
     print("OK: patch notes")
