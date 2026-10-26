@@ -52,16 +52,42 @@ FISH = {   # (이모지, 이름, 등급, 평균 cm, 기준가) — 2.82: 기준�
     "knifejaw": ("🐡", "돌돔", 2, 50, 230_000), "kingcrab": ("🦀", "킹크랩", 2, 60, 270_000),
     "sunfish": ("🐡", "개복치", 3, 250, 1_330_000),
     "whaleshark": ("🐋", "고래상어", 4, 900, 12_000_000),
+    # 3.4.0 새 물고기 45종 (공개 전엔 테스트 서버에서만 잡힘) — 100종
+    "bluegill": ("🐟", "블루길", 0, 18, 3_000), "bass": ("🐟", "배스", 0, 35, 6_500),
+    "dace": ("🐟", "황어", 0, 35, 5_000), "chub": ("🐟", "끄리", 0, 30, 4_000),
+    "sillago": ("🐟", "보리멸", 0, 20, 4_500), "shrimp": ("🦐", "새우", 0, 8, 3_000),
+    "clam": ("🐚", "바지락", 0, 4, 2_500), "pollack": ("🐟", "명태", 0, 45, 5_500),
+    "halfbeak": ("🐟", "학꽁치", 0, 25, 4_000), "sweetfish": ("🐟", "은어", 0, 18, 7_000),
+    "skate": ("🐠", "홍어", 1, 70, 40_000), "conger": ("🐍", "붕장어", 1, 60, 30_000),
+    "blackbream": ("🐠", "감성돔", 1, 40, 42_000), "tilefish": ("🐠", "옥돔", 1, 40, 38_000),
+    "cuttlefish": ("🦑", "갑오징어", 1, 25, 32_000), "urchin": ("🐚", "성게", 1, 8, 36_000),
+    "seacucumber": ("🥒", "해삼", 1, 20, 34_000), "yellowcroaker": ("🐠", "참조기", 1, 25, 28_000),
+    "snakehead": ("🐍", "가물치", 1, 70, 32_000), "carp": ("🐟", "잉어", 1, 60, 24_000),
+    "amberjack": ("🐡", "잿방어", 2, 100, 260_000), "redgrouper": ("🐡", "붉바리", 2, 45, 280_000),
+    "spotbass": ("🐡", "점농어", 2, 65, 170_000), "longtooth": ("🐡", "능성어", 2, 60, 240_000),
+    "kingsalmon": ("🐡", "왕연어", 2, 90, 250_000), "giantoctopus": ("🐙", "대왕문어", 2, 120, 230_000),
+    "snowcrab": ("🦀", "대게", 2, 50, 260_000), "mahimahi": ("🐡", "만새기", 2, 100, 180_000),
+    "spinylobster": ("🦞", "닭새우", 2, 30, 270_000),
+    "bigeye": ("🦈", "눈다랑어", 3, 180, 1_300_000), "sailfish": ("🦈", "돛새치", 3, 300, 1_500_000),
+    "hammerhead": ("🦈", "귀상어", 3, 350, 1_450_000), "manta": ("🦈", "쥐가오리", 3, 400, 1_350_000),
+    "giantgrouper": ("🦈", "자이언트 그루퍼", 3, 200, 1_550_000), "arapaima": ("🐊", "피라루쿠", 3, 250, 1_400_000),
+    "napoleon": ("🐠", "나폴레옹피시", 3, 150, 1_600_000), "trevally": ("🦈", "자이언트 트레발리", 3, 130, 1_250_000),
+    "giantsquid": ("🦑", "대왕오징어", 4, 1200, 11_000_000), "goldtuna": ("🐉", "황금 참다랑어", 4, 250, 13_000_000),
+    "dragonfish": ("🐉", "용고기", 4, 200, 14_000_000), "phoenixkoi": ("🐉", "불사조 비단잉어", 4, 100, 15_000_000),
+    "moonfish": ("🌙", "달빛 개복치", 4, 300, 10_000_000), "rainbowfish": ("🌈", "무지개 물고기", 4, 60, 9_000_000),
+    "leviathan": ("🐉", "리바이어던", 4, 2000, 18_000_000), "megalodon": ("🦈", "메갈로돈", 4, 1500, 20_000_000),
 }
 NEW_310 = {"filefish", "sandfish", "horsemackerel", "sandlance", "scorpionfish", "greenling", "cod", "monkfish", "crab",
            "webfoot", "abalone", "knifejaw", "kingcrab", "sunfish", "whaleshark"}
-BY_GRADE_310 = [[k for k, f in FISH.items() if f[2] == g] for g in range(5)]          # 3.1.0 공개 서버: 55종
+NEW_340 = set(list(FISH)[55:])
+BY_GRADE_340 = [[k for k, f in FISH.items() if f[2] == g] for g in range(5)]          # 3.4.0 공개 서버: 100종
+BY_GRADE_310 = [[k for k in b if k not in NEW_340] for b in BY_GRADE_340]             # 3.1.0 공개 서버: 55종
 BY_GRADE = [[k for k in b if k not in NEW_310] for b in BY_GRADE_310]                # 3.1.0 전 서버: 40종
 
 
-def by_grade(new: bool = False) -> list[list[str]]:
-    """잡히는 · 시세 · 도감에 나오는 물고기 (등급별). new = 3.1.0 공개 서버."""
-    return BY_GRADE_310 if new else BY_GRADE
+def by_grade(new: bool = False, v340: bool = False) -> list[list[str]]:
+    """잡히는 · 시세 · 도감에 나오는 물고기 (등급별). new = 3.1.0 공개 서버 · v340 = 3.4.0 공개 서버."""
+    return BY_GRADE_340 if v340 else BY_GRADE_310 if new else BY_GRADE
 
 # 걸린 시간(입질까지 기다린 시간)별 등급 확률 % — 10초와 10분 사이는 직선으로 잇는다
 BITE_MIN, BITE_MAX = 10, 600
@@ -69,6 +95,8 @@ ODDS_FAST = (62, 28, 8, 1.7, 0.3)
 ODDS_SLOW = (24, 30, 26, 15, 5)
 ODDS_FAST_310 = (66, 27, 6, 0.9, 0.1)   # 3.1.0: 희귀 · 영웅 · 전설 확률 하향 (평균 수입 약 절반)
 ODDS_SLOW_310 = (34, 34, 22, 8, 2)
+ODDS_FAST_340 = (65.5, 27, 6.25, 1.1, 0.15)   # 3.4.0: 희귀 · 영웅 · 전설 확률 소폭 상향
+ODDS_SLOW_340 = (33, 34, 22.2, 8.5, 2.3)
 CATCH_WINDOW = 300            # 입질 뒤 이 시간(초) 안에 [잡기!] — 낚싯대로 늘어난다
 JUNK_PROB = 0.12              # 물고기 대신 잡템
 JUNK = {   # 아이템 → 비중 (old_boot = 낡은 장화, 아무것도 아님)
@@ -105,6 +133,15 @@ RECIPES_311_NEEDS = {"grill": [(0, 4)], "sashimi": [(1, 4)], "stew": [(2, 2)], "
 COOK_CHANCE_311 = {"grill": 0.85, "sashimi": 0.80, "stew": 0.75, "eel_rice": 0.70, "feast": 0.65}
 # 3.1.1 낚싯대가 좋을수록 희귀한 물고기가 아주 조금 더 ('기다린 시간' 효과 +)
 ROD_RARE_311 = {"rod_carbon": 0.02, "rod_pro": 0.04, "rod_legend": 0.06}
+# 3.4.0 (release.preview_340 서버): 요리 성공 확률 ↑ · 낚싯대 · 미끼 효과 ↑ · 낚싯대 내구도
+COOK_CHANCE_340 = {"grill": 0.95, "sashimi": 0.92, "stew": 0.90, "eel_rice": 0.87, "feast": 0.85}
+RODS_340 = {"rod_carbon": (0.08, 480), "rod_pro": (0.15, 720), "rod_legend": (0.25, 1080)}
+ROD_RARE_340 = {"rod_carbon": 0.04, "rod_pro": 0.08, "rod_legend": 0.12}
+BAIT_JUNK_340, BAIT_GOLD_T_340 = 0.03, 0.25
+ROD_DUR = {"rod_carbon": 120, "rod_pro": 300, "rod_legend": 800}   # 내구도 — 한 번 낚을 때마다 1 (자동 낚시는 안 닳는다)
+# 대어(영웅 · 전설)가 걸리면 가끔 줄이 끊어져 도망 + 낚싯대에 금이 간다 (내구도 -10). 좋은 낚싯대일수록 덜 끊긴다
+LINE_SNAP = {None: 0.06, "rod_carbon": 0.04, "rod_pro": 0.02, "rod_legend": 0.01}
+SNAP_DAMAGE = 10
 COOK_HOURS = 24
 FEAST_GIVES = ("grill", "sashimi", "stew", "eel_rice")
 # 먹이기: 유망주 성장 경험치 (하루 유망주 · 선수마다 한 마리) — 경기 출전 한 번 = 10
@@ -122,10 +159,10 @@ def bag_max(level: int, new: bool = False) -> int:
     return BAG_310[0] + BAG_310[1] * (max(1, int(level)) - 1) if new else BAG_MAX
 
 
-def day_fish(now_ts: int) -> str:
-    """오늘의 물고기 (3.1.0) — KST 날짜로 고정. 비싼 물고기일수록 덜 뽑힌다 (가중치 1/√기준가)."""
+def day_fish(now_ts: int, v340: bool = False) -> str:
+    """오늘의 물고기 (3.1.0) — KST 날짜로 고정. 비싼 물고기일수록 덜 뽑힌다 (가중치 1/√기준가). v340 = 3.4.0 100종 중에서."""
     rng = random.Random(f"fish-day-{_kst_day(now_ts)}")
-    keys = list(FISH)
+    keys = list(FISH) if v340 else [k for k in FISH if k not in NEW_340]
     return rng.choices(keys, weights=[1 / math.sqrt(FISH[k][4]) for k in keys])[0]
 
 
@@ -144,10 +181,10 @@ def add_xp(level: int, xp: int, gain: int) -> tuple[int, int, int]:
     return level, (0 if level >= LEVEL_MAX else xp), up
 
 
-def grade_odds(wait: float, bonus: float = 0.0, new: bool = False) -> list[float]:
-    """기다린 시간(초) + 효과 보너스 → 등급 확률 (합 1). 10초 → 10분을 0 → 1 로 보고 직선으로 잇는다. new = 3.1.0 확률."""
+def grade_odds(wait: float, bonus: float = 0.0, new: bool = False, v340: bool = False) -> list[float]:
+    """기다린 시간(초) + 효과 보너스 → 등급 확률 (합 1). 10초 → 10분을 0 → 1 로 보고 직선으로 잇는다. new = 3.1.0 확률 · v340 = 3.4.0."""
     t = (min(max(wait, BITE_MIN), BITE_MAX) - BITE_MIN) / (BITE_MAX - BITE_MIN) + bonus
-    fast, slow = (ODDS_FAST_310, ODDS_SLOW_310) if new else (ODDS_FAST, ODDS_SLOW)
+    fast, slow = (ODDS_FAST_340, ODDS_SLOW_340) if v340 else (ODDS_FAST_310, ODDS_SLOW_310) if new else (ODDS_FAST, ODDS_SLOW)
     w = [max(0.0, a + (b - a) * t) for a, b in zip(fast, slow)]
     s = sum(w)
     return [x / s for x in w]
@@ -219,6 +256,7 @@ class FishingDB(EconomyDB):
             # 2.82b 한 번만: 판매로 쓴 10/21 거래 포인트 초기화 (부적 보너스는 그대로)
             con.execute("CREATE TABLE IF NOT EXISTS fish_auto (user_id INTEGER PRIMARY KEY, until INTEGER, next_ts INTEGER)")
             con.execute("CREATE TABLE IF NOT EXISTS fish_migrations (key TEXT PRIMARY KEY)")
+            con.execute("CREATE TABLE IF NOT EXISTS fish_rod (user_id INTEGER, rod TEXT, dur INTEGER, PRIMARY KEY(user_id, rod))")
             if con.execute("INSERT OR IGNORE INTO fish_migrations VALUES('reset-trade-2.82b')").rowcount:
                 con.execute("UPDATE fish_trade SET used=0 WHERE day_key=?", (_kst_day(RESET_282B_TS),))
             con.commit()
@@ -242,6 +280,26 @@ class FishingDB(EconomyDB):
     def _rod(cls, con, uid: int) -> Optional[str]:
         have = [k for k in RODS if cls._qty(con, uid, k) > 0]
         return max(have, key=lambda k: RODS[k][0]) if have else None
+
+    @staticmethod
+    def _dur(con, uid: int, rod: str) -> int:
+        """3.4.0 낚싯대 남은 내구도 (기록이 없으면 새것)."""
+        r = con.execute("SELECT dur FROM fish_rod WHERE user_id=? AND rod=?", (uid, rod)).fetchone()
+        return int(r[0]) if r else ROD_DUR[rod]
+
+    @classmethod
+    def _wear(cls, con, uid: int, rod: Optional[str], dmg: int) -> Optional[dict]:
+        """3.4.0 낚싯대가 닳는다 — 0 이 되면 부러져 가방에서 하나 사라진다 (다음 것은 새것). → {rod, dur, max, broke}."""
+        if not rod or dmg <= 0:
+            return None
+        dur = cls._dur(con, uid, rod) - dmg
+        if dur > 0:
+            con.execute("INSERT OR REPLACE INTO fish_rod VALUES(?,?,?)", (uid, rod, dur))
+            return {"rod": rod, "dur": dur, "max": ROD_DUR[rod], "broke": False}
+        con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item=?", (uid, rod))
+        con.execute("DELETE FROM inventory WHERE user_id=? AND item=? AND qty<=0", (uid, rod))
+        con.execute("DELETE FROM fish_rod WHERE user_id=? AND rod=?", (uid, rod))
+        return {"rod": rod, "dur": 0, "max": ROD_DUR[rod], "broke": True}
 
     @staticmethod
     def _buffs(con, uid: int, now_ts: int) -> set[str]:
@@ -283,10 +341,12 @@ class FishingDB(EconomyDB):
                     "ON CONFLICT(user_id, day_key) DO UPDATE SET used = used + excluded.used",
                     (uid, _kst_day(now_ts), pts))
 
-    def _price_row(self, con, fish: dict, market: dict, now_ts: int, icebox: bool, new: bool = False) -> int:
+    def _price_row(self, con, fish: dict, market: dict, now_ts: int, icebox: bool, new: bool = False, v340: bool = False) -> int:
+        """v340 = 3.4.0: 판매량에 따라 내려가지 않는다 (싯가는 날마다 랜덤으로만)."""
         m = market[fish["species"]]
-        day = DAY_FISH_MULT if new and fish["species"] == day_fish(now_ts) else 1.0   # 3.1.0 오늘의 물고기
-        return fish_price(fish["species"], fish["size"], m["mult"] * day, m["supply"], freshness(fish["caught_ts"], now_ts, icebox))
+        day = DAY_FISH_MULT if new and fish["species"] == day_fish(now_ts, v340) else 1.0   # 3.1.0 오늘의 물고기
+        return fish_price(fish["species"], fish["size"], m["mult"] * day, 1.0 if v340 else m["supply"],
+                          freshness(fish["caught_ts"], now_ts, icebox))
 
     @staticmethod
     def _level(con, uid: int) -> int:
@@ -310,12 +370,14 @@ class FishingDB(EconomyDB):
             s["used"], s["limit"] = self._trade(con, uid, now_ts)
             s["buffs"] = sorted(self._buffs(con, uid, now_ts))
             s["rod"] = self._rod(con, uid)
+            s["rod_dur"] = (self._dur(con, uid, s["rod"]), ROD_DUR[s["rod"]]) if s["rod"] else None   # 3.4.0
             s["bait_qty"] = {k: self._qty(con, uid, k) for k in ("bait", "bait_gold")}
             s["need"] = level_need(s["level"])
             return s
         return await self._tx(fn)
 
-    async def cast(self, uid: int, now_ts: int, bait: Optional[str], channel_id: int, rng=random, new: bool = False) -> dict:
+    async def cast(self, uid: int, now_ts: int, bait: Optional[str], channel_id: int, rng=random, new: bool = False,
+                   v340: bool = False) -> dict:
         """찌 던지기. 실패 reason: busy(이미 던짐) / full(어망 가득) / no_bait."""
         def fn(con):
             s = self._state(con, uid)
@@ -328,7 +390,7 @@ class FishingDB(EconomyDB):
                     return {"ok": False, "reason": "no_bait"}
                 con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item=?", (uid, bait))
             rod = self._rod(con, uid)
-            window = RODS[rod][1] if rod else CATCH_WINDOW
+            window = (RODS_340 if v340 else RODS)[rod][1] if rod else CATCH_WINDOW
             bite = now_ts + rng.randint(BITE_MIN, BITE_MAX)
             con.execute("UPDATE fish_state SET cast_ts=?, bite_ts=?, window=?, bait=?, channel_id=?, message_id=NULL "
                         "WHERE user_id=?", (now_ts, bite, window, bait, channel_id, uid))
@@ -345,7 +407,7 @@ class FishingDB(EconomyDB):
         return await self._tx(fn)
 
     async def reel(self, uid: int, now_ts: int, rng=random, new_xp: bool = True, new_310: bool = False,
-                   new_311: bool = False) -> dict:
+                   new_311: bool = False, new_340: bool = False) -> dict:
         """[잡기!]. 결과 kind: early(아직 입질 전 — 찌만 회수) / fled(늦음) / junk / fish. 실패 reason: idle."""
         def fn(con):
             s = self._state(con, uid)
@@ -356,7 +418,8 @@ class FishingDB(EconomyDB):
                 return {"ok": True, "kind": "early"}
             if now_ts > s["bite_ts"] + s["window"]:
                 return {"ok": True, "kind": "fled", "wait": s["bite_ts"] - s["cast_ts"]}
-            r = self._catch(con, uid, s, s["bite_ts"] - s["cast_ts"], s["bait"], now_ts, rng, new_xp, new_310, new_311)
+            r = self._catch(con, uid, s, s["bite_ts"] - s["cast_ts"], s["bait"], now_ts, rng, new_xp, new_310, new_311,
+                            new_340, wear=new_340)
             if new_310 and rng.random() < AUTO_DROP:   # 3.1.0 🤖 자동 낚시 (아주 가끔)
                 give_item(con, uid, "auto_fish")
                 r["auto_drop"] = True
@@ -364,24 +427,30 @@ class FishingDB(EconomyDB):
         return await self._tx(fn)
 
     def _catch(self, con, uid: int, s: dict, wait: float, bait: Optional[str], now_ts: int, rng,
-               new_xp: bool = True, new_310: bool = False, new_311: bool = False) -> dict:
-        """입질을 잡은 한 번 — 잡템 또는 물고기를 어망에 넣는다 ([잡기!] · 자동 낚시 공용)."""
+               new_xp: bool = True, new_310: bool = False, new_311: bool = False, new_340: bool = False,
+               wear: bool = False) -> dict:
+        """입질을 잡은 한 번 — 잡템 또는 물고기를 어망에 넣는다 ([잡기!] · 자동 낚시 공용).
+        new_340 = 3.4.0 확률 · 물고기 · 장비 효과 · wear = 낚싯대가 닳고 대어는 가끔 줄이 끊긴다 ([잡기!] 만)."""
         buffs = self._buffs(con, uid, now_ts)
-        junk_p = BAIT_JUNK if bait == "bait" else JUNK_PROB
+        rod = self._rod(con, uid)
+        junk_p = (BAIT_JUNK_340 if new_340 else BAIT_JUNK) if bait == "bait" else JUNK_PROB
         if rng.random() < junk_p:
             item = rng.choices(list(JUNK), weights=list(JUNK.values()))[0]
             if item != "old_boot":
                 give_item(con, uid, item)
-            return {"ok": True, "kind": "junk", "item": item, "wait": wait}
-        bonus = min(0.174, LEVEL_RARE_STEP * (s["level"] - 1)) + (BAIT_GOLD_T if bait == "bait_gold" else 0) \
+            return {"ok": True, "kind": "junk", "item": item, "wait": wait, "rod": self._wear(con, uid, rod, 1) if wear else None}
+        bonus = min(0.174, LEVEL_RARE_STEP * (s["level"] - 1)) \
+            + ((BAIT_GOLD_T_340 if new_340 else BAIT_GOLD_T) if bait == "bait_gold" else 0) \
             + (0.10 if "stew" in buffs else 0)
-        rod = self._rod(con, uid)
-        if new_311 and rod:   # 3.1.1 좋은 낚싯대일수록 희귀 확률 살짝 ↑
-            bonus += ROD_RARE_311[rod]
-        odds = grade_odds(wait, bonus, new_310)
+        if new_311 and rod:   # 3.1.1 좋은 낚싯대일수록 희귀 확률 살짝 ↑ (3.4.0 두 배)
+            bonus += (ROD_RARE_340 if new_340 else ROD_RARE_311)[rod]
+        odds = grade_odds(wait, bonus, new_310, new_340)
         grade = rng.choices(range(5), weights=odds)[0]
-        key = rng.choice(by_grade(new_310)[grade])
-        size = roll_size(key, rng, RODS[rod][0] if rod else 0)
+        key = rng.choice(by_grade(new_310, new_340)[grade])
+        if wear and grade >= 3 and rng.random() < LINE_SNAP[rod]:   # 3.4.0 대어에 줄이 끊어졌다!
+            return {"ok": True, "kind": "snap", "species": key, "grade": grade, "wait": wait,
+                    "rod": self._wear(con, uid, rod, SNAP_DAMAGE)}
+        size = roll_size(key, rng, (RODS_340 if new_340 else RODS)[rod][0] if rod else 0)
         xp = catch_xp(key, size, new_xp)
         if "grill" in buffs:
             xp = round(xp * 1.3)
@@ -394,10 +463,11 @@ class FishingDB(EconomyDB):
                     "DO UPDATE SET cnt = cnt + 1, best = MAX(best, excluded.best)", (uid, key, size))
         con.execute("INSERT INTO fish_log VALUES(?,?,?,?,?)", (uid, key, size, now_ts, week_key(now_ts)))
         market = self._market(con, now_ts)
-        price = fish_price(key, size, market[key]["mult"], market[key]["supply"], 1.0)
+        price = fish_price(key, size, market[key]["mult"], 1.0 if new_340 else market[key]["supply"], 1.0)
         return {"ok": True, "kind": "fish", "id": cur.lastrowid, "species": key, "grade": grade, "size": size,
                 "xp": xp, "level": level, "leveled": up, "wait": wait, "odds": odds, "price": price,
-                "new": new_species, "record": bool(best and size > best[0])}
+                "new": new_species, "record": bool(best and size > best[0]),
+                "rod": self._wear(con, uid, rod, 1) if wear else None}
 
     # ───────────── 🤖 자동 낚시 (3.1.0) ─────────────
     async def use_auto(self, uid: int, now_ts: int) -> dict:
@@ -415,7 +485,7 @@ class FishingDB(EconomyDB):
             return {"ok": True, "until": until, "next": nxt}
         return await self._tx(fn)
 
-    async def auto_run(self, uid: int, now_ts: int, rng=random, new: bool = False) -> dict:
+    async def auto_run(self, uid: int, now_ts: int, rng=random, new: bool = False, v340: bool = False) -> dict:
         """밀린 자동 낚시를 한꺼번에 처리 → {until, next, fish: [...], junk: [...], full: 어망이 차서 쉰 횟수}."""
         def fn(con):
             r = con.execute("SELECT until, next_ts FROM fish_auto WHERE user_id=?", (uid,)).fetchone()
@@ -428,7 +498,7 @@ class FishingDB(EconomyDB):
                 if con.execute("SELECT COUNT(*) FROM fish_bag WHERE user_id=?", (uid,)).fetchone()[0] >= bag_max(s["level"], new):
                     out["full"] += 1
                 else:
-                    c = self._catch(con, uid, s, BITE_MIN, None, nxt, rng, True, new)
+                    c = self._catch(con, uid, s, BITE_MIN, None, nxt, rng, True, new, new_340=v340)
                     (out["fish"] if c["kind"] == "fish" else out["junk"]).append(c)
                 nxt += rng.randint(*AUTO_EVERY)
             if nxt > until:
@@ -443,7 +513,7 @@ class FishingDB(EconomyDB):
         return await self._tx(lambda con: [r[0] for r in con.execute("SELECT user_id FROM fish_auto")])
 
     # ───────────── 어망 · 시세 · 판매 · 보내기 ─────────────
-    async def bag(self, uid: int, now_ts: int, new: bool = False) -> dict:
+    async def bag(self, uid: int, now_ts: int, new: bool = False, v340: bool = False) -> dict:
         """어망 [{id, species, size, caught_ts, displayed, price, fresh}] + 거래 한도 · 어망 칸 수."""
         def fn(con):
             market = self._market(con, now_ts)
@@ -451,21 +521,22 @@ class FishingDB(EconomyDB):
             rows = self._fish_rows(con, uid)
             for f in rows:
                 f["fresh"] = freshness(f["caught_ts"], now_ts, ice)
-                f["price"] = self._price_row(con, f, market, now_ts, ice, new)
+                f["price"] = self._price_row(con, f, market, now_ts, ice, new, v340)
             used, limit = self._trade(con, uid, now_ts)
             return {"fish": rows, "used": used, "limit": limit, "icebox": ice, "max": bag_max(self._level(con, uid), new)}
         return await self._tx(fn)
 
-    async def market(self, now_ts: int, new: bool = False) -> dict[str, dict]:
+    async def market(self, now_ts: int, new: bool = False, v340: bool = False) -> dict[str, dict]:
         def fn(con):
             m = self._market(con, now_ts)
-            today = day_fish(now_ts) if new else None
+            today = day_fish(now_ts, v340) if new else None
             for k, v in m.items():
-                v["price"] = fish_price(k, FISH[k][3], v["mult"] * (DAY_FISH_MULT if k == today else 1.0), v["supply"], 1.0)
+                v["price"] = fish_price(k, FISH[k][3], v["mult"] * (DAY_FISH_MULT if k == today else 1.0),
+                                        1.0 if v340 else v["supply"], 1.0)
             return m
         return await self._tx(fn)
 
-    async def sell(self, uid: int, ids: Optional[list[int]], now_ts: int, new: bool = False) -> dict:
+    async def sell(self, uid: int, ids: Optional[list[int]], now_ts: int, new: bool = False, v340: bool = False) -> dict:
         """판매 — 거래 포인트를 쓰지 않는다 (2.82b: 포인트는 유저 간 보내기에만). ids=None 이면 전시 중이 아닌 물고기 전부 (3.1.0).
         실패 reason: none(없음 · 전시 중)."""
         def fn(con):
@@ -475,11 +546,12 @@ class FishingDB(EconomyDB):
             market = self._market(con, now_ts)
             ice = self._qty(con, uid, "icebox") > 0
             total = 0
-            for f in rows:   # 한 마리씩 팔 때마다 그 종 시세가 내려간다
-                total += self._price_row(con, f, market, now_ts, ice, new)
-                m = market[f["species"]]
-                m["supply"] = max(SUPPLY_MIN, m["supply"] * (1 - SUPPLY_HIT))
-                con.execute("UPDATE fish_market SET supply=? WHERE species=?", (m["supply"], f["species"]))
+            for f in rows:   # 한 마리씩 팔 때마다 그 종 시세가 내려간다 (3.4.0 공개 서버는 안 내려간다 — 랜덤 시세만)
+                total += self._price_row(con, f, market, now_ts, ice, new, v340)
+                if not v340:
+                    m = market[f["species"]]
+                    m["supply"] = max(SUPPLY_MIN, m["supply"] * (1 - SUPPLY_HIT))
+                    con.execute("UPDATE fish_market SET supply=? WHERE species=?", (m["supply"], f["species"]))
                 con.execute("DELETE FROM fish_bag WHERE id=?", (f["id"],))
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (uid,))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total, uid))
@@ -595,7 +667,7 @@ class FishingDB(EconomyDB):
             "SELECT target FROM fish_fed WHERE user_id=? AND day_key=?", (uid, day))})
 
     async def cook(self, uid: int, recipe: str, now_ts: int, ids: Optional[list[int]] = None, new: bool = False,
-                   rng=random) -> dict:
+                   rng=random, v340: bool = False) -> dict:
         """요리: 어망에서 재료 등급 물고기를 (가장 싼 것부터) 쓰고 양념을 쓴다. reason: fish(물고기 부족) / spice / pick.
         new = 3.1.1: 재료 두 배(RECIPES_311_NEEDS) · ids 로 쓸 물고기를 직접 고른다 · COOK_CHANCE_311 확률로 성공
         (실패하면 재료는 타서 사라지고 효과는 없다 → burnt=True)."""
@@ -628,7 +700,7 @@ class FishingDB(EconomyDB):
             if spice:
                 con.execute("UPDATE inventory SET qty = qty - ? WHERE user_id=? AND item='spice'", (spice, uid))
             used = [FISH[f["species"]][1] for f in use]
-            if new and rng.random() >= COOK_CHANCE_311[recipe]:
+            if new and rng.random() >= (COOK_CHANCE_340 if v340 else COOK_CHANCE_311)[recipe]:
                 return {"ok": True, "burnt": True, "used": used}
             until = now_ts + COOK_HOURS * 3600
             con.execute("INSERT OR REPLACE INTO fish_buffs VALUES(?,?,?)", (uid, recipe, until))
@@ -708,5 +780,6 @@ def now() -> int:
     return int(time.time())
 
 
-assert len(FISH) == 55 and [len(b) for b in BY_GRADE] == [13, 11, 8, 5, 3] and [len(b) for b in BY_GRADE_310] == [19, 16, 10, 6, 4]
-assert all(math.isclose(sum(o), 100) for o in (ODDS_FAST, ODDS_SLOW, ODDS_FAST_310, ODDS_SLOW_310))
+assert len(FISH) == 100 and [len(b) for b in BY_GRADE] == [13, 11, 8, 5, 3] and [len(b) for b in BY_GRADE_310] == [19, 16, 10, 6, 4]
+assert [len(b) for b in BY_GRADE_340] == [29, 26, 19, 14, 12]
+assert all(math.isclose(sum(o), 100) for o in (ODDS_FAST, ODDS_SLOW, ODDS_FAST_310, ODDS_SLOW_310, ODDS_FAST_340, ODDS_SLOW_340))
