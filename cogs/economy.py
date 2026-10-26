@@ -380,6 +380,10 @@ class Economy(commands.Cog):
         (0.3888, "-1", "🧤", "선방",          "막아냅니다!",
          "골키퍼가 방향을 완벽하게 읽었어요! 키커는 고개를 숙입니다."),
     ]
+    # 3.4.1 (release.preview_341 서버): 1배(골 · 선방)가 너무 자주 나와 2배 · 5배를 늘림. 줄 순서 · 멘트는 그대로(장면 그림 pk_0~9).
+    # 수익 44.62% · 본전 6% 는 그대로, 기대값도 약 -1.1% 그대로 (2배 · 5배 손실도 함께 늘려 맞춘다).
+    PK_TABLE_341 = [(p, *rest) for p, (_, *rest) in zip(
+        (0.0005, 0.003, 0.040, 0.100, 0.3027, 0.060, 0.120, 0.0425, 0.010, 0.3213), PK_TABLE)]
 
     # ✅ 훈련 이벤트(고정 범위 내에서 수익/손실)
     TRAIN_EVENTS = [
@@ -1139,8 +1143,9 @@ class Economy(commands.Cog):
             e.description += f"\n\n`베팅` **{amount:,}원**\n`잔액` **{cur_bal:,}원**"
             return await interaction.followup.send(embed=e)
 
+        table = self.PK_TABLE_341 if release.preview_341(interaction.guild_id) else self.PK_TABLE   # 3.4.1 2배 · 5배 ↑
         roll, acc = random.random(), 0.0
-        for idx, (prob, mult_s, emoji, name, headline, caster) in enumerate(self.PK_TABLE):
+        for idx, (prob, mult_s, emoji, name, headline, caster) in enumerate(table):
             acc += prob
             if roll < acc:
                 break

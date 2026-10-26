@@ -123,6 +123,18 @@ def preview_340(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_340(now)
 
 
+
+# 3.4.1 — 테스트 서버 먼저. preview_341(guild): 페널티킥 1배(골 · 선방)를 줄이고 2배 · 5배를 늘림. None = 아직
+RELEASE_341_TS: Optional[int] = None
+
+
+def released_341(now: Optional[float] = None) -> bool:
+    return RELEASE_341_TS is not None and _now(now) >= RELEASE_341_TS
+
+
+def preview_341(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_341(now)
+
 def maintenance(now: Optional[float] = None) -> bool:
     return MAINTENANCE is not None and MAINTENANCE[0] <= _now(now) < MAINTENANCE[1]
 
