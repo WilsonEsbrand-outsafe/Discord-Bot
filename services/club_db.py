@@ -343,6 +343,8 @@ XP_GAP_MULT = ((40, 0.0), (30, 0.1), (20, 0.4), (10, 0.7), (-9, 1.0), (-10 ** 9,
 XP_POOR_PENALTY = ((40, -10), (30, -5))   # 이만큼 약한 상대에게 부진하면 (이기지 못함 · 공격수/미드 공격 포인트 없음 · 수비/골키퍼 실점)
 XP_REPEAT = ((3, 1.0), (6, 0.5), (10 ** 9, 0.0))   # 같은 상대와 오늘 N번째 경기까지 배율
 XP_FRIENDLY = 0.5
+# 3.5.0 (release.preview_350): 미드필더 유망주는 도움 경험치를 골만큼 받고, 약팀 상대 부진은 '이기지 못함'만 본다
+PROSPECT_MF_ASSIST_350 = PROSPECT_XP["goal"]
 
 
 def xp_gap_mult(gap: int) -> float:
@@ -1322,13 +1324,15 @@ class ClubDB:
         return await self._tx(fn)
 
     async def record_prospects(self, sides: list[tuple], goals: list[dict], now_ts: int,
-                               events: list[dict] = (), rng=random, friendly: bool = False) -> list[dict]:
+                               events: list[dict] = (), rng=random, friendly: bool = False,
+                               v350: bool = False) -> list[dict]:
         """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 성장 경험치 ± (하루 PROSPECT_DAILY_GROWTH 경기까지,
         30세까지, 잠재력까지, 프로 의식 배율), 자신감 변화, 부상. sides: [(선발 xi, 득점, 실점[, 상대 id, 전력 차])]
         — 양 팀 모두. events: 중계 장면(경고 · 찬스 놓침).
         경험치 악용 방지(2.6): +경험치 × 친선 0.5 · 전력 차 배율 · 같은 상대 반복 배율, 훨씬 약한 상대에게 부진하면 감점.
         뛴 유망주마다 결과 dict (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키 ·
-        mods: 경험치 배율 설명 · injury: 부상 dict | None)."""
+        mods: 경험치 배율 설명 · injury: 부상 dict | None).
+        v350 = 3.5.0 미드필더 보정 (PROSPECT_MF_ASSIST_350 · 부진 감점 완화)."""
         if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, *_ in sides for s in xi):
             return []
         day = kst_day(now_ts)
@@ -1355,6 +1359,9 @@ class ClubDB:
                              "card": sum(e.get("player_id") == pid and e.get("kind") == "card" for e in events),
                              "miss": sum(e.get("player_id") == pid and e.get("kind") == "miss" for e in events)}
                     delta = sum(PROSPECT_XP[k] * n for k, n in parts.items())
+                    mf350 = v350 and p["group"] == "MF"
+                    if mf350:
+                        delta += (PROSPECT_MF_ASSIST_350 - PROSPECT_XP["assist"]) * a
                     mods, minus = [], [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0]
                     mult = 1.0
                     if friendly:
@@ -1379,7 +1386,7 @@ class ClubDB:
                                       * (1 + self._facility(con, owner[0], "training") * FACILITIES["training"][3] / 100))
                     # 훨씬 약한 상대에게 부진 → 감점
                     attack = p["group"] in ("FW", "MF")
-                    poor = res != "W" or (g + a == 0 if attack else ga > 0)
+                    poor = res != "W" or (False if mf350 else g + a == 0 if attack else ga > 0)
                     pen = next((v for lo, v in XP_POOR_PENALTY if gap >= lo), 0)
                     if poor and pen:
                         delta += pen
