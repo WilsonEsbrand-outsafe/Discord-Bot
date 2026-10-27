@@ -168,12 +168,20 @@ _CHANCES = (
     ("🚩", "{p}, 오프사이드 깃발이 올라갑니다."),
 )
 _CARDS = (("🟨", "{p}에게 옐로카드! 거친 태클이었어요."), ("🟨", "{p}, 시간 끌기로 경고를 받습니다."))
+# 3.5.0 (release.preview_350): 포지션별 활약 장면 — 유망주 경험치 + (PROSPECT_XP_350)
+# kind → (포지션, [(이모지, 문구)])
+_PLAYS_350 = {
+    "key_pass": ("MF", (("🎯", "{p}의 킬패스! 수비 라인을 완전히 무너뜨립니다!"), ("🧠", "{p}, 중원에서 공을 빼앗아 역습을 지휘합니다!"))),
+    "tackle": ("DF", (("🛡️", "{p}의 깔끔한 태클! 결정적인 위기를 막아냅니다!"), ("🧱", "{p}, 몸을 던져 슛을 막아냅니다!"))),
+    "save": ("GK", (("🧤", "{p}의 슈퍼 세이브!! 골문을 지켜냅니다!"), ("🧤", "{p}, 1대1 상황에서 침착하게 막아냅니다!"))),
+}
 _GOAL_CALLS = ("골!!! {p}!!", "{p}의 슛— 들어갑니다!!", "{p}가 해냅니다! 골!!", "그림 같은 골! {p}!!")
 
 
-def match_highlights(result: dict, home: dict, away: dict, rng: random.Random = random) -> list[dict]:
+def match_highlights(result: dict, home: dict, away: dict, rng: random.Random = random, v350: bool = False) -> list[dict]:
     """골 + 골이 아닌 장면(선방·골대·경고)을 섞은 90분 하이라이트. [{minute, side, icon, text, goal}] 시간순.
-    골이 아닌 장면엔 player_id 와 kind(card · miss · None)도 붙인다 — 유망주 경험치 감점용."""
+    골이 아닌 장면엔 player_id 와 kind(card · miss · None)도 붙인다 — 유망주 경험치 감점용.
+    v350 = 3.5.0: 미드필더 킬패스 · 수비수 태클 · 골키퍼 선방 장면(kind key_pass · tackle · save)을 팀마다 1~3개 더."""
     def pick(team):
         xi = team["xi"] or [{"name": team["name"], "pos": "MF", "ovr": 50}]
         return rng.choice([p for p in xi if p["pos"] != "GK"] or xi)
@@ -190,6 +198,18 @@ def match_highlights(result: dict, home: dict, away: dict, rng: random.Random = 
         out.append({"minute": rng.randint(2, 89), "side": side, "goal": False, "icon": icon,
                     "text": tpl.format(p=who["name"]), "player_id": who.get("player_id"),
                     "kind": "card" if card else ("miss" if tpl == _MISS else None)})
+    if v350:
+        for side, team in (("home", home), ("away", away)):
+            for _ in range(rng.randint(1, 3)):
+                kind = rng.choice(list(_PLAYS_350))
+                pos, lines = _PLAYS_350[kind]
+                cand = [p for p in team["xi"] if p.get("pos") == pos]
+                if not cand:
+                    continue
+                who = rng.choice(cand)
+                icon, tpl = rng.choice(lines)
+                out.append({"minute": rng.randint(2, 89), "side": side, "goal": False, "icon": icon,
+                            "text": tpl.format(p=who["name"]), "player_id": who.get("player_id"), "kind": kind})
     out.sort(key=lambda h: (h["minute"], not h["goal"]))
     return out
 
@@ -336,14 +356,16 @@ PROSPECT_DAILY_GROWTH = 20       # 하루(KST)에 성장 경험치가 쌓이는 
 # 경기당 성장 경험치. 음수는 감점 — 경험치는 0 밑으로 내려가지 않는다 (OVR 은 안 떨어진다).
 # rout = 3골 차 이상 대패(패배 -5 에 더해서) · card = 옐로카드 · miss = 1대1 찬스 놓침 (중계 장면 그대로)
 PROSPECT_XP = {"app": 10, "goal": 6, "assist": 4, "W": 5, "D": 2, "L": -5, "rout": -5, "card": -3, "miss": -2}
-PROSPECT_XP_LABEL = {"L": "패배", "rout": "대패", "card": "경고", "miss": "찬스 놓침", "poor": "약팀 상대 부진"}
+PROSPECT_XP_LABEL = {"key_pass": "킬패스", "tackle": "태클", "save": "선방", "clean": "무실점", "L": "패배", "rout": "대패", "card": "경고", "miss": "찬스 놓침", "poor": "약팀 상대 부진"}
 # 2.6 경험치 악용 방지 (+경험치에만 곱한다 · 감점은 그대로)
 # 전력 차(내 팀 - 상대): (이상, 배율) 큰 쪽부터 — 상대가 10 이상 강하면 ×1.2
 XP_GAP_MULT = ((40, 0.0), (30, 0.1), (20, 0.4), (10, 0.7), (-9, 1.0), (-10 ** 9, 1.2))
 XP_POOR_PENALTY = ((40, -10), (30, -5))   # 이만큼 약한 상대에게 부진하면 (이기지 못함 · 공격수/미드 공격 포인트 없음 · 수비/골키퍼 실점)
 XP_REPEAT = ((3, 1.0), (6, 0.5), (10 ** 9, 0.0))   # 같은 상대와 오늘 N번째 경기까지 배율
 XP_FRIENDLY = 0.5
-# 3.5.0 (release.preview_350): 미드필더 유망주는 도움 경험치를 골만큼 받고, 약팀 상대 부진은 '이기지 못함'만 본다
+# 3.5.0 (release.preview_350): 포지션별 경험치 — 미드필더 킬패스 · 수비수 태클 · 골키퍼 선방 장면마다 +,
+# 무실점이면 수비수 · 골키퍼 +. 미드필더는 도움 경험치를 골만큼 받고, 약팀 상대엔 공격 포인트나 킬패스가 있으면 부진 아님
+PROSPECT_XP_350 = {"key_pass": 4, "tackle": 4, "save": 3, "clean_DF": 3, "clean_GK": 4}
 PROSPECT_MF_ASSIST_350 = PROSPECT_XP["goal"]
 
 
@@ -1332,7 +1354,7 @@ class ClubDB:
         경험치 악용 방지(2.6): +경험치 × 친선 0.5 · 전력 차 배율 · 같은 상대 반복 배율, 훨씬 약한 상대에게 부진하면 감점.
         뛴 유망주마다 결과 dict (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키 ·
         mods: 경험치 배율 설명 · injury: 부상 dict | None).
-        v350 = 3.5.0 미드필더 보정 (PROSPECT_MF_ASSIST_350 · 부진 감점 완화)."""
+        v350 = 3.5.0 포지션별 경험치 (PROSPECT_XP_350 · PROSPECT_MF_ASSIST_350) · plus: 더해진 항목 키."""
         if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, *_ in sides for s in xi):
             return []
         day = kst_day(now_ts)
@@ -1359,9 +1381,20 @@ class ClubDB:
                              "card": sum(e.get("player_id") == pid and e.get("kind") == "card" for e in events),
                              "miss": sum(e.get("player_id") == pid and e.get("kind") == "miss" for e in events)}
                     delta = sum(PROSPECT_XP[k] * n for k, n in parts.items())
-                    mf350 = v350 and p["group"] == "MF"
-                    if mf350:
-                        delta += (PROSPECT_MF_ASSIST_350 - PROSPECT_XP["assist"]) * a
+                    plus, plays = [], 0
+                    if v350:
+                        if p["group"] == "MF":
+                            delta += (PROSPECT_MF_ASSIST_350 - PROSPECT_XP["assist"]) * a
+                        for kind in ("key_pass", "tackle", "save"):
+                            n = sum(e.get("player_id") == pid and e.get("kind") == kind for e in events)
+                            if n:
+                                delta += PROSPECT_XP_350[kind] * n
+                                plus.append(kind)
+                                plays += n
+                        clean = PROSPECT_XP_350.get(f"clean_{p['group']}")
+                        if clean and ga == 0:
+                            delta += clean
+                            plus.append("clean")
                     mods, minus = [], [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0]
                     mult = 1.0
                     if friendly:
@@ -1386,7 +1419,7 @@ class ClubDB:
                                       * (1 + self._facility(con, owner[0], "training") * FACILITIES["training"][3] / 100))
                     # 훨씬 약한 상대에게 부진 → 감점
                     attack = p["group"] in ("FW", "MF")
-                    poor = res != "W" or (False if mf350 else g + a == 0 if attack else ga > 0)
+                    poor = res != "W" or (g + a + plays == 0 if attack else ga > 0)
                     pen = next((v for lo, v in XP_POOR_PENALTY if gap >= lo), 0)
                     if poor and pen:
                         delta += pen
@@ -1416,7 +1449,7 @@ class ClubDB:
                          p["injuries"] + bool(injury), injury["games"] if injury else p["injury_games"], p["id"]))
                     out.append({"user_id": owner[0], "name": p["name"], "number": p["number"], "goals": g, "assists": a,
                                 "ovr0": p["ovr"], "ovr": ovr, "grew": grew, "xp": delta if grew else None,
-                                "minus": minus, "mods": mods,
+                                "minus": minus, "mods": mods, "plus": plus,
                                 "conf0": p["confidence"], "conf": conf, "injury": injury})
             return out
         return await self._tx(fn)
