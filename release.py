@@ -135,6 +135,19 @@ def released_341(now: Optional[float] = None) -> bool:
 def preview_341(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_341(now)
 
+
+# 3.5.0 — 테스트 서버 먼저. preview_350(guild): 파산 탕감 0% 10% · 30~70% 75% · 100% 15%. None = 아직
+RELEASE_350_TS: Optional[int] = None
+
+
+def released_350(now: Optional[float] = None) -> bool:
+    return RELEASE_350_TS is not None and _now(now) >= RELEASE_350_TS
+
+
+def preview_350(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_350(now)
+
+
 def maintenance(now: Optional[float] = None) -> bool:
     return MAINTENANCE is not None and MAINTENANCE[0] <= _now(now) < MAINTENANCE[1]
 
