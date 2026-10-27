@@ -40,7 +40,15 @@ def test_bankrupt_rates():
     asyncio.run(flow())
 
 
+def test_fishing_rare_up():
+    import services.fishing as F
+    for w in (10, 120, 300, 600):
+        old, new = F.grade_odds(w, 0, True, True), F.grade_odds(w, 0, True, True, True)
+        assert sum(new[2:]) > sum(old[2:]) and new[4] > old[4]
+
+
 if __name__ == "__main__":
+    test_fishing_rare_up()
     test_release_switch()
     test_table()
     test_bankrupt_rates()
