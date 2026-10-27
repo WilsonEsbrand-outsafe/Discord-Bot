@@ -296,7 +296,8 @@ class Club(commands.Cog):
         """경기 결과 카드의 유망주 줄: 골 · 도움 · 경험치(감점 사유) · OVR 상승 · 부상."""
         line = f"\n🌟 **{x['name']}** #{x['number']} · {x['goals']}골 {x['assists']}도움"
         if x["xp"] is not None:
-            why = ", ".join(PROSPECT_XP_LABEL[k] for k in x["minus"])
+            why = ", ".join([f"+{PROSPECT_XP_LABEL[k]}" for k in x.get("plus", [])]   # 3.5.0 활약 장면
+                            + [PROSPECT_XP_LABEL[k] for k in x["minus"]])
             line += f" · 경험치 **{x['xp']:+d}**" + (f" ({why})" if why else "")
         line += f" · OVR {x['ovr0']} → **{x['ovr']}** ⬆️" if x["ovr"] > x["ovr0"] else ""
         if x["xp"] is not None and x.get("mods"):   # 2.6 경험치 배율 (친선 · 전력 차 · 같은 상대)
@@ -361,14 +362,15 @@ class Club(commands.Cog):
         2.8 전술: 두 팀에 전술이 붙어 있으면 전반만 먼저 굴리고, 하프타임에 상대 전술을 공개하고 경기를 건 사람이
         HT_WAIT 초 안에 후반 전술을 고른다 (안 고르면 하프타임 규칙). 그 뒤 후반을 굴려 기록 · 정산한다."""
         tac = bool(h.get("tactic") and a.get("tactic"))
+        v350 = release.preview_350(getattr(interaction, "guild_id", None))   # 3.5.0 포지션별 활약 장면 · 경험치
         mh, ma = T.base_mults(h, a) if tac else (1.0, 1.0)
         pw, pd, pl = win_probs(h["rating"], a["rating"], mh, ma)
         if tac:
             first = T.first_half(h, a)
-            st = {"result": first, "hl": [x for x in match_highlights(first, h, a) if x["minute"] <= 45]}
+            st = {"result": first, "hl": [x for x in match_highlights(first, h, a, v350=v350) if x["minute"] <= 45]}
         else:
             result = simulate_match(h, a)
-            st = {"result": result, "hl": match_highlights(result, h, a)}
+            st = {"result": result, "hl": match_highlights(result, h, a, v350=v350)}
         shown: list[dict] = []   # 중계에만 보이는 줄 (전술 변경)
 
         def log_until(minute: int) -> str:
@@ -391,7 +393,8 @@ class Club(commands.Cog):
             gap = round(h["rating"] - a["rating"])
             stars = await self.clubs.record_prospects(
                 [(h["xi"], hg, ag, a["uid"], gap), (a["xi"], ag, hg, h["uid"], -gap)], result["goals"], int(time.time()),
-                st["hl"], friendly=friendly)
+                st["hl"], friendly=friendly,
+                v350=v350)   # 3.5.0 포지션별 경험치
             if stars:
                 extra = "\n" + "".join(self._star_line(x) for x in stars) + extra
             if tac:   # 적응도 +5 · 상대 분석 기록
@@ -431,7 +434,7 @@ class Club(commands.Cog):
             ta = T.ht_choice(a, sa, sh)
             result = T.second_half(h, a, first, th, ta)
             late = {"goals": [g for g in result["goals"] if g["minute"] > 45]}
-            st["hl"] = st["hl"] + [x for x in match_highlights(late, h, a) if x["minute"] > 45]
+            st["hl"] = st["hl"] + [x for x in match_highlights(late, h, a, v350=v350) if x["minute"] > 45]
             st["result"] = result
             for side, key, t in ((h, "home", th), (a, "away", ta)):
                 if t != side["tactic"]:
