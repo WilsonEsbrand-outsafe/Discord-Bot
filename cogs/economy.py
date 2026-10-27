@@ -10,7 +10,7 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    BANKRUPT_310, BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS, SKIP_ITEMS, shop_open,
+    BANKRUPT_310, BANKRUPT_350, BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS, SKIP_ITEMS, shop_open,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
@@ -279,7 +279,8 @@ class BankruptConfirm(discord.ui.View):
         self.stop()
         gid = getattr(interaction, "guild_id", None)
         r = await self.cog.db.declare_bankruptcy(self.user.id, int(time.time()), new=release.preview_310(gid),
-                                                  v311=release.preview_311(gid))   # 3.2.0 변호사 = 기다리지 않고 한 번 더
+                                                  v311=release.preview_311(gid),   # 3.2.0 변호사 = 기다리지 않고 한 번 더
+                                                  v350=release.preview_350(gid))   # 3.5.0 탕감 확률
         if not r["ok"]:
             msg = ("이미 빚이 없어요." if r["reason"] == "not_negative"
                    else f"파산은 한 시간에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>"
@@ -543,7 +544,7 @@ class Economy(commands.Cog):
                 ui.EVEN, user, "⚖️ 파산"), ephemeral=True)
         lo, hi = BANKRUPT_FORGIVE
         if release.preview_310(getattr(interaction, "guild_id", None)):   # 3.1.0
-            (p0, _), (pm, _), (p1, _) = BANKRUPT_310
+            (p0, _), (pm, _), (p1, _) = BANKRUPT_350 if release.preview_350(getattr(interaction, "guild_id", None)) else BANKRUPT_310
             forgive = f"**0%** ({p0:.0%} 확률) · **{lo:.0%} ~ {hi:.0%}** ({pm:.0%}) · **100%** ({p1:.0%}) 중 하나로 탕감돼요"
             if n := await self.db.lawyers(user.id):
                 forgive += (f"\n　⚖️ 선임된 변호사 **{n}명** — "

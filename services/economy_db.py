@@ -229,6 +229,7 @@ TRANSFER_REQUIRE = [
 BANKRUPT_COOLDOWN = 3600             # 한 시간에 한 번
 BANKRUPT_FORGIVE = (0.3, 0.7)
 BANKRUPT_310 = ((0.25, 0.0), (0.60, None), (0.15, 1.0))   # 3.1.0: 탕감 0% · 30~70%(None = 랜덤) · 100% 확률
+BANKRUPT_350 = ((0.10, 0.0), (0.75, None), (0.15, 1.0))   # 3.5.0: 탕감 0% 를 줄이고 30~70% 를 늘림
 BANKRUPT_FREE_LAWYER = 0.05   # 3.1.0: 0%가 나왔는데 선임한 변호사가 없으면, 아주 가끔 지나가던 변호사가 선임권을 공짜로 준다
 
 
@@ -683,12 +684,14 @@ class EconomyDB:
             return {"ok": True, "uses": self._lawyers(con, target_id)}
         return await self._tx(fn)
 
-    async def declare_bankruptcy(self, user_id: int, now_ts: int, rng=random, new: bool = False, v311: bool = False) -> dict:
+    async def declare_bankruptcy(self, user_id: int, now_ts: int, rng=random, new: bool = False, v311: bool = False,
+                                 v350: bool = False) -> dict:
         """파산: 진행 중 스폰서 계약을 강제 해지해 원금으로 빚을 갚고, 남은 빚의 30~70% 를 랜덤 탕감한다.
         선수 카드는 건드리지 않는다. 실패 reason: not_negative / cooldown(until).
         new = 3.1.0: 탕감이 0% · 30~70% · 100% 중 하나 (BANKRUPT_310).
         v311 = 3.2.0: 선임한 변호사는 다시 변론하지 않고, 한 시간이 안 지났어도 파산 신청을 한 번 더 하게 해 준다
-        (쿨타임일 때만 변호사 한 명을 쓴다 · extra=True)."""
+        (쿨타임일 때만 변호사 한 명을 쓴다 · extra=True).
+        v350 = 3.5.0: 탕감 확률표를 BANKRUPT_350 으로."""
         def fn(con):
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
@@ -712,11 +715,12 @@ class EconomyDB:
             rate = rng.uniform(*BANKRUPT_FORGIVE)
             lawyer, before = False, 0.0
             if new:
-                pick = rng.choices([r for _, r in BANKRUPT_310], weights=[p for p, _ in BANKRUPT_310])[0]
+                table = BANKRUPT_350 if v350 else BANKRUPT_310
+                pick = rng.choices([r for _, r in table], weights=[p for p, _ in table])[0]
                 if pick == 0.0 and after < 0:
                     if not v311 and self._lawyers(con, user_id) > 0:   # ⚖️ 3.1.0: 선임한 변호사가 다시 변론 (0% 빼고)
                         con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
-                        rest = [(p, r) for p, r in BANKRUPT_310 if r != 0.0]
+                        rest = [(p, r) for p, r in table if r != 0.0]
                         pick, lawyer = rng.choices([r for _, r in rest], weights=[p for p, _ in rest])[0], True
                     elif rng.random() < BANKRUPT_FREE_LAWYER:   # 지나가던 변호사가 선임권을 공짜로 (탕감은 0% 그대로)
                         give_item(con, user_id, "lawyer")
