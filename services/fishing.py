@@ -97,6 +97,8 @@ ODDS_FAST_310 = (66, 27, 6, 0.9, 0.1)   # 3.1.0: 희귀 · 영웅 · 전설 확�
 ODDS_SLOW_310 = (34, 34, 22, 8, 2)
 ODDS_FAST_340 = (65.5, 27, 6.25, 1.1, 0.15)   # 3.4.0: 희귀 · 영웅 · 전설 확률 소폭 상향
 ODDS_SLOW_340 = (33, 34, 22.2, 8.5, 2.3)
+ODDS_FAST_350 = (63, 27, 8, 1.7, 0.3)   # 3.5.0: 희귀 · 영웅 · 전설 확률 상향
+ODDS_SLOW_350 = (28, 32, 25, 11, 4)
 CATCH_WINDOW = 300            # 입질 뒤 이 시간(초) 안에 [잡기!] — 낚싯대로 늘어난다
 JUNK_PROB = 0.12              # 물고기 대신 잡템
 JUNK = {   # 아이템 → 비중 (old_boot = 낡은 장화, 아무것도 아님)
@@ -181,10 +183,10 @@ def add_xp(level: int, xp: int, gain: int) -> tuple[int, int, int]:
     return level, (0 if level >= LEVEL_MAX else xp), up
 
 
-def grade_odds(wait: float, bonus: float = 0.0, new: bool = False, v340: bool = False) -> list[float]:
-    """기다린 시간(초) + 효과 보너스 → 등급 확률 (합 1). 10초 → 10분을 0 → 1 로 보고 직선으로 잇는다. new = 3.1.0 확률 · v340 = 3.4.0."""
+def grade_odds(wait: float, bonus: float = 0.0, new: bool = False, v340: bool = False, v350: bool = False) -> list[float]:
+    """기다린 시간(초) + 효과 보너스 → 등급 확률 (합 1). 10초 → 10분을 0 → 1 로 보고 직선으로 잇는다. new = 3.1.0 확률 · v340 = 3.4.0 · v350 = 3.5.0."""
     t = (min(max(wait, BITE_MIN), BITE_MAX) - BITE_MIN) / (BITE_MAX - BITE_MIN) + bonus
-    fast, slow = (ODDS_FAST_340, ODDS_SLOW_340) if v340 else (ODDS_FAST_310, ODDS_SLOW_310) if new else (ODDS_FAST, ODDS_SLOW)
+    fast, slow = (ODDS_FAST_350, ODDS_SLOW_350) if v350 else (ODDS_FAST_340, ODDS_SLOW_340) if v340 else (ODDS_FAST_310, ODDS_SLOW_310) if new else (ODDS_FAST, ODDS_SLOW)
     w = [max(0.0, a + (b - a) * t) for a, b in zip(fast, slow)]
     s = sum(w)
     return [x / s for x in w]
@@ -407,7 +409,7 @@ class FishingDB(EconomyDB):
         return await self._tx(fn)
 
     async def reel(self, uid: int, now_ts: int, rng=random, new_xp: bool = True, new_310: bool = False,
-                   new_311: bool = False, new_340: bool = False) -> dict:
+                   new_311: bool = False, new_340: bool = False, new_350: bool = False) -> dict:
         """[잡기!]. 결과 kind: early(아직 입질 전 — 찌만 회수) / fled(늦음) / junk / fish. 실패 reason: idle."""
         def fn(con):
             s = self._state(con, uid)
@@ -419,7 +421,7 @@ class FishingDB(EconomyDB):
             if now_ts > s["bite_ts"] + s["window"]:
                 return {"ok": True, "kind": "fled", "wait": s["bite_ts"] - s["cast_ts"]}
             r = self._catch(con, uid, s, s["bite_ts"] - s["cast_ts"], s["bait"], now_ts, rng, new_xp, new_310, new_311,
-                            new_340, wear=new_340)
+                            new_340, wear=new_340, new_350=new_350)
             if new_310 and rng.random() < AUTO_DROP:   # 3.1.0 🤖 자동 낚시 (아주 가끔)
                 give_item(con, uid, "auto_fish")
                 r["auto_drop"] = True
@@ -428,9 +430,10 @@ class FishingDB(EconomyDB):
 
     def _catch(self, con, uid: int, s: dict, wait: float, bait: Optional[str], now_ts: int, rng,
                new_xp: bool = True, new_310: bool = False, new_311: bool = False, new_340: bool = False,
-               wear: bool = False) -> dict:
+               wear: bool = False, new_350: bool = False) -> dict:
         """입질을 잡은 한 번 — 잡템 또는 물고기를 어망에 넣는다 ([잡기!] · 자동 낚시 공용).
-        new_340 = 3.4.0 확률 · 물고기 · 장비 효과 · wear = 낚싯대가 닳고 대어는 가끔 줄이 끊긴다 ([잡기!] 만)."""
+        new_340 = 3.4.0 확률 · 물고기 · 장비 효과 · wear = 낚싯대가 닳고 대어는 가끔 줄이 끊긴다 ([잡기!] 만).
+        new_350 = 3.5.0 희귀 · 영웅 · 전설 확률 상향."""
         buffs = self._buffs(con, uid, now_ts)
         rod = self._rod(con, uid)
         junk_p = (BAIT_JUNK_340 if new_340 else BAIT_JUNK) if bait == "bait" else JUNK_PROB
@@ -444,7 +447,7 @@ class FishingDB(EconomyDB):
             + (0.10 if "stew" in buffs else 0)
         if new_311 and rod:   # 3.1.1 좋은 낚싯대일수록 희귀 확률 살짝 ↑ (3.4.0 두 배)
             bonus += (ROD_RARE_340 if new_340 else ROD_RARE_311)[rod]
-        odds = grade_odds(wait, bonus, new_310, new_340)
+        odds = grade_odds(wait, bonus, new_310, new_340, new_350 and new_340)
         grade = rng.choices(range(5), weights=odds)[0]
         key = rng.choice(by_grade(new_310, new_340)[grade])
         if wear and grade >= 3 and rng.random() < LINE_SNAP[rod]:   # 3.4.0 대어에 줄이 끊어졌다!
@@ -485,7 +488,8 @@ class FishingDB(EconomyDB):
             return {"ok": True, "until": until, "next": nxt}
         return await self._tx(fn)
 
-    async def auto_run(self, uid: int, now_ts: int, rng=random, new: bool = False, v340: bool = False) -> dict:
+    async def auto_run(self, uid: int, now_ts: int, rng=random, new: bool = False, v340: bool = False,
+                       v350: bool = False) -> dict:
         """밀린 자동 낚시를 한꺼번에 처리 → {until, next, fish: [...], junk: [...], full: 어망이 차서 쉰 횟수}."""
         def fn(con):
             r = con.execute("SELECT until, next_ts FROM fish_auto WHERE user_id=?", (uid,)).fetchone()
@@ -498,7 +502,7 @@ class FishingDB(EconomyDB):
                 if con.execute("SELECT COUNT(*) FROM fish_bag WHERE user_id=?", (uid,)).fetchone()[0] >= bag_max(s["level"], new):
                     out["full"] += 1
                 else:
-                    c = self._catch(con, uid, s, BITE_MIN, None, nxt, rng, True, new, new_340=v340)
+                    c = self._catch(con, uid, s, BITE_MIN, None, nxt, rng, True, new, new_340=v340, new_350=v350)
                     (out["fish"] if c["kind"] == "fish" else out["junk"]).append(c)
                 nxt += rng.randint(*AUTO_EVERY)
             if nxt > until:
@@ -782,4 +786,5 @@ def now() -> int:
 
 assert len(FISH) == 100 and [len(b) for b in BY_GRADE] == [13, 11, 8, 5, 3] and [len(b) for b in BY_GRADE_310] == [19, 16, 10, 6, 4]
 assert [len(b) for b in BY_GRADE_340] == [29, 26, 19, 14, 12]
-assert all(math.isclose(sum(o), 100) for o in (ODDS_FAST, ODDS_SLOW, ODDS_FAST_310, ODDS_SLOW_310, ODDS_FAST_340, ODDS_SLOW_340))
+assert all(math.isclose(sum(o), 100) for o in (ODDS_FAST, ODDS_SLOW, ODDS_FAST_310, ODDS_SLOW_310, ODDS_FAST_340, ODDS_SLOW_340,
+                                              ODDS_FAST_350, ODDS_SLOW_350))
