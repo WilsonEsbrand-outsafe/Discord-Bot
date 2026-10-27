@@ -145,14 +145,29 @@ def test_341():
     note = PATCH_NOTES["3.4.1"]
     assert "장부" not in note and "체크리스트" not in note and "%" not in note and len(note) < 600
     keys = {k: ts for k, ts, *_ in NOTICES}
-    start, end = release.MAINTENANCE
-    assert (start, end) == (calendar.timegm((2026, 10, 26, 7, 30, 0)), calendar.timegm((2026, 10, 26, 7, 35, 0)))   # 16:30 ~ 16:35 KST
+    start, end = calendar.timegm((2026, 10, 26, 7, 30, 0)), calendar.timegm((2026, 10, 26, 7, 35, 0))   # 16:30 ~ 16:35 KST
     assert keys["maint-3.4.1"] == keys["patch-3.4.1"] < start == release.RELEASE_341_TS   # 미리 발송 · 점검 시작에 공개
     assert not release.preview_341(123, start - 1) and release.preview_341(123, start)
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.4.1")
     assert "16:30 ~ 16:35" in body
     assert P.notice_text("maint-3.4.1", title, body, keys["maint-3.4.1"]) == (title, body)
-    assert P.notice_text("maint-3.4.1", title, body, end)[0] == "✅ 점검 완료 안내"   # 늦게 배포되면 점검 완료로
+
+
+
+def test_350():
+    import calendar
+    import release
+    note = PATCH_NOTES["3.5.0"]
+    assert "장부" not in note and "체크리스트" not in note and "%" not in note and len(note) < 600
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    start, end = release.MAINTENANCE
+    assert (start, end) == (calendar.timegm((2026, 10, 27, 3, 20, 0)), calendar.timegm((2026, 10, 27, 3, 25, 0)))   # 12:20 ~ 12:25 KST
+    assert keys["maint-3.5.0"] == keys["patch-3.5.0"] < start == release.RELEASE_350_TS   # 미리 발송 · 점검 시작에 공개
+    assert not release.preview_350(123, start - 1) and release.preview_350(123, start)
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.5.0")
+    assert "12:20 ~ 12:25" in body
+    assert P.notice_text("maint-3.5.0", title, body, keys["maint-3.5.0"]) == (title, body)
+    assert P.notice_text("maint-3.5.0", title, body, end)[0] == "✅ 점검 완료 안내"
 
 
 def test_320():
@@ -182,4 +197,5 @@ if __name__ == "__main__":
     test_330()
     test_340()
     test_341()
+    test_350()
     print("OK: patch notes")
