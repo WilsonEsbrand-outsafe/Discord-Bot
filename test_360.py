@@ -256,8 +256,11 @@ def test_reserve_match_screen():
             class display_avatar:
                 url = "https://x"
             id, display_name, guild = U, "나", None
+        await hub.clubs.create_club(U + 1, "상대FC", now)
+        opp = await hub.clubs.reserve_opponent(U, 60, now)
+        assert opp["uid"] != U and opp["name"].endswith(" 2군")          # 다른 유저 구단의 2군
         e = await hub._reserve_match(Me, now)
-        assert "2군" in e.title and ":" in e.title
+        assert e.title.count("2군") == 2 and ":" in e.title and "화면FC 2군" in e.title
         assert "쉬는 중" in (await hub._reserve_match(Me, now + 5)).title      # 쿨타임
         assert "2군" in await hub._reserve_text(Me, now)
     asyncio.run(flow())

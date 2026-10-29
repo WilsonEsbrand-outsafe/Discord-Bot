@@ -398,21 +398,11 @@ RESERVE_AMATEURS = [(f"{RESERVE_ID}{g}_{i:02d}", n, g) for g, names in (
     ("GK", ("잡아라", "골문지")), ("DF", ("버텨라", "막아봐", "수비꾼", "튼튼이", "지켜줘")),
     ("MF", ("돌려줘", "뛰어라", "이어줘", "부지런", "중간이", "살림꾼")), ("FW", ("넣어봐", "때려라", "골사냥", "쏴보자", "돌진이")))
     for i, n in enumerate(names, 1)]
-_NPC_RESERVE = ("FC 새싹", "청춘 유나이티드", "미래 시티", "꿈나무 FC", "새벽 레인저스", "푸른 들 FC", "도전 애슬레틱", "희망 원더러스")
 
 
 def in_reserve(p: dict) -> bool:
     """3.6.0 2군 유망주인가: 강화 전 (기본 OVR 이 강화 기준 밑이고 강화 단계 0)."""
     return p["ovr"] < ENH_MIN_OVR and not p.get("enh")
-
-
-def npc_reserve(rating: int, rng=random) -> dict:
-    """2군 경기 NPC 상대 — 내 2군 전력 ±4."""
-    r = max(30, rating + rng.randint(-4, 4))
-    xi = [{"player_id": None, "name": f"{n} {i + 1}번", "pos": g, "ovr": r, "nation": "-"}
-          for i, (g, n) in enumerate(zip(("GK",) + ("DF",) * 4 + ("MF",) * 4 + ("FW",) * 2, ("골키퍼",) + ("수비",) * 4
-                                         + ("미드",) * 4 + ("공격",) * 2))]
-    return {"name": rng.choice(_NPC_RESERVE) + " 2군", "rating": r, "xi": xi}
 
 
 def xp_gap_mult(gap: int) -> float:
@@ -1476,39 +1466,51 @@ class ClubDB:
     async def reserve_team(self, user_id: int, now_ts: int) -> Optional[dict]:
         """2군 11명: 강화 전 유망주(부상 아니면 · 고정) + 유스 선수 + 2군 아마추어로 빈자리. 구단이 없으면 None.
         → {name, formation, rating, lineup, xi, prospect(2군 유망주 | None), youth_ids}."""
+        return await self._tx(lambda con: self._reserve_team(con, user_id, now_ts))
+
+    async def reserve_opponent(self, user_id: int, rating: int, now_ts: int, rng=random) -> Optional[dict]:
+        """2군 경기 상대 — 다른 유저 구단의 2군. 유망주나 유스가 있는 2군을 먼저, 그중 전력이 가장 비슷한 5팀에서 무작위.
+        (그런 2군이 없으면 아마추어만 있는 2군도) 다른 구단이 없으면 None."""
         def fn(con):
-            row = con.execute("SELECT club_name, formation, emblem FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
-            if not row:
-                return None
-            formation = row[1] if row[1] in FORMATIONS else DEFAULT_FORMATION
-            pool = {}
-            p = self._active_prospect(con, user_id, now_ts)
-            if p and in_reserve(p) and not p["injured"]:
-                pool[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"], "ovr": p["ovr"],
-                                  "nation": p["nation"], "number": p["number"], "prospect": True, "focus": p["focus"],
-                                  "conf_mult": 0.6 + p["confidence"] * 0.04}
-            try:
-                youth = con.execute("SELECT id, name, pos, ovr FROM youth_players WHERE user_id=? AND status='youth'",
-                                    (int(user_id),)).fetchall()
-            except sqlite3.OperationalError:
-                youth = []
-            for yid, name, pos, ovr in youth:
-                pool[f"YY{yid}"] = {"player_id": f"YY{yid}", "name": name, "pos": pos, "ovr": int(round(ovr)),
-                                    "nation": "대한민국", "youth_id": yid}
-            for pid, name, g in RESERVE_AMATEURS:
-                pool[pid] = {"player_id": pid, "name": name, "pos": g, "ovr": RESERVE_OVR, "nation": "대한민국", "amateur": True}
-            fixed = tuple(k for k, v in pool.items() if not v.get("amateur"))   # 아마추어는 빈자리만
-            placed = auto_assign(list(pool.values()), formation, fixed)
-            lineup = [{"slot": slot, "index": i, **pool[pid]} if pid else {"slot": slot, "index": i, "player_id": None}
-                      for i, (slot, pid) in enumerate(zip(FORMATIONS[formation], placed))]
-            rating = team_rating(lineup, None)["rating"]
-            on = {s.get("player_id") for s in lineup}
-            return {"name": (f"{row[2]} " if row[2] else "") + row[0] + " 2군", "formation": formation, "rating": rating,
-                    "lineup": lineup, "xi": [s for s in lineup if s.get("player_id")], "uid": int(user_id),
-                    "prospect": p if p and p["pid"] in on else None,
-                    "prospect_any": p if p and in_reserve(p) else None,
-                    "youth_ids": [v["youth_id"] for k, v in pool.items() if v.get("youth_id") and k in on]}
+            teams = [t for (uid,) in con.execute("SELECT user_id FROM clubs WHERE user_id<>?", (int(user_id),)).fetchall()
+                     if (t := self._reserve_team(con, uid, now_ts))]
+            real = [t for t in teams if t["prospect"] or t["youth_ids"]]
+            pool = sorted(real or teams, key=lambda t: abs(t["rating"] - rating))[:5]
+            return rng.choice(pool) if pool else None
         return await self._tx(fn)
+
+    def _reserve_team(self, con, user_id: int, now_ts: int) -> Optional[dict]:
+        row = con.execute("SELECT club_name, formation, emblem FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
+        if not row:
+            return None
+        formation = row[1] if row[1] in FORMATIONS else DEFAULT_FORMATION
+        pool = {}
+        p = self._active_prospect(con, user_id, now_ts)
+        if p and in_reserve(p) and not p["injured"]:
+            pool[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"], "ovr": p["ovr"],
+                              "nation": p["nation"], "number": p["number"], "prospect": True, "focus": p["focus"],
+                              "conf_mult": 0.6 + p["confidence"] * 0.04}
+        try:
+            youth = con.execute("SELECT id, name, pos, ovr FROM youth_players WHERE user_id=? AND status='youth'",
+                                (int(user_id),)).fetchall()
+        except sqlite3.OperationalError:
+            youth = []
+        for yid, name, pos, ovr in youth:
+            pool[f"YY{yid}"] = {"player_id": f"YY{yid}", "name": name, "pos": pos, "ovr": int(round(ovr)),
+                                "nation": "대한민국", "youth_id": yid}
+        for pid, name, g in RESERVE_AMATEURS:
+            pool[pid] = {"player_id": pid, "name": name, "pos": g, "ovr": RESERVE_OVR, "nation": "대한민국", "amateur": True}
+        fixed = tuple(k for k, v in pool.items() if not v.get("amateur"))   # 아마추어는 빈자리만
+        placed = auto_assign(list(pool.values()), formation, fixed)
+        lineup = [{"slot": slot, "index": i, **pool[pid]} if pid else {"slot": slot, "index": i, "player_id": None}
+                  for i, (slot, pid) in enumerate(zip(FORMATIONS[formation], placed))]
+        rating = team_rating(lineup, None)["rating"]
+        on = {s.get("player_id") for s in lineup}
+        return {"name": (f"{row[2]} " if row[2] else "") + row[0] + " 2군", "formation": formation, "rating": rating,
+                "lineup": lineup, "xi": [s for s in lineup if s.get("player_id")], "uid": int(user_id),
+                "prospect": p if p and p["pid"] in on else None,
+                "prospect_any": p if p and in_reserve(p) else None,
+                "youth_ids": [v["youth_id"] for k, v in pool.items() if v.get("youth_id") and k in on]}
 
     async def record_prospects(self, sides: list[tuple], goals: list[dict], now_ts: int,
                                events: list[dict] = (), rng=random, friendly: bool = False,

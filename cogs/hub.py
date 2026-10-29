@@ -11,7 +11,7 @@ import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS, FACILITY_MAX, MANAGERS, MEDICS, PROSPECT_PRICE,
-    RESERVE_COOLDOWN, RESERVE_XP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect, match_highlights, npc_reserve,
+    RESERVE_COOLDOWN, RESERVE_XP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect, match_highlights,
     simulate_match,
 )
 from services.enhance import ENH_MIN_OVR
@@ -621,11 +621,11 @@ class Hubs(commands.Cog):
         ama = sum(bool(s.get("amateur")) for s in t["xi"])
         return (f"**⚽ 2군** · 전력 **{t['rating']}** · {t['formation']}\n{star}\n"
                 f"🎓 유스 {len(youth)}명" + (f" ({', '.join(youth)})" if youth else "") + f" · 👥 2군 아마추어 {ama}명\n"
-                f"-# 2군 경기는 판수 제한 없이 {RESERVE_COOLDOWN}초마다 · 유망주 경험치 ×{RESERVE_XP:g} · "
+                f"-# 2군 경기는 다른 유저 2군과 · 판수 제한 없이 {RESERVE_COOLDOWN}초마다 · 유망주 경험치 ×{RESERVE_XP:g} · "
                 f"유스는 하루 {Y.RESERVE_DAILY}판까지 훈련 1번만큼 자라요")
 
     async def _reserve_match(self, user, now: int) -> discord.Embed:
-        """2군 경기 한 판 — NPC 2군과 바로 결과. 유망주 경험치 · 유스 성장."""
+        """2군 경기 한 판 — 다른 유저 구단의 2군과 바로 결과. 양쪽 유망주 경험치 · 내 유스 성장."""
         from cogs.club import Club
         left = self._reserve_at.get(user.id, 0) + RESERVE_COOLDOWN - now
         if left > 0:
@@ -633,13 +633,17 @@ class Hubs(commands.Cog):
         t = await self.clubs.reserve_team(user.id, now)
         if not t:
             return ui.card("🙅 2군 경기", "구단이 있어야 해요. `/구단생성`", ui.LOSE, user, "🎓 유스")
+        opp = await self.clubs.reserve_opponent(user.id, t["rating"], now)
+        if not opp:
+            return ui.card("😶 상대 2군이 없어요", "2군 경기를 할 다른 유저 구단이 아직 없습니다.", ui.EVEN, user, "🎓 유스")
         self._reserve_at[user.id] = now
-        opp = npc_reserve(t["rating"])
         res = simulate_match(t, opp)
         gf, ga = res["home"], res["away"]
         hl = match_highlights(res, t, opp, v350=True)
-        stars = await self.clubs.record_prospects([(t["xi"], gf, ga, None, t["rating"] - opp["rating"])], res["goals"], now,
-                                                  hl, v350=True, v360=True, xp_mult=RESERVE_XP, xp_label="2군")
+        gap = t["rating"] - opp["rating"]
+        stars = await self.clubs.record_prospects([(t["xi"], gf, ga, opp["uid"], gap), (opp["xi"], ga, gf, user.id, -gap)],
+                                                  res["goals"], now, hl, v350=True, v360=True, xp_mult=RESERVE_XP,
+                                                  xp_label="2군")
         grown = await self.youth.reserve_growth(user.id, t["youth_ids"], gf > ga, now)
         goals = [f"`{g['minute']:>2}'` ⚽ {g['scorer']}" + (f" (도움 {g['assist']})" if g.get("assist") else "")
                  + ("" if g["side"] == "home" else f" *({opp['name']})*") for g in res["goals"]]
