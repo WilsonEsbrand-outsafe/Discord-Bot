@@ -61,7 +61,7 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
         body = (f"`나이` **{p['age']}세** · `OVR` **{p['ovr']}** · `잠재력` **{p['pot']}** ({p['pot_grade']}) · "
                 f"`최고` {p['peak_ovr']}\n{grow}"
                 + ("" if v360 else f"\n`오늘 성장 경기` {min(played, PROSPECT_DAILY_GROWTH)}/{PROSPECT_DAILY_GROWTH}")
-                + (f"\n🏟️ **2군 소속** — `/구단` → 🎓 2군에서 경기해 OVR {EH.ENH_MIN_OVR}이 되면 1군 승격 · 강화"
+                + (f"\n🏟️ **2군 소속** — `/2군`에서 경기해 OVR {EH.ENH_MIN_OVR}이 되면 1군 승격 · 강화"
                    if v360 and in_reserve(p) else "\n🏟️ **1군**" if v360 else "")
                 + _enh_line(p)
                 + (f"\n🚑 **부상** — {p['injury']} · "

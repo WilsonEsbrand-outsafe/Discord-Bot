@@ -246,22 +246,38 @@ class Hubs(commands.Cog):
     # ───────────── /구단 허브 (2.8 서버 · 내 구단) ─────────────
     def club_view(self, user, page: int = 0, guild_id: int | None = None) -> HubView:
         g311 = release.preview_311(guild_id)   # 3.1.1: /포메이션 · /선발 · /주장 · /감독 · /의료진 · /시설 을 이 화면으로
+        g360 = release.preview_360(guild_id)   # 3.6.0: 유망주 · 2군 · 유스는 /2군 으로 따로
         pages = [Page("🏟️", "구단", self._p_club, "선발 명단 · 전력 · 전적")]
         if g311:
             pages.append(Page("📋", "편성", self._p_lineup, "포메이션 · 선발 · 주장"))
-        pages += [Page("🌟", "유망주", self._p_prospect, "나만의 선수"),
-                 Page("🏗️", "시설", self._p_facility, "경기장 · 훈련장 · 유스 · 메디컬"),
+        if not g360:
+            pages.append(Page("🌟", "유망주", self._p_prospect, "나만의 선수"))
+        pages += [Page("🏗️", "시설", self._p_facility, "경기장 · 훈련장 · 유스 · 메디컬"),
                  Page("👔", "감독 · 의료진" + (" · 스카우터" if g311 else ""), self._p_staff,
                       "전력 보너스 · 부상 치료" + (" · 유스 스카우터" if g311 else "")),
                  Page("⚔️", "전술", self._p_tactics, "기본 전술 · 적응도 · 하프타임 규칙"),
-                 Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술"),
-                 Page("🎓", "2군 · 유스" if release.preview_360(guild_id) else "유스", self._p_youth,
-                      ("2군 경기 · " if release.preview_360(guild_id) else "") + "입단 테스트 · 훈련 · 판매 · 1군 등록"),
-                 Page("💼", "경영", self._p_mgmt, "관중 수입 · 팬 만족도 · 티켓 가격")]
+                 Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술")]
+        if not g360:
+            pages.append(Page("🎓", "유스", self._p_youth, "입단 테스트 · 훈련 · 판매 · 1군 등록"))
+        pages.append(Page("💼", "경영", self._p_mgmt, "관중 수입 · 팬 만족도 · 티켓 가격"))
         if release.preview_2101(guild_id):   # 2.10.1 (테스트 서버 먼저)
             pages.append(Page("🎨", "꾸미기 · 설정", self._p_decor, "구단명 · 엠블럼 · 경기장 이름 · 구단 삭제"))
-        return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page,
-                       ctx={"g311": g311, "g360": release.preview_360(guild_id)})
+        return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page, ctx={"g311": g311, "g360": g360})
+
+    # ───────────── /2군 (3.6.0 · 유망주 · 2군 경기 · 유스) ─────────────
+    def reserve_view(self, user, page: int = 0, guild_id: int | None = None) -> HubView:
+        pages = [Page("🎓", "2군 · 유스", self._p_youth, "2군 경기 · 입단 테스트 · 훈련 · 판매 · 1군 등록"),
+                 Page("🌟", "유망주", self._p_prospect, "나만의 선수 · 1군 승격 · 강화는 `/유망주`")]
+        return HubView(user, "2군", "🎓 2군", pages, "/2군", page,
+                       ctx={"g311": release.preview_311(guild_id), "g360": True})
+
+    @app_commands.command(name="2군", description="🎓 2군 · 유스 · 유망주 — 다른 유저 2군과 경기 · 입단 테스트 · 훈련 · 1군 등록")
+    async def reserve(self, interaction: discord.Interaction):
+        if not release.preview_360(interaction.guild_id):
+            return await interaction.response.send_message("아직 이 서버에서는 쓸 수 없는 명령어예요.", ephemeral=True)
+        if not await self.clubs.get_club(interaction.user.id):
+            return await interaction.response.send_message("구단이 있어야 해요. `/구단생성`", ephemeral=True)
+        await self.reserve_view(interaction.user, guild_id=interaction.guild_id).send(interaction, ephemeral=False)
 
     # ───────────── 🎨 꾸미기 · 설정 (2.10.1: /구단명변경 · /구단꾸미기 · /구단삭제 를 여기로) ─────────────
     async def _p_decor(self, view: HubView) -> discord.Embed:

@@ -399,3 +399,21 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
     print("✅ test_360 통과")
+
+
+def test_reserve_command_split():
+    import cogs.hub as H
+    hub = H.Hubs.__new__(H.Hubs)
+
+    class Me:
+        id, display_name, guild = 3603, "나", None
+
+    async def flow():
+        titles = lambda v: [p.title for p in v.pages]
+        old = titles(hub.club_view(Me, guild_id=OTHER))   # 3.6.0 전 서버: /구단 에 유망주 · 유스
+        new = titles(hub.club_view(Me, guild_id=T))       # 3.6.0 서버: /2군 으로 빠진다
+        assert "유망주" in old and "유스" in old
+        assert "유망주" not in new and not any(t == "유스" or "2군" in t for t in new)
+        assert titles(hub.reserve_view(Me, guild_id=T)) == ["2군 · 유스", "유망주"]
+    asyncio.run(flow())
+    assert "2군" in release.hidden_commands(OTHER) and "2군" not in release.hidden_commands(T)
