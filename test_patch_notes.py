@@ -160,14 +160,28 @@ def test_350():
     note = PATCH_NOTES["3.5.0"]
     assert "장부" not in note and "체크리스트" not in note and "%" not in note and len(note) < 600
     keys = {k: ts for k, ts, *_ in NOTICES}
-    start, end = release.MAINTENANCE
-    assert (start, end) == (calendar.timegm((2026, 10, 27, 3, 20, 0)), calendar.timegm((2026, 10, 27, 3, 25, 0)))   # 12:20 ~ 12:25 KST
+    start, end = calendar.timegm((2026, 10, 27, 3, 20, 0)), calendar.timegm((2026, 10, 27, 3, 25, 0))   # 12:20 ~ 12:25 KST (지금 MAINTENANCE 는 3.6.0)
     assert keys["maint-3.5.0"] == keys["patch-3.5.0"] < start == release.RELEASE_350_TS   # 미리 발송 · 점검 시작에 공개
     assert not release.preview_350(123, start - 1) and release.preview_350(123, start)
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.5.0")
     assert "12:20 ~ 12:25" in body
     assert P.notice_text("maint-3.5.0", title, body, keys["maint-3.5.0"]) == (title, body)
-    assert P.notice_text("maint-3.5.0", title, body, end)[0] == "✅ 점검 완료 안내"
+
+
+def test_360():
+    import calendar
+    import release
+    note = PATCH_NOTES["3.6.0"]
+    assert "장부" not in note and "체크리스트" not in note and "%" not in note and len(note) < 1200
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    start, end = release.MAINTENANCE
+    assert (start, end) == (calendar.timegm((2026, 10, 29, 4, 25, 0)), calendar.timegm((2026, 10, 29, 4, 30, 0)))   # 13:25 ~ 13:30 KST
+    assert keys["maint-3.6.0"] == keys["patch-3.6.0"] < start == release.RELEASE_360_TS   # 미리 발송 · 점검 시작에 공개
+    assert not release.preview_360(123, start - 1) and release.preview_360(123, start)
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.6.0")
+    assert "13:25 ~ 13:30" in body and "YOUTHTOKIKO" in note
+    assert P.notice_text("maint-3.6.0", title, body, keys["maint-3.6.0"]) == (title, body)
+    assert P.notice_text("maint-3.6.0", title, body, end)[0] == "✅ 점검 완료 안내"
 
 
 def test_320():
