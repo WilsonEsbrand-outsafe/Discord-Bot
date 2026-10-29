@@ -60,8 +60,9 @@ def build_pool(db_path: str | None) -> sqlite3.Connection:
         return sqlite3.connect(pmdb.DB_PATH)
 
     con = sqlite3.connect(pmdb.DB_PATH)
-    for _ in range(POOL_SIZE):
-        p = pm._spawn_player(0, 0)
+    v360 = os.getenv("V360") == "1"   # 3.6.0 선수풀: OVR 65부터 · 1,200명
+    for _ in range(pmdb.POOL_SIZE_360 if v360 else POOL_SIZE):
+        p = pm._spawn_player(0, 0, min_ovr=pmdb.POOL_MIN_OVR_360 if v360 else 50)
         con.execute(
             "INSERT INTO pm_players(player_id,name,nation,position,age,ovr,pot,pot_grade,"
             "base_value,retired,created_month,updated_ts) VALUES(?,?,?,?,?,?,?,?,?,0,0,0)",

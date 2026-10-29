@@ -361,6 +361,36 @@ def test_fishing_dex_rewards():
     asyncio.run(flow())
 
 
+def test_pool_min_ovr():
+    """공개(RELEASE_360_TS) 뒤: 새 선수 OVR 65부터 · 아무도 안 가진 65 밑 은퇴 · 풀 1,200명 · 팩 표 바뀜."""
+    P = pmdb
+    pm = P.PlayerMarketDB()
+    assert all(pm._spawn_player(0, 0, min_ovr=65)["ovr"] >= 65 for _ in range(300))
+    assert P.PACKS["브론즈"]["price"] == 50_000 and P.pool_size() == P.POOL_SIZE
+    old = release.RELEASE_360_TS
+    release.RELEASE_360_TS = 1
+    try:
+        assert P.PACKS["브론즈"]["price"] == 150_000 and P.pool_size() == P.POOL_SIZE_360
+        assert set(P.PACKS) == set(P.PACKS_OLD)
+        assert all(pm._spawn_player(0, 10)["ovr"] >= 65 for _ in range(300))
+
+        async def flow():
+            con = sqlite3.connect(TMP)
+            for pid, ovr in (("W1", 50), ("W2", 60), ("W3", 70), ("W4", 55)):
+                con.execute("INSERT INTO pm_players(player_id, name, nation, position, age, ovr, pot, pot_grade, base_value, "
+                            "retired, created_month, updated_ts) VALUES(?, ?, '대한민국', 'MF', 25, ?, ?, 'C', 1000, 0, 0, 0)",
+                            (pid, pid, ovr, ovr))
+            con.execute("INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(1, 'W4', 1)")
+            con.commit()
+            await pm.ensure_active_pool(1000, target=0)
+            got = dict(con.execute("SELECT player_id, retired FROM pm_players WHERE player_id LIKE 'W%'").fetchall())
+            con.close()
+            assert got == {"W1": 1, "W2": 1, "W3": 0, "W4": 0}   # 가진 선수는 남는다
+        asyncio.run(flow())
+    finally:
+        release.RELEASE_360_TS = old
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

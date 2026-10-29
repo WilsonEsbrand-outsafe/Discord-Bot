@@ -9,6 +9,7 @@ import sqlite3
 import release
 import time
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
@@ -213,7 +214,7 @@ AMATEUR_SQUAD: list[dict] = [
 # 상위 4종(플래티넘~얼티밋)은 비싼 선수일수록 수가 급격히 줄어 추첨이 싼 쪽으로 쏠렸다
 # (EV 0.80~0.92x, 손해 50~70%). 구간 하한을 단가의 0.7~0.75배로 올리고 중심을 0.95로,
 # 잭팟 하한은 풀에 실제로 있는 가격대로 내렸다 → EV 0.95~0.96x, 손해 17~30% (2026-09 풀 기준).
-PACKS = {
+PACKS_OLD = {
     "브론즈":    {"price":     50_000, "min_price":     17_000, "max_price":     90_000},
     "실버":      {"price":    150_000, "min_price":     52_000, "max_price":    270_000},
     "골드":      {"price":    500_000, "min_price":    175_000, "max_price":    900_000},
@@ -230,6 +231,36 @@ PACKS = {
     "수비수":    {"price":    500_000, "min_price":    175_000, "max_price":    900_000, "pos": "DF"},
     "골키퍼":    {"price":    500_000, "min_price":    175_000, "max_price":    900_000, "pos": "GK"},
 }
+# 3.6.0 (RELEASE_360_TS 부터): 선수풀이 OVR 65부터라 싼 선수가 없어진다 → 브론즈 15만 · 실버 30만 · 골드(포지션 팩) 60만으로 올리고
+# 중심을 맞춰 EV 0.92~0.94x (스폰 분포 1,200명 시뮬 · tools/pack_balance.py V360=1). 플래티넘부터는 그대로.
+PACKS_360 = {
+    "브론즈":    {"price":    150_000, "min_price":     50_000, "max_price":    270_000, "center": 0.75},
+    "실버":      {"price":    300_000, "min_price":    105_000, "max_price":    540_000, "center": 1.03},
+    "골드":      {"price":    600_000, "min_price":    250_000, "max_price":  1_080_000, "center": 0.95},
+    **{k: v for k, v in PACKS_OLD.items() if k in ("플래티넘", "다이아몬드", "아이콘", "얼티밋")},
+    **{k: {"price": 600_000, "min_price": 250_000, "max_price": 1_080_000, "center": 0.95, "pos": g}
+       for k, g in (("공격수", "FW"), ("미드필더", "MF"), ("수비수", "DF"), ("골키퍼", "GK"))},
+}
+
+
+class _Packs(Mapping):
+    """지금 쓰는 팩 표 — RELEASE_360_TS 전엔 PACKS_OLD, 뒤엔 PACKS_360 (모든 서버 같이 · 선수풀과 함께 바뀐다)."""
+
+    @staticmethod
+    def _cur() -> dict:
+        return PACKS_360 if release.released_360() else PACKS_OLD
+
+    def __getitem__(self, k):
+        return self._cur()[k]
+
+    def __iter__(self):
+        return iter(self._cur())
+
+    def __len__(self):
+        return len(self._cur())
+
+
+PACKS = _Packs()
 
 # ── 잭팟(대박) ─────────────────────────────────────────────
 # 가우시안 꼬리를 두껍게 하는 방식은 대박을 만들기 전에 EV부터 1을 넘겨
@@ -246,6 +277,15 @@ PACK_VALUE_CENTER = 0.90
 PRICE_HISTORY_KEEP_DAYS = 30
 PACK_MAX_PULLS = 10
 POOL_SIZE = 1_000   # 시장에 상시 유지할 활성 선수 수
+# 3.6.0 (release.RELEASE_360_TS 부터 · 모든 서버가 같이 쓰는 데이터): 선수풀은 OVR 65부터 — 65 밑 선수는 새로 안 나오고,
+# 노쇠로 65 밑이 되면 은퇴. 공개 때 아무도 안 가진 65 밑 선수는 은퇴시키고 풀을 1,200명으로 늘린다.
+# (1군 아마추어가 OVR 65 · 유망주는 OVR 70 에 1군 승격이라 그보다 약한 카드는 쓸 데가 없다)
+POOL_MIN_OVR_360 = 65
+POOL_SIZE_360 = 1_200
+
+
+def pool_size(now_ts: Optional[float] = None) -> int:
+    return POOL_SIZE_360 if release.released_360(now_ts) else POOL_SIZE
 
 def _pack_weight(player_price: int, pack_price: int) -> float:
     """팩 가격 기준 대칭 가우시안 가중치.
@@ -899,7 +939,7 @@ class PlayerMarketDB:
                     con.close()
             await self._run(work)
 
-        await self.ensure_active_pool(now_ts, target=POOL_SIZE)
+        await self.ensure_active_pool(now_ts, target=pool_size(now_ts))
         if not self._gk_checked:   # 부팅마다 한 번 — 새로 뽑히는 선수는 가중치대로라 한 번 맞추면 유지된다
             self._gk_checked = True
             async with self._lock:
@@ -975,7 +1015,7 @@ class PlayerMarketDB:
             deleted = await asyncio.to_thread(work)
 
         # lock 밖에서 새 선수 스폰 (ensure_active_pool이 lock을 다시 획득함)
-        await self.ensure_active_pool(now_ts, target=POOL_SIZE)
+        await self.ensure_active_pool(now_ts, target=pool_size(now_ts))
 
         # 새로 생성된 활성 일반 선수 수 집계
         async with self._lock:
@@ -1033,8 +1073,11 @@ class PlayerMarketDB:
         return max(1_000, floor_p), max(floor_p + 1_000, ceil_p)
 
     def _spawn_player(self, month_index: int, now_ts: int, force_grade: Optional[str] = None,
-                      pid: Optional[str] = None) -> Dict:
-        """pid 는 DB에 넣는 쪽이 _next_player_id(con) 로 발급해 넘긴다 (도구·테스트는 생략 가능)."""
+                      pid: Optional[str] = None, min_ovr: Optional[int] = None) -> Dict:
+        """pid 는 DB에 넣는 쪽이 _next_player_id(con) 로 발급해 넘긴다 (도구·테스트는 생략 가능).
+        min_ovr: 3.6.0 선수풀 최소 OVR (None 이면 RELEASE_360_TS 뒤에 POOL_MIN_OVR_360)."""
+        if min_ovr is None:
+            min_ovr = POOL_MIN_OVR_360 if release.released_360(now_ts) else 50
         # ── 나이 분포: 유망주 55% / 전성기 30% / 베테랑 15%
         r_age = random.random()
         if r_age < 0.55:
@@ -1074,7 +1117,8 @@ class PlayerMarketDB:
         if age >= 30:
             pot = max(pot - random.randint(0, age - 28), 60)
 
-        ovr = max(50, pot - gap_start)
+        ovr = max(min_ovr, pot - gap_start)
+        pot = max(pot, ovr)
 
         nation = pick_weighted_nation()
         name = random_name_by_nation(nation)
@@ -1109,6 +1153,17 @@ class PlayerMarketDB:
                     row = con.execute("SELECT month_index FROM pm_game_time WHERE id=1").fetchone()
                     month_index = int(row[0]) if row else 0
 
+                    if release.released_360(now_ts):   # 3.6.0 아무도 안 가진 OVR 65 밑 선수는 은퇴
+                        weak = [pid for (pid,) in con.execute(
+                            "SELECT player_id FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' AND ovr<? "
+                            "AND player_id NOT IN (SELECT player_id FROM pm_holdings WHERE qty>0)", (POOL_MIN_OVR_360,))]
+                        for pid in weak:
+                            con.execute("UPDATE pm_players SET retired=1, updated_ts=? WHERE player_id=?", (int(now_ts), pid))
+                            con.execute("UPDATE pm_market SET price=0, floor_price=0, ceil_price=0, last_update_ts=? "
+                                        "WHERE player_id=?", (int(now_ts), pid))
+                        if weak:
+                            con.commit()
+                            print(f"[PM] 3.6.0 OVR {POOL_MIN_OVR_360} 밑 선수 은퇴: {len(weak)}명")
                     # 아마추어 더미(AMT_)는 시장에 나오지 않으므로 정원에서 제외한다.
                     active = con.execute(
                         "SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"
@@ -1837,6 +1892,13 @@ class PlayerMarketDB:
                                 if hi:
                                     ovr = max(1, ovr - random.randint(lo, hi))
                                     pot = max(ovr, pot)
+                                if release.released_360(now_ts) and ovr < POOL_MIN_OVR_360:   # 3.6.0 OVR 65 밑이면 은퇴
+                                    retired_this_run.add(str(pid))
+                                    con.execute("UPDATE pm_players SET retired=1, updated_ts=? WHERE player_id=?",
+                                                (int(now_ts), str(pid)))
+                                    con.execute("UPDATE pm_market SET price=0, floor_price=0, ceil_price=0, last_update_ts=? "
+                                                "WHERE player_id=?", (int(now_ts), str(pid)))
+                                    continue
 
                             new_base = self._compute_base_value(age, ovr, pot)
                             floor_p, ceil_p = self._compute_floor_ceil(new_base)
