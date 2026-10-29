@@ -265,18 +265,24 @@ class Hubs(commands.Cog):
 
     # ───────────── /2군 (3.6.0 · 유망주 · 2군 경기 · 유스) ─────────────
     def reserve_view(self, user, page: int = 0, guild_id: int | None = None) -> HubView:
-        pages = [Page("🎓", "2군 · 유스", self._p_youth, "2군 경기 · 입단 테스트 · 훈련 · 판매 · 1군 등록"),
+        pages = [Page("🎓", "2군 · 유스", self._p_youth, "2군 명단 · 입단 테스트 · 훈련 · 판매 · 1군 등록"),
                  Page("🌟", "유망주", self._p_prospect, "나만의 선수 · 1군 승격 · 강화는 `/유망주`")]
         return HubView(user, "2군", "🎓 2군", pages, "/2군", page,
                        ctx={"g311": release.preview_311(guild_id), "g360": True})
 
-    @app_commands.command(name="2군", description="🎓 2군 · 유스 · 유망주 — 다른 유저 2군과 경기 · 입단 테스트 · 훈련 · 1군 등록")
+    @app_commands.command(name="2군", description="🎓 2군 · 유스 · 유망주 — 2군 명단 · 입단 테스트 · 훈련 · 1군 등록")
     async def reserve(self, interaction: discord.Interaction):
         if not release.preview_360(interaction.guild_id):
             return await interaction.response.send_message("아직 이 서버에서는 쓸 수 없는 명령어예요.", ephemeral=True)
         if not await self.clubs.get_club(interaction.user.id):
             return await interaction.response.send_message("구단이 있어야 해요. `/구단생성`", ephemeral=True)
         await self.reserve_view(interaction.user, guild_id=interaction.guild_id).send(interaction, ephemeral=False)
+
+    @app_commands.command(name="유스경기", description="⚽ 2군 경기 — 내 2군(유망주 · 유스)이 다른 유저의 2군과 한 판")
+    async def youth_match(self, interaction: discord.Interaction):
+        if not release.preview_360(interaction.guild_id):
+            return await interaction.response.send_message("아직 이 서버에서는 쓸 수 없는 명령어예요.", ephemeral=True)
+        await interaction.response.send_message(embed=await self._reserve_match(interaction.user, int(time.time())))
 
     # ───────────── 🎨 꾸미기 · 설정 (2.10.1: /구단명변경 · /구단꾸미기 · /구단삭제 를 여기로) ─────────────
     async def _p_decor(self, view: HubView) -> discord.Embed:
@@ -554,9 +560,9 @@ class Hubs(commands.Cog):
                 ("tryout", "지원자 보기" if not apps else "지원자 다시 보기", "🔎", not st["tried"] and not full),
                 ("coupon", f"쿠폰으로 테스트 ({items['scout_coupon']})", "🎟️",
                  not st["tried"] and not full and not apps and items["scout_coupon"] > 0),
-                ("reserve", "2군 경기", "⚽", True) if g360 else ("match", "주간 연습경기", "⚽", not st["matched"] and bool(youth))):
+                *(() if g360 else (("match", "주간 연습경기", "⚽", not st["matched"] and bool(youth)),))):   # 3.6.0: 2군 경기는 /유스경기
             b = discord.ui.Button(label=label, emoji=emoji, row=2, disabled=not ok,
-                                  style=discord.ButtonStyle.primary if key in ("tryout", "reserve") else discord.ButtonStyle.secondary)
+                                  style=discord.ButtonStyle.primary if key == "tryout" else discord.ButtonStyle.secondary)
             b.callback = self._youth_act(view, key)
             view.add_item(b)
         # 3줄: 지원자 고르기 → 테스트
@@ -590,8 +596,6 @@ class Hubs(commands.Cog):
                                   if r["trains"] in Y.REVEAL else ""), ui.WIN, user, "🎓 유스") if r["ok"] else ui.card(
                     "🙅 훈련", {"limit": "오늘 훈련을 다 했어요.", "ticket": "🏋️ 특훈권이 없어요.", "none": "선수를 골라 주세요."}[r["reason"]],
                     ui.LOSE, user, "🎓 유스")
-            elif key == "reserve":
-                note = await self._reserve_match(user, now)
             elif key == "match":
                 r = await self.youth.weekly_match(user.id, now)
                 if r["ok"]:
@@ -636,7 +640,7 @@ class Hubs(commands.Cog):
         ama = sum(bool(s.get("amateur")) for s in t["xi"])
         return (f"**⚽ 2군** · 전력 **{t['rating']}** · {t['formation']}\n{star}\n"
                 f"🎓 유스 {len(youth)}명" + (f" ({', '.join(youth)})" if youth else "") + f" · 👥 2군 아마추어 {ama}명\n"
-                f"-# 2군 경기는 다른 유저 2군과 {RESERVE_COOLDOWN}초마다")
+                f"-# `/유스경기` — 다른 유저 2군과 {RESERVE_COOLDOWN}초마다")
 
     async def _reserve_match(self, user, now: int) -> discord.Embed:
         """2군 경기 한 판 — 다른 유저 구단의 2군과 바로 결과. 양쪽 유망주 경험치 · 내 유스 성장."""

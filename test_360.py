@@ -418,7 +418,7 @@ def test_reserve_command_split():
         assert "유망주" not in new and not any(t == "유스" or "2군" in t for t in new)
         assert titles(hub.reserve_view(Me, guild_id=T)) == ["2군 · 유스", "유망주"]
     asyncio.run(flow())
-    assert "2군" in release.hidden_commands(OTHER) and "2군" not in release.hidden_commands(T)
+    assert {"2군", "유스경기"} <= release.hidden_commands(OTHER) and not {"2군", "유스경기"} & release.hidden_commands(T)
 
 
 def test_coupon_youthtokiko():

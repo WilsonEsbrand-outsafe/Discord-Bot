@@ -82,7 +82,7 @@ def preview_310(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 
 
 PREVIEW_310: set[str] = {"드리블"}   # 3.1.0 새 명령어 — 공개 전엔 테스트 서버에만 보인다
-PREVIEW_360: set[str] = {"2군"}     # 3.6.0 새 명령어 — 공개 전엔 테스트 서버에만 보인다
+PREVIEW_360: set[str] = {"2군", "유스경기"}     # 3.6.0 새 명령어 — 공개 전엔 테스트 서버에만 보인다
 
 
 # 3.1.1 — 테스트 서버 먼저. preview_311(guild): /구단 화면에서 편성 · 감독 · 의료진 · 시설을 바로 바꾼다. None = 아직
