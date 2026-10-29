@@ -185,6 +185,84 @@ def test_official_skip():
     assert it.followup.sent[0].description.startswith("`배당`")
 
 
+def test_reserve():
+    """2군: 강화 전 유망주 + 유스 + 2군 아마추어 · 1군에선 빠짐 · 1군 아마추어 최소 OVR · 유스 하루 성장 한도."""
+    import services.youth as Y
+    Y.DB_PATH = TMP
+
+    async def flow():
+        now = int(time.time())
+        db, clubs, pm, yd = edb.EconomyDB(), cdb.ClubDB(), pmdb.PlayerMarketDB(), Y.YouthDB()
+        U = 3601
+        await clubs.create_club(U, "이군FC", now)
+        await pm.give_amateur_squad(U)
+        await db.add_balance(U, 10_000_000)
+        info, _ = cdb.prospect_input("이군이", "대한민국", "ST", 10, "1-1")
+        pid = (await clubs.create_prospect(U, info, now))["pid"]
+        con = sqlite3.connect(TMP)
+        con.execute("UPDATE prospects SET ovr=60, pot=90, pro=10, proneness=1 WHERE user_id=?", (U,))
+        con.execute("INSERT INTO youth_players(user_id, name, nick, pos, personality, ovr, pot, grade, join_age, joined_ts) "
+                    "VALUES(?, '유스킴', '번개', 'MF', 'diligent', 50.0, 80, 'B', 15, ?)", (U, now))
+        con.commit(); con.close()
+        # 예전 서버: 유망주가 1군 명단에, 아마추어 OVR 50
+        tok = release.GUILD.set(OTHER)
+        sq = {p["player_id"]: p for p in await clubs.squad(U)}
+        assert pid in sq and sq["AMT_GK_01"]["ovr"] == 50
+        release.GUILD.reset(tok)
+        # 3.6.0 서버: 유망주는 2군, 1군 아마추어 최소 65
+        tok = release.GUILD.set(T)
+        sq = {p["player_id"]: p for p in await clubs.squad(U)}
+        assert pid not in sq and sq["AMT_GK_01"]["ovr"] == cdb.AMATEUR_MIN_360
+        t = await clubs.reserve_team(U, now)
+        ids = [s["player_id"] for s in t["xi"]]
+        assert len(ids) == 11 and pid in ids and any(i.startswith("YY") for i in ids)
+        assert all(s["ovr"] == cdb.RESERVE_OVR for s in t["xi"] if s.get("amateur"))
+        assert t["prospect"]["pid"] == pid and len(t["youth_ids"]) == 1
+        # 2군 경기 경험치 ×0.7
+        x = (await clubs.record_prospects([(t["xi"], 1, 0, None, 0)], [], now, rng=NoHurt, v360=True,
+                                          xp_mult=cdb.RESERVE_XP, xp_label="2군"))[0]
+        assert x["xp"] == round(15 * cdb.RESERVE_XP) and "2군 ×0.7" in x["mods"]
+        # OVR 70 이 되면 1군으로
+        con = sqlite3.connect(TMP)
+        con.execute("UPDATE prospects SET ovr=70 WHERE user_id=?", (U,))
+        con.commit(); con.close()
+        assert pid in {p["player_id"] for p in await clubs.squad(U)}
+        assert (await clubs.reserve_team(U, now))["prospect"] is None
+        release.GUILD.reset(tok)
+        # 유스 성장: 하루 RESERVE_DAILY 판까지
+        yid = t["youth_ids"][0]
+        for i in range(Y.RESERVE_DAILY):
+            g = await yd.reserve_growth(U, [yid], True, now)
+            assert g["grown"] and g["left"] == Y.RESERVE_DAILY - i - 1
+        assert (await yd.reserve_growth(U, [yid], True, now))["grown"] == []
+        st = await yd.status(U, now)
+        assert st["youth"][0]["ovr"] > 50 and not st["tried"]
+    asyncio.run(flow())
+
+
+def test_reserve_match_screen():
+    import services.youth as Y
+    import cogs.hub as H
+    Y.DB_PATH = TMP
+
+    async def flow():
+        now = int(time.time())
+        hub = H.Hubs.__new__(H.Hubs)
+        hub.clubs, hub.youth, hub._reserve_at = cdb.ClubDB(), Y.YouthDB(), {}
+        U = 3602
+        await hub.clubs.create_club(U, "화면FC", now)
+
+        class Me:
+            class display_avatar:
+                url = "https://x"
+            id, display_name, guild = U, "나", None
+        e = await hub._reserve_match(Me, now)
+        assert "2군" in e.title and ":" in e.title
+        assert "쉬는 중" in (await hub._reserve_match(Me, now + 5)).title      # 쿨타임
+        assert "2군" in await hub._reserve_text(Me, now)
+    asyncio.run(flow())
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
