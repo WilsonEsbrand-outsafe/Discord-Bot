@@ -263,6 +263,44 @@ def test_reserve_match_screen():
     asyncio.run(flow())
 
 
+def test_prospect_transfer():
+    async def flow():
+        now = int(time.time())
+        db, clubs = edb.EconomyDB(), cdb.ClubDB()
+        A, B, C = 3611, 3612, 3613
+        for u in (A, B, C):
+            await clubs.create_club(u, f"거래{u}", now)
+            await db.add_balance(u, 50_000_000)
+        info, _ = cdb.prospect_input("이적생", "대한민국", "CM", 7, "1-1")
+        p = await clubs.create_prospect(A, info, now)
+        await clubs.set_slot(A, 0, p["pid"])
+        await clubs.set_captain(A, p["pid"])
+        bal_a = await db.get_balance(A)
+        # C 는 이미 현역 유망주 · 영구결번 7 인 구단은 못 받는다
+        info2, _ = cdb.prospect_input("원래", "대한민국", "ST", 9, "1-1")
+        await clubs.create_prospect(C, info2, now)
+        assert (await clubs.transfer_prospect(A, C, p["id"], 0, now))["reason"] == "exists"
+        con = sqlite3.connect(TMP)
+        con.execute("INSERT INTO prospects(user_id, name, nation, position, number, birthday, foot, height, ovr, pot, aged, "
+                    "peak_ovr, peak_age, created_ts, retired_ts, retired_number) VALUES(?, '전설', '대한민국', 'ST', 7, '1-1', "
+                    "'오른발', 180, 60, 80, 20, 60, 20, ?, ?, 1)", (B, now - 99, now - 9))
+        con.commit()
+        assert (await clubs.transfer_prospect(A, B, p["id"], 0, now))["reason"] == "retired_number"
+        con.execute("UPDATE prospects SET retired_number=0 WHERE user_id=? AND retired_ts>0", (B,))
+        con.commit(); con.close()
+        assert (await clubs.transfer_prospect(A, B, p["id"], 10 ** 12, now))["reason"] == "balance"
+        assert (await clubs.transfer_prospect(A, A, p["id"], 0, now))["reason"] == "self"
+        r = await clubs.transfer_prospect(A, B, p["id"], 20_000_000, now)
+        assert r["ok"] and r["user_id"] == B and r["name"] == "이적생"
+        assert await db.get_balance(A) == bal_a + 20_000_000
+        assert (await clubs.prospects(A, now))["active"] is None
+        assert (await clubs.prospects(B, now))["active"]["id"] == p["id"]
+        team = await clubs.get_team(A)
+        assert team["captain"] is None and all(s.get("player_id") != p["pid"] for s in team["lineup"])
+        assert (await clubs.transfer_prospect(A, B, p["id"], 0, now))["reason"] == "none"   # 두 번은 안 된다
+    asyncio.run(flow())
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

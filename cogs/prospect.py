@@ -17,6 +17,7 @@ from services.player_market_db import NATIONS
 from services import enhance as EH
 
 SECTION = "🌟 유망주"
+OFFER_TIMEOUT = 600   # 3.6.0 이적 제안 유효 시간 (초)
 RETIRE_WHY = {"self": "👋 은퇴 선언", "age": f"👴 {PROSPECT_RETIRE_AGE}세 은퇴", "steroid": "💉 부작용 은퇴"}
 RULES = (f"1살 = 실제 {PROSPECT_YEAR // 86400}일 · {PROSPECT_PRIME_END}세까지 경기로 성장(하루 {PROSPECT_DAILY_GROWTH}경기) · "
          f"{PROSPECT_PRIME_END + 1}세부터 노쇠 · {PROSPECT_RETIRE_AGE}세 은퇴")
@@ -311,6 +312,10 @@ class ProspectPanel(_OwnerView):
                                       style=discord.ButtonStyle.secondary if locked else discord.ButtonStyle.success)
                 b.callback = cog.enhance
                 self.add_item(b)
+            if release.preview_360(getattr(getattr(user, "guild", None), "id", None)):   # 3.6.0 개인 거래
+                b = discord.ui.Button(label="이적 제안", emoji="🤝", row=1, style=discord.ButtonStyle.secondary)
+                b.callback = self._offer
+                self.add_item(b)
             for label, emoji, style, fn in (("은퇴", "👋", discord.ButtonStyle.primary, cog.retire),
                                             ("삭제", "🗑️", discord.ButtonStyle.danger, cog.delete)):
                 b = discord.ui.Button(label=label, emoji=emoji, style=style, row=1)
@@ -333,8 +338,98 @@ class ProspectPanel(_OwnerView):
     async def _create(self, interaction: discord.Interaction):
         await interaction.response.send_modal(CreateModal(self.cog, self.pos.values[0]))
 
+    async def _offer(self, interaction: discord.Interaction):
+        await interaction.response.send_message("🤝 누구에게 이적을 제안할까요?", view=OfferPick(self.cog, self.user), ephemeral=True)
+
     async def _number(self, interaction: discord.Interaction):
         await self.cog.retire_number(interaction, self.number.values[0])
+
+
+# ───────────── 3.6.0 유망주 개인 거래 ─────────────
+class OfferPick(_OwnerView):
+    """이적 제안: 받을 유저 고르기 → 가격 입력창."""
+
+    def __init__(self, cog: "Prospect", user):
+        super().__init__(timeout=180)
+        self.cog, self.user = cog, user
+        self.pick = discord.ui.UserSelect(placeholder="🤝 이적을 제안할 유저 고르기")
+        self.pick.callback = self._picked
+        self.add_item(self.pick)
+
+    async def _picked(self, interaction: discord.Interaction):
+        buyer = self.pick.values[0]
+        if buyer.bot or buyer.id == self.user.id:
+            return await interaction.response.send_message("다른 유저를 골라 주세요.", ephemeral=True)
+        await interaction.response.send_modal(OfferModal(self.cog, buyer))
+
+
+class OfferModal(discord.ui.Modal):
+    def __init__(self, cog: "Prospect", buyer):
+        super().__init__(title=f"🤝 {buyer.display_name}님에게 이적 제안"[:45])
+        self.cog, self.buyer = cog, buyer
+        self.price = discord.ui.TextInput(label="이적료 (원)", placeholder="예: 30000000 (0 이면 무상 이적)", max_length=13)
+        self.add_item(self.price)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = str(self.price.value).replace(",", "").replace("원", "").strip()
+        if not raw.isdigit():
+            return await interaction.response.send_message("이적료는 숫자로 적어 주세요.", ephemeral=True)
+        await self.cog.offer(interaction, self.buyer, int(raw))
+
+
+class OfferView(discord.ui.View):
+    """채널에 올라간 이적 제안 — 받는 사람만 [수락] [거절], 제안한 사람은 [취소]. 10분 뒤 만료."""
+
+    def __init__(self, cog: "Prospect", seller, buyer, p: dict, price: int):
+        super().__init__(timeout=OFFER_TIMEOUT)
+        self.cog, self.seller, self.buyer, self.p, self.price = cog, seller, buyer, p, price
+        self.msg = None
+
+    async def _close(self, interaction, embed):
+        self.stop()
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @discord.ui.button(label="수락", emoji="✅", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.buyer.id:
+            return await interaction.response.send_message("🙅 제안을 받은 사람만 누를 수 있어요.", ephemeral=True)
+        now = int(time.time())
+        r = await self.cog.clubs.transfer_prospect(self.seller.id, self.buyer.id, self.p["id"], self.price, now)
+        if not r["ok"]:
+            msg = {"none": "이미 은퇴했거나 다른 곳으로 간 선수예요.", "self": "자기 자신과는 거래할 수 없어요.",
+                   "no_club": "구단이 있어야 데려올 수 있어요. `/구단생성`",
+                   "exists": "이미 현역 유망주가 있어요. 한 번에 한 명만 키울 수 있어요.",
+                   "retired_number": f"내 구단에서 **#{r.get('number')}**은(는) 영구결번이에요.",
+                   "balance": f"이적료 **{self.price:,}원**이 부족해요."}[r["reason"]]
+            if r["reason"] in ("none", "self"):
+                return await self._close(interaction, ui.card("❌ 이적 무산", msg, ui.LOSE, self.buyer, SECTION))
+            return await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
+        e = prospect_embed(r, self.buyer, now)
+        e.title = f"✍️ {r['name']} #{r['number']} 이적 완료!"
+        e.description = (f"**{self.seller.display_name}** → **{self.buyer.display_name}** · 이적료 **{self.price:,}원**\n\n"
+                         + e.description)
+        await self._close(interaction, e)
+
+    @discord.ui.button(label="거절", emoji="🙅", style=discord.ButtonStyle.danger)
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.buyer.id:
+            return await interaction.response.send_message("🙅 제안을 받은 사람만 누를 수 있어요.", ephemeral=True)
+        await self._close(interaction, ui.card("🙅 이적 거절", f"**{self.buyer.display_name}**님이 **{self.p['name']}** 이적을 거절했어요.",
+                                               ui.EVEN, self.seller, SECTION))
+
+    @discord.ui.button(label="제안 취소", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.seller.id:
+            return await interaction.response.send_message("🙅 제안한 사람만 취소할 수 있어요.", ephemeral=True)
+        await self._close(interaction, ui.card("이적 제안 취소", f"**{self.p['name']}**은(는) 그대로 남아요.", ui.EVEN, self.seller, SECTION))
+
+    async def on_timeout(self):
+        if self.msg:
+            try:
+                await self.msg.edit(embed=ui.card("⌛ 이적 제안 만료", f"**{self.p['name']}** 이적 제안이 10분 동안 답이 없어 끝났어요.",
+                                                  ui.EVEN, self.seller, SECTION), view=None)
+            except discord.HTTPException:
+                pass
 
 
 class CreateModal(discord.ui.Modal):
@@ -405,6 +500,22 @@ class Prospect(commands.Cog):
         if mine and release.preview_2101(interaction.guild_id):   # 2.10.1: 만들기 · 은퇴 · 삭제 · 영구결번을 이 화면에서 (테스트 서버 먼저)
             return await interaction.followup.send(embed=e, view=ProspectPanel(self, owner, data))
         await interaction.followup.send(embed=e)
+
+    # ───────────── 3.6.0 이적 제안 ─────────────
+    async def offer(self, interaction: discord.Interaction, buyer, price: int):
+        seller, now = interaction.user, int(time.time())
+        p = (await self.clubs.prospects(seller.id, now))["active"]
+        if not p:
+            return await interaction.response.send_message("현역 유망주가 없어요.", ephemeral=True)
+        e = prospect_embed(p, seller, now)
+        e.title = f"🤝 이적 제안 — {p['name']} #{p['number']}"
+        e.description = (f"**{seller.display_name}** → {buyer.mention} · 이적료 **{price:,}원**\n"
+                         f"-# 받는 사람만 수락할 수 있어요 · {OFFER_TIMEOUT // 60}분 뒤 만료 · 기록 · 강화 · 특성은 그대로 넘어가요\n\n"
+                         + e.description)
+        view = OfferView(self, seller, buyer, p, price)
+        await interaction.response.send_message(content=buyer.mention, embed=e, view=view,
+                                                allowed_mentions=discord.AllowedMentions(users=[buyer]))
+        view.msg = await interaction.original_response()
 
     # ───────────── 생성 ─────────────
     # 2.10.1: 예전 /유망주생성 · /유망주은퇴 · /유망주삭제 · /영구결번 — 이제 /유망주 화면(ProspectPanel)에서 부른다
