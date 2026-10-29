@@ -350,18 +350,17 @@ WEEKLY_DAILY = 30
 WEEKLY_REWARDS = ((30_000_000, 3), (20_000_000, 2), (10_000_000, 1))   # 1~3위 (돈, 🔷 강화석)
 WEEKLY_SHOW = 10          # 주간 랭킹 화면에 보이는 구단 수
 # 3.6.0 공식경기 상금 (베팅 대신): 경기마다 이번 주 상금함에 쌓이고 월요일 주간 정산 때 한 번에 받는다 (랭킹에 들어간 판만).
-# 상금 = 기본(승 · 무 · 패) × 상대 전력 배율(1 + (상대 − 나)/PRIZE_GAP_DIV, PRIZE_GAP_CAP 안) × 인기도(0.5 + 팬 만족도/100)
-OFFICIAL_PRIZE = {"W": 300_000, "D": 100_000, "L": 30_000}
-PRIZE_GAP_DIV, PRIZE_GAP_CAP = 20, (0.3, 2.0)
+# 상금 = PRIZE_STAKE × 그 결과의 배당(승 · 무 · 패 확률로 정한 official_odds) × 결과 배율(승 1 · 무 0.5 · 패 0)
+#        × 인기도(0.5 + 팬 만족도/100) — 강한 상대를 이길수록 배당이 높아 상금이 크다
+PRIZE_STAKE = 150_000
+PRIZE_RESULT = {"W": 1.0, "D": 0.5, "L": 0.0}
 
 
-def official_prize(res: str, my_rating: float, opp_rating: float, sat: float) -> dict:
-    """공식경기 한 판 상금 → {prize, base, strength(상대 전력 배율), popularity(인기도 배율)}."""
-    lo, hi = PRIZE_GAP_CAP
-    strength = round(max(lo, min(hi, 1 + (opp_rating - my_rating) / PRIZE_GAP_DIV)), 2)
+def official_prize(res: str, odds: dict, sat: float) -> dict:
+    """공식경기 한 판 상금 → {prize, odds(그 결과 배당), popularity(인기도 배율)}."""
     popularity = round(0.5 + max(0.0, min(100.0, sat)) / 100, 2)
-    return {"prize": int(round(OFFICIAL_PRIZE[res] * strength * popularity, -2)), "base": OFFICIAL_PRIZE[res],
-            "strength": strength, "popularity": popularity}
+    return {"prize": int(round(PRIZE_STAKE * odds[res] * PRIZE_RESULT[res] * popularity, -2)), "odds": odds[res],
+            "popularity": popularity}
 
 
 def week_key(ts: int) -> int:
@@ -1216,11 +1215,11 @@ class ClubDB:
 
     async def record_official(self, user_id: int, opp_id: int, gf: int, ga: int, now_ts: int,
                               amount: int, pick: str, odds: float, weekly: bool = False,
-                              ratings: Optional[tuple[float, float]] = None) -> dict:
+                              prize_odds: Optional[dict] = None) -> dict:
         """공식경기 결과 기록 + 베팅 정산. 예측(pick)이 맞으면 순이익 = 베팅 × (배당 - 1), 틀리면 베팅금을 잃는다.
         승점 · 득실(/공식순위)과 /구단 전적은 건 쪽과 상대 모두에 기록한다 (돈은 건 쪽만).
-        ratings = (내 전력, 상대 전력) 이면 3.6.0 상금 방식: 베팅 없이 official_prize 를 이번 주 상금함에 쌓는다."""
-        if ratings:
+        prize_odds = 승 · 무 · 패 배당이면 3.6.0 상금 방식: 베팅 없이 official_prize 를 이번 주 상금함에 쌓는다."""
+        if prize_odds:
             amount = 0
         season = season_key(now_ts)
         res = "W" if gf > ga else ("D" if gf == ga else "L")
@@ -1248,9 +1247,9 @@ class ClubDB:
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0]
             rec = con.execute("SELECT points, w, d, l, gf, ga FROM club_official WHERE user_id=? AND season=?",
                               (int(user_id), season)).fetchone()
-            prize = official_prize(res, *ratings, self._popularity(con, user_id)) if ratings else None
+            prize = official_prize(res, prize_odds, self._popularity(con, user_id)) if prize_odds else None
             week = self._add_weekly(con, user_id, gf, ga, now_ts, prize["prize"] if prize else 0) \
-                if weekly or ratings else None   # 3.6.0 주간 랭킹 · 상금함
+                if weekly or prize_odds else None   # 3.6.0 주간 랭킹 · 상금함
             if prize and week:
                 prize["counted"] = week["counted"]
             return {"result": res, "delta": delta, "balance": int(bal), "week": week, "prize": prize,

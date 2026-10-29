@@ -473,32 +473,32 @@ def test_auto_reserve():
 
 
 def test_official_prize():
-    """3.6.0 공식경기 상금: 베팅 없이 상대 전력 · 인기도로 상금 → 이번 주 상금함 → 월요일 정산 (랭킹 밖도)."""
-    p = cdb.official_prize("W", 60, 60, 50)
-    assert p["prize"] == cdb.OFFICIAL_PRIZE["W"] and p["strength"] == 1 and p["popularity"] == 1
-    assert cdb.official_prize("W", 60, 80, 50)["strength"] == 2.0                   # 훨씬 강한 상대
-    assert cdb.official_prize("W", 80, 60, 50)["strength"] == 0.3                   # 훨씬 약한 상대
-    assert cdb.official_prize("W", 60, 60, 100)["popularity"] == 1.5
-    assert cdb.official_prize("L", 60, 60, 0)["prize"] == round(cdb.OFFICIAL_PRIZE["L"] * 0.5, -2)
+    """3.6.0 공식경기 상금: 베팅 없이 승 · 무 배당 × 인기도 → 이번 주 상금함 → 월요일 정산 (랭킹 밖도)."""
+    odds = {"W": 2.4, "D": 3.6, "L": 2.6}
+    assert cdb.official_prize("W", odds, 50)["prize"] == round(cdb.PRIZE_STAKE * 2.4, -2)
+    assert cdb.official_prize("D", odds, 50)["prize"] == round(cdb.PRIZE_STAKE * 3.6 * 0.5, -2)
+    assert cdb.official_prize("L", odds, 50)["prize"] == 0                              # 지면 없음
+    assert cdb.official_prize("W", odds, 100)["popularity"] == 1.5
+    strong = cdb.official_odds(cdb.win_probs(60, 75))
+    assert cdb.official_prize("W", strong, 50)["prize"] > cdb.official_prize("W", odds, 50)["prize"]   # 강한 상대
 
     async def flow():
         db, clubs = edb.EconomyDB(), cdb.ClubDB()
         now = 1_810_000_000
-        users = (911, 912, 913, 914, 915)
-        for u in users:
+        for u in (911, 912, 913, 914, 915):
             await clubs.create_club(u, f"상금{u}", now)
         bal = await db.get_balance(911)
-        r = await clubs.record_official(911, 912, 2, 0, now, 0, "W", 1.0, weekly=True, ratings=(60, 70))
+        r = await clubs.record_official(911, 912, 2, 0, now, 0, "W", 1.0, weekly=True, prize_odds=odds)
         assert r["delta"] == 0 and await db.get_balance(911) == bal                    # 바로 안 들어온다
-        want = cdb.official_prize("W", 60, 70, 50)["prize"]
+        want = cdb.official_prize("W", odds, 50)["prize"]
         assert r["prize"]["prize"] == want and r["week"]["purse"] == want
         assert (await clubs.weekly_me(911, now))["purse"] == want
         for u in (912, 913, 914):   # 랭킹 1~3위를 채운다
             for _ in range(3):
-                await clubs.record_official(u, 911, 3, 0, now, 0, "W", 1.0, weekly=True, ratings=(60, 60))
+                await clubs.record_official(u, 911, 3, 0, now, 0, "W", 1.0, weekly=True, prize_odds=odds)
         paid = {x["user_id"]: x for x in await clubs.settle_weekly(now + 8 * 86400)}
         assert paid[911]["rank"] is None and paid[911]["purse"] == want             # 랭킹 밖도 상금은 받는다
         assert await db.get_balance(911) == bal + want
-        assert paid[912]["rank"] and paid[912]["purse"] == 3 * cdb.OFFICIAL_PRIZE["W"]
+        assert paid[912]["rank"] and paid[912]["purse"] == 3 * want
         assert 915 not in paid
     asyncio.run(flow())
