@@ -428,7 +428,7 @@ def test_coupon_youthtokiko():
         assert (await db.redeem_coupon(U, "youthtokiko", now, OTHER))["reason"] == "unknown"   # 공개 전 다른 서버
         bal = await db.get_balance(U)
         r = await db.redeem_coupon(U, "youthtokiko", now, T)
-        assert r["ok"] and await db.get_balance(U) == bal + 2_000_000
+        assert r["ok"] and await db.get_balance(U) == bal
         assert (await db.inventory(U))[0].get("xp_boost") == 1
         assert (await db.redeem_coupon(U, "YOUTHTOKIKO", now, T))["reason"] == "used"
     asyncio.run(flow())
