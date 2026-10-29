@@ -10,7 +10,7 @@ from typing import Optional
 TEST_GUILD = 1374213619793006704
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
 MAINT_OPEN_END = calendar.timegm((2100, 1, 1, 0, 0, 0))   # 끝 시각을 정하지 않은 무기한 점검
-MAINTENANCE = (calendar.timegm((2026, 10, 29, 6, 58, 0)), MAINT_OPEN_END)   # 10/29 15:58 KST ~ 무기한 — 3.6.0 오류 확인 긴급 점검 (끝나면 끝 시각을 넣는다)
+MAINTENANCE = (calendar.timegm((2026, 10, 29, 6, 58, 0)), calendar.timegm((2026, 10, 29, 7, 44, 0)))   # 10/29 15:58 ~ 16:44 KST — 3.6.0 오류 긴급 점검 (3.6.1 배포와 함께 끝)
 # 3.6.0 정기점검은 10/29 13:25 ~ 13:30 KST (04:25 ~ 04:30 UTC) 였다
 # (2.8 점검은 RELEASE_TS ± 600초였다. 공개를 다시 단계 배포할 땐 MAINTENANCE 를 RELEASE_TS 에 맞춘다)
 
