@@ -33,6 +33,14 @@ PROSPECT_360 = (
     "`/유망주` 하나로 다 해요 — 세부 능력치 · 커리어 · 명예의 전당\n"
     "　[은퇴] 전성기 커리어로 저장 · 🏅 등번호 영구결번 · [삭제] 기록 없이 삭제 (환불 없음)"
 )
+# 3.6.0: 공식경기는 베팅 없이 상금 (주간 정산)
+MATCH_360 = (
+    "`/친선경기 상대:` — 90분 문자중계 · 돈 없이 전적만 · 🔁 다시 붙기\n"
+    "`/공식경기 상대: 스킵:` — 이기면 상금이 이번 주 상금함에 쌓여요 · 매주 월요일 한 번에 정산\n"
+    "　강한 상대일수록 · 🏟️ 경영 팬 만족도(인기도)가 높을수록 상금이 커요 (상대를 비우면 자동 매칭)\n"
+    "`/공식순위` — 이번 주 랭킹(1~3위 보상) · 이번 달 시즌\n\n"
+    "킥오프 때 **예상 승률**이 나와요. 머플러를 쓰면 전력 +3!"
+)
 
 TUTORIAL_STEPS = [
     ("📋", "오늘의 체크리스트", None),
@@ -242,6 +250,8 @@ class TutorialView(discord.ui.View):
         emoji, title, body = self.steps[self.step]
         if title == "유망주" and release.ctx_360():
             body = PROSPECT_360
+        elif title == "경기" and release.ctx_360():
+            body = MATCH_360
         if body is None:
             e = await checklist_embed(self.db, self.user)
         else:
