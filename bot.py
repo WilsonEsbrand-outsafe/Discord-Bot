@@ -261,7 +261,7 @@ async def sync_guild(guild: discord.abc.Snowflake):
         print(f"❌ Sync failed for guild {gid}:", repr(e))
 
 # ───────────────── 정기점검 · 가입(구단생성) 먼저 ─────────────────
-SIGNUP_FREE = {"구단생성", "튜토리얼", "명령어"}   # 구단이 없는 새 유저도 쓸 수 있는 명령어
+SIGNUP_FREE = {"구단생성", "튜토리얼", "명령어", "tts"}   # 구단이 없는 새 유저도 쓸 수 있는 명령어
 
 
 def _signed_up(user_id: int) -> bool:
@@ -279,7 +279,7 @@ def _signed_up(user_id: int) -> bool:
         con.close()
 
 
-ONBOARD_FREE = {"튜토리얼", "명령어"}   # 2.8 서버: 입문 튜토리얼을 안 끝낸 새 유저가 쓸 수 있는 명령어
+ONBOARD_FREE = {"튜토리얼", "명령어", "tts"}   # 2.8 서버: 입문 튜토리얼을 안 끝낸 새 유저가 쓸 수 있는 명령어
 
 
 def _onboard_state(user_id: int) -> str:
@@ -373,7 +373,7 @@ async def on_ready():
     ui.BOT_ICON = bot.user.display_avatar.url   # 3.1.0 키코 푸터 아이콘
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sports_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sports_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub", "cogs.tts")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -521,7 +521,7 @@ async def sync_and_reload(interaction: discord.Interaction):
             print(f"⚠️ {_name} 리로드 실패:", repr(e))
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sports_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sports_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub", "cogs.tts")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)
