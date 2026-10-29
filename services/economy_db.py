@@ -126,7 +126,7 @@ SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
 SHOP_310: set[str] = set()   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템 (⚖️ 변호사 선임권 · 🤖 자동 낚시는 상점에서 팔지 않는다)
 SHOP_340: set[str] = {"enh_stone"}   # 3.4.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템
 SHOP_360: set[str] = {"xp_boost", "xp_book", "rehab", "mental", "elixir", "auto_reserve"}   # 3.6.0 유망주 아이템 (테스트 서버 먼저)
-SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3, "elixir": 1, "auto_reserve": 2}   # 하루(KST) 구매 한도가 있는 아이템
+SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3, "elixir": 1, "auto_reserve": 2, "xp_book": 3}   # 하루(KST) 구매 한도가 있는 아이템 (3.6.1 훈련 교본 3권)
 # 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
 SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST
 SHOP_BASE = ("muffler", "steroid")
