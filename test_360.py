@@ -233,12 +233,10 @@ def test_reserve():
         assert pid in {p["player_id"] for p in await clubs.squad(U)}
         assert (await clubs.reserve_team(U, now))["prospect"] is None
         release.GUILD.reset(tok)
-        # 유스 성장: 하루 RESERVE_DAILY 판까지
+        # 유스 성장: 판수 제한 없음 (잠재력까지)
         yid = t["youth_ids"][0]
-        for i in range(Y.RESERVE_DAILY):
-            g = await yd.reserve_growth(U, [yid], True, now)
-            assert g["grown"] and g["left"] == Y.RESERVE_DAILY - i - 1
-        assert (await yd.reserve_growth(U, [yid], True, now))["grown"] == []
+        for _ in range(10):
+            assert (await yd.reserve_growth(U, [yid], True, now))["grown"]
         st = await yd.status(U, now)
         assert st["youth"][0]["ovr"] > 50 and not st["tried"]
     asyncio.run(flow())
@@ -421,3 +419,17 @@ def test_reserve_command_split():
         assert titles(hub.reserve_view(Me, guild_id=T)) == ["2군 · 유스", "유망주"]
     asyncio.run(flow())
     assert "2군" in release.hidden_commands(OTHER) and "2군" not in release.hidden_commands(T)
+
+
+def test_coupon_youthtokiko():
+    async def flow():
+        now = int(time.time())
+        db, U = edb.EconomyDB(), 3631
+        assert (await db.redeem_coupon(U, "youthtokiko", now, OTHER))["reason"] == "unknown"   # 공개 전 다른 서버
+        bal = await db.get_balance(U)
+        r = await db.redeem_coupon(U, "youthtokiko", now, T)
+        assert r["ok"] and await db.get_balance(U) == bal + 2_000_000
+        assert (await db.inventory(U))[0].get("xp_boost") == 1
+        assert (await db.redeem_coupon(U, "YOUTHTOKIKO", now, T))["reason"] == "used"
+    asyncio.run(flow())
+    assert edb.SHOP_PRICES["xp_book"] == 3_000_000

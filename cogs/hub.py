@@ -636,8 +636,7 @@ class Hubs(commands.Cog):
         ama = sum(bool(s.get("amateur")) for s in t["xi"])
         return (f"**⚽ 2군** · 전력 **{t['rating']}** · {t['formation']}\n{star}\n"
                 f"🎓 유스 {len(youth)}명" + (f" ({', '.join(youth)})" if youth else "") + f" · 👥 2군 아마추어 {ama}명\n"
-                f"-# 2군 경기는 다른 유저 2군과 · 판수 제한 없이 {RESERVE_COOLDOWN}초마다 · 유망주 경험치 ×{RESERVE_XP:g} · "
-                f"유스는 하루 {Y.RESERVE_DAILY}판까지 훈련 1번만큼 자라요")
+                f"-# 2군 경기는 다른 유저 2군과 {RESERVE_COOLDOWN}초마다")
 
     async def _reserve_match(self, user, now: int) -> discord.Embed:
         """2군 경기 한 판 — 다른 유저 구단의 2군과 바로 결과. 양쪽 유망주 경험치 · 내 유스 성장."""
@@ -669,9 +668,6 @@ class Hubs(commands.Cog):
                 body += f"\n\n🎉 **{x['name']}** OVR {PROMOTE_OVR} 달성 — **1군 승격!** 이제 `/친선경기` `/공식경기`에서 뛰어요"
         if grown["grown"]:
             body += "\n\n🎓 " + " · ".join(f"{n} {a:.1f}→**{b:.1f}**" for n, a, b in grown["grown"])
-            body += f"\n-# 오늘 유스 성장 {grown['left']}판 남음"
-        elif t["youth_ids"]:
-            body += f"\n-# 오늘 유스 성장은 {Y.RESERVE_DAILY}판을 다 채웠어요 (유망주 경험치는 계속)"
         color = ui.WIN if gf > ga else ui.LOSE if gf < ga else ui.EVEN
         return ui.card(f"⚽ {t['name']} {gf} : {ga} {opp['name']}", f"`전력` {t['rating']} vs {opp['rating']}\n\n" + body,
                        color, user, "🎓 유스")
