@@ -155,7 +155,8 @@ class _Followup:
     def __init__(self):
         self.sent = []
 
-    async def send(self, embed=None, view=None, wait=False, **kw):
+    async def send(self, embed=None, wait=False, **kw):
+        assert kw.get("view", 1) is not None   # 실제 discord.py 는 view=None 이면 TypeError (3.6.0 공식경기 스킵 오류)
         self.sent.append(embed)
 
 
