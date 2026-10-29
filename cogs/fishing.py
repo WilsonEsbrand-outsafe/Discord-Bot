@@ -741,16 +741,18 @@ class Fishing(commands.Cog):
             text="최근 15마리 · 판 물고기 · 보낸 물고기도 남아요")
 
     async def _p_weekly(self, view: HubView) -> discord.Embed:
-        top = await self.db.weekly_top(int(time.time()))
+        v360 = release.preview_360(getattr(getattr(view.user, "guild", None), "id", None))   # 3.6.0 한 사람 여러 마리 · 15위까지
+        top = await self.db.weekly_top(int(time.time()), 15 if v360 else 5, per_user=not v360)
         lines = []
         for i, t in enumerate(top):
             u = self.bot.get_user(t["user_id"])
             name = u.display_name if u else f"#{t['user_id'] % 10000}"
-            lines.append(f"{('🥇', '🥈', '🥉', '4.', '5.')[i]} **{name}** — {fish_name(t['species'])} **{t['size']:g}cm** "
+            lines.append(f"{('🥇', '🥈', '🥉')[i] if i < 3 else f'{i + 1}.'} **{name}** — {fish_name(t['species'])} **{t['size']:g}cm** "
                          f"(평균의 {t['ratio']:.0%})")
         return ui.card("🏆 이번 주 최대어", "\n".join(lines) or "이번 주엔 아직 아무도 낚지 못했어요.",
                        ui.GOLD if lines else ui.EVEN, view.user, SECTION).set_footer(
-            text="등급이 높은 물고기 먼저, 같으면 평균 크기 대비 더 큰 쪽 · 매주 월요일 00시 새로 시작")
+            text="등급이 높은 물고기 먼저, 같으면 평균 크기 대비 더 큰 쪽" + (" · 한 사람이 여러 마리 올라갈 수 있어요" if v360 else "")
+            + " · 매주 월요일 00시 새로 시작")
 
     async def _p_shop(self, view: HubView) -> discord.Embed:
         user = view.user

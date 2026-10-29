@@ -1347,14 +1347,15 @@ class ClubDB:
 
     async def record_prospects(self, sides: list[tuple], goals: list[dict], now_ts: int,
                                events: list[dict] = (), rng=random, friendly: bool = False,
-                               v350: bool = False) -> list[dict]:
+                               v350: bool = False, v360: bool = False) -> list[dict]:
         """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 성장 경험치 ± (하루 PROSPECT_DAILY_GROWTH 경기까지,
         30세까지, 잠재력까지, 프로 의식 배율), 자신감 변화, 부상. sides: [(선발 xi, 득점, 실점[, 상대 id, 전력 차])]
         — 양 팀 모두. events: 중계 장면(경고 · 찬스 놓침).
         경험치 악용 방지(2.6): +경험치 × 친선 0.5 · 전력 차 배율 · 같은 상대 반복 배율, 훨씬 약한 상대에게 부진하면 감점.
         뛴 유망주마다 결과 dict (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키 ·
         mods: 경험치 배율 설명 · injury: 부상 dict | None).
-        v350 = 3.5.0 포지션별 경험치 (PROSPECT_XP_350 · PROSPECT_MF_ASSIST_350) · plus: 더해진 항목 키."""
+        v350 = 3.5.0 포지션별 경험치 (PROSPECT_XP_350 · PROSPECT_MF_ASSIST_350) · plus: 더해진 항목 키.
+        v360 = 3.6.0 하루 판수 제한 · 같은 상대 반복 감소 없앰 (전력 차 · 친선 배율은 그대로)."""
         if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, *_ in sides for s in xi):
             return []
         day = kst_day(now_ts)
@@ -1376,7 +1377,7 @@ class ClubDB:
                     a = sum(x.get("assist_id") == pid for x in goals)
                     played = p["day_n"] if p["day_key"] == day else 0
                     ovr, xp = p["ovr"], p["xp"]
-                    grew = played < PROSPECT_DAILY_GROWTH and p["age"] <= PROSPECT_PRIME_END and ovr < p["pot"]
+                    grew = (v360 or played < PROSPECT_DAILY_GROWTH) and p["age"] <= PROSPECT_PRIME_END and ovr < p["pot"]
                     parts = {"app": 1, "goal": g, "assist": a, res: 1, "rout": int(ga - gf >= 3),
                              "card": sum(e.get("player_id") == pid and e.get("kind") == "card" for e in events),
                              "miss": sum(e.get("player_id") == pid and e.get("kind") == "miss" for e in events)}
@@ -1410,7 +1411,7 @@ class ClubDB:
                                     (owner[0], int(opp_id), day))
                         n = con.execute("SELECT n FROM prospect_vs WHERE user_id=? AND opp_id=? AND day_key=?",
                                         (owner[0], int(opp_id), day)).fetchone()[0]
-                        m = xp_repeat_mult(n)
+                        m = 1.0 if v360 else xp_repeat_mult(n)
                         if m != 1:
                             mult *= m
                             mods.append(f"같은 상대 오늘 {n}번째 ×{m:g}")
