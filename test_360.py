@@ -324,7 +324,7 @@ def test_prospect_items():
         con.execute("UPDATE prospects SET ovr=50, xp=0, pot=90, pro=10, confidence=10, proneness=1 WHERE id=?", (p["id"],))
         con.commit()
         r = await clubs.use_prospect_item(U, "xp_book", now)
-        assert (r["ovr"], r["xp"]) == (53, 80 - 20 - 23 - 26)   # 50→51 20 · 51→52 23 · 52→53 26
+        assert (r["ovr"], r["xp"]) == (51, 40 - 20)   # 3.6.1 교본 +40: 50→51 20 · 51→52 은 23 필요
         assert (await clubs.use_prospect_item(U, "rehab", now))["reason"] == "useless"
         con.execute("UPDATE prospects SET injury_games=5, injury='발목 염좌 (경미)' WHERE id=?", (p["id"],))
         con.commit()
@@ -433,7 +433,7 @@ def test_coupon_youthtokiko():
         assert (await db.inventory(U))[0].get("xp_boost") == 1
         assert (await db.redeem_coupon(U, "YOUTHTOKIKO", now, T))["reason"] == "used"
     asyncio.run(flow())
-    assert edb.SHOP_PRICES["xp_book"] == 3_000_000
+    assert edb.SHOP_PRICES["xp_book"] == 5_000_000 and edb.SHOP_DAILY_LIMITS["xp_book"] == 3   # 3.6.1
 
 
 def test_auto_reserve():
