@@ -112,7 +112,7 @@ ITEM_PRICES = {
     # 3.4.0 유망주 강화
     "enh_stone": 1_000_000,
     # 3.6.0 유망주
-    "xp_boost": 2_000_000, "xp_book": 1_500_000, "rehab": 2_000_000, "mental": 1_000_000, "elixir": 30_000_000,
+    "xp_boost": 2_000_000, "xp_book": 3_000_000, "rehab": 2_000_000, "mental": 1_000_000, "elixir": 30_000_000,
 }
 # 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
@@ -176,6 +176,9 @@ COUPONS_310 = {"PATCH310"}   # 3.1.0 공개 서버(테스트 서버 먼저)에�
 COUPONS_321 = {"LEGALTOTO"}  # 3.3.0 공개(점검 시작) 뒤에만
 COUPONS["UPGRADEBOT"] = ({"enh_stone": 1}, calendar.timegm((2026, 11, 1, 15, 0, 0)))   # 3.4.0 점검 보상 · 2026-11-02 00:00 KST 만료
 COUPONS_340 = {"UPGRADEBOT"}    # 3.4.0 공개(점검 시작) 뒤에만
+# 3.6.0 점검 보상: 경험치 부스터 + 200만원 · 2026-11-08 00:00 KST 만료 ("money" = 돈, 아이템이 아니다)
+COUPONS["YOUTHTOKIKO"] = ({"xp_boost": 1, "money": 2_000_000}, calendar.timegm((2026, 11, 7, 15, 0, 0)))
+COUPONS_360 = {"YOUTHTOKIKO"}   # 3.6.0 공개(점검 시작) 뒤에만 (테스트 서버 먼저)
 
 
 # 창단 멤버 영구 칭호 (2.8) — 마이그레이션으로 한 번만 지급 (eco_migrations 에 'founder-2.8' 표시)
@@ -1734,7 +1737,8 @@ class EconomyDB:
         code = (code or "").strip().upper()
         if code not in COUPONS or (code in COUPONS_310 and not release.preview_310(guild_id, now_ts)) \
                 or (code in COUPONS_321 and not release.preview_321(guild_id, now_ts)) \
-                or (code in COUPONS_340 and not release.preview_340(guild_id, now_ts)):
+                or (code in COUPONS_340 and not release.preview_340(guild_id, now_ts)) \
+                or (code in COUPONS_360 and not release.preview_360(guild_id, now_ts)):
             return {"ok": False, "reason": "unknown"}
         items, expires = COUPONS[code]
         if now_ts >= expires:
@@ -1744,7 +1748,11 @@ class EconomyDB:
             if not con.execute("INSERT OR IGNORE INTO coupon_used(user_id, code) VALUES(?, ?)", (user_id, code)).rowcount:
                 return {"ok": False, "reason": "used"}
             for item, qty in items.items():
-                give_item(con, user_id, item, qty)
+                if item == "money":
+                    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
+                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (qty, user_id))
+                else:
+                    give_item(con, user_id, item, qty)
             return {"ok": True, "code": code, "items": items}
         return await self._tx(fn)
 

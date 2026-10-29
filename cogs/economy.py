@@ -1111,7 +1111,8 @@ class Economy(commands.Cog):
                    "used": "이미 받은 쿠폰이에요."}[r["reason"]]
             return await interaction.response.send_message(
                 embed=ui.card("🙅 쿠폰 사용 실패", msg, ui.LOSE, user, "🎟️ 쿠폰"), ephemeral=True)
-        lines = "\n".join(f"{ITEMS[k][0]} **{ITEMS[k][1]}** × {q}" for k, q in r["items"].items())
+        lines = "\n".join(f"💰 **{q:,}원**" if k == "money" else f"{ITEMS[k][0]} **{ITEMS[k][1]}** × {q}"
+                          for k, q in r["items"].items())
         e = ui.card(f"🎁 쿠폰 `{r['code']}` 사용 완료!", lines + "\n\n`/가방`에서 바로 사용할 수 있어요.", ui.GOLD, user, "🎟️ 쿠폰")
         e.set_thumbnail(url=ui.emoji_url("🎁"))
         await interaction.response.send_message(embed=e)
