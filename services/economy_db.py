@@ -89,6 +89,7 @@ ITEMS = {
     "rehab":       ("🩹", "재활 치료권",     "부상 중인 내 유망주를 바로 복귀"),
     "mental":      ("🧠", "멘탈 코칭",       "내 유망주 자신감 +5 (골 · 도움 기회 ↑)"),
     "elixir":      ("⏳", "회춘 주사",       "내 유망주 나이 -1살 (17세 밑으로는 안 내려가요)"),
+    "auto_reserve": ("🤖", "자동 2군 경기권", "12시간 동안 10분마다 2군 경기를 자동으로 (경험치 절반 · 유스 성장은 2판에 1번)"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
@@ -113,6 +114,7 @@ ITEM_PRICES = {
     "enh_stone": 1_000_000,
     # 3.6.0 유망주
     "xp_boost": 2_000_000, "xp_book": 3_000_000, "rehab": 2_000_000, "mental": 1_000_000, "elixir": 30_000_000,
+    "auto_reserve": 10_000_000,
 }
 # 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
@@ -120,11 +122,11 @@ SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
                ("🏹 양궁", ("bow_pro", "windbreaker", "focus")),
                ("🎓 유스", ("first_team", "special_training", "scout_coupon")),
                ("⚔️ 전술", ("tactic_note", "analysis_report")),
-               ("🌟 유망주", ("enh_stone", "xp_boost", "xp_book", "rehab", "mental", "elixir")))
+               ("🌟 유망주", ("enh_stone", "xp_boost", "xp_book", "rehab", "mental", "elixir", "auto_reserve")))
 SHOP_310: set[str] = set()   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템 (⚖️ 변호사 선임권 · 🤖 자동 낚시는 상점에서 팔지 않는다)
 SHOP_340: set[str] = {"enh_stone"}   # 3.4.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템
-SHOP_360: set[str] = {"xp_boost", "xp_book", "rehab", "mental", "elixir"}   # 3.6.0 유망주 아이템 (테스트 서버 먼저)
-SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3, "elixir": 1}   # 하루(KST) 구매 한도가 있는 아이템
+SHOP_360: set[str] = {"xp_boost", "xp_book", "rehab", "mental", "elixir", "auto_reserve"}   # 3.6.0 유망주 아이템 (테스트 서버 먼저)
+SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3, "elixir": 1, "auto_reserve": 1}   # 하루(KST) 구매 한도가 있는 아이템
 # 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
 SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST
 SHOP_BASE = ("muffler", "steroid")

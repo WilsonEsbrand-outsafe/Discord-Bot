@@ -11,7 +11,7 @@ import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS, FACILITY_MAX, MANAGERS, MEDICS, PROSPECT_PRICE,
-    PROMOTE_OVR, RESERVE_COOLDOWN, RESERVE_XP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect, match_highlights,
+    AUTO_RESERVE_EVERY, AUTO_RESERVE_HOURS, AUTO_RESERVE_XP, PROMOTE_OVR, RESERVE_COOLDOWN, RESERVE_XP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect, match_highlights,
     simulate_match,
 )
 from services.dungeon import THEMES, DungeonDB, theme_of
@@ -137,14 +137,17 @@ class Hubs(commands.Cog):
 
     async def cog_load(self):
         from cogs.economy import ITEM_HANDLERS
-        ITEM_HANDLERS.update({"tactic_note": self._use_note, "analysis_report": self._use_report})
+        ITEM_HANDLERS.update({"tactic_note": self._use_note, "analysis_report": self._use_report,
+                              "auto_reserve": self._use_auto_reserve})
         self.mgmt_loop.start()
+        self.auto_reserve_loop.start()
 
     async def cog_unload(self):
         from cogs.economy import ITEM_HANDLERS
-        for k in ("tactic_note", "analysis_report"):
+        for k in ("tactic_note", "analysis_report", "auto_reserve"):
             ITEM_HANDLERS.pop(k, None)
         self.mgmt_loop.cancel()
+        self.auto_reserve_loop.cancel()
 
     # ───────────── 🏟️ 구단 경영 정산 (2.8 · 00시 KST) ─────────────
     @tasks.loop(minutes=10)
@@ -630,6 +633,7 @@ class Hubs(commands.Cog):
     # ───────────── ⚽ 2군 (3.6.0) ─────────────
     async def _reserve_text(self, user, now: int) -> str:
         t = await self.clubs.reserve_team(user.id, now)
+        a = await self.clubs.auto_reserve(user.id)
         if not t:
             return "**⚽ 2군** — 구단이 있어야 해요. `/구단생성`"
         p = t["prospect_any"]
@@ -640,7 +644,78 @@ class Hubs(commands.Cog):
         ama = sum(bool(s.get("amateur")) for s in t["xi"])
         return (f"**⚽ 2군** · 전력 **{t['rating']}** · {t['formation']}\n{star}\n"
                 f"🎓 유스 {len(youth)}명" + (f" ({', '.join(youth)})" if youth else "") + f" · 👥 2군 아마추어 {ama}명\n"
-                f"-# `/유스경기` — 다른 유저 2군과 {RESERVE_COOLDOWN}초마다")
+                f"-# `/유스경기` — 다른 유저 2군과 {RESERVE_COOLDOWN}초마다"
+                + ((f"\n🤖 **자동 2군 경기 중** · <t:{a['until']}:R> 끝 · " if a["until"] > now else "\n🤖 지난 자동 2군 경기 · ")
+                   + self._auto_reserve_line(a) if a else ""))
+
+    async def _play_reserve(self, uid: int, now: int, auto: bool = False) -> dict:
+        """2군 경기 한 판 (다른 유저 구단의 2군과) → {reason: None | club | opp, t, opp, res, stars, grown}.
+        auto = 🤖 자동 경기: 경험치 × AUTO_RESERVE_XP · 유스 성장은 grow_youth 일 때만 (2판에 1번)."""
+        t = await self.clubs.reserve_team(uid, now)
+        if not t:
+            return {"reason": "club"}
+        opp = await self.clubs.reserve_opponent(uid, t["rating"], now)
+        if not opp:
+            return {"reason": "opp"}
+        res = simulate_match(t, opp)
+        gf, ga = res["home"], res["away"]
+        hl = match_highlights(res, t, opp, v350=True)
+        gap = t["rating"] - opp["rating"]
+        stars = await self.clubs.record_prospects([(t["xi"], gf, ga, opp["uid"], gap), (opp["xi"], ga, gf, uid, -gap)],
+                                                  res["goals"], now, hl, v350=True, v360=True,
+                                                  xp_mult=RESERVE_XP * (AUTO_RESERVE_XP if auto else 1),
+                                                  xp_label="자동 2군" if auto else "2군", reserve=True)
+        a = await self.clubs.auto_reserve(uid) if auto else None
+        grow = not auto or (a and a["n"] % 2 == 0)
+        grown = await self.youth.reserve_growth(uid, t["youth_ids"], gf > ga, now) if grow else {"grown": []}
+        return {"reason": None, "t": t, "opp": opp, "res": res, "stars": stars, "grown": grown}
+
+    # ───────────── 🤖 자동 2군 경기 (3.6.0) ─────────────
+    @tasks.loop(minutes=1)
+    async def auto_reserve_loop(self):
+        now = int(time.time())
+        for uid in await self.clubs.auto_reserve_due(now):
+            try:
+                m = await self._play_reserve(uid, now, auto=True)
+                if m["reason"]:
+                    await self.clubs.auto_reserve_step(uid, None, 0, None)
+                    continue
+                gf, ga = m["res"]["home"], m["res"]["away"]
+                mine = [x for x in m["stars"] if x["user_id"] == uid]
+                up = next((x["name"] for x in mine if x["ovr"] >= PROMOTE_OVR > x["ovr0"]), None)
+                await self.clubs.auto_reserve_step(uid, "W" if gf > ga else "D" if gf == ga else "L",
+                                                   sum(x["xp"] or 0 for x in mine), up)
+            except Exception as ex:   # 한 구단 오류로 루프가 멈추지 않게
+                print(f"[자동 2군] {uid} 오류: {ex!r}")
+                await self.clubs.auto_reserve_step(uid, None, 0, None)
+        for r in await self.clubs.auto_reserve_ended(now):
+            e = ui.card("🤖 자동 2군 경기 끝", self._auto_reserve_line(r), ui.GOLD, None, "🎓 유스")
+            await send_notify(self.bot, self.db, r["user_id"], "자동_2군", e)
+
+    @auto_reserve_loop.before_loop
+    async def _before_auto_reserve(self):
+        await self.bot.wait_until_ready()
+
+    @staticmethod
+    def _auto_reserve_line(a: dict) -> str:
+        return (f"**{a['n']}경기** {a['w']}승 {a['d']}무 {a['l']}패 · 유망주 경험치 **+{a['xp']}**"
+                + (f"\n🎉 **{a['promoted']}** 1군 승격!" if a.get("promoted") else ""))
+
+    async def _use_auto_reserve(self, interaction: discord.Interaction, user):
+        if not release.preview_360(interaction.guild_id):
+            return await interaction.response.send_message("🤖 자동 2군 경기는 아직 이 서버에서 쓸 수 없어요.", ephemeral=True)
+        r = await self.clubs.use_auto_reserve(user.id, int(time.time()))
+        if not r["ok"]:
+            return await interaction.response.send_message(
+                "🙅 " + {"none": "🤖 자동 2군 경기권이 없어요.", "no_club": "구단이 있어야 해요. `/구단생성`"}[r["reason"]],
+                ephemeral=True)
+        await interaction.response.send_message(embed=ui.card(
+            "🤖 자동 2군 경기 시작!",
+            f"**{AUTO_RESERVE_EVERY // 60}분마다** 다른 유저의 2군과 자동으로 경기해요.\n"
+            f"⏰ <t:{r['until']}:f> 까지 · 다음 경기 <t:{r['next']}:R>\n"
+            f"📉 유망주 경험치는 직접 할 때의 절반 · 유스 성장은 2판에 1번\n"
+            f"`/2군`에서 진행 상황을 볼 수 있어요. (끝나면 `/알림설정` 🤖 자동 2군을 켠 경우 DM)",
+            ui.GOLD, user, "🎒 아이템"))
 
     async def _reserve_match(self, user, now: int) -> discord.Embed:
         """2군 경기 한 판 — 다른 유저 구단의 2군과 바로 결과. 양쪽 유망주 경험치 · 내 유스 성장."""
@@ -648,21 +723,14 @@ class Hubs(commands.Cog):
         left = self._reserve_at.get(user.id, 0) + RESERVE_COOLDOWN - now
         if left > 0:
             return ui.card("⏳ 2군 선수들이 쉬는 중", f"**{left}초** 뒤에 다음 경기를 할 수 있어요.", ui.EVEN, user, "🎓 유스")
-        t = await self.clubs.reserve_team(user.id, now)
-        if not t:
+        m = await self._play_reserve(user.id, now)
+        if m["reason"] == "club":
             return ui.card("🙅 2군 경기", "구단이 있어야 해요. `/구단생성`", ui.LOSE, user, "🎓 유스")
-        opp = await self.clubs.reserve_opponent(user.id, t["rating"], now)
-        if not opp:
+        if m["reason"] == "opp":
             return ui.card("😶 상대 2군이 없어요", "2군 경기를 할 다른 유저 구단이 아직 없습니다.", ui.EVEN, user, "🎓 유스")
         self._reserve_at[user.id] = now
-        res = simulate_match(t, opp)
+        t, opp, res, stars, grown = m["t"], m["opp"], m["res"], m["stars"], m["grown"]
         gf, ga = res["home"], res["away"]
-        hl = match_highlights(res, t, opp, v350=True)
-        gap = t["rating"] - opp["rating"]
-        stars = await self.clubs.record_prospects([(t["xi"], gf, ga, opp["uid"], gap), (opp["xi"], ga, gf, user.id, -gap)],
-                                                  res["goals"], now, hl, v350=True, v360=True, xp_mult=RESERVE_XP,
-                                                  xp_label="2군", reserve=True)
-        grown = await self.youth.reserve_growth(user.id, t["youth_ids"], gf > ga, now)
         goals = [f"`{g['minute']:>2}'` ⚽ {g['scorer']}" + (f" (도움 {g['assist']})" if g.get("assist") else "")
                  + ("" if g["side"] == "home" else f" *({opp['name']})*") for g in res["goals"]]
         body = "\n".join(goals) or "*골 없이 끝났어요.*"
