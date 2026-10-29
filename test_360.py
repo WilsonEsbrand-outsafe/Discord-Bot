@@ -469,4 +469,4 @@ def test_auto_reserve():
         assert not [e for e in await hub.clubs.auto_reserve_ended(now) if e["user_id"] == U]
         assert "1경기" in H.Hubs._auto_reserve_line(a)
     asyncio.run(flow())
-    assert edb.SHOP_PRICES["auto_reserve"] == 10_000_000 and edb.SHOP_DAILY_LIMITS["auto_reserve"] == 1
+    assert edb.SHOP_PRICES["auto_reserve"] == 10_000_000 and edb.SHOP_DAILY_LIMITS["auto_reserve"] == 2
