@@ -188,10 +188,24 @@ def test_360_hold():
     import release
     keys = {k: ts for k, ts, *_ in NOTICES}
     start, end = release.MAINTENANCE
-    assert start == keys["maint-3.6.0-hold"] == calendar.timegm((2026, 10, 29, 6, 58, 0)) and end == release.MAINT_OPEN_END
-    assert release.maintenance(start) and release.maintenance(start + 86400 * 365)   # 끝 시각 없음
+    assert start == keys["maint-3.6.0-hold"] == calendar.timegm((2026, 10, 29, 6, 58, 0))
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.6.0-hold")
-    assert P.notice_text("maint-3.6.0-hold", title, body, start + 60) == (title, body)   # 점검 완료로 바뀌지 않는다
+    assert P.notice_text("maint-3.6.0-hold", title, body, start + 60) == (title, body)   # 점검 중에 나간 안내
+
+
+def test_361():
+    import calendar
+    import release
+    from services.economy_db import COUPONS
+    note = PATCH_NOTES["3.6.1"]
+    assert "장부" not in note and "%" not in note and len(note) < 600 and "SORRYKIKO" in note
+    assert COUPONS["SORRYKIKO"][0] == {"enh_stone": 1}
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    start, end = release.MAINTENANCE
+    assert keys["maint-3.6.1"] == keys["patch-3.6.1"] == end == calendar.timegm((2026, 10, 29, 7, 44, 0))   # 16:44 KST 점검 끝
+    assert release.maintenance(end - 1) and not release.maintenance(end)
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.6.1")
+    assert P.notice_text("maint-3.6.1", title, body, end)[0] == "✅ 점검 완료 안내"
 
 
 def test_320():
@@ -224,4 +238,5 @@ if __name__ == "__main__":
     test_350()
     test_360()
     test_360_hold()
+    test_361()
     print("OK: patch notes")

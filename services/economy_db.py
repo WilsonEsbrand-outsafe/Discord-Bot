@@ -181,6 +181,7 @@ COUPONS_340 = {"UPGRADEBOT"}    # 3.4.0 공개(점검 시작) 뒤에만
 # 3.6.0 점검 보상: 경험치 부스터 1개 · 2026-11-08 00:00 KST 만료 (쿠폰 아이템에 "money" 를 넣으면 돈으로 준다)
 COUPONS["YOUTHTOKIKO"] = ({"xp_boost": 1}, calendar.timegm((2026, 11, 7, 15, 0, 0)))
 COUPONS_360 = {"YOUTHTOKIKO"}   # 3.6.0 공개(점검 시작) 뒤에만 (테스트 서버 먼저)
+COUPONS["SORRYKIKO"] = ({"enh_stone": 1}, calendar.timegm((2026, 11, 7, 15, 0, 0)))   # 3.6.1 긴급 점검 보상 · 2026-11-08 00:00 KST 만료
 
 
 # 창단 멤버 영구 칭호 (2.8) — 마이그레이션으로 한 번만 지급 (eco_migrations 에 'founder-2.8' 표시)
