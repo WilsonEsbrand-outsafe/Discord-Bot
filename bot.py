@@ -349,16 +349,21 @@ discord.ui.view.ViewStore.dispatch_modal = (
     None if _maint_blocked(interaction) else _dispatch_modal(self, custom_id, interaction, *a))
 
 
+def _pending_releases(now: float) -> list[int]:
+    """아직 오지 않은 공개 시각들 (release.RELEASE_TS · RELEASE_xxx_TS 전부)."""
+    return sorted({v for k, v in vars(release).items()
+                   if k.startswith("RELEASE_") and k.endswith("_TS") and isinstance(v, int) and v > now})
+
+
 async def _release_sync():
-    """공개 시각(RELEASE_TS)이 되면 모든 서버의 / 목록을 새 패치로 다시 동기화한다."""
-    if release.RELEASE_TS is None or release.released():
-        return
-    wait = release.RELEASE_TS - time.time()
-    await asyncio.sleep(wait + 1)
-    print("🚀 [릴리스] 공개 시각 — 모든 서버 명령어 다시 동기화")
-    for guild in bot.guilds:
-        await sync_guild(guild)
-        await asyncio.sleep(1.5)
+    """공개 시각이 되면 모든 서버의 / 목록을 새 패치로 다시 동기화한다.
+    (3.6.1: 예전엔 2.8 RELEASE_TS 만 봐서, 3.6.0 은 공개 뒤에도 /2군 · /유스경기 가 다른 서버에 안 보였다)"""
+    for ts in _pending_releases(time.time()):
+        await asyncio.sleep(max(0, ts - time.time()) + 1)
+        print("🚀 [릴리스] 공개 시각 — 모든 서버 명령어 다시 동기화")
+        for guild in bot.guilds:
+            await sync_guild(guild)
+            await asyncio.sleep(1.5)
 
 
 @bot.event
