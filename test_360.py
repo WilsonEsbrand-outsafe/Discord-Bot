@@ -301,6 +301,66 @@ def test_prospect_transfer():
     asyncio.run(flow())
 
 
+def test_prospect_items():
+    async def flow():
+        now = int(time.time())
+        db, clubs = edb.EconomyDB(), cdb.ClubDB()
+        U = 3621
+        await db.add_balance(U, 50_000_000)
+        assert (await clubs.use_prospect_item(U, "xp_book", now))["reason"] == "none"
+        for k in ("xp_boost", "xp_book", "rehab", "mental", "elixir"):
+            await db.give_item(U, k, 2)
+            assert edb.shop_open(k, guild_id=T) and not edb.shop_open(k, guild_id=OTHER, now_ts=0)
+        assert (await clubs.use_prospect_item(U, "xp_book", now))["reason"] == "no_prospect"
+        info, _ = cdb.prospect_input("아이템", "대한민국", "ST", 11, "1-1")
+        p = await clubs.create_prospect(U, info, now - 3 * cdb.PROSPECT_YEAR)   # 20세
+        con = sqlite3.connect(TMP)
+        con.execute("UPDATE prospects SET ovr=50, xp=0, pot=90, pro=10, confidence=10, proneness=1 WHERE id=?", (p["id"],))
+        con.commit()
+        r = await clubs.use_prospect_item(U, "xp_book", now)
+        assert (r["ovr"], r["xp"]) == (53, 80 - 20 - 23 - 26)   # 50→51 20 · 51→52 23 · 52→53 26
+        assert (await clubs.use_prospect_item(U, "rehab", now))["reason"] == "useless"
+        con.execute("UPDATE prospects SET injury_games=5, injury='발목 염좌 (경미)' WHERE id=?", (p["id"],))
+        con.commit()
+        assert (await clubs.use_prospect_item(U, "rehab", now))["ok"]
+        assert not (await clubs.prospects(U, now))["active"]["injured"]
+        assert (await clubs.use_prospect_item(U, "mental", now))["conf"] == 15
+        r = await clubs.use_prospect_item(U, "elixir", now)
+        assert (r["age0"], r["age"]) == (20, 19) and (await clubs.prospects(U, now))["active"]["age"] == 19
+        assert (await clubs.use_prospect_item(U, "xp_boost", now))["uses"] == cdb.XP_BOOST_USES
+        x = (await clubs.record_prospects([([{"player_id": p["pid"]}], 1, 0, None, 0)], [], now, rng=NoHurt, v360=True))[0]
+        assert x["xp"] == 30 and any("부스터" in m for m in x["mods"])
+        x = (await clubs.record_prospects([([{"player_id": p["pid"]}], 1, 0, None, 0)], [], now, rng=NoHurt, v360=False))[0]
+        assert x["xp"] == 15                                                   # 예전 서버엔 안 붙는다
+        assert con.execute("SELECT uses FROM buffs WHERE user_id=? AND item='xp_boost'", (U,)).fetchone()[0] == 9
+        con.close()
+    asyncio.run(flow())
+
+
+def test_fishing_dex_rewards():
+    import services.fishing as F
+    F.DB_PATH = TMP
+
+    async def flow():
+        db = F.FishingDB()
+        U = 3631
+        pool = F.by_grade(True, True)
+        con = db._connect()
+        con.executemany("INSERT INTO fish_dex(user_id, species, cnt, best) VALUES(?,?,1,10)", [(U, k) for k in pool[0]])
+        con.commit(); con.close()
+        bal = await db.get_balance(U)
+        assert await db.claim_dex(U) == [(0, *F.DEX_REWARDS[0])]
+        assert await db.claim_dex(U) == [] and await db.get_balance(U) == bal + F.DEX_REWARDS[0][0]
+        con = db._connect()
+        con.executemany("INSERT INTO fish_dex(user_id, species, cnt, best) VALUES(?,?,1,10)",
+                        [(U, k) for b in pool[1:] for k in b])
+        con.commit(); con.close()
+        got = await db.claim_dex(U)
+        assert [g for g, *_ in got] == [1, 2, 3, 4, 5] and await db.dex_rewards(U) == set(range(6))
+        assert (await db.inventory(U))[0].get("auto_fish") == sum(r for _, r in F.DEX_REWARDS)
+    asyncio.run(flow())
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -18,7 +18,7 @@ from services.economy_db import ITEM_PRICES, ITEMS, SHOP_ONE_ONLY, EconomyDB, gi
 from services.fishing import (
     AQUARIUM_MAX, AUTO_EVERY, BAG_MAX, CATCH_WINDOW, DAY_FISH_MULT, bag_max, day_fish, CHARM_BONUS, RODS, FISH, FishingDB, GRADE_EMOJI, GRADE_POINTS, GRADES, RECIPES, RECIPES_311_NEEDS, COOK_CHANCE_311,
     COOK_CHANCE_340, ROD_DUR, RODS_340,
-    SKIP_PIECES, TRADE_DAILY, by_grade, fish_name, grade_odds, level_need, odds_line,
+    DEX_REWARDS, SKIP_PIECES, TRADE_DAILY, by_grade, fish_name, grade_odds, level_need, odds_line,
 )
 from services.hub import HubView, Page
 from services.notifier import send_notify
@@ -424,7 +424,8 @@ class Fishing(commands.Cog):
             Page("🍽️", "먹이기", self._p_feed, "유망주 · 선발 선수에게 하루 한 마리"),
             Page("🍳", "요리", self._p_cook, "24시간 효과"),
             Page("🐠", "수족관", self._p_aquarium, f"최대 {AQUARIUM_MAX}마리 전시"),
-            Page("📖", "도감", self._p_dex, "100종 모으기" if self._live(user) else "40종 모으기"),
+            Page("📖", "도감", self._p_dex, ("100종 모으기 · 보상" if release.preview_360(getattr(getattr(user, "guild", None), "id", None))
+                                           else "100종 모으기") if self._live(user) else "40종 모으기"),
             Page("📜", "낚시 기록", self._p_log, "최근에 낚은 물고기 15마리"),
             Page("🏆", "주간 최대어", self._p_weekly, "이번 주 가장 큰 물고기"),
             Page("🛒", "낚시 상점", self._p_shop, "미끼 · 낚싯대 · 아이스박스"),
@@ -728,6 +729,28 @@ class Fishing(commands.Cog):
             have = sum(k in dex for k in pool[g])
             parts.append((f"{GRADE_EMOJI[g]} {GRADES[g]} {have}/{len(pool[g])}", cells))
         got = sum(k in dex for b in pool for k in b)
+        if v340 and release.preview_360(getattr(getattr(view.user, "guild", None), "id", None)):   # 3.6.0 도감 보상
+            done = await self.db.dex_rewards(view.user.id)
+            ready = [g for g in range(6) if g not in done and (got == sum(map(len, pool)) if g == 5
+                                                                  else all(k in dex for k in pool[g]))]
+            lines = [("✅" if g in done else "🎁" if g in ready else "⬜") + " "
+                     + ("📖 전체 완성" if g == 5 else f"{GRADE_EMOJI[g]} {GRADES[g]} 다 모으기")
+                     + f" · {m // 10_000:,}만원" + (f" + 🤖 자동 낚시 {r}" if r else "") for g, (m, r) in enumerate(DEX_REWARDS)]
+            e = _fields(ui.card(f"📖 도감 · {got}/{sum(map(len, pool))}", "**🎁 도감 보상**\n" + "\n".join(lines),
+                                ui.INFO, view.user, SECTION), parts)
+            if ready:
+                b = discord.ui.Button(label=f"도감 보상 받기 ({len(ready)})", emoji="🎁", style=discord.ButtonStyle.success, row=0)
+
+                async def claim(interaction: discord.Interaction):
+                    got_r = await self.db.claim_dex(view.user.id)
+                    note = ui.card("🎁 도감 보상!", "\n".join(
+                        ("📖 전체 완성" if g == 5 else f"{GRADE_EMOJI[g]} {GRADES[g]}") + f" · **+{m:,}원**"
+                        + (f" · 🤖 자동 낚시 **{r}개**" if r else "") for g, m, r in got_r) or "받을 보상이 없어요.",
+                                   ui.GOLD if got_r else ui.EVEN, view.user, SECTION)
+                    await view.refresh(interaction, note)
+                b.callback = claim
+                view.add_item(b)
+            return e
         if v340:   # 3.4.0 100종 — 등급마다 칸
             return _fields(ui.card(f"📖 도감 · {got}/{sum(map(len, pool))}", "", ui.INFO, view.user, SECTION), parts)
         return ui.card(f"📖 도감 · {len(dex)}/{sum(map(len, pool))}", "\n\n".join(f"**{t}**\n" + "\n".join(c) for t, c in parts),

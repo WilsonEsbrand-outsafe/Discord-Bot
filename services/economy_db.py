@@ -83,6 +83,12 @@ ITEMS = {
     "lawyer":      ("⚖️", "변호사 선임권",   "나 또는 다른 유저에게 선임 · 빚이 있으면 한 시간 안 기다리고 파산 신청 한 번 더"),
     # ── 3.4.0 ──
     "enh_stone":   ("🔷", "강화석",          "유망주 강화 재료 · /유망주 → [강화]"),
+    # ── 3.6.0 유망주 (가방에서 사용) ──
+    "xp_boost":    ("📗", "경험치 부스터",   "내 유망주가 다음 10경기 동안 얻는 +경험치 2배"),
+    "xp_book":     ("📘", "훈련 교본",       "내 유망주 경험치 +80 (바로 · 30세까지 · 잠재력까지)"),
+    "rehab":       ("🩹", "재활 치료권",     "부상 중인 내 유망주를 바로 복귀"),
+    "mental":      ("🧠", "멘탈 코칭",       "내 유망주 자신감 +5 (골 · 도움 기회 ↑)"),
+    "elixir":      ("⏳", "회춘 주사",       "내 유망주 나이 -1살 (17세 밑으로는 안 내려가요)"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
@@ -105,6 +111,8 @@ ITEM_PRICES = {
     "tactic_note": 500_000, "analysis_report": 300_000,
     # 3.4.0 유망주 강화
     "enh_stone": 1_000_000,
+    # 3.6.0 유망주
+    "xp_boost": 2_000_000, "xp_book": 1_500_000, "rehab": 2_000_000, "mental": 1_000_000, "elixir": 30_000_000,
 }
 # 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
@@ -112,10 +120,11 @@ SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
                ("🏹 양궁", ("bow_pro", "windbreaker", "focus")),
                ("🎓 유스", ("first_team", "special_training", "scout_coupon")),
                ("⚔️ 전술", ("tactic_note", "analysis_report")),
-               ("🌟 유망주", ("enh_stone",)))
+               ("🌟 유망주", ("enh_stone", "xp_boost", "xp_book", "rehab", "mental", "elixir")))
 SHOP_310: set[str] = set()   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템 (⚖️ 변호사 선임권 · 🤖 자동 낚시는 상점에서 팔지 않는다)
 SHOP_340: set[str] = {"enh_stone"}   # 3.4.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템
-SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3}   # 하루(KST) 구매 한도가 있는 아이템
+SHOP_360: set[str] = {"xp_boost", "xp_book", "rehab", "mental", "elixir"}   # 3.6.0 유망주 아이템 (테스트 서버 먼저)
+SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3, "elixir": 1}   # 하루(KST) 구매 한도가 있는 아이템
 # 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
 SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST
 SHOP_BASE = ("muffler", "steroid")
@@ -129,6 +138,8 @@ def shop_open(item: str, now_ts: Optional[float] = None, guild_id: Optional[int]
     if item in SHOP_310 and not release.preview_310(guild_id, now_ts):
         return False
     if item in SHOP_340 and not release.preview_340(guild_id, now_ts):
+        return False
+    if item in SHOP_360 and not release.preview_360(guild_id, now_ts):
         return False
     if item in ARCHERY_ITEMS and release.preview_311(guild_id, now_ts):   # 3.1.1 양궁 아이템 삭제
         return False
