@@ -396,7 +396,7 @@ PROSPECT_MF_ASSIST_350 = PROSPECT_XP["goal"]
 
 # 3.6.0 유망주 아이템 (가방 [사용])
 XP_BOOST_USES, XP_BOOST_MULT = 10, 2.0   # 📗 경험치 부스터: 다음 10경기 +경험치 2배
-XP_BOOK = 80                              # 📘 훈련 교본: 경험치 +80
+XP_BOOK = 40                              # 📘 훈련 교본: 경험치 +40 (3.6.1: 80 → 40 · 하루 3권 · 500만원)
 MENTAL_GAIN = 5                           # 🧠 멘탈 코칭: 자신감 +5
 
 # 3.6.0 (release.preview_360): 2군 — 기본 OVR 이 PROMOTE_OVR 밑(강화 0)인 유망주는 1군이 아니라 2군에서 뛴다. 강화는 그대로 OVR 70부터.
