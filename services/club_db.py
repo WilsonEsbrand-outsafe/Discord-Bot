@@ -393,7 +393,7 @@ AMATEUR_MIN_360 = 65
 PROMOTE_OVR = 65         # 유망주 1군 승격 OVR
 RESERVE_ID = "AMB_"
 RESERVE_OVR = 55
-RESERVE_XP = 0.7          # 2군 경기 경험치 배율 (판수 제한이 없어서 1군보다 조금 적게)
+RESERVE_XP = 1.5          # 2군 경기 경험치 배율 · 2군 경기엔 감점(패배 · 대패 · 경고 · 찬스 놓침 · 부진) · 전력 차 감소가 없다
 RESERVE_COOLDOWN = 60     # 2군 경기 사이 (초)
 RESERVE_AMATEURS = [(f"{RESERVE_ID}{g}_{i:02d}", n, g) for g, names in (
     ("GK", ("잡아라", "골문지")), ("DF", ("버텨라", "막아봐", "수비꾼", "튼튼이", "지켜줘")),
@@ -1516,7 +1516,7 @@ class ClubDB:
     async def record_prospects(self, sides: list[tuple], goals: list[dict], now_ts: int,
                                events: list[dict] = (), rng=random, friendly: bool = False,
                                v350: bool = False, v360: bool = False, xp_mult: float = 1.0,
-                               xp_label: str = "") -> list[dict]:
+                               xp_label: str = "", reserve: bool = False) -> list[dict]:
         """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 성장 경험치 ± (하루 PROSPECT_DAILY_GROWTH 경기까지,
         30세까지, 잠재력까지, 프로 의식 배율), 자신감 변화, 부상. sides: [(선발 xi, 득점, 실점[, 상대 id, 전력 차])]
         — 양 팀 모두. events: 중계 장면(경고 · 찬스 놓침).
@@ -1525,7 +1525,8 @@ class ClubDB:
         mods: 경험치 배율 설명 · injury: 부상 dict | None).
         v350 = 3.5.0 포지션별 경험치 (PROSPECT_XP_350 · PROSPECT_MF_ASSIST_350) · plus: 더해진 항목 키.
         v360 = 3.6.0 하루 판수 제한 · 같은 상대 반복 감소 없앰 (전력 차 · 친선 배율은 그대로).
-        xp_mult · xp_label: 3.6.0 2군 경기 경험치 배율 (+경험치에만)."""
+        xp_mult · xp_label: 3.6.0 2군 경기 경험치 배율 (+경험치에만).
+        reserve = 3.6.0 2군 경기: 감점 항목 · 전력 차 배율 · 부진 감점 없음."""
         if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, *_ in sides for s in xi):
             return []
         day = kst_day(now_ts)
@@ -1551,7 +1552,7 @@ class ClubDB:
                     parts = {"app": 1, "goal": g, "assist": a, res: 1, "rout": int(ga - gf >= 3),
                              "card": sum(e.get("player_id") == pid and e.get("kind") == "card" for e in events),
                              "miss": sum(e.get("player_id") == pid and e.get("kind") == "miss" for e in events)}
-                    delta = sum(PROSPECT_XP[k] * n for k, n in parts.items())
+                    delta = sum(PROSPECT_XP[k] * n for k, n in parts.items() if not (reserve and PROSPECT_XP[k] < 0))
                     plus, plays = [], 0
                     if v350:
                         if p["group"] == "MF":
@@ -1566,7 +1567,7 @@ class ClubDB:
                         if clean and ga == 0:
                             delta += clean
                             plus.append("clean")
-                    mods, minus = [], [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0]
+                    mods, minus = [], [] if reserve else [k for k, n in parts.items() if n and PROSPECT_XP[k] < 0]
                     mult = 1.0
                     if friendly:
                         mult *= XP_FRIENDLY
@@ -1581,7 +1582,7 @@ class ClubDB:
                                                 (owner[0],)).fetchone()
                         except sqlite3.OperationalError:
                             boost = None
-                    m = xp_gap_mult(gap)
+                    m = 1.0 if reserve else xp_gap_mult(gap)
                     if m != 1:
                         mult *= m
                         mods.append(f"전력 차 {gap:+d} ×{m:g}")
@@ -1606,7 +1607,7 @@ class ClubDB:
                     attack = p["group"] in ("FW", "MF")
                     poor = res != "W" or (g + a + plays == 0 if attack else ga > 0)
                     pen = next((v for lo, v in XP_POOR_PENALTY if gap >= lo), 0)
-                    if poor and pen:
+                    if poor and pen and not reserve:
                         delta += pen
                         minus.append("poor")
                     if grew:
