@@ -222,9 +222,9 @@ def test_reserve():
         x = (await clubs.record_prospects([(t["xi"], 1, 0, None, 0)], [], now, rng=NoHurt, v360=True,
                                           xp_mult=cdb.RESERVE_XP, xp_label="2군"))[0]
         assert x["xp"] == round(15 * cdb.RESERVE_XP) and "2군 ×0.7" in x["mods"]
-        # OVR 70 이 되면 1군으로
+        # OVR 65 가 되면 1군으로
         con = sqlite3.connect(TMP)
-        con.execute("UPDATE prospects SET ovr=70 WHERE user_id=?", (U,))
+        con.execute("UPDATE prospects SET ovr=65 WHERE user_id=?", (U,))
         con.commit(); con.close()
         assert pid in {p["player_id"] for p in await clubs.squad(U)}
         assert (await clubs.reserve_team(U, now))["prospect"] is None

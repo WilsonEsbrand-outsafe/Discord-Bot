@@ -386,10 +386,11 @@ XP_BOOST_USES, XP_BOOST_MULT = 10, 2.0   # 📗 경험치 부스터: 다음 10�
 XP_BOOK = 80                              # 📘 훈련 교본: 경험치 +80
 MENTAL_GAIN = 5                           # 🧠 멘탈 코칭: 자신감 +5
 
-# 3.6.0 (release.preview_360): 2군 — 강화 전(기본 OVR 70 밑 · 강화 0) 유망주는 1군이 아니라 2군에서 뛴다.
-# 2군 = 유망주 + 유스 선수 + 2군 아마추어(1군 아마추어와 다른 선수들 · 빈자리만). 2군 경기는 NPC 2군과 바로 결과.
+# 3.6.0 (release.preview_360): 2군 — 기본 OVR 이 PROMOTE_OVR 밑(강화 0)인 유망주는 1군이 아니라 2군에서 뛴다. 강화는 그대로 OVR 70부터.
+# 2군 = 유망주 + 유스 선수 + 2군 아마추어(1군 아마추어와 다른 선수들 · 빈자리만). 2군 경기는 다른 유저 구단의 2군과 바로 결과.
 # 1군 아마추어(AMT_)는 OVR 이 AMATEUR_MIN_360 밑이면 그만큼으로 뛴다.
 AMATEUR_MIN_360 = 65
+PROMOTE_OVR = 65         # 유망주 1군 승격 OVR
 RESERVE_ID = "AMB_"
 RESERVE_OVR = 55
 RESERVE_XP = 0.7          # 2군 경기 경험치 배율 (판수 제한이 없어서 1군보다 조금 적게)
@@ -401,8 +402,8 @@ RESERVE_AMATEURS = [(f"{RESERVE_ID}{g}_{i:02d}", n, g) for g, names in (
 
 
 def in_reserve(p: dict) -> bool:
-    """3.6.0 2군 유망주인가: 강화 전 (기본 OVR 이 강화 기준 밑이고 강화 단계 0)."""
-    return p["ovr"] < ENH_MIN_OVR and not p.get("enh")
+    """3.6.0 2군 유망주인가: 기본 OVR 이 1군 승격 기준(PROMOTE_OVR) 밑이고 강화 단계 0."""
+    return p["ovr"] < PROMOTE_OVR and not p.get("enh")
 
 
 def xp_gap_mult(gap: int) -> float:
