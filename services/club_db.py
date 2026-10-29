@@ -343,6 +343,17 @@ def kst_day(ts: int) -> int:
     return (int(ts) + 9 * 3600) // 86400
 
 
+# 3.6.0 (release.preview_360): 공식경기 주간 랭킹 — 내가 건 공식경기만, 하루(KST) WEEKLY_DAILY 판까지 승점(승 3 · 무 1)을 쌓는다.
+# 매주 월요일 00시(KST)에 지난주 순위대로 보상 (돈, 강화석). 같은 승점이면 득실차 → 다득점 → 먼저 도달.
+WEEKLY_DAILY = 30
+WEEKLY_REWARDS = ((30_000_000, 3), (20_000_000, 2), (10_000_000, 1)) + ((3_000_000, 0),) * 7   # 1~10위 (돈, 🔷 강화석)
+
+
+def week_key(ts: int) -> int:
+    """월요일 00시(KST)에 바뀌는 주 번호."""
+    return (kst_day(ts) + 3) // 7
+
+
 # ───────────── 유망주 (2.4) ─────────────
 # 나만의 선수. 이적시장 · 팩 · 스카우트 · 시세와 섞이지 않게 pm_players 가 아니라 prospects 에 둔다.
 # 보유 카드(pm_holdings)도 아니라서 판매 · 매물 · 트레이드는 애초에 닿지 않고, 구단 명단(_squad)에만 합쳐진다.
@@ -634,6 +645,13 @@ class ClubDB:
                 m = con.execute("DELETE FROM club_official").rowcount
                 con.execute("DELETE FROM prospect_vs")
                 print(f"[구단] 친선 · 공식경기 기록 초기화: 구단 {n}개 · 공식 기록 {m}줄 (백업 *_bak_20261003)")
+            # 3.6.0 공식경기 주간 랭킹 (내가 건 경기만 · 하루 WEEKLY_DAILY 판까지) · 보상 지급 기록
+            con.execute("CREATE TABLE IF NOT EXISTS club_official_week (user_id INTEGER NOT NULL, week INTEGER NOT NULL, "
+                        "points INTEGER NOT NULL DEFAULT 0, w INTEGER NOT NULL DEFAULT 0, d INTEGER NOT NULL DEFAULT 0, "
+                        "l INTEGER NOT NULL DEFAULT 0, gf INTEGER NOT NULL DEFAULT 0, ga INTEGER NOT NULL DEFAULT 0, "
+                        "day_key INTEGER NOT NULL DEFAULT 0, day_n INTEGER NOT NULL DEFAULT 0, "
+                        "last_ts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, week))")
+            con.execute("CREATE TABLE IF NOT EXISTS club_week_paid (week INTEGER PRIMARY KEY, paid_ts INTEGER NOT NULL)")
             # 시설 (구단을 지웠다 다시 만들어도 남는다) · 명문 구단
             con.execute("CREATE TABLE IF NOT EXISTS club_facilities (user_id INTEGER PRIMARY KEY, "
                         + ", ".join(f"{k} INTEGER NOT NULL DEFAULT 0" for k in FACILITIES) + ")")
@@ -1140,7 +1158,7 @@ class ClubDB:
         return await self._tx(fn)
 
     async def record_official(self, user_id: int, opp_id: int, gf: int, ga: int, now_ts: int,
-                              amount: int, pick: str, odds: float) -> dict:
+                              amount: int, pick: str, odds: float, weekly: bool = False) -> dict:
         """공식경기 결과 기록 + 베팅 정산. 예측(pick)이 맞으면 순이익 = 베팅 × (배당 - 1), 틀리면 베팅금을 잃는다.
         승점 · 득실(/공식순위)과 /구단 전적은 건 쪽과 상대 모두에 기록한다 (돈은 건 쪽만)."""
         season = season_key(now_ts)
@@ -1169,9 +1187,78 @@ class ClubDB:
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0]
             rec = con.execute("SELECT points, w, d, l, gf, ga FROM club_official WHERE user_id=? AND season=?",
                               (int(user_id), season)).fetchone()
-            return {"result": res, "delta": delta, "balance": int(bal),
+            week = self._add_weekly(con, user_id, gf, ga, now_ts) if weekly else None   # 3.6.0 주간 랭킹
+            return {"result": res, "delta": delta, "balance": int(bal), "week": week,
                     "rehab": {"name": rehab[0], "left": rehab[1] - 1} if rehab else None,
                     **dict(zip(("points", "w", "d", "l", "gf", "ga"), rec))}
+        return await self._tx(fn)
+
+    @staticmethod
+    def _add_weekly(con, user_id: int, gf: int, ga: int, now_ts: int) -> dict:
+        """3.6.0 주간 랭킹에 내가 건 공식경기 한 판. 오늘 WEEKLY_DAILY 판이 넘으면 기록만 안 한다. → {counted, day_n, points}."""
+        wk, day = week_key(now_ts), kst_day(now_ts)
+        con.execute("INSERT OR IGNORE INTO club_official_week(user_id, week) VALUES(?, ?)", (int(user_id), wk))
+        dk, dn = con.execute("SELECT day_key, day_n FROM club_official_week WHERE user_id=? AND week=?",
+                             (int(user_id), wk)).fetchone()
+        dn = dn if dk == day else 0
+        counted = dn < WEEKLY_DAILY
+        if counted:
+            r = "W" if gf > ga else ("D" if gf == ga else "L")
+            con.execute("UPDATE club_official_week SET points=points+?, w=w+?, d=d+?, l=l+?, gf=gf+?, ga=ga+?, day_key=?, "
+                        "day_n=?, last_ts=? WHERE user_id=? AND week=?",
+                        ({"W": 3, "D": 1, "L": 0}[r], r == "W", r == "D", r == "L", gf, ga, day, dn + 1, int(now_ts),
+                         int(user_id), wk))
+            dn += 1
+        pts = con.execute("SELECT points FROM club_official_week WHERE user_id=? AND week=?", (int(user_id), wk)).fetchone()[0]
+        return {"counted": counted, "day_n": dn, "points": int(pts)}
+
+    @staticmethod
+    def _weekly_rows(con, week: int, limit: int) -> list[dict]:
+        rows = con.execute(
+            "SELECT o.user_id, COALESCE(c.club_name, '(삭제된 구단)'), o.points, o.w, o.d, o.l, o.gf, o.ga "
+            "FROM club_official_week o LEFT JOIN clubs c ON c.user_id=o.user_id WHERE o.week=? AND (o.w+o.d+o.l)>0 "
+            "ORDER BY o.points DESC, (o.gf-o.ga) DESC, o.gf DESC, o.last_ts ASC LIMIT ?", (week, limit)).fetchall()
+        return [dict(zip(("user_id", "name", "points", "w", "d", "l", "gf", "ga"), r)) for r in rows]
+
+    async def weekly_table(self, now_ts: int, limit: int = 10) -> list[dict]:
+        """3.6.0 이번 주 공식경기 순위."""
+        return await self._tx(lambda con: self._weekly_rows(con, week_key(now_ts), limit))
+
+    async def weekly_me(self, user_id: int, now_ts: int) -> Optional[dict]:
+        """이번 주 내 기록 + 순위 (기록이 없으면 None)."""
+        def fn(con):
+            wk = week_key(now_ts)
+            row = con.execute("SELECT points, w, d, l, gf, ga, last_ts FROM club_official_week WHERE user_id=? AND week=? "
+                              "AND (w+d+l)>0", (int(user_id), wk)).fetchone()
+            if not row:
+                return None
+            pts, w, d, l, gf, ga, last = row
+            rank = 1 + con.execute(
+                "SELECT COUNT(*) FROM club_official_week WHERE week=? AND (w+d+l)>0 AND (points>? OR (points=? AND "
+                "((gf-ga)>? OR ((gf-ga)=? AND (gf>? OR (gf=? AND last_ts<?))))))",
+                (wk, pts, pts, gf - ga, gf - ga, gf, gf, last)).fetchone()[0]
+            return {"rank": rank, "points": pts, "w": w, "d": d, "l": l, "gf": gf, "ga": ga}
+        return await self._tx(fn)
+
+    async def settle_weekly(self, now_ts: int) -> list[dict]:
+        """지난주(들) 주간 랭킹 보상을 한 번씩 지급. [{week, rank, user_id, name, money, stones}]."""
+        cur = week_key(now_ts)
+
+        def fn(con):
+            out = []
+            weeks = [w for (w,) in con.execute("SELECT DISTINCT week FROM club_official_week WHERE week<? AND week NOT IN "
+                                               "(SELECT week FROM club_week_paid) ORDER BY week", (cur,))]
+            for wk in weeks:
+                con.execute("INSERT INTO club_week_paid(week, paid_ts) VALUES(?, ?)", (wk, int(now_ts)))
+                for i, r in enumerate(self._weekly_rows(con, wk, len(WEEKLY_REWARDS))):
+                    money, stones = WEEKLY_REWARDS[i]
+                    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (r["user_id"],))
+                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (money, r["user_id"]))
+                    if stones:
+                        con.execute("INSERT INTO inventory(user_id, item, qty) VALUES(?, 'enh_stone', ?) "
+                                    "ON CONFLICT(user_id, item) DO UPDATE SET qty = qty + excluded.qty", (r["user_id"], stones))
+                    out.append({"week": wk, "rank": i + 1, "money": money, "stones": stones, **r})
+            return out
         return await self._tx(fn)
 
     async def official_table(self, now_ts: int, limit: int = 10) -> list[dict]:

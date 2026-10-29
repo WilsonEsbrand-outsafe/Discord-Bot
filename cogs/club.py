@@ -8,13 +8,13 @@ from typing import Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, NEWBIE_GAP, NEWBIE_OFFICIAL, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
-    match_highlights, official_odds, season_key, simulate_match, win_probs,
+    WEEKLY_DAILY, WEEKLY_REWARDS, match_highlights, official_odds, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
 from services.fishing import FishingDB
@@ -113,6 +113,33 @@ class Club(commands.Cog):
         self.tac = TacticsDB()    # 2.8 ⚔️ 전술
         self.pm = PlayerMarketDB()
         self._playing: set[int] = set()   # 경기 중인 유저 (중계가 겹치지 않게 — 끝나면 바로 다시 가능)
+        self.weekly_loop.start()
+
+    def cog_unload(self):
+        self.weekly_loop.cancel()
+
+    # ───────────── 3.6.0 공식경기 주간 랭킹 보상 ─────────────
+    @tasks.loop(minutes=10)
+    async def weekly_loop(self):
+        try:
+            paid = await self.clubs.settle_weekly(int(time.time()))
+        except Exception as e:
+            return print(f"[주간 랭킹] 정산 오류: {e!r}")
+        for x in paid:
+            print(f"[주간 랭킹] {x['week']}주 {x['rank']}위 {x['user_id']} +{x['money']:,} 🔷{x['stones']}")
+            e = ui.card(f"🏆 공식경기 주간 랭킹 {x['rank']}위!",
+                        f"**{x['name']}** · {x['points']}점 · {x['w']}승 {x['d']}무 {x['l']}패\n\n"
+                        f"`보상` **+{x['money']:,}원**" + (f" · 🔷 강화석 **{x['stones']}개**" if x["stones"] else ""),
+                        ui.GOLD, None, "🏆 공식경기")
+            try:
+                u = self.bot.get_user(x["user_id"]) or await self.bot.fetch_user(x["user_id"])
+                await u.send(embed=e)
+            except discord.HTTPException:   # DM 막힘 — 보상은 이미 들어갔다
+                pass
+
+    @weekly_loop.before_loop
+    async def _before_weekly(self):
+        await self.bot.wait_until_ready()
 
     # ───────────── 자동완성 ─────────────
     async def slot_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -356,11 +383,12 @@ class Club(commands.Cog):
         return sides
 
     async def _play_match(self, interaction, user, h: dict, a: dict, section: str, title_tag: str,
-                          after=None, view=None, note: str = "", friendly: bool = False) -> dict:
+                          after=None, view=None, note: str = "", friendly: bool = False, skip: bool = False) -> dict:
         """경기 시뮬레이션 → 90분 하이라이트 문자중계. after(result) 가 돌려준 문자열을 결과 카드에,
         note 는 킥오프 카드에 붙인다.
         2.8 전술: 두 팀에 전술이 붙어 있으면 전반만 먼저 굴리고, 하프타임에 상대 전술을 공개하고 경기를 건 사람이
-        HT_WAIT 초 안에 후반 전술을 고른다 (안 고르면 하프타임 규칙). 그 뒤 후반을 굴려 기록 · 정산한다."""
+        HT_WAIT 초 안에 후반 전술을 고른다 (안 고르면 하프타임 규칙). 그 뒤 후반을 굴려 기록 · 정산한다.
+        skip (3.6.0 공식경기 스킵): 중계 없이 바로 결과 카드 (하프타임 전술은 규칙대로)."""
         tac = bool(h.get("tactic") and a.get("tactic"))
         v350 = release.preview_350(getattr(interaction, "guild_id", None))   # 3.5.0 포지션별 활약 장면 · 경험치
         mh, ma = T.base_mults(h, a) if tac else (1.0, 1.0)
@@ -454,6 +482,13 @@ class Club(commands.Cog):
                           f"{venue}> 🎙️ *\"전력 {h['rating']} 대 {a['rating']}! 주심의 휘슬과 함께 킥오프!\"*\n\n"
                           f"`예상 승률` {h['name']} **{pw:.0%}** · 무 **{pd:.0%}** · {a['name']} **{pl:.0%}**" + note,
                           ui.DARK, user, section)
+        if skip:   # 3.6.0 중계 없이 바로 결과
+            if tac:
+                await second_half(None)
+            final = await finish()
+            final.description = note.lstrip("\n") + "\n\n" + final.description if note else final.description
+            await interaction.followup.send(embed=final, view=view)
+            return st["result"]
         final = None if tac else await finish()   # 2.7 과 같이: 전술이 없으면 중계 전에 기록
         msg = None
         try:
@@ -523,11 +558,12 @@ class Club(commands.Cog):
     @app_commands.command(name="공식경기", description="돈을 걸고 공식경기! 승 · 무 · 패를 맞혀요")
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)", 예측="내 구단 경기 결과 예측 (기본: 승)",
-                           상대="상대 구단의 주인 (비우면 비슷한 전력 구단과 자동 매칭)")
+                           상대="상대 구단의 주인 (비우면 비슷한 전력 구단과 자동 매칭)",
+                           스킵="중계 없이 바로 결과만 보기")
     @app_commands.choices(예측=[app_commands.Choice(name=n, value=k) for k, n in
                               (("W", "승 — 내 구단 승리"), ("D", "무 — 무승부"), ("L", "패 — 내 구단 패배"))])
     async def official(self, interaction: discord.Interaction, amount: app_commands.Range[int, OFFICIAL_MIN_BET],
-                       예측: str = "W", 상대: Optional[discord.Member] = None):
+                       예측: str = "W", 상대: Optional[discord.Member] = None, 스킵: bool = False):
         user, now, amount = interaction.user, int(time.time()), int(amount)
         if 상대 is not None and (상대.id == user.id or 상대.bot):
             return await interaction.response.send_message("다른 유저의 구단을 골라 주세요.", ephemeral=True)
@@ -538,11 +574,12 @@ class Club(commands.Cog):
         await interaction.response.defer()
         self._playing.add(user.id)
         try:
-            await self._official(interaction, user, now, amount, 예측, 상대)
+            await self._official(interaction, user, now, amount, 예측, 상대,
+                                 skip=스킵 and release.preview_360(interaction.guild_id))   # 3.6.0 스킵
         finally:
             self._playing.discard(user.id)
 
-    async def _official(self, interaction, user, now: int, amount: int, pick: str, opp_user):
+    async def _official(self, interaction, user, now: int, amount: int, pick: str, opp_user, skip: bool = False):
         sec = "🏆 공식경기 중계"
         bal = await self.money.get_balance(user.id)
         if bal < amount:
@@ -581,27 +618,37 @@ class Club(commands.Cog):
                            for k, o in odds.items())
         note = f"\n`배당` {board}\n`베팅` **{amount:,}원** · 적중하면 **{ui.won(round(amount * (odds[pick] - 1)))}**"
 
+        weekly = release.preview_360(interaction.guild_id)   # 3.6.0 주간 랭킹
+
         async def record(result):
             r = await self.clubs.record_official(user.id, opp_id, result["home"], result["away"], now, amount, pick,
-                                                 odds[pick])
+                                                 odds[pick], weekly=weekly)
             mark = {"W": "승리", "D": "무승부", "L": "패배"}[r["result"]]
             hit = "🎯 적중!" if r["result"] == pick else "❌ 빗나감"
             return (f"\n\n`예측` **{self.PICKS[pick]}** @ {odds[pick]:.2f}배 · `결과` **{mark}** → {hit}\n"
                     f"`정산` **{ui.won(r['delta'])}** · `잔액` **{r['balance']:,}원**\n"
                     f"`이번 시즌` {r['points']}점 · {r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d} · "
                     "순위는 `/공식순위`"
+                    + ((f"\n`이번 주` **{r['week']['points']}점** · 오늘 랭킹 {r['week']['day_n']}/{WEEKLY_DAILY}판"
+                        if r["week"]["counted"] else f"\n`이번 주` {r['week']['points']}점 · 오늘 랭킹 {WEEKLY_DAILY}판을 다 채웠어요")
+                       if r.get("week") else "")
                     + ((f"\n🩹 **{r['rehab']['name']}** 부상 복귀!" if r["rehab"]["left"] <= 0 else
                         f"\n🚑 **{r['rehab']['name']}** 복귀까지 공식경기 **{r['rehab']['left']}경기**")
                        if r.get("rehab") else ""))
-        await self._play_match(interaction, user, h, a, sec, "🏆", after=record, note=note)
+        await self._play_match(interaction, user, h, a, sec, "🏆", after=record, note=note, skip=skip)
 
-    @app_commands.command(name="공식순위", description="이번 달 공식경기 시즌 순위")
-    async def official_table(self, interaction: discord.Interaction):
+    @app_commands.command(name="공식순위", description="공식경기 순위 — 이번 주(보상) · 이번 달 시즌")
+    @app_commands.describe(기간="주간(매주 월요일 보상) 또는 이번 달 시즌 (기본: 주간)")
+    @app_commands.choices(기간=[app_commands.Choice(name="주간 랭킹 (보상)", value="week"),
+                              app_commands.Choice(name="이번 달 시즌", value="season")])
+    async def official_table(self, interaction: discord.Interaction, 기간: str = "week"):
         await interaction.response.defer()
         now = int(time.time())
+        medals = ("🥇", "🥈", "🥉")
+        if 기간 == "week" and release.preview_360(interaction.guild_id):   # 3.6.0 주간 랭킹
+            return await interaction.followup.send(embed=await self._weekly_embed(interaction.user, now))
         rows = await self.clubs.official_table(now, limit=10)
         season = season_key(now)
-        medals = ("🥇", "🥈", "🥉")
         lines = [f"{medals[i] if i < 3 else f'`{i + 1}`'} **{r['name']}** · **{r['points']}점** · "
                  f"{r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d}" for i, r in enumerate(rows)]
         e = ui.card(f"🏆 {season // 100}년 {season % 100}월 공식경기 순위",
@@ -609,6 +656,23 @@ class Club(commands.Cog):
                     ui.GOLD, interaction.user, "🏆 공식경기")
         e.set_footer(text="승 3점 · 무 1점 · 건 쪽과 상대 모두 기록 · 매달 1일 새 시즌")
         await interaction.followup.send(embed=e)
+
+    async def _weekly_embed(self, user, now: int) -> discord.Embed:
+        rows = await self.clubs.weekly_table(now, limit=len(WEEKLY_REWARDS))
+        medals = ("🥇", "🥈", "🥉")
+        prize = lambda i: f"{WEEKLY_REWARDS[i][0] // 10_000:,}만원" + (f" + 🔷{WEEKLY_REWARDS[i][1]}" if WEEKLY_REWARDS[i][1] else "")
+        lines = [f"{medals[i] if i < 3 else f'`{i + 1}`'} **{r['name']}** · **{r['points']}점** · "
+                 f"{r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d} · 🎁 {prize(i)}" for i, r in enumerate(rows)]
+        me = await self.clubs.weekly_me(user.id, now)
+        mine = (f"\n\n`내 순위` **{me['rank']}위** · {me['points']}점 · {me['w']}승 {me['d']}무 {me['l']}패" if me else
+                "\n\n아직 이번 주 기록이 없어요. `/공식경기`로 순위에 올라 보세요!")
+        reset = ((now + 9 * 3600) // 86400 + 3) // 7 * 7 - 3   # 다음 주 월요일 KST 날짜 번호
+        next_mon = (reset + 7) * 86400 - 9 * 3600
+        e = ui.card("🏆 이번 주 공식경기 랭킹",
+                    ("\n".join(lines) or "아직 이번 주 공식경기가 없어요.") + mine + f"\n\n⏰ 보상 지급 <t:{next_mon}:R>",
+                    ui.GOLD, user, "🏆 공식경기")
+        e.set_footer(text=f"내가 건 공식경기만 · 하루 {WEEKLY_DAILY}판까지 · 승 3점 · 무 1점 · 매주 월요일 00시 보상")
+        return e
 
     # ───────────── 감독 ─────────────
     @app_commands.command(name="감독", description="감독을 영입합니다 — 전력 보너스, 선호 포메이션이면 추가 보너스 (비우면 목록)")
