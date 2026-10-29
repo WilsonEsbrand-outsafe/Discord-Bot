@@ -50,6 +50,11 @@ jobs:
 
             pip install -r requirements.txt --quiet || exit 1
 
+            # /tts (cogs/tts.py) 용. 실패해도 배포는 계속한다 — 없으면 /tts 만 "목소리를 만들지 못했어요" 로 끝난다.
+            # discord.py[voice] 2.7+ = PyNaCl + davey(디스코드 음성 암호화 DAVE), 소리 재생엔 ffmpeg 가 필요하다.
+            pip install "discord.py[voice]>=2.7.0" "edge-tts>=7.0" "gTTS>=2.5" --quiet || echo "::warning::TTS 패키지 설치 실패"
+            command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg; } || echo "::warning::ffmpeg 설치 실패"
+
             # 환경변수 동기화 (Secret 에 있는 것만)
             grep -q "^ODDS_API_KEY=" .env && sed -i "s|^ODDS_API_KEY=.*|ODDS_API_KEY=${{ secrets.ODDS_API_KEY }}|" .env || echo "ODDS_API_KEY=${{ secrets.ODDS_API_KEY }}" >> .env
             grep -q "^TRANSFER_RUMOR_CHANNEL_ID=" .env && sed -i "s|^TRANSFER_RUMOR_CHANNEL_ID=.*|TRANSFER_RUMOR_CHANNEL_ID=${{ secrets.TRANSFER_RUMOR_CHANNEL_ID }}|" .env || echo "TRANSFER_RUMOR_CHANNEL_ID=${{ secrets.TRANSFER_RUMOR_CHANNEL_ID }}" >> .env
