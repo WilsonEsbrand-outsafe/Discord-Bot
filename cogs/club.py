@@ -14,7 +14,7 @@ import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, NEWBIE_GAP, NEWBIE_OFFICIAL, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
-    WEEKLY_DAILY, WEEKLY_REWARDS, match_highlights, official_odds, season_key, simulate_match, win_probs,
+    WEEKLY_DAILY, WEEKLY_REWARDS, WEEKLY_SHOW, match_highlights, official_odds, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
 from services.fishing import FishingDB
@@ -658,11 +658,12 @@ class Club(commands.Cog):
         await interaction.followup.send(embed=e)
 
     async def _weekly_embed(self, user, now: int) -> discord.Embed:
-        rows = await self.clubs.weekly_table(now, limit=len(WEEKLY_REWARDS))
+        rows = await self.clubs.weekly_table(now, limit=WEEKLY_SHOW)
         medals = ("🥇", "🥈", "🥉")
-        prize = lambda i: f"{WEEKLY_REWARDS[i][0] // 10_000:,}만원" + (f" + 🔷{WEEKLY_REWARDS[i][1]}" if WEEKLY_REWARDS[i][1] else "")
+        prize = lambda i: (f" · 🎁 {WEEKLY_REWARDS[i][0] // 10_000:,}만원" + (f" + 🔷{WEEKLY_REWARDS[i][1]}" if WEEKLY_REWARDS[i][1] else "")
+                           if i < len(WEEKLY_REWARDS) else "")
         lines = [f"{medals[i] if i < 3 else f'`{i + 1}`'} **{r['name']}** · **{r['points']}점** · "
-                 f"{r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d} · 🎁 {prize(i)}" for i, r in enumerate(rows)]
+                 f"{r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d}{prize(i)}" for i, r in enumerate(rows)]
         me = await self.clubs.weekly_me(user.id, now)
         mine = (f"\n\n`내 순위` **{me['rank']}위** · {me['points']}점 · {me['w']}승 {me['d']}무 {me['l']}패" if me else
                 "\n\n아직 이번 주 기록이 없어요. `/공식경기`로 순위에 올라 보세요!")
@@ -671,7 +672,7 @@ class Club(commands.Cog):
         e = ui.card("🏆 이번 주 공식경기 랭킹",
                     ("\n".join(lines) or "아직 이번 주 공식경기가 없어요.") + mine + f"\n\n⏰ 보상 지급 <t:{next_mon}:R>",
                     ui.GOLD, user, "🏆 공식경기")
-        e.set_footer(text=f"내가 건 공식경기만 · 하루 {WEEKLY_DAILY}판까지 · 승 3점 · 무 1점 · 매주 월요일 00시 보상")
+        e.set_footer(text=f"내가 건 공식경기만 · 하루 {WEEKLY_DAILY}판까지 · 승 3점 · 무 1점 · 매주 월요일 00시 1~3위 보상")
         return e
 
     # ───────────── 감독 ─────────────
