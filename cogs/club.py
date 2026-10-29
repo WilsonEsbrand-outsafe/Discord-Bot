@@ -492,7 +492,7 @@ class Club(commands.Cog):
                 await second_half(None)
             final = await finish()
             final.description = note.lstrip("\n") + "\n\n" + final.description if note else final.description
-            await interaction.followup.send(embed=final, view=view)
+            await interaction.followup.send(embed=final, **({"view": view} if view else {}))   # view=None 은 send 가 거부한다 (3.6.0 스킵 오류)
             return st["result"]
         final = None if tac else await finish()   # 2.7 과 같이: 전술이 없으면 중계 전에 기록
         msg = None
@@ -515,7 +515,7 @@ class Club(commands.Cog):
                 if "tactics" not in st["result"]:
                     await second_half(None)
                 final = await finish()
-            await interaction.followup.send(embed=final, view=view)
+            await interaction.followup.send(embed=final, **({"view": view} if view else {}))   # view=None 은 send 가 거부한다 (3.6.0 스킵 오류)
         return st["result"]
 
     @app_commands.command(name="친선경기", description="다른 유저의 구단과 친선경기 (90분 문자중계 · 연속 가능 · 돈 없이 전적만 기록)")
