@@ -623,9 +623,9 @@ class Club(commands.Cog):
             _, opp_id, opp = random.choice(pool[:5])
 
         h, a = await self._sides(user.id, opp_id, me, opp, guild_id=interaction.guild_id)
-        if prize:   # 3.6.0 상금 방식
-            return await self._official_prize(interaction, user, now, h, a, opp_id, sec, skip)
         odds = official_odds(win_probs(h["rating"], a["rating"], *(T.base_mults(h, a) if h.get("tactic") else (1, 1))))
+        if prize:   # 3.6.0 상금 방식 (배당은 그대로 쓴다)
+            return await self._official_prize(interaction, user, now, h, a, opp_id, sec, skip, odds)
         board = " · ".join((f"**{self.PICKS[k]} {o:.2f}배** 👈" if k == pick else f"{self.PICKS[k]} {o:.2f}배")
                            for k, o in odds.items())
         note = f"\n`배당` {board}\n`베팅` **{amount:,}원** · 적중하면 **{ui.won(round(amount * (odds[pick] - 1)))}**"
@@ -649,19 +649,21 @@ class Club(commands.Cog):
                        if r.get("rehab") else ""))
         await self._play_match(interaction, user, h, a, sec, "🏆", after=record, note=note, skip=skip)
 
-    async def _official_prize(self, interaction, user, now: int, h: dict, a: dict, opp_id: int, sec: str, skip: bool):
-        """3.6.0 공식경기: 베팅 없이 경기마다 상금이 이번 주 상금함에 쌓이고 월요일에 받는다."""
+    async def _official_prize(self, interaction, user, now: int, h: dict, a: dict, opp_id: int, sec: str, skip: bool,
+                              odds: dict):
+        """3.6.0 공식경기: 베팅 없이 승 · 무 배당만큼 상금이 이번 주 상금함에 쌓이고 월요일에 받는다."""
         pop = await self.clubs.popularity(user.id)
-        pre = {k: official_prize(k, h["rating"], a["rating"], pop)["prize"] for k in "WDL"}
-        note = (f"\n`상금` 승 **{pre['W']:,}** · 무 {pre['D']:,} · 패 {pre['L']:,}원 "
-                f"(상대 전력 ×{official_prize('W', h['rating'], a['rating'], pop)['strength']:g} · 인기도 ×{0.5 + pop / 100:.2f})")
+        pre = {k: official_prize(k, odds, pop)["prize"] for k in "WD"}
+        note = (f"\n`배당` 승 **{odds['W']:.2f}배** · 무 {odds['D']:.2f}배 · 패 {odds['L']:.2f}배 · 인기도 ×{0.5 + pop / 100:.2f}\n"
+                f"`상금` 승 **{pre['W']:,}원** · 무 {pre['D']:,}원 · 패 없음")
 
         async def record(result):
             r = await self.clubs.record_official(user.id, opp_id, result["home"], result["away"], now, 0, "W", 1.0,
-                                                 weekly=True, ratings=(h["rating"], a["rating"]))
+                                                 weekly=True, prize_odds=odds)
             mark = {"W": "승리", "D": "무승부", "L": "패배"}[r["result"]]
             p, wk = r["prize"], r["week"]
-            got = (f"`상금` **+{p['prize']:,}원** → 이번 주 상금함 **{wk['purse']:,}원** (월요일 정산)" if wk["counted"] else
+            got = (f"`상금` **+{p['prize']:,}원** → 이번 주 상금함 **{wk['purse']:,}원** (월요일 정산)" if wk["counted"] and p["prize"]
+                   else f"`상금` 없음 · 이번 주 상금함 **{wk['purse']:,}원**" if wk["counted"] else
                    f"`상금` 오늘 {WEEKLY_DAILY}판을 다 채워서 상금 · 랭킹 없이 기록만 했어요")
             return (f"\n\n`결과` **{mark}** · {got}\n"
                     f"`이번 주` **{wk['points']}점** · 오늘 {min(wk['day_n'], WEEKLY_DAILY)}/{WEEKLY_DAILY}판 · "
