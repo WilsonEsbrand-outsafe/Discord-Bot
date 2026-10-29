@@ -395,6 +395,9 @@ RESERVE_ID = "AMB_"
 RESERVE_OVR = 55
 RESERVE_XP = 1.5          # 2군 경기 경험치 배율 · 2군 경기엔 감점(패배 · 대패 · 경고 · 찬스 놓침 · 부진) · 전력 차 감소가 없다
 RESERVE_COOLDOWN = 60     # 2군 경기 사이 (초)
+AUTO_RESERVE_HOURS = 12   # 🤖 자동 2군 경기권: 이 시간 동안
+AUTO_RESERVE_EVERY = 600  # 이만큼(초)마다 한 판
+AUTO_RESERVE_XP = 0.5     # 직접 할 때(RESERVE_XP)의 이만큼 · 유스 성장은 2판에 1번
 RESERVE_AMATEURS = [(f"{RESERVE_ID}{g}_{i:02d}", n, g) for g, names in (
     ("GK", ("잡아라", "골문지")), ("DF", ("버텨라", "막아봐", "수비꾼", "튼튼이", "지켜줘")),
     ("MF", ("돌려줘", "뛰어라", "이어줘", "부지런", "중간이", "살림꾼")), ("FW", ("넣어봐", "때려라", "골사냥", "쏴보자", "돌진이")))
@@ -678,6 +681,11 @@ class ClubDB:
                         "day_key INTEGER NOT NULL DEFAULT 0, day_n INTEGER NOT NULL DEFAULT 0, "
                         "last_ts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, week))")
             con.execute("CREATE TABLE IF NOT EXISTS club_week_paid (week INTEGER PRIMARY KEY, paid_ts INTEGER NOT NULL)")
+            # 3.6.0 🤖 자동 2군 경기 (끝나도 다음에 쓸 때까지 결과를 남겨 둔다 · done = DM 보냄)
+            con.execute("CREATE TABLE IF NOT EXISTS reserve_auto (user_id INTEGER PRIMARY KEY, until INTEGER NOT NULL, "
+                        "next_ts INTEGER NOT NULL, n INTEGER NOT NULL DEFAULT 0, w INTEGER NOT NULL DEFAULT 0, "
+                        "d INTEGER NOT NULL DEFAULT 0, l INTEGER NOT NULL DEFAULT 0, xp INTEGER NOT NULL DEFAULT 0, "
+                        "promoted TEXT, done INTEGER NOT NULL DEFAULT 0)")
             # 시설 (구단을 지웠다 다시 만들어도 남는다) · 명문 구단
             con.execute("CREATE TABLE IF NOT EXISTS club_facilities (user_id INTEGER PRIMARY KEY, "
                         + ", ".join(f"{k} INTEGER NOT NULL DEFAULT 0" for k in FACILITIES) + ")")
@@ -1479,6 +1487,56 @@ class ClubDB:
             pool = sorted(real or teams, key=lambda t: abs(t["rating"] - rating))[:5]
             return rng.choice(pool) if pool else None
         return await self._tx(fn)
+
+    # ───────────── 🤖 자동 2군 경기 (3.6.0) ─────────────
+    async def use_auto_reserve(self, user_id: int, now_ts: int) -> dict:
+        """자동 2군 경기권 사용 — AUTO_RESERVE_HOURS 시간 (켜져 있으면 남은 시간에 더한다). reason: none / no_club."""
+        def fn(con):
+            if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (int(user_id),)).fetchone():
+                return {"ok": False, "reason": "no_club"}
+            r = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='auto_reserve'", (int(user_id),)).fetchone()
+            if not r or r[0] <= 0:
+                return {"ok": False, "reason": "none"}
+            con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='auto_reserve'", (int(user_id),))
+            cur = con.execute("SELECT until, next_ts FROM reserve_auto WHERE user_id=?", (int(user_id),)).fetchone()
+            if cur and cur[0] > now_ts:
+                until, nxt = cur[0] + AUTO_RESERVE_HOURS * 3600, cur[1]
+                con.execute("UPDATE reserve_auto SET until=? WHERE user_id=?", (until, int(user_id)))
+            else:
+                until, nxt = now_ts + AUTO_RESERVE_HOURS * 3600, now_ts + AUTO_RESERVE_EVERY
+                con.execute("INSERT OR REPLACE INTO reserve_auto(user_id, until, next_ts) VALUES(?, ?, ?)",
+                            (int(user_id), until, nxt))
+            return {"ok": True, "until": until, "next": nxt}
+        return await self._tx(fn)
+
+    async def auto_reserve(self, user_id: int) -> Optional[dict]:
+        """자동 2군 경기 상태 · 누적 결과 (쓴 적 없으면 None)."""
+        def fn(con):
+            r = con.execute("SELECT until, next_ts, n, w, d, l, xp, promoted, done FROM reserve_auto WHERE user_id=?",
+                            (int(user_id),)).fetchone()
+            return dict(zip(("until", "next", "n", "w", "d", "l", "xp", "promoted", "done"), r)) if r else None
+        return await self._tx(fn)
+
+    async def auto_reserve_due(self, now_ts: int) -> list[int]:
+        """다음 자동 경기 시각이 된 구단 (아직 끝나지 않은 것만)."""
+        return await self._tx(lambda con: [u for (u,) in con.execute(
+            "SELECT user_id FROM reserve_auto WHERE done=0 AND next_ts<=? AND next_ts<=until", (now_ts,))])
+
+    async def auto_reserve_ended(self, now_ts: int) -> list[dict]:
+        """끝났는데 아직 결과를 안 보낸 자동 경기 → 보냄으로 표시하고 돌려준다."""
+        def fn(con):
+            rows = con.execute("SELECT user_id, n, w, d, l, xp, promoted FROM reserve_auto "
+                               "WHERE done=0 AND next_ts>until AND until<=?", (now_ts,)).fetchall()
+            con.executemany("UPDATE reserve_auto SET done=1 WHERE user_id=?", [(r[0],) for r in rows])
+            return [dict(zip(("user_id", "n", "w", "d", "l", "xp", "promoted"), r)) for r in rows]
+        return await self._tx(fn)
+
+    async def auto_reserve_step(self, user_id: int, res: str, xp: int, promoted: Optional[str]) -> None:
+        """자동 경기 한 판 기록 (res: W/D/L · None = 상대가 없어 쉰 판) → 다음 경기 시각을 AUTO_RESERVE_EVERY 뒤로."""
+        await self._tx(lambda con: con.execute(
+            "UPDATE reserve_auto SET n=n+?, w=w+?, d=d+?, l=l+?, xp=xp+?, promoted=COALESCE(?, promoted), "
+            "next_ts=next_ts+? WHERE user_id=?",
+            (res is not None, res == "W", res == "D", res == "L", int(xp), promoted, AUTO_RESERVE_EVERY, int(user_id))))
 
     def _reserve_team(self, con, user_id: int, now_ts: int) -> Optional[dict]:
         row = con.execute("SELECT club_name, formation, emblem FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()

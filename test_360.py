@@ -433,3 +433,40 @@ def test_coupon_youthtokiko():
         assert (await db.redeem_coupon(U, "YOUTHTOKIKO", now, T))["reason"] == "used"
     asyncio.run(flow())
     assert edb.SHOP_PRICES["xp_book"] == 3_000_000
+
+
+def test_auto_reserve():
+    import services.youth as Y
+    import cogs.hub as H
+    Y.DB_PATH = TMP
+
+    async def flow():
+        now = int(time.time())
+        db = edb.EconomyDB()
+        hub = H.Hubs.__new__(H.Hubs)
+        hub.clubs, hub.youth, hub.db, hub._reserve_at = cdb.ClubDB(), Y.YouthDB(), db, {}
+        U, V = 3641, 3642
+        await hub.clubs.create_club(U, "자동FC", now)
+        await hub.clubs.create_club(V, "상대자동FC", now)
+        assert (await hub.clubs.use_auto_reserve(U, now))["reason"] == "none"
+        await db.give_item(U, "auto_reserve", 2)
+        r = await hub.clubs.use_auto_reserve(U, now)
+        assert r["ok"] and r["until"] == now + cdb.AUTO_RESERVE_HOURS * 3600 and r["next"] == now + cdb.AUTO_RESERVE_EVERY
+        assert (await hub.clubs.use_auto_reserve(U, now))["until"] == now + 2 * cdb.AUTO_RESERVE_HOURS * 3600   # 겹쳐 쓰면 연장
+        assert U not in await hub.clubs.auto_reserve_due(now)
+        assert U in await hub.clubs.auto_reserve_due(r["next"])
+        m = await hub._play_reserve(U, r["next"], auto=True)
+        assert m["reason"] is None
+        await hub.clubs.auto_reserve_step(U, "W", 7, None)
+        a = await hub.clubs.auto_reserve(U)
+        assert (a["n"], a["w"], a["xp"]) == (1, 1, 7) and a["next"] == r["next"] + cdb.AUTO_RESERVE_EVERY
+        # 끝나면 결과를 한 번만 돌려준다
+        con = sqlite3.connect(TMP)
+        con.execute("UPDATE reserve_auto SET until=?, next_ts=? WHERE user_id=?", (now - 10, now, U))
+        con.commit(); con.close()
+        ended = await hub.clubs.auto_reserve_ended(now)
+        assert [e["user_id"] for e in ended if e["user_id"] == U] == [U]
+        assert not [e for e in await hub.clubs.auto_reserve_ended(now) if e["user_id"] == U]
+        assert "1경기" in H.Hubs._auto_reserve_line(a)
+    asyncio.run(flow())
+    assert edb.SHOP_PRICES["auto_reserve"] == 10_000_000 and edb.SHOP_DAILY_LIMITS["auto_reserve"] == 1
