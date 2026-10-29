@@ -297,8 +297,7 @@ async def _tree_check(interaction: discord.Interaction) -> bool:
     if interaction.type != discord.InteractionType.application_command or interaction.user.id == OWNER_ID:
         return True
     if release.maintenance():
-        start, end = release.MAINTENANCE
-        await interaction.response.send_message(_MAINT_TEXT.format(start, end), ephemeral=True)
+        await interaction.response.send_message(_maint_text(), ephemeral=True)
         return False
     name = (interaction.command.qualified_name if interaction.command else "").split(" ")[0]
     if release.preview_311(interaction.guild_id) and not spam.check(interaction.user.id, name):   # 3.1.1 연타 막기
@@ -326,11 +325,18 @@ bot.tree.interaction_check = _tree_check
 _MAINT_TEXT = "🔧 정기점검 중입니다. (<t:{0}:t> ~ <t:{1}:t>) 점검이 끝나면 다시 이용해 주세요."
 
 
+def _maint_text() -> str:
+    start, end = release.MAINTENANCE
+    if end >= release.MAINT_OPEN_END:   # 무기한 점검
+        return "🔧 긴급 점검 중입니다. 오류를 확인하고 있어요. 점검이 끝나면 공지로 알려 드릴게요."
+    return _MAINT_TEXT.format(start, end)
+
+
 def _maint_blocked(interaction: discord.Interaction) -> bool:
     release.GUILD.set(interaction.guild_id)   # 버튼 · 메뉴 콜백 태스크가 이 값을 물려받는다 (release.ctx_360)
     if interaction.user.id == OWNER_ID or not release.maintenance():
         return False
-    asyncio.create_task(interaction.response.send_message(_MAINT_TEXT.format(*release.MAINTENANCE), ephemeral=True))
+    asyncio.create_task(interaction.response.send_message(_maint_text(), ephemeral=True))
     return True
 
 

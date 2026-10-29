@@ -174,14 +174,24 @@ def test_360():
     note = PATCH_NOTES["3.6.0"]
     assert "장부" not in note and "체크리스트" not in note and "%" not in note and len(note) < 1200
     keys = {k: ts for k, ts, *_ in NOTICES}
-    start, end = release.MAINTENANCE
-    assert (start, end) == (calendar.timegm((2026, 10, 29, 4, 25, 0)), calendar.timegm((2026, 10, 29, 4, 30, 0)))   # 13:25 ~ 13:30 KST
+    start, end = calendar.timegm((2026, 10, 29, 4, 25, 0)), calendar.timegm((2026, 10, 29, 4, 30, 0))   # 13:25 ~ 13:30 KST (지금 MAINTENANCE 는 무기한 긴급 점검)
     assert keys["maint-3.6.0"] == keys["patch-3.6.0"] < start == release.RELEASE_360_TS   # 미리 발송 · 점검 시작에 공개
     assert not release.preview_360(123, start - 1) and release.preview_360(123, start)
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.6.0")
     assert "13:25 ~ 13:30" in body and "YOUTHTOKIKO" in note
     assert P.notice_text("maint-3.6.0", title, body, keys["maint-3.6.0"]) == (title, body)
-    assert P.notice_text("maint-3.6.0", title, body, end)[0] == "✅ 점검 완료 안내"
+    assert P.notice_text("maint-3.6.0", title, body, keys["maint-3.6.0"]) == (title, body)
+
+
+def test_360_hold():
+    import calendar
+    import release
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    start, end = release.MAINTENANCE
+    assert start == keys["maint-3.6.0-hold"] == calendar.timegm((2026, 10, 29, 6, 58, 0)) and end == release.MAINT_OPEN_END
+    assert release.maintenance(start) and release.maintenance(start + 86400 * 365)   # 끝 시각 없음
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.6.0-hold")
+    assert P.notice_text("maint-3.6.0-hold", title, body, start + 60) == (title, body)   # 점검 완료로 바뀌지 않는다
 
 
 def test_320():
@@ -212,4 +222,6 @@ if __name__ == "__main__":
     test_340()
     test_341()
     test_350()
+    test_360()
+    test_360_hold()
     print("OK: patch notes")
