@@ -11,10 +11,9 @@ import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS, FACILITY_MAX, MANAGERS, MEDICS, PROSPECT_PRICE,
-    RESERVE_COOLDOWN, RESERVE_XP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect, match_highlights,
+    PROMOTE_OVR, RESERVE_COOLDOWN, RESERVE_XP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect, match_highlights,
     simulate_match,
 )
-from services.enhance import ENH_MIN_OVR
 from services.dungeon import THEMES, DungeonDB, theme_of
 from services.economy_db import (
     ROOKIE_GRIND_MULT, SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB, rookie_until,
@@ -631,8 +630,8 @@ class Hubs(commands.Cog):
             return "**⚽ 2군** — 구단이 있어야 해요. `/구단생성`"
         p = t["prospect_any"]
         star = (f"🌟 **{p['name']}** OVR {p['ovr']}" + (" (🚑 부상 — 복귀하면 다시 뛰어요)" if p["injured"] else "")
-                + f" · OVR **{ENH_MIN_OVR}**이 되면 1군 승격 · 강화") if p else \
-            f"🌟 2군 유망주 없음 (강화 전 · OVR {ENH_MIN_OVR} 밑 유망주가 여기서 뛰어요)"
+                + f" · OVR **{PROMOTE_OVR}**이 되면 1군 승격") if p else \
+            f"🌟 2군 유망주 없음 (OVR {PROMOTE_OVR} 밑 유망주가 여기서 뛰어요)"
         youth = [s["name"] for s in t["xi"] if s.get("youth_id")]
         ama = sum(bool(s.get("amateur")) for s in t["xi"])
         return (f"**⚽ 2군** · 전력 **{t['rating']}** · {t['formation']}\n{star}\n"
@@ -666,8 +665,8 @@ class Hubs(commands.Cog):
         body = "\n".join(goals) or "*골 없이 끝났어요.*"
         body += "".join(Club._star_line(x) for x in stars)
         for x in stars:
-            if x["ovr"] >= ENH_MIN_OVR > x["ovr0"]:
-                body += f"\n\n🎉 **{x['name']}** OVR {ENH_MIN_OVR} 달성 — **1군 승격!** 이제 `/유망주`에서 강화할 수 있어요"
+            if x["ovr"] >= PROMOTE_OVR > x["ovr0"]:
+                body += f"\n\n🎉 **{x['name']}** OVR {PROMOTE_OVR} 달성 — **1군 승격!** 이제 `/친선경기` `/공식경기`에서 뛰어요"
         if grown["grown"]:
             body += "\n\n🎓 " + " · ".join(f"{n} {a:.1f}→**{b:.1f}**" for n, a, b in grown["grown"])
             body += f"\n-# 오늘 유스 성장 {grown['left']}판 남음"
