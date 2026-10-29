@@ -14,7 +14,7 @@ import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, NEWBIE_GAP, NEWBIE_OFFICIAL, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
-    WEEKLY_DAILY, WEEKLY_REWARDS, WEEKLY_SHOW, match_highlights, official_odds, season_key, simulate_match, win_probs,
+    WEEKLY_DAILY, WEEKLY_REWARDS, WEEKLY_SHOW, match_highlights, official_odds, official_prize, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
 from services.fishing import FishingDB
@@ -126,11 +126,16 @@ class Club(commands.Cog):
         except Exception as e:
             return print(f"[주간 랭킹] 정산 오류: {e!r}")
         for x in paid:
-            print(f"[주간 랭킹] {x['week']}주 {x['rank']}위 {x['user_id']} +{x['money']:,} 🔷{x['stones']}")
-            e = ui.card(f"🏆 공식경기 주간 랭킹 {x['rank']}위!",
-                        f"**{x['name']}** · {x['points']}점 · {x['w']}승 {x['d']}무 {x['l']}패\n\n"
-                        f"`보상` **+{x['money']:,}원**" + (f" · 🔷 강화석 **{x['stones']}개**" if x["stones"] else ""),
-                        ui.GOLD, None, "🏆 공식경기")
+            print(f"[주간 정산] {x['week']}주 {x['rank'] or '-'}위 {x['user_id']} +{x['money']:,} 🔷{x['stones']} "
+                  f"상금 +{x.get('purse', 0):,}")
+            lines = [f"**{x['name']}** · {x['points']}점 · {x['w']}승 {x['d']}무 {x['l']}패\n"]
+            if x.get("purse"):
+                lines.append(f"💰 `공식경기 상금` **+{x['purse']:,}원**")
+            if x["rank"]:
+                lines.append(f"🏆 `주간 랭킹 {x['rank']}위` **+{x['money']:,}원**"
+                             + (f" · 🔷 강화석 **{x['stones']}개**" if x["stones"] else ""))
+            e = ui.card(f"🏆 공식경기 주간 랭킹 {x['rank']}위!" if x["rank"] else "💰 공식경기 주간 정산",
+                        "\n".join(lines), ui.GOLD, None, "🏆 공식경기")
             try:
                 u = self.bot.get_user(x["user_id"]) or await self.bot.fetch_user(x["user_id"])
                 await u.send(embed=e)
@@ -555,16 +560,21 @@ class Club(commands.Cog):
 
     PICKS = {"W": "승", "D": "무", "L": "패"}
 
-    @app_commands.command(name="공식경기", description="돈을 걸고 공식경기! 승 · 무 · 패를 맞혀요")
+    @app_commands.command(name="공식경기", description="공식경기! 이기면 상금이 쌓여요 (상대가 강할수록 · 인기가 많을수록 더)")
     @app_commands.rename(amount="베팅액")
-    @app_commands.describe(amount="베팅 금액 (최소 1,000원)", 예측="내 구단 경기 결과 예측 (기본: 승)",
+    @app_commands.describe(amount="베팅 금액 (3.6.0 전 서버만 · 최소 1,000원)", 예측="결과 예측 (3.6.0 전 서버만 · 기본: 승)",
                            상대="상대 구단의 주인 (비우면 비슷한 전력 구단과 자동 매칭)",
                            스킵="중계 없이 바로 결과만 보기")
     @app_commands.choices(예측=[app_commands.Choice(name=n, value=k) for k, n in
                               (("W", "승 — 내 구단 승리"), ("D", "무 — 무승부"), ("L", "패 — 내 구단 패배"))])
-    async def official(self, interaction: discord.Interaction, amount: app_commands.Range[int, OFFICIAL_MIN_BET],
+    async def official(self, interaction: discord.Interaction,
+                       amount: Optional[app_commands.Range[int, OFFICIAL_MIN_BET]] = None,
                        예측: str = "W", 상대: Optional[discord.Member] = None, 스킵: bool = False):
-        user, now, amount = interaction.user, int(time.time()), int(amount)
+        user, now = interaction.user, int(time.time())
+        v360 = release.preview_360(interaction.guild_id)   # 3.6.0: 베팅 없이 상금
+        if amount is None and not v360:
+            return await interaction.response.send_message("베팅액을 입력해 주세요. (최소 1,000원)", ephemeral=True)
+        amount = 0 if v360 else int(amount)
         if 상대 is not None and (상대.id == user.id or 상대.bot):
             return await interaction.response.send_message("다른 유저의 구단을 골라 주세요.", ephemeral=True)
         if user.id in self._playing:
@@ -574,15 +584,15 @@ class Club(commands.Cog):
         await interaction.response.defer()
         self._playing.add(user.id)
         try:
-            await self._official(interaction, user, now, amount, 예측, 상대,
-                                 skip=스킵 and release.preview_360(interaction.guild_id))   # 3.6.0 스킵
+            await self._official(interaction, user, now, amount, 예측, 상대, skip=스킵 and v360, prize=v360)   # 3.6.0 스킵 · 상금
         finally:
             self._playing.discard(user.id)
 
-    async def _official(self, interaction, user, now: int, amount: int, pick: str, opp_user, skip: bool = False):
+    async def _official(self, interaction, user, now: int, amount: int, pick: str, opp_user, skip: bool = False,
+                        prize: bool = False):
         sec = "🏆 공식경기 중계"
         bal = await self.money.get_balance(user.id)
-        if bal < amount:
+        if not prize and bal < amount:
             return await interaction.followup.send(embed=ui.card(
                 "🙅 베팅할 돈이 부족해요", f"`베팅` **{amount:,}원**\n`잔액` **{bal:,}원**", ui.LOSE, user, sec))
         if opp_user is not None:
@@ -613,6 +623,8 @@ class Club(commands.Cog):
             _, opp_id, opp = random.choice(pool[:5])
 
         h, a = await self._sides(user.id, opp_id, me, opp, guild_id=interaction.guild_id)
+        if prize:   # 3.6.0 상금 방식
+            return await self._official_prize(interaction, user, now, h, a, opp_id, sec, skip)
         odds = official_odds(win_probs(h["rating"], a["rating"], *(T.base_mults(h, a) if h.get("tactic") else (1, 1))))
         board = " · ".join((f"**{self.PICKS[k]} {o:.2f}배** 👈" if k == pick else f"{self.PICKS[k]} {o:.2f}배")
                            for k, o in odds.items())
@@ -632,6 +644,28 @@ class Club(commands.Cog):
                     + ((f"\n`이번 주` **{r['week']['points']}점** · 오늘 랭킹 {r['week']['day_n']}/{WEEKLY_DAILY}판"
                         if r["week"]["counted"] else f"\n`이번 주` {r['week']['points']}점 · 오늘 랭킹 {WEEKLY_DAILY}판을 다 채웠어요")
                        if r.get("week") else "")
+                    + ((f"\n🩹 **{r['rehab']['name']}** 부상 복귀!" if r["rehab"]["left"] <= 0 else
+                        f"\n🚑 **{r['rehab']['name']}** 복귀까지 공식경기 **{r['rehab']['left']}경기**")
+                       if r.get("rehab") else ""))
+        await self._play_match(interaction, user, h, a, sec, "🏆", after=record, note=note, skip=skip)
+
+    async def _official_prize(self, interaction, user, now: int, h: dict, a: dict, opp_id: int, sec: str, skip: bool):
+        """3.6.0 공식경기: 베팅 없이 경기마다 상금이 이번 주 상금함에 쌓이고 월요일에 받는다."""
+        pop = await self.clubs.popularity(user.id)
+        pre = {k: official_prize(k, h["rating"], a["rating"], pop)["prize"] for k in "WDL"}
+        note = (f"\n`상금` 승 **{pre['W']:,}** · 무 {pre['D']:,} · 패 {pre['L']:,}원 "
+                f"(상대 전력 ×{official_prize('W', h['rating'], a['rating'], pop)['strength']:g} · 인기도 ×{0.5 + pop / 100:.2f})")
+
+        async def record(result):
+            r = await self.clubs.record_official(user.id, opp_id, result["home"], result["away"], now, 0, "W", 1.0,
+                                                 weekly=True, ratings=(h["rating"], a["rating"]))
+            mark = {"W": "승리", "D": "무승부", "L": "패배"}[r["result"]]
+            p, wk = r["prize"], r["week"]
+            got = (f"`상금` **+{p['prize']:,}원** → 이번 주 상금함 **{wk['purse']:,}원** (월요일 정산)" if wk["counted"] else
+                   f"`상금` 오늘 {WEEKLY_DAILY}판을 다 채워서 상금 · 랭킹 없이 기록만 했어요")
+            return (f"\n\n`결과` **{mark}** · {got}\n"
+                    f"`이번 주` **{wk['points']}점** · 오늘 {min(wk['day_n'], WEEKLY_DAILY)}/{WEEKLY_DAILY}판 · "
+                    f"`이번 시즌` {r['points']}점 {r['w']}승 {r['d']}무 {r['l']}패 · 순위는 `/공식순위`"
                     + ((f"\n🩹 **{r['rehab']['name']}** 부상 복귀!" if r["rehab"]["left"] <= 0 else
                         f"\n🚑 **{r['rehab']['name']}** 복귀까지 공식경기 **{r['rehab']['left']}경기**")
                        if r.get("rehab") else ""))
@@ -665,7 +699,8 @@ class Club(commands.Cog):
         lines = [f"{medals[i] if i < 3 else f'`{i + 1}`'} **{r['name']}** · **{r['points']}점** · "
                  f"{r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d}{prize(i)}" for i, r in enumerate(rows)]
         me = await self.clubs.weekly_me(user.id, now)
-        mine = (f"\n\n`내 순위` **{me['rank']}위** · {me['points']}점 · {me['w']}승 {me['d']}무 {me['l']}패" if me else
+        mine = (f"\n\n`내 순위` **{me['rank']}위** · {me['points']}점 · {me['w']}승 {me['d']}무 {me['l']}패"
+                + (f"\n💰 `이번 주 상금함` **{me['purse']:,}원** (월요일 정산)" if me.get("purse") else "") if me else
                 "\n\n아직 이번 주 기록이 없어요. `/공식경기`로 순위에 올라 보세요!")
         reset = ((now + 9 * 3600) // 86400 + 3) // 7 * 7 - 3   # 다음 주 월요일 KST 날짜 번호
         next_mon = (reset + 7) * 86400 - 9 * 3600
