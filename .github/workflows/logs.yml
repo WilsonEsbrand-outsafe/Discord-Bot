@@ -37,6 +37,13 @@ jobs:
             print("선수 번호 최대:", q("SELECT MAX(CAST(player_id AS INTEGER)) FROM pm_players WHERE player_id NOT LIKE 'AMT_%'"))
             print("현역 선수 수:", q("SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"))
             print("구단 수:", q("SELECT COUNT(*) FROM clubs"))
+            print("선수풀 OVR (현역 · 아마추어 제외): 최소", q("SELECT MIN(ovr) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"),
+                  "· 최대", q("SELECT MAX(ovr) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"))
+            print("OVR 구간별 현역 선수 수:", con.execute(
+                "SELECT group_concat(b || ':' || n, '  ') FROM (SELECT (ovr / 5) * 5 AS b, COUNT(*) AS n FROM pm_players "
+                "WHERE retired=0 AND player_id NOT LIKE 'AMT_%' GROUP BY b ORDER BY b)").fetchone()[0])
+            print("보유 중인 카드 OVR 최소:", q("SELECT MIN(p.ovr) FROM pm_holdings h JOIN pm_players p ON p.player_id=h.player_id "
+                                       "WHERE h.qty>0 AND p.retired=0 AND p.player_id NOT LIKE 'AMT_%'"))
             for t in ("pm_price_history", "pm_news", "pm_holdings", "pm_listings", "pm_trade_items"):
                 print(t, "행 수:", q(f"SELECT COUNT(*) FROM {t}"))
             print("가장 오래된 시세 기록(일 전):", q("SELECT (strftime('%s','now') - MIN(tick_ts)) / 86400 FROM pm_price_history"))

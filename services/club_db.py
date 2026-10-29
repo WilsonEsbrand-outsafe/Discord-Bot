@@ -1694,6 +1694,34 @@ class ClubDB:
             return p
         return await self._tx(fn)
 
+    async def transfer_prospect(self, seller: int, buyer: int, prospect_id: int, price: int, now_ts: int) -> dict:
+        """3.6.0 유망주 개인 거래: 산 사람이 price 를 판 사람에게 주고 현역 유망주를 데려간다 (기록 · 강화 · 특성 그대로).
+        실패 reason: none(판 사람의 현역 유망주가 아님) / self / no_club(산 사람 구단 없음) / exists(산 사람에게 현역 유망주가 있음) /
+        retired_number(산 사람 구단의 영구결번 번호) / balance."""
+        def fn(con):
+            if int(seller) == int(buyer):
+                return {"ok": False, "reason": "self"}
+            p = self._active_prospect(con, seller, now_ts)
+            if not p or p["id"] != int(prospect_id):
+                return {"ok": False, "reason": "none"}
+            if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (int(buyer),)).fetchone():
+                return {"ok": False, "reason": "no_club"}
+            if self._active_prospect(con, buyer, now_ts):
+                return {"ok": False, "reason": "exists"}
+            if con.execute("SELECT 1 FROM prospects WHERE user_id=? AND number=? AND retired_number=1",
+                           (int(buyer), p["number"])).fetchone():
+                return {"ok": False, "reason": "retired_number", "number": p["number"]}
+            bal = self._pay(con, buyer, int(price))
+            if bal is None:
+                return {"ok": False, "reason": "balance", "price": int(price)}
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(seller),))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (int(price), int(seller)))
+            con.execute("UPDATE prospects SET user_id=? WHERE id=?", (int(buyer), p["id"]))
+            con.execute("DELETE FROM club_lineup WHERE user_id=? AND player_id=?", (int(seller), p["pid"]))
+            con.execute("UPDATE clubs SET captain=NULL WHERE user_id=? AND captain=?", (int(seller), p["pid"]))
+            return {"ok": True, "price": int(price), "balance": bal, **self._prospect_by_id(con, p["id"], now_ts)}
+        return await self._tx(fn)
+
     async def retire_number(self, user_id: int, prospect_id: int, now_ts: int) -> dict:
         """은퇴한 내 유망주의 등번호를 영구결번. 실패 reason: none(내 은퇴 선수 아님) / done(이미 영구결번) /
         taken(그 번호는 이미 영구결번) / wearing(현역 유망주가 그 번호를 달고 있음)."""
