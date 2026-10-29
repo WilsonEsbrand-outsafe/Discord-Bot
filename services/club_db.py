@@ -11,6 +11,7 @@ import zlib
 from pathlib import Path
 from typing import Optional
 
+import release
 from services.economy_db import rookie_until
 from services.enhance import ENH_DROP_FROM, ENH_DROP_P, ENH_MAX, ENH_MIN_OVR, ENH_PLAYERS, ENH_STONES, STAR_OVR, TRAITS, enh_ovr, parse_traits, trait_slots
 from services.enhance import chance as enh_chance
@@ -378,6 +379,35 @@ XP_FRIENDLY = 0.5
 # 무실점이면 수비수 · 골키퍼 +. 미드필더는 도움 경험치를 골만큼 받고, 약팀 상대엔 공격 포인트나 킬패스가 있으면 부진 아님
 PROSPECT_XP_350 = {"key_pass": 4, "tackle": 4, "save": 3, "clean_DF": 3, "clean_GK": 4}
 PROSPECT_MF_ASSIST_350 = PROSPECT_XP["goal"]
+
+
+# 3.6.0 (release.preview_360): 2군 — 강화 전(기본 OVR 70 밑 · 강화 0) 유망주는 1군이 아니라 2군에서 뛴다.
+# 2군 = 유망주 + 유스 선수 + 2군 아마추어(1군 아마추어와 다른 선수들 · 빈자리만). 2군 경기는 NPC 2군과 바로 결과.
+# 1군 아마추어(AMT_)는 OVR 이 AMATEUR_MIN_360 밑이면 그만큼으로 뛴다.
+AMATEUR_MIN_360 = 65
+RESERVE_ID = "AMB_"
+RESERVE_OVR = 55
+RESERVE_XP = 0.7          # 2군 경기 경험치 배율 (판수 제한이 없어서 1군보다 조금 적게)
+RESERVE_COOLDOWN = 60     # 2군 경기 사이 (초)
+RESERVE_AMATEURS = [(f"{RESERVE_ID}{g}_{i:02d}", n, g) for g, names in (
+    ("GK", ("잡아라", "골문지")), ("DF", ("버텨라", "막아봐", "수비꾼", "튼튼이", "지켜줘")),
+    ("MF", ("돌려줘", "뛰어라", "이어줘", "부지런", "중간이", "살림꾼")), ("FW", ("넣어봐", "때려라", "골사냥", "쏴보자", "돌진이")))
+    for i, n in enumerate(names, 1)]
+_NPC_RESERVE = ("FC 새싹", "청춘 유나이티드", "미래 시티", "꿈나무 FC", "새벽 레인저스", "푸른 들 FC", "도전 애슬레틱", "희망 원더러스")
+
+
+def in_reserve(p: dict) -> bool:
+    """3.6.0 2군 유망주인가: 강화 전 (기본 OVR 이 강화 기준 밑이고 강화 단계 0)."""
+    return p["ovr"] < ENH_MIN_OVR and not p.get("enh")
+
+
+def npc_reserve(rating: int, rng=random) -> dict:
+    """2군 경기 NPC 상대 — 내 2군 전력 ±4."""
+    r = max(30, rating + rng.randint(-4, 4))
+    xi = [{"player_id": None, "name": f"{n} {i + 1}번", "pos": g, "ovr": r, "nation": "-"}
+          for i, (g, n) in enumerate(zip(("GK",) + ("DF",) * 4 + ("MF",) * 4 + ("FW",) * 2, ("골키퍼",) + ("수비",) * 4
+                                         + ("미드",) * 4 + ("공격",) * 2))]
+    return {"name": rng.choice(_NPC_RESERVE) + " 2군", "rating": r, "xi": xi}
 
 
 def xp_gap_mult(gap: int) -> float:
@@ -751,8 +781,13 @@ class ClubDB:
             (int(user_id),),
         ).fetchall()
         squad = {r[0]: {"player_id": r[0], "name": r[1], "pos": r[2], "ovr": int(r[3]), "nation": r[4]} for r in rows}
+        v360 = release.ctx_360()
+        if v360:   # 3.6.0 1군 아마추어 최소 OVR
+            for x in squad.values():
+                if x["player_id"].startswith("AMT_"):
+                    x["ovr"] = max(x["ovr"], AMATEUR_MIN_360)
         p = ClubDB._active_prospect(con, user_id, int(time.time()))
-        if p and not p["injured"]:
+        if p and not p["injured"] and not (v360 and in_reserve(p)):   # 3.6.0 강화 전 유망주는 2군
             squad[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"],
                                "ovr": min(99, p["ovr"] + enh_ovr(p["enh"], p["traits"])),   # 3.4.0 강화 · 특성
                                "nation": p["nation"], "number": p["number"], "prospect": True, "focus": p["focus"],
@@ -1432,9 +1467,48 @@ class ClubDB:
             return {"ok": True, "trait": key}
         return await self._tx(fn)
 
+    # ───────────── 3.6.0 2군 ─────────────
+    async def reserve_team(self, user_id: int, now_ts: int) -> Optional[dict]:
+        """2군 11명: 강화 전 유망주(부상 아니면 · 고정) + 유스 선수 + 2군 아마추어로 빈자리. 구단이 없으면 None.
+        → {name, formation, rating, lineup, xi, prospect(2군 유망주 | None), youth_ids}."""
+        def fn(con):
+            row = con.execute("SELECT club_name, formation, emblem FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
+            if not row:
+                return None
+            formation = row[1] if row[1] in FORMATIONS else DEFAULT_FORMATION
+            pool = {}
+            p = self._active_prospect(con, user_id, now_ts)
+            if p and in_reserve(p) and not p["injured"]:
+                pool[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"], "ovr": p["ovr"],
+                                  "nation": p["nation"], "number": p["number"], "prospect": True, "focus": p["focus"],
+                                  "conf_mult": 0.6 + p["confidence"] * 0.04}
+            try:
+                youth = con.execute("SELECT id, name, pos, ovr FROM youth_players WHERE user_id=? AND status='youth'",
+                                    (int(user_id),)).fetchall()
+            except sqlite3.OperationalError:
+                youth = []
+            for yid, name, pos, ovr in youth:
+                pool[f"YY{yid}"] = {"player_id": f"YY{yid}", "name": name, "pos": pos, "ovr": int(round(ovr)),
+                                    "nation": "대한민국", "youth_id": yid}
+            for pid, name, g in RESERVE_AMATEURS:
+                pool[pid] = {"player_id": pid, "name": name, "pos": g, "ovr": RESERVE_OVR, "nation": "대한민국", "amateur": True}
+            fixed = tuple(k for k, v in pool.items() if not v.get("amateur"))   # 아마추어는 빈자리만
+            placed = auto_assign(list(pool.values()), formation, fixed)
+            lineup = [{"slot": slot, "index": i, **pool[pid]} if pid else {"slot": slot, "index": i, "player_id": None}
+                      for i, (slot, pid) in enumerate(zip(FORMATIONS[formation], placed))]
+            rating = team_rating(lineup, None)["rating"]
+            on = {s.get("player_id") for s in lineup}
+            return {"name": (f"{row[2]} " if row[2] else "") + row[0] + " 2군", "formation": formation, "rating": rating,
+                    "lineup": lineup, "xi": [s for s in lineup if s.get("player_id")], "uid": int(user_id),
+                    "prospect": p if p and p["pid"] in on else None,
+                    "prospect_any": p if p and in_reserve(p) else None,
+                    "youth_ids": [v["youth_id"] for k, v in pool.items() if v.get("youth_id") and k in on]}
+        return await self._tx(fn)
+
     async def record_prospects(self, sides: list[tuple], goals: list[dict], now_ts: int,
                                events: list[dict] = (), rng=random, friendly: bool = False,
-                               v350: bool = False, v360: bool = False) -> list[dict]:
+                               v350: bool = False, v360: bool = False, xp_mult: float = 1.0,
+                               xp_label: str = "") -> list[dict]:
         """경기에 뛴 유망주 기록: 출전 · 골 · 도움, 성장 경험치 ± (하루 PROSPECT_DAILY_GROWTH 경기까지,
         30세까지, 잠재력까지, 프로 의식 배율), 자신감 변화, 부상. sides: [(선발 xi, 득점, 실점[, 상대 id, 전력 차])]
         — 양 팀 모두. events: 중계 장면(경고 · 찬스 놓침).
@@ -1442,7 +1516,8 @@ class ClubDB:
         뛴 유망주마다 결과 dict (xp: 이번 경기 경험치, 성장 대상이 아니면 None · minus: 감점 사유 키 ·
         mods: 경험치 배율 설명 · injury: 부상 dict | None).
         v350 = 3.5.0 포지션별 경험치 (PROSPECT_XP_350 · PROSPECT_MF_ASSIST_350) · plus: 더해진 항목 키.
-        v360 = 3.6.0 하루 판수 제한 · 같은 상대 반복 감소 없앰 (전력 차 · 친선 배율은 그대로)."""
+        v360 = 3.6.0 하루 판수 제한 · 같은 상대 반복 감소 없앰 (전력 차 · 친선 배율은 그대로).
+        xp_mult · xp_label: 3.6.0 2군 경기 경험치 배율 (+경험치에만)."""
         if not any(str(s.get("player_id") or "").startswith(PROSPECT_ID) for xi, *_ in sides for s in xi):
             return []
         day = kst_day(now_ts)
@@ -1488,6 +1563,9 @@ class ClubDB:
                     if friendly:
                         mult *= XP_FRIENDLY
                         mods.append(f"친선 ×{XP_FRIENDLY:g}")
+                    if xp_mult != 1:
+                        mult *= xp_mult
+                        mods.append(f"{xp_label} ×{xp_mult:g}")
                     m = xp_gap_mult(gap)
                     if m != 1:
                         mult *= m

@@ -11,8 +11,10 @@ import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS, FACILITY_MAX, MANAGERS, MEDICS, PROSPECT_PRICE,
-    STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect,
+    RESERVE_COOLDOWN, RESERVE_XP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect, match_highlights, npc_reserve,
+    simulate_match,
 )
+from services.enhance import ENH_MIN_OVR
 from services.dungeon import THEMES, DungeonDB, theme_of
 from services.economy_db import (
     ROOKIE_GRIND_MULT, SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB, rookie_until,
@@ -132,6 +134,7 @@ class Hubs(commands.Cog):
         self.tac = TacticsDB()
         self.youth = YouthDB()
         self.mgmt = MgmtDB()
+        self._reserve_at: dict[int, int] = {}   # 3.6.0 2군 경기 마지막 시각 (쿨타임)
 
     async def cog_load(self):
         from cogs.economy import ITEM_HANDLERS
@@ -252,11 +255,13 @@ class Hubs(commands.Cog):
                       "전력 보너스 · 부상 치료" + (" · 유스 스카우터" if g311 else "")),
                  Page("⚔️", "전술", self._p_tactics, "기본 전술 · 적응도 · 하프타임 규칙"),
                  Page("🔍", "상대 분석", self._p_scout, "상대 최근 5경기 전술"),
-                 Page("🎓", "유스", self._p_youth, "입단 테스트 · 훈련 · 판매 · 1군 등록"),
+                 Page("🎓", "2군 · 유스" if release.preview_360(guild_id) else "유스", self._p_youth,
+                      ("2군 경기 · " if release.preview_360(guild_id) else "") + "입단 테스트 · 훈련 · 판매 · 1군 등록"),
                  Page("💼", "경영", self._p_mgmt, "관중 수입 · 팬 만족도 · 티켓 가격")]
         if release.preview_2101(guild_id):   # 2.10.1 (테스트 서버 먼저)
             pages.append(Page("🎨", "꾸미기 · 설정", self._p_decor, "구단명 · 엠블럼 · 경기장 이름 · 구단 삭제"))
-        return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page, ctx={"g311": g311})
+        return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page,
+                       ctx={"g311": g311, "g360": release.preview_360(guild_id)})
 
     # ───────────── 🎨 꾸미기 · 설정 (2.10.1: /구단명변경 · /구단꾸미기 · /구단삭제 를 여기로) ─────────────
     async def _p_decor(self, view: HubView) -> discord.Embed:
@@ -496,7 +501,10 @@ class Hubs(commands.Cog):
                 f"{i}. **{a['name']}** {a['pos']} {a['age']}세 · OVR {a['ovr']} · "
                 + (f"잠재 {Y.star_text(Y.applicant_stars(a, club, sc))} · " if g311 else "")
                 + f"{Y.PERSONALITIES[a['personality']][0]} — \"{a['scout']}\"" for i, a in enumerate(apps, 1))
-        e = ui.card("🎓 유스", body, ui.INFO, user, "🎓 유스")
+        g360 = view.ctx.get("g360")   # 3.6.0 2군
+        if g360:
+            body = await self._reserve_text(user, now) + "\n\n**🎓 유스**\n" + body
+        e = ui.card("🎓 2군 · 유스" if g360 else "🎓 유스", body, ui.INFO, user, "🎓 유스")
         e.set_footer(text=f"테스트 {_won(Y.TRYOUT_FEE)}원(불합격 시 절반 환불) · 훈련 하루 {Y.TRAIN_DAILY}번 · "
                           f"{Y.GRAD_AGE}세 졸업 · 성격: 📚성실 ✨천재 🌱대기만성 🔥승부사")
         # 0줄: 선수 고르기
@@ -531,9 +539,9 @@ class Hubs(commands.Cog):
                 ("tryout", "지원자 보기" if not apps else "지원자 다시 보기", "🔎", not st["tried"] and not full),
                 ("coupon", f"쿠폰으로 테스트 ({items['scout_coupon']})", "🎟️",
                  not st["tried"] and not full and not apps and items["scout_coupon"] > 0),
-                ("match", "주간 연습경기", "⚽", not st["matched"] and bool(youth))):
+                ("reserve", "2군 경기", "⚽", True) if g360 else ("match", "주간 연습경기", "⚽", not st["matched"] and bool(youth))):
             b = discord.ui.Button(label=label, emoji=emoji, row=2, disabled=not ok,
-                                  style=discord.ButtonStyle.primary if key == "tryout" else discord.ButtonStyle.secondary)
+                                  style=discord.ButtonStyle.primary if key in ("tryout", "reserve") else discord.ButtonStyle.secondary)
             b.callback = self._youth_act(view, key)
             view.add_item(b)
         # 3줄: 지원자 고르기 → 테스트
@@ -567,6 +575,8 @@ class Hubs(commands.Cog):
                                   if r["trains"] in Y.REVEAL else ""), ui.WIN, user, "🎓 유스") if r["ok"] else ui.card(
                     "🙅 훈련", {"limit": "오늘 훈련을 다 했어요.", "ticket": "🏋️ 특훈권이 없어요.", "none": "선수를 골라 주세요."}[r["reason"]],
                     ui.LOSE, user, "🎓 유스")
+            elif key == "reserve":
+                note = await self._reserve_match(user, now)
             elif key == "match":
                 r = await self.youth.weekly_match(user.id, now)
                 if r["ok"]:
@@ -597,6 +607,55 @@ class Hubs(commands.Cog):
                             "none": "선수를 찾지 못했어요."}[r["reason"]], ui.LOSE, user, "🎓 유스")
             await view.refresh(interaction, note)
         return cb
+
+    # ───────────── ⚽ 2군 (3.6.0) ─────────────
+    async def _reserve_text(self, user, now: int) -> str:
+        t = await self.clubs.reserve_team(user.id, now)
+        if not t:
+            return "**⚽ 2군** — 구단이 있어야 해요. `/구단생성`"
+        p = t["prospect_any"]
+        star = (f"🌟 **{p['name']}** OVR {p['ovr']}" + (" (🚑 부상 — 복귀하면 다시 뛰어요)" if p["injured"] else "")
+                + f" · OVR **{ENH_MIN_OVR}**이 되면 1군 승격 · 강화") if p else \
+            f"🌟 2군 유망주 없음 (강화 전 · OVR {ENH_MIN_OVR} 밑 유망주가 여기서 뛰어요)"
+        youth = [s["name"] for s in t["xi"] if s.get("youth_id")]
+        ama = sum(bool(s.get("amateur")) for s in t["xi"])
+        return (f"**⚽ 2군** · 전력 **{t['rating']}** · {t['formation']}\n{star}\n"
+                f"🎓 유스 {len(youth)}명" + (f" ({', '.join(youth)})" if youth else "") + f" · 👥 2군 아마추어 {ama}명\n"
+                f"-# 2군 경기는 판수 제한 없이 {RESERVE_COOLDOWN}초마다 · 유망주 경험치 ×{RESERVE_XP:g} · "
+                f"유스는 하루 {Y.RESERVE_DAILY}판까지 훈련 1번만큼 자라요")
+
+    async def _reserve_match(self, user, now: int) -> discord.Embed:
+        """2군 경기 한 판 — NPC 2군과 바로 결과. 유망주 경험치 · 유스 성장."""
+        from cogs.club import Club
+        left = self._reserve_at.get(user.id, 0) + RESERVE_COOLDOWN - now
+        if left > 0:
+            return ui.card("⏳ 2군 선수들이 쉬는 중", f"**{left}초** 뒤에 다음 경기를 할 수 있어요.", ui.EVEN, user, "🎓 유스")
+        t = await self.clubs.reserve_team(user.id, now)
+        if not t:
+            return ui.card("🙅 2군 경기", "구단이 있어야 해요. `/구단생성`", ui.LOSE, user, "🎓 유스")
+        self._reserve_at[user.id] = now
+        opp = npc_reserve(t["rating"])
+        res = simulate_match(t, opp)
+        gf, ga = res["home"], res["away"]
+        hl = match_highlights(res, t, opp, v350=True)
+        stars = await self.clubs.record_prospects([(t["xi"], gf, ga, None, t["rating"] - opp["rating"])], res["goals"], now,
+                                                  hl, v350=True, v360=True, xp_mult=RESERVE_XP, xp_label="2군")
+        grown = await self.youth.reserve_growth(user.id, t["youth_ids"], gf > ga, now)
+        goals = [f"`{g['minute']:>2}'` ⚽ {g['scorer']}" + (f" (도움 {g['assist']})" if g.get("assist") else "")
+                 + ("" if g["side"] == "home" else f" *({opp['name']})*") for g in res["goals"]]
+        body = "\n".join(goals) or "*골 없이 끝났어요.*"
+        body += "".join(Club._star_line(x) for x in stars)
+        for x in stars:
+            if x["ovr"] >= ENH_MIN_OVR > x["ovr0"]:
+                body += f"\n\n🎉 **{x['name']}** OVR {ENH_MIN_OVR} 달성 — **1군 승격!** 이제 `/유망주`에서 강화할 수 있어요"
+        if grown["grown"]:
+            body += "\n\n🎓 " + " · ".join(f"{n} {a:.1f}→**{b:.1f}**" for n, a, b in grown["grown"])
+            body += f"\n-# 오늘 유스 성장 {grown['left']}판 남음"
+        elif t["youth_ids"]:
+            body += f"\n-# 오늘 유스 성장은 {Y.RESERVE_DAILY}판을 다 채웠어요 (유망주 경험치는 계속)"
+        color = ui.WIN if gf > ga else ui.LOSE if gf < ga else ui.EVEN
+        return ui.card(f"⚽ {t['name']} {gf} : {ga} {opp['name']}", f"`전력` {t['rating']} vs {opp['rating']}\n\n" + body,
+                       color, user, "🎓 유스")
 
     async def _youth_tryout(self, view: HubView, interaction: discord.Interaction, idx: int):
         user = view.user

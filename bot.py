@@ -293,6 +293,7 @@ def _onboard_state(user_id: int) -> str:
 
 
 async def _tree_check(interaction: discord.Interaction) -> bool:
+    release.GUILD.set(interaction.guild_id)   # 3.6.0 DB 안쪽에서 서버별 공개 여부를 본다 (release.ctx_360)
     if interaction.type != discord.InteractionType.application_command or interaction.user.id == OWNER_ID:
         return True
     if release.maintenance():
@@ -326,6 +327,7 @@ _MAINT_TEXT = "🔧 정기점검 중입니다. (<t:{0}:t> ~ <t:{1}:t>) 점검이
 
 
 def _maint_blocked(interaction: discord.Interaction) -> bool:
+    release.GUILD.set(interaction.guild_id)   # 버튼 · 메뉴 콜백 태스크가 이 값을 물려받는다 (release.ctx_360)
     if interaction.user.id == OWNER_ID or not release.maintenance():
         return False
     asyncio.create_task(interaction.response.send_message(_MAINT_TEXT.format(*release.MAINTENANCE), ephemeral=True))

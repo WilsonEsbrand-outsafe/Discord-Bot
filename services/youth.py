@@ -22,6 +22,7 @@ YEAR = 7 * 86400
 GRAD_AGE, FIRST_RETIRE = 19, 35
 TRAIN_DAILY, GROWTH = 2, 0.02                       # 훈련 한 번 = 잠재력까지 남은 거리의 2%
 MATCH_TRAINS = 3                                    # 주간 연습경기 = 훈련 3번 분량
+RESERVE_DAILY = 6                                   # 3.6.0 2군 경기: 하루 이만큼까지 유스 선수가 훈련 1번 분량씩 자란다
 AFTER_GRAD_DECAY = 0.85                             # 졸업 뒤 판매가 주마다
 SELL_MULT = 1.5
 REGISTER_FEE = 1_000_000
@@ -220,6 +221,10 @@ class YouthDB(EconomyDB):
                         "applicants TEXT, PRIMARY KEY(user_id, day_key))")
             con.execute("CREATE TABLE IF NOT EXISTS youth_week (user_id INTEGER, week INTEGER, match INTEGER DEFAULT 0, "
                         "register INTEGER DEFAULT 0, PRIMARY KEY(user_id, week))")
+            try:   # 3.6.0 오늘 2군 경기로 자란 횟수
+                con.execute("ALTER TABLE youth_daily ADD COLUMN reserve INTEGER DEFAULT 0")
+            except Exception:
+                pass
             con.commit()
         finally:
             con.close()
@@ -389,6 +394,29 @@ class YouthDB(EconomyDB):
             con.execute("INSERT INTO youth_week(user_id, week, match) VALUES(?,?,1) ON CONFLICT(user_id, week) DO UPDATE SET match=1",
                         (uid, wk))
             return {"ok": True, "score": (gf, ga), "won": won, "grown": out}
+        return await self._tx(fn)
+
+    async def reserve_growth(self, uid: int, ids: list[int], won: bool, now_ts: int) -> dict:
+        """3.6.0 2군 경기에 뛴 유스 선수 성장 — 하루 RESERVE_DAILY 판까지 훈련 1번 분량 (성격 · 승부사 보너스 그대로).
+        → {grown: [(이름, 전, 후)], left: 오늘 남은 성장 판수}."""
+        day = _kst_day(now_ts)
+
+        def fn(con):
+            con.execute("INSERT OR IGNORE INTO youth_daily(user_id, day_key) VALUES(?, ?)", (uid, day))
+            n = int(con.execute("SELECT COALESCE(reserve, 0) FROM youth_daily WHERE user_id=? AND day_key=?",
+                                (uid, day)).fetchone()[0])
+            if n >= RESERVE_DAILY or not ids:
+                return {"grown": [], "left": max(0, RESERVE_DAILY - n)}
+            out = []
+            for yid in ids:
+                y = self._get(con, uid, yid)
+                if not y:
+                    continue
+                new = grow(y["ovr"], y["pot"], 1, train_mult(y, now_ts, match=True, won=won))
+                con.execute("UPDATE youth_players SET ovr=?, trains=trains+1 WHERE id=?", (new, yid))
+                out.append((y["name"], y["ovr"], new))
+            con.execute("UPDATE youth_daily SET reserve=? WHERE user_id=? AND day_key=?", (n + 1, uid, day))
+            return {"grown": out, "left": RESERVE_DAILY - n - 1}
         return await self._tx(fn)
 
     async def sell(self, uid: int, yid: int, now_ts: int) -> dict:

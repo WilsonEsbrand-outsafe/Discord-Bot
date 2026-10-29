@@ -3,6 +3,7 @@
 # 지금: 3.1.0 — 10/23 16:30 KST 모든 서버 공개 (점검 16:30 ~ 16:35) · 2.10.1 — 10/22 10:00 KST (점검 10:00 ~ 10:05) · 2.9.1 은 10/21 14:15 KST · 2.8 은 2026-10-20 00:00 KST 공개 완료
 #       (2.5 는 2026-10-02 00:00 · 2.6 은 2026-10-03 12:00 · 2.7 은 2026-10-12 17:00 KST 공개 완료)
 import calendar  # RELEASE_TS = calendar.timegm((년, 월, 일, 시(UTC), 분, 0)) · None = 아직 테스트 서버에만
+import contextvars
 import time
 from typing import Optional
 
@@ -159,6 +160,16 @@ def released_360(now: Optional[float] = None) -> bool:
 
 def preview_360(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_360(now)
+
+
+# 지금 처리 중인 상호작용의 서버 — bot.py 가 / 명령어 · 버튼 · 메뉴마다 넣는다 (DB 안쪽처럼 서버를 넘겨받지 못하는 곳용).
+# 백그라운드 작업에선 None.
+GUILD: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("guild", default=None)
+
+
+def ctx_360() -> bool:
+    """3.6.0 이 공개된 서버에서 온 상호작용인가 (2군 · 1군 아마추어 최소 OVR — 구단 명단을 만드는 DB 안쪽에서 쓴다)."""
+    return preview_360(GUILD.get())
 
 
 def maintenance(now: Optional[float] = None) -> bool:

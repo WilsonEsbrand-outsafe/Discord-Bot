@@ -825,6 +825,11 @@ class PlayerMarketDB:
                 _DB_STAT_SHOWN = True
                 pc, fl, ps = (con.execute(f"PRAGMA {k}").fetchone()[0] for k in ("page_count", "freelist_count", "page_size"))
                 print(f"[DB] 크기 {pc * ps / 1e6:,.0f}MB · 빈 공간 {fl * ps / 1e6:,.0f}MB")
+                # 3.6.0: 선수풀 OVR 분포 (1군 아마추어 최소 OVR 정할 때 참고)
+                lo, hi, n, under = con.execute(
+                    "SELECT MIN(ovr), MAX(ovr), COUNT(*), SUM(ovr < 65) FROM pm_players "
+                    "WHERE retired=0 AND player_id NOT LIKE 'AMT_%'").fetchone()
+                print(f"[DB] 선수풀 현역 {n or 0:,}명 · OVR {lo}~{hi} · 65 미만 {under or 0:,}명")
         finally:
             con.close()
 

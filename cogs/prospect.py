@@ -10,7 +10,7 @@ import release
 from services import ui
 from services.club_db import (
     PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_FOCUS_GROWTH, PROSPECT_FOCUS_N, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
-    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, ClubDB, focus_parts, focus_pool, hidden_tier, kst_day, prospect_attrs,
+    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, ClubDB, focus_parts, in_reserve, focus_pool, hidden_tier, kst_day, prospect_attrs,
     prospect_input, prospect_xp_need,
 )
 from services.player_market_db import NATIONS
@@ -60,6 +60,8 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
         body = (f"`나이` **{p['age']}세** · `OVR` **{p['ovr']}** · `잠재력` **{p['pot']}** ({p['pot_grade']}) · "
                 f"`최고` {p['peak_ovr']}\n{grow}"
                 + ("" if v360 else f"\n`오늘 성장 경기` {min(played, PROSPECT_DAILY_GROWTH)}/{PROSPECT_DAILY_GROWTH}")
+                + (f"\n🏟️ **2군 소속** — `/구단` → 🎓 2군에서 경기해 OVR {EH.ENH_MIN_OVR}이 되면 1군 승격 · 강화"
+                   if v360 and in_reserve(p) else "\n🏟️ **1군**" if v360 else "")
                 + _enh_line(p)
                 + (f"\n🚑 **부상** — {p['injury']} · "
                    + (f"복귀까지 공식경기 **{p['injury_games']}경기** (내 구단이 공식경기를 치를 때마다 1경기씩)"
