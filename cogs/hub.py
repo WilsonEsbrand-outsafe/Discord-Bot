@@ -658,7 +658,7 @@ class Hubs(commands.Cog):
         gap = t["rating"] - opp["rating"]
         stars = await self.clubs.record_prospects([(t["xi"], gf, ga, opp["uid"], gap), (opp["xi"], ga, gf, user.id, -gap)],
                                                   res["goals"], now, hl, v350=True, v360=True, xp_mult=RESERVE_XP,
-                                                  xp_label="2군")
+                                                  xp_label="2군", reserve=True)
         grown = await self.youth.reserve_growth(user.id, t["youth_ids"], gf > ga, now)
         goals = [f"`{g['minute']:>2}'` ⚽ {g['scorer']}" + (f" (도움 {g['assist']})" if g.get("assist") else "")
                  + ("" if g["side"] == "home" else f" *({opp['name']})*") for g in res["goals"]]

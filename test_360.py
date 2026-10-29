@@ -218,10 +218,14 @@ def test_reserve():
         assert len(ids) == 11 and pid in ids and any(i.startswith("YY") for i in ids)
         assert all(s["ovr"] == cdb.RESERVE_OVR for s in t["xi"] if s.get("amateur"))
         assert t["prospect"]["pid"] == pid and len(t["youth_ids"]) == 1
-        # 2군 경기 경험치 ×0.7
+        # 2군 경기 경험치 ×1.5
         x = (await clubs.record_prospects([(t["xi"], 1, 0, None, 0)], [], now, rng=NoHurt, v360=True,
-                                          xp_mult=cdb.RESERVE_XP, xp_label="2군"))[0]
-        assert x["xp"] == round(15 * cdb.RESERVE_XP) and "2군 ×0.7" in x["mods"]
+                                          xp_mult=cdb.RESERVE_XP, xp_label="2군", reserve=True))[0]
+        assert x["xp"] == round(15 * cdb.RESERVE_XP) and "2군 ×1.5" in x["mods"]
+        # 2군 경기엔 감점 없음: 훨씬 약한 상대에게 대패해도 출전 경험치는 그대로 (전력 차 배율도 없음)
+        x = (await clubs.record_prospects([(t["xi"], 0, 4, None, 30)], [], now, rng=NoHurt, v360=True,
+                                          xp_mult=cdb.RESERVE_XP, xp_label="2군", reserve=True))[0]
+        assert x["xp"] > 0 and x["minus"] == [] and not any("전력 차" in m for m in x["mods"])
         # OVR 65 가 되면 1군으로
         con = sqlite3.connect(TMP)
         con.execute("UPDATE prospects SET ovr=65 WHERE user_id=?", (U,))
