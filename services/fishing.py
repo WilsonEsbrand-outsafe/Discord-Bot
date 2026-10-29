@@ -748,19 +748,22 @@ class FishingDB(EconomyDB):
                 "SELECT species, size, ts FROM fish_log WHERE user_id=? ORDER BY ts DESC, rowid DESC LIMIT ?", (uid, limit))
             if sp in FISH])
 
-    async def weekly_top(self, now_ts: int, limit: int = 5) -> list[dict]:
-        """이번 주 최대어 — 평균 크기 대비 가장 큰 물고기 (종마다 크기가 달라서 비율로 겨룬다). 유저당 1마리."""
+    async def weekly_top(self, now_ts: int, limit: int = 5, per_user: bool = True) -> list[dict]:
+        """이번 주 최대어 — 평균 크기 대비 가장 큰 물고기 (종마다 크기가 달라서 비율로 겨룬다). 유저당 1마리.
+        per_user=False (3.6.0): 유저당 1마리가 아니라 이번 주 낚은 물고기 전체를 크기 순으로."""
         wk = week_key(now_ts)
 
         def fn(con):
             best: dict[int, tuple] = {}
+            every: list[tuple] = []
             for uid, sp, size, ts in con.execute("SELECT user_id, species, size, ts FROM fish_log WHERE week=?", (wk,)):
                 if sp not in FISH:
                     continue
                 score = (FISH[sp][2], size_mult(sp, size))   # 등급 먼저, 그다음 크기 비율
+                every.append((uid, (score, sp, size, ts)))
                 if uid not in best or score > best[uid][0]:
                     best[uid] = (score, sp, size, ts)
-            top = sorted(best.items(), key=lambda kv: kv[1][0], reverse=True)[:limit]
+            top = sorted(best.items() if per_user else every, key=lambda kv: kv[1][0], reverse=True)[:limit]
             return [{"user_id": u, "species": sp, "size": size, "ratio": sc[1], "ts": ts} for u, (sc, sp, size, ts) in top]
         return await self._tx(fn)
 

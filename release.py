@@ -148,6 +148,19 @@ def preview_350(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_350(now)
 
 
+# 3.6.0 — 테스트 서버 먼저. preview_360(guild): 유망주 판수 제한 · 같은 상대 감소 없앰 · 1배 더 줄이기 · 스카우트 보상 ·
+# 낚시 크기 랭킹 · 공식경기 스킵 · 주간 랭킹 · 2군 등. None = 아직
+RELEASE_360_TS: Optional[int] = None
+
+
+def released_360(now: Optional[float] = None) -> bool:
+    return RELEASE_360_TS is not None and _now(now) >= RELEASE_360_TS
+
+
+def preview_360(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_360(now)
+
+
 def maintenance(now: Optional[float] = None) -> bool:
     return MAINTENANCE is not None and MAINTENANCE[0] <= _now(now) < MAINTENANCE[1]
 

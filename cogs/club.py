@@ -394,7 +394,8 @@ class Club(commands.Cog):
             stars = await self.clubs.record_prospects(
                 [(h["xi"], hg, ag, a["uid"], gap), (a["xi"], ag, hg, h["uid"], -gap)], result["goals"], int(time.time()),
                 st["hl"], friendly=friendly,
-                v350=v350)   # 3.5.0 포지션별 경험치
+                v350=v350,   # 3.5.0 포지션별 경험치
+                v360=release.preview_360(getattr(interaction, "guild_id", None)))   # 3.6.0 판수 제한 · 같은 상대 감소 없음
             if stars:
                 extra = "\n" + "".join(self._star_line(x) for x in stars) + extra
             if tac:   # 적응도 +5 · 상대 분석 기록

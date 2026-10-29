@@ -385,6 +385,9 @@ class Economy(commands.Cog):
     # 수익 44.62% · 본전 6% 는 그대로, 기대값도 약 -1.1% 그대로 (2배 · 5배 손실도 함께 늘려 맞춘다).
     PK_TABLE_341 = [(p, *rest) for p, (_, *rest) in zip(
         (0.0005, 0.003, 0.040, 0.100, 0.3027, 0.060, 0.120, 0.0425, 0.010, 0.3213), PK_TABLE)]
+    # 3.6.0 (release.preview_360 서버): 1배를 더 줄임 — 1배 수익 · 1배 손실에서 같은 만큼 덜어 2배 수익 · 2배 손실로 (기대값 그대로)
+    PK_TABLE_360 = [(p, *rest) for p, (_, *rest) in zip(
+        (0.0005, 0.003, 0.040, 0.180, 0.2227, 0.060, 0.200, 0.0425, 0.010, 0.2413), PK_TABLE)]
 
     # ✅ 훈련 이벤트(고정 범위 내에서 수익/손실)
     TRAIN_EVENTS = [
@@ -705,7 +708,9 @@ class Economy(commands.Cog):
     def scout_tier(cls, level: int) -> str:
         return cls.SCOUT_LEVEL_NAMES[min(int(level), SCOUT_MAX_LEVEL) - 1]
 
-    def _scout_roll(self, level: int, con, user_id: int):
+    SCOUT_WIN_360 = 1.5   # 3.6.0 (release.preview_360 서버): 스카우트 성공 기본 보상 1.5배
+
+    def _scout_roll(self, level: int, con, user_id: int, v360: bool = False):
         """(돈 변동, 경험치 변동, 표시 정보). 성공하면 레벨별 확률로 선수 카드를 같은 트랜잭션에서 지급한다."""
         ev = random.choice(self.SCOUT_EVENTS)
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
@@ -720,6 +725,8 @@ class Economy(commands.Cog):
             if found:
                 give_player(con, user_id, found["player_id"])
         base = random.randint(*ev["win"])
+        if v360:
+            base = round(base * self.SCOUT_WIN_360, -2)
         return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "found": found,
                                 "base": base, "mult": mult}
 
@@ -737,7 +744,7 @@ class Economy(commands.Cog):
         user = interaction.user
         now_ts = int(time.time())
         try:
-            r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._scout_roll(lv, con, user.id),
+            r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(getattr(interaction, "guild_id", None))),
                                          cooldown_sec=self.SCOUT_COOLDOWN)
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
@@ -1052,7 +1059,7 @@ class Economy(commands.Cog):
         table = SKIP_ITEMS[item]
         what = self.GRIND_NAMES[table]
         v311 = release.preview_311(_gid(user))   # 3.1.1 훈련 레벨 간격 · 배율
-        roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id),
+        roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(_gid(user))),
                 "training": lambda lv, con=None: self._train_roll(lv, con, v311),
                 "spectating": lambda lv, con: self._watch_roll(lv, con, user.id, release.preview_310(_gid(user)))}[table]
         status = {"scouting": self._scout_status, "training": self._train_status, "spectating": self._watch_status}[table]
@@ -1144,7 +1151,8 @@ class Economy(commands.Cog):
             e.description += f"\n\n`베팅` **{amount:,}원**\n`잔액` **{cur_bal:,}원**"
             return await interaction.followup.send(embed=e)
 
-        table = self.PK_TABLE_341 if release.preview_341(interaction.guild_id) else self.PK_TABLE   # 3.4.1 2배 · 5배 ↑
+        table = (self.PK_TABLE_360 if release.preview_360(interaction.guild_id)   # 3.6.0 1배 더 ↓
+                 else self.PK_TABLE_341 if release.preview_341(interaction.guild_id) else self.PK_TABLE)   # 3.4.1 2배 · 5배 ↑
         roll, acc = random.random(), 0.0
         for idx, (prob, mult_s, emoji, name, headline, caster) in enumerate(table):
             acc += prob
@@ -1252,6 +1260,20 @@ class Economy(commands.Cog):
         (0.002, 0.006, 0.025, 0.070, 0.150, 0.140, 0.070, 0.170, 0.179, 0.0417, 0.004, 0.1423), HOOP_TABLE)]
     UFC_TABLE_341 = [(p, *rest) for p, (_, *rest) in zip(
         (0.0005, 0.003, 0.012, 0.045, 0.135, 0.160, 0.050, 0.170, 0.0635, 0.040, 0.014, 0.001, 0.306), UFC_TABLE)]
+    # 3.6.0 (release.preview_360 서버): 1배를 더 줄임 — 1배 수익 · 1배 손실에서 같은 만큼 2배 수익 · 2배 손실로.
+    # UFC 는 1배 손실이 워낙 많아 남는 몫을 무승부(본전)와 2배 손실에 반씩 (기대값 그대로)
+    BAT_TABLE_360 = [(p, *rest) for p, (_, *rest) in zip(
+        (0.001, 0.005, 0.020, 0.050, 0.200, 0.120, 0.080, 0.115, 0.200, 0.033, 0.003, 0.173), BAT_TABLE)]
+    HOOP_TABLE_360 = [(p, *rest) for p, (_, *rest) in zip(
+        (0.002, 0.006, 0.025, 0.070, 0.200, 0.090, 0.070, 0.145, 0.229, 0.0417, 0.004, 0.1173), HOOP_TABLE)]
+    UFC_TABLE_360 = [(p, *rest) for p, (_, *rest) in zip(
+        (0.0005, 0.003, 0.012, 0.045, 0.205, 0.090, 0.080, 0.135, 0.1635, 0.040, 0.014, 0.001, 0.211), UFC_TABLE)]
+
+    def _table(self, interaction, key: str):
+        """종목 배당표: 3.6.0 → 3.4.1 → 처음 표 순서로 그 서버에 공개된 것."""
+        g = getattr(interaction, "guild_id", None)
+        suffix = "_360" if release.preview_360(g) else "_341" if release.preview_341(g) else ""
+        return getattr(self, f"{key}_TABLE{suffix}")
 
     @staticmethod
     def _caster_card(user, title: str, caster: str, color: int, section: str) -> discord.Embed:
@@ -1304,7 +1326,7 @@ class Economy(commands.Cog):
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def batting(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
-        await self._play_table(interaction, amount, key="bat", table=self.BAT_TABLE_341 if release.preview_341(getattr(interaction, "guild_id", None)) else self.BAT_TABLE,
+        await self._play_table(interaction, amount, key="bat", table=self._table(interaction, "BAT"),
                                section="🎙️ 야구 중계",
                                spam_lines=self.BAT_SPAM_LINES,
                                broke=("🙅 타석에 설 수 없어요", "잔액이 부족해 대기 타석에서 돌아갑니다!"),
@@ -1314,7 +1336,7 @@ class Economy(commands.Cog):
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def basketball(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
-        await self._play_table(interaction, amount, key="hoop", table=self.HOOP_TABLE_341 if release.preview_341(getattr(interaction, "guild_id", None)) else self.HOOP_TABLE,
+        await self._play_table(interaction, amount, key="hoop", table=self._table(interaction, "HOOP"),
                                section="🎙️ 농구 중계",
                                spam_lines=self.HOOP_SPAM_LINES,
                                broke=("🙅 코트에 들어갈 수 없어요", "잔액이 부족해 벤치로 돌아갑니다!"),
@@ -1324,7 +1346,7 @@ class Economy(commands.Cog):
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="베팅 금액 (최소 1,000원)")
     async def ufc_fight(self, interaction: discord.Interaction, amount: app_commands.Range[int, BAT_MIN_BET]):
-        await self._play_table(interaction, amount, key="ufc", table=self.UFC_TABLE_341 if release.preview_341(getattr(interaction, "guild_id", None)) else self.UFC_TABLE,
+        await self._play_table(interaction, amount, key="ufc", table=self._table(interaction, "UFC"),
                                section="🎙️ UFC 중계",
                                spam_lines=self.UFC_SPAM_LINES,
                                broke=("🙅 옥타곤에 오를 수 없어요", "잔액이 부족해 계체량에서 탈락했습니다!"),
@@ -1377,10 +1399,10 @@ class Economy(commands.Cog):
         return [top, s - top, -(s - worst), -worst]
 
     @staticmethod
-    def _race_prizes_341(rng=random) -> list[int]:
-        """3.4.1: 1배 칸 없는 상금표 (수익 · 손실 모두 2배부터) — 달팽이 · 조정과 같은 규칙."""
-        from cogs.race import prizes_341
-        return prizes_341(4, rng)
+    def _race_prizes_341(v360: bool = False, rng=random) -> list[int]:
+        """3.4.1: 1배 칸 없는 상금표 (수익 · 손실 모두 2배부터) — 달팽이 · 조정과 같은 규칙. v360: 1배 판이 더 드물게."""
+        from cogs.race import PRIZE_OLD_341, PRIZE_OLD_360, prizes_341
+        return prizes_341(4, rng, PRIZE_OLD_360 if v360 else PRIZE_OLD_341)
 
     @classmethod
     def _race_frames(cls, finish: list[int], rng=random, comeback: int | None = None) -> list[list[int]]:
@@ -1441,7 +1463,7 @@ class Economy(commands.Cog):
 
         horses = random.sample(self.RACE_HORSES, 4)
         race = {"no": random.randint(1, 12), "horses": horses,
-                "moods": [random.choice(self.RACE_MOODS) for _ in horses], "prizes": self._race_prizes_341() if release.preview_341(getattr(interaction, "guild_id", None)) else self._race_prizes()}
+                "moods": [random.choice(self.RACE_MOODS) for _ in horses], "prizes": self._race_prizes_341(release.preview_360(getattr(interaction, "guild_id", None))) if release.preview_341(getattr(interaction, "guild_id", None)) else self._race_prizes()}
         await self.db.add_balance(user.id, -amount)   # 마권 발매: 베팅금 먼저 차감
         view = RaceView(self, user, amount, race)
         try:

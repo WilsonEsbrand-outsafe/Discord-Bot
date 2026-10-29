@@ -54,13 +54,14 @@ def prizes(n: int, rng=random) -> list[int]:
 
 
 PRIZE_OLD_341 = 0.35   # 3.4.1: 이 비율만큼은 예전 상금표 (1배 칸이 가끔은 나오게)
+PRIZE_OLD_360 = 0.15   # 3.6.0 (release.preview_360 서버): 1배 있는 판을 더 드물게 (약 13%)
 
 
-def prizes_341(n: int, rng=random) -> list[int]:
+def prizes_341(n: int, rng=random, old: float = PRIZE_OLD_341) -> list[int]:
     """3.4.1 (release.preview_341 서버): prizes 와 같은 모양인데 1배 칸이 드물다 — 대부분 수익 · 손실 모두 2배부터.
     1위 > 2위 ≥ 2 · 손실 칸도 모두 2배 이상(4명이면 꼴찌 > 3위). 기대값은 0 근처(6명은 손실 합이 최소 6이라 살짝 -).
     다만 1배가 아예 없으면 어색해서 PRIZE_OLD_341 비율은 예전 상금표(1배 칸이 자주 있다)를 그대로 쓴다 → 1배 있는 판 약 30%."""
-    if rng.random() < PRIZE_OLD_341:
+    if rng.random() < old:
         return prizes(n, rng)
     s = rng.choices(range(5, 11), weights=(25, 25, 18, 14, 10, 8))[0]
     top = rng.randint(s // 2 + 1, s - 2)
@@ -73,6 +74,13 @@ def prizes_341(n: int, rng=random) -> list[int]:
         cuts = sorted(rng.randint(0, left) for _ in range(k - 1))
         loss = sorted(2 + b - a for a, b in zip([0] + cuts, cuts + [left]))
     return [top, s - top] + [0] * (n - 2 - k) + [-x for x in loss]
+
+def race_prizes(n: int, guild_id, rng=random) -> list[int]:
+    """그 서버에 공개된 상금표: 3.6.0(1배 판 더 드물게) → 3.4.1 → 처음 규칙."""
+    if release.preview_360(guild_id):
+        return prizes_341(n, rng, PRIZE_OLD_360)
+    return prizes_341(n, rng) if release.preview_341(guild_id) else prizes(n, rng)
+
 
 def prize_lines(amount: int, table: list[int]) -> str:
     return "\n".join(f"{PLACES[i]} {i + 1}위 **{ui.won(amount * m)}** · {label(m)}" for i, m in enumerate(table))
@@ -970,7 +978,7 @@ class Race(commands.Cog):
         user, amount = interaction.user, int(amount)
 
         async def build():
-            race = {"no": random.randint(1, 12), "runners": SNAIL.runners(random), "prizes": (prizes_341 if release.preview_341(getattr(interaction, "guild_id", None)) else prizes)(SNAIL.n)}
+            race = {"no": random.randint(1, 12), "runners": SNAIL.runners(random), "prizes": race_prizes(SNAIL.n, getattr(interaction, "guild_id", None))}
             return (lambda: PickView(self, SNAIL, user, amount, race)), self._snail_card(user, amount, race), None
         await self._bet(interaction, amount, SNAIL.section, build)
 
@@ -1044,7 +1052,7 @@ class Race(commands.Cog):
             me = random.randrange(ROW_N)
             rivals = iter(random.sample(ROWERS, ROW_N - 1))
             boats = [None if i == me else next(rivals) for i in range(ROW_N)]
-            race = {"no": random.randint(1, 12), "me": me, "boats": boats, "prizes": (prizes_341 if release.preview_341(interaction.guild_id) else prizes)(ROW_N),
+            race = {"no": random.randint(1, 12), "me": me, "boats": boats, "prizes": race_prizes(ROW_N, interaction.guild_id),
                     "rules": row_rules(interaction.guild_id)}
             lines = [f"`{i + 1}` 🚣 **{user.display_name}** 👈 · 내 보트" if b is None else
                      f"`{i + 1}` {b[0]} **{b[1]}** · {b[2]}kg · {random.choice(MOODS)}\n　 *{b[3]}*" for i, b in enumerate(boats)]

@@ -20,6 +20,12 @@ SECTION = "🌟 유망주"
 RETIRE_WHY = {"self": "👋 은퇴 선언", "age": f"👴 {PROSPECT_RETIRE_AGE}세 은퇴", "steroid": "💉 부작용 은퇴"}
 RULES = (f"1살 = 실제 {PROSPECT_YEAR // 86400}일 · {PROSPECT_PRIME_END}세까지 경기로 성장(하루 {PROSPECT_DAILY_GROWTH}경기) · "
          f"{PROSPECT_PRIME_END + 1}세부터 노쇠 · {PROSPECT_RETIRE_AGE}세 은퇴")
+RULES_360 = (f"1살 = 실제 {PROSPECT_YEAR // 86400}일 · {PROSPECT_PRIME_END}세까지 경기로 성장 · "   # 3.6.0 하루 판수 제한 없음
+             f"{PROSPECT_PRIME_END + 1}세부터 노쇠 · {PROSPECT_RETIRE_AGE}세 은퇴")
+
+
+def rules(user) -> str:
+    return RULES_360 if release.preview_360(getattr(getattr(user, "guild", None), "id", None)) else RULES
 
 
 def _bday(b: str) -> str:
@@ -50,9 +56,10 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
         else:
             grow = f"`성장` {ui.bar(p['xp'], need)} {p['xp']}/{need} → OVR {p['ovr'] + 1}"
         played = p["day_n"] if p["day_key"] == kst_day(now) else 0
+        v360 = release.preview_360(getattr(getattr(owner, "guild", None), "id", None))   # 3.6.0 하루 판수 제한 없음
         body = (f"`나이` **{p['age']}세** · `OVR` **{p['ovr']}** · `잠재력` **{p['pot']}** ({p['pot_grade']}) · "
-                f"`최고` {p['peak_ovr']}\n{grow}\n"
-                f"`오늘 성장 경기` {min(played, PROSPECT_DAILY_GROWTH)}/{PROSPECT_DAILY_GROWTH}"
+                f"`최고` {p['peak_ovr']}\n{grow}"
+                + ("" if v360 else f"\n`오늘 성장 경기` {min(played, PROSPECT_DAILY_GROWTH)}/{PROSPECT_DAILY_GROWTH}")
                 + _enh_line(p)
                 + (f"\n🚑 **부상** — {p['injury']} · "
                    + (f"복귀까지 공식경기 **{p['injury_games']}경기** (내 구단이 공식경기를 치를 때마다 1경기씩)"
@@ -71,7 +78,7 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
     e.add_field(name="🔒 히든 능력치", inline=True, value=(
         f"`자신감` {hidden_tier(p['confidence'])}\n`부상 빈도` {hidden_tier(p['proneness'])}\n"
         f"`프로 의식` {hidden_tier(p['pro'])}" + (f"\n`부상 이력` {p['injuries']}회" if p["injuries"] else "")))
-    e.set_footer(text=RULES)
+    e.set_footer(text=rules(owner))
     return e
 
 
@@ -387,7 +394,7 @@ class Prospect(commands.Cog):
                     "이름 · 국적 · 포지션 · 등번호 · 생일까지 직접 정할 수 있어요.") if mine \
                 else f"{owner.display_name}님은 현역 유망주가 없어요."
             e = ui.card("🌟 유망주", text, ui.EVEN, owner, SECTION)
-            e.set_footer(text=RULES)
+            e.set_footer(text=rules(owner))
         if data["retired"]:
             lines = [_legend_line(r) for r in data["retired"][:10]]
             if mine and any(not r["retired_number"] for r in data["retired"]):
