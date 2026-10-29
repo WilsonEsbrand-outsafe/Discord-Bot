@@ -20,6 +20,20 @@ from services.economy_db import (
 SECTION = "📘 튜토리얼"
 
 # (목차 이모지, 제목, 본문). 첫 장(체크리스트)은 유저마다 내용이 달라서 따로 만든다.
+# 3.6.0: 유망주 판수 제한 없음 · 강화 전(OVR 70 미만)엔 2군 · 유저끼리 이적 가능
+PROSPECT_360 = (
+    f"`/유망주` → 포지션 고르기 — **{PROSPECT_PRICE:,}원**으로 나만의 선수를 만들어요\n"
+    "　이름 · 국적 · 포지션 · 등번호 · 생일 · 주발 · 키를 직접 정하고, 능력치는 17세 · OVR 50~58 · 잠재력 75~94 랜덤\n"
+    "　🔒 이적시장 · 판매 불가 · 한 번에 한 명 · 🤝 `/유망주` [이적 제안]으로 다른 유저에게 이적 가능\n\n"
+    "🎓 **2군** — OVR 70 전까지는 2군 소속이에요. `/구단` → 🎓 2군 · 유스에서 유스 선수들과 2군 경기로 성장\n"
+    "⭐ **1군** — OVR 70이 되면 1군 등록 · `/친선경기` `/공식경기`에서 출전 · 골 · 도움으로 성장 (판수 제한 없음)\n"
+    "　📚 경험치 아이템 · 💉 스테로이드는 `/아이템상점` 🌟 유망주에서\n"
+    f"🕰️ 1살 = 실제 {PROSPECT_YEAR // 86400}일 · {PROSPECT_PRIME_END + 1}세부터 노쇠 · {PROSPECT_RETIRE_AGE}세 은퇴\n"
+    "🔒 히든 능력치(자신감 · 부상 빈도 · 프로 의식) · 🚑 경기 중 부상 — `/구단` 의료진으로 결장 기간 단축\n\n"
+    "`/유망주` 하나로 다 해요 — 세부 능력치 · 커리어 · 명예의 전당\n"
+    "　[은퇴] 전성기 커리어로 저장 · 🏅 등번호 영구결번 · [삭제] 기록 없이 삭제 (환불 없음)"
+)
+
 TUTORIAL_STEPS = [
     ("📋", "오늘의 체크리스트", None),
     ("🏟️", "구단 만들기", (
@@ -226,6 +240,8 @@ class TutorialView(discord.ui.View):
 
     async def make_embed(self) -> discord.Embed:
         emoji, title, body = self.steps[self.step]
+        if title == "유망주" and release.ctx_360():
+            body = PROSPECT_360
         if body is None:
             e = await checklist_embed(self.db, self.user)
         else:
