@@ -82,6 +82,7 @@ def preview_310(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 
 
 PREVIEW_310: set[str] = {"드리블"}   # 3.1.0 새 명령어 — 공개 전엔 테스트 서버에만 보인다
+PREVIEW_360: set[str] = {"2군"}     # 3.6.0 새 명령어 — 공개 전엔 테스트 서버에만 보인다
 
 
 # 3.1.1 — 테스트 서버 먼저. preview_311(guild): /구단 화면에서 편성 · 감독 · 의료진 · 시설을 바로 바꾼다. None = 아직
@@ -181,4 +182,5 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = set(LEGACY_ONLY if preview(guild_id, now) else PREVIEW_ONLY)
     out = out | LEGACY_2101 if preview_2101(guild_id, now) else out
     out = out | LEGACY_311 if preview_311(guild_id, now) else out
+    out = out if preview_360(guild_id, now) else out | PREVIEW_360
     return out if preview_310(guild_id, now) else out | PREVIEW_310
