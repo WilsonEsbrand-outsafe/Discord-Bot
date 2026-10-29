@@ -10,7 +10,7 @@ import release
 from services import ui
 from services.club_db import (
     PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_FOCUS_GROWTH, PROSPECT_FOCUS_N, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
-    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, ClubDB, focus_parts, in_reserve, focus_pool, hidden_tier, kst_day, prospect_attrs,
+    PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, XP_BOOK, ClubDB, focus_parts, in_reserve, focus_pool, hidden_tier, kst_day, prospect_attrs,
     prospect_input, prospect_xp_need,
 )
 from services.player_market_db import NATIONS
@@ -460,6 +460,36 @@ class Prospect(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.clubs = ClubDB()
+
+    ITEMS_360 = ("xp_boost", "xp_book", "rehab", "mental", "elixir")   # 3.6.0 유망주 아이템 — 가방 [사용]
+
+    async def cog_load(self):
+        from cogs.economy import ITEM_HANDLERS
+        ITEM_HANDLERS.update({k: self._item(k) for k in self.ITEMS_360})
+
+    async def cog_unload(self):
+        from cogs.economy import ITEM_HANDLERS
+        for k in self.ITEMS_360:
+            ITEM_HANDLERS.pop(k, None)
+
+    def _item(self, key: str):
+        async def use(interaction: discord.Interaction, user):
+            from services.economy_db import ITEMS
+            emoji, name, _ = ITEMS[key]
+            r = await self.clubs.use_prospect_item(user.id, key, int(time.time()))
+            if not r["ok"]:
+                msg = {"none": f"{emoji} {name}이(가) 없어요.", "no_prospect": "현역 유망주가 없어요. `/유망주`에서 만들어 주세요.",
+                       "useless": r.get("why", "")}[r["reason"]]
+                return await interaction.response.send_message(f"🙅 {msg}", ephemeral=True)
+            who = f"**{r['name']}** #{r['number']}"
+            text = {"xp_boost": lambda: f"{who}이(가) 다음 **{r['uses']}경기** 동안 +경험치 **2배**!",
+                    "xp_book": lambda: f"{who} 경험치 **+{XP_BOOK}**" + (f" · OVR {r['ovr0']} → **{r['ovr']}** ⬆️" if r["ovr"] > r["ovr0"]
+                                                                       else f" · 성장 {r['xp']}/{r['need']}"),
+                    "rehab": lambda: f"{who} **{r['injury']}** 완치! 바로 경기에 나갈 수 있어요.",
+                    "mental": lambda: f"{who} 자신감 {hidden_tier(r['conf0'])} → **{hidden_tier(r['conf'])}**",
+                    "elixir": lambda: f"{who} {r['age0']}세 → **{r['age']}세**"}[key]()
+            await interaction.response.send_message(embed=ui.card(f"{emoji} {name} 사용!", text, ui.GOLD, user, SECTION))
+        return use
 
     # ───────────── 자동완성 ─────────────
     async def nation_autocomplete(self, interaction: discord.Interaction, current: str):

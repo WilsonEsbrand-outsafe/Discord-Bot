@@ -85,6 +85,10 @@ BY_GRADE_310 = [[k for k in b if k not in NEW_340] for b in BY_GRADE_340]       
 BY_GRADE = [[k for k in b if k not in NEW_310] for b in BY_GRADE_310]                # 3.1.0 전 서버: 40종
 
 
+# 3.6.0 도감 보상: 등급 하나를 다 모으면 (돈, 🤖 자동 낚시) 한 번 · 5 = 100종 전체 완성
+DEX_REWARDS = ((3_000_000, 0), (5_000_000, 0), (10_000_000, 0), (30_000_000, 1), (100_000_000, 2), (200_000_000, 3))
+
+
 def by_grade(new: bool = False, v340: bool = False) -> list[list[str]]:
     """잡히는 · 시세 · 도감에 나오는 물고기 (등급별). new = 3.1.0 공개 서버 · v340 = 3.4.0 공개 서버."""
     return BY_GRADE_340 if v340 else BY_GRADE_310 if new else BY_GRADE
@@ -243,6 +247,7 @@ class FishingDB(EconomyDB):
             con.execute("CREATE TABLE IF NOT EXISTS fish_bag (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, "
                         "species TEXT, size REAL, caught_ts INTEGER, displayed INTEGER NOT NULL DEFAULT 0)")
             con.execute("CREATE INDEX IF NOT EXISTS fish_bag_user ON fish_bag(user_id)")
+            con.execute("CREATE TABLE IF NOT EXISTS fish_dex_reward (user_id INTEGER, grade INTEGER, PRIMARY KEY(user_id, grade))")
             con.execute("CREATE TABLE IF NOT EXISTS fish_dex (user_id INTEGER, species TEXT, cnt INTEGER, best REAL, "
                         "PRIMARY KEY(user_id, species))")
             con.execute("CREATE TABLE IF NOT EXISTS fish_log (user_id INTEGER, species TEXT, size REAL, ts INTEGER, week INTEGER)")
@@ -734,6 +739,35 @@ class FishingDB(EconomyDB):
             except sqlite3.OperationalError:
                 return 0
             return sum(2 ** FISH[s][2] for (s,) in rows if s in FISH)
+        return await self._tx(fn)
+
+    # ───────────── 3.6.0 도감 보상 ─────────────
+    async def dex_rewards(self, uid: int) -> set[int]:
+        """이미 받은 도감 보상 (등급 번호 · 5 = 전체 완성)."""
+        return await self._tx(lambda con: {int(g) for (g,) in con.execute(
+            "SELECT grade FROM fish_dex_reward WHERE user_id=?", (uid,))})
+
+    async def claim_dex(self, uid: int, v340: bool = True) -> list[tuple[int, int, int]]:
+        """다 모은 등급 보상을 한 번씩 받는다 → [(등급, 돈, 자동 낚시 개수)] (등급 5 = 전체 완성)."""
+        pool = by_grade(True, v340)
+
+        def fn(con):
+            have = {s for (s,) in con.execute("SELECT species FROM fish_dex WHERE user_id=?", (uid,))}
+            done = {int(g) for (g,) in con.execute("SELECT grade FROM fish_dex_reward WHERE user_id=?", (uid,))}
+            out = []
+            full = all(k in have for b in pool for k in b)
+            for g in range(6):
+                if g in done or not (full if g == 5 else all(k in have for k in pool[g])):
+                    continue
+                money, robots = DEX_REWARDS[g]
+                con.execute("INSERT INTO fish_dex_reward(user_id, grade) VALUES(?, ?)", (uid, g))
+                con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (uid,))
+                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (money, uid))
+                if robots:
+                    con.execute("INSERT INTO inventory(user_id, item, qty) VALUES(?, 'auto_fish', ?) "
+                                "ON CONFLICT(user_id, item) DO UPDATE SET qty = qty + excluded.qty", (uid, robots))
+                out.append((g, money, robots))
+            return out
         return await self._tx(fn)
 
     # ───────────── 도감 · 주간 최대어 ─────────────

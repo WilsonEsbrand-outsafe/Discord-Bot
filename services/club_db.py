@@ -381,6 +381,11 @@ PROSPECT_XP_350 = {"key_pass": 4, "tackle": 4, "save": 3, "clean_DF": 3, "clean_
 PROSPECT_MF_ASSIST_350 = PROSPECT_XP["goal"]
 
 
+# 3.6.0 유망주 아이템 (가방 [사용])
+XP_BOOST_USES, XP_BOOST_MULT = 10, 2.0   # 📗 경험치 부스터: 다음 10경기 +경험치 2배
+XP_BOOK = 80                              # 📘 훈련 교본: 경험치 +80
+MENTAL_GAIN = 5                           # 🧠 멘탈 코칭: 자신감 +5
+
 # 3.6.0 (release.preview_360): 2군 — 강화 전(기본 OVR 70 밑 · 강화 0) 유망주는 1군이 아니라 2군에서 뛴다.
 # 2군 = 유망주 + 유스 선수 + 2군 아마추어(1군 아마추어와 다른 선수들 · 빈자리만). 2군 경기는 NPC 2군과 바로 결과.
 # 1군 아마추어(AMT_)는 OVR 이 AMATEUR_MIN_360 밑이면 그만큼으로 뛴다.
@@ -1566,6 +1571,13 @@ class ClubDB:
                     if xp_mult != 1:
                         mult *= xp_mult
                         mods.append(f"{xp_label} ×{xp_mult:g}")
+                    boost = None
+                    if v360 and grew:   # 3.6.0 📗 경험치 부스터 (+경험치일 때만 한 번 쓴다)
+                        try:
+                            boost = con.execute("SELECT uses FROM buffs WHERE user_id=? AND item='xp_boost' AND uses>0",
+                                                (owner[0],)).fetchone()
+                        except sqlite3.OperationalError:
+                            boost = None
                     m = xp_gap_mult(gap)
                     if m != 1:
                         mult *= m
@@ -1580,6 +1592,10 @@ class ClubDB:
                         if m != 1:
                             mult *= m
                             mods.append(f"같은 상대 오늘 {n}번째 ×{m:g}")
+                    if boost and delta > 0:
+                        mult *= XP_BOOST_MULT
+                        mods.append(f"📗 부스터 ×{XP_BOOST_MULT:g} (남은 {boost[0] - 1}경기)")
+                        con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='xp_boost'", (owner[0],))
                     if delta > 0:   # 프로 의식: 10 이면 그대로, 높을수록 더 많이 (감점에는 안 붙는다)
                         delta = round(delta * (0.7 + p["pro"] * 0.03) * mult
                                       * (1 + self._facility(con, owner[0], "training") * FACILITIES["training"][3] / 100))
@@ -1670,6 +1686,55 @@ class ClubDB:
             return {"ok": True, "kind": kind, "name": p["name"], "number": p["number"], "age": p["age"],
                     "ovr0": p["ovr"], "pot0": p["pot"], "ovr": ovr, "pot": pot, "pot_grade": pot_grade_for_value(pot),
                     "prone0": p["proneness"], "prone": prone}
+        return await self._tx(fn)
+
+    async def use_prospect_item(self, user_id: int, item: str, now_ts: int) -> dict:
+        """3.6.0 유망주 아이템 사용 (가방에서 1개). item: xp_boost · xp_book · rehab · mental · elixir.
+        실패 reason: none(아이템 없음) / no_prospect / useless(지금 쓸 데가 없음 — 아이템은 그대로) + why."""
+        def fn(con):
+            r = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (int(user_id), item)).fetchone()
+            if not r or int(r[0]) <= 0:
+                return {"ok": False, "reason": "none"}
+            p = self._active_prospect(con, user_id, now_ts)
+            if not p:
+                return {"ok": False, "reason": "no_prospect"}
+            out = {"ok": True, "item": item, "name": p["name"], "number": p["number"]}
+            if item == "xp_boost":
+                con.execute("INSERT INTO buffs(user_id, item, uses) VALUES(?, 'xp_boost', ?) "
+                            "ON CONFLICT(user_id, item) DO UPDATE SET uses = uses + excluded.uses", (int(user_id), XP_BOOST_USES))
+                out["uses"] = con.execute("SELECT uses FROM buffs WHERE user_id=? AND item='xp_boost'",
+                                          (int(user_id),)).fetchone()[0]
+            elif item == "xp_book":
+                if p["age"] > PROSPECT_PRIME_END or p["ovr"] >= p["pot"]:
+                    return {"ok": False, "reason": "useless", "why": "더 성장할 수 없는 선수예요 (30세 넘음 · 잠재력 도달)."}
+                ovr, xp = p["ovr"], p["xp"] + XP_BOOK
+                while ovr < p["pot"] and xp >= prospect_xp_need(ovr):
+                    xp -= prospect_xp_need(ovr)
+                    ovr += 1
+                xp = 0 if ovr >= p["pot"] else xp
+                peak = (ovr, p["age"]) if ovr > p["peak_ovr"] else (p["peak_ovr"], p["peak_age"])
+                con.execute("UPDATE prospects SET ovr=?, xp=?, peak_ovr=?, peak_age=? WHERE id=?", (ovr, xp, *peak, p["id"]))
+                out.update(ovr0=p["ovr"], ovr=ovr, xp=xp, need=prospect_xp_need(ovr))
+            elif item == "rehab":
+                if not p["injured"]:
+                    return {"ok": False, "reason": "useless", "why": "다친 곳이 없어요."}
+                con.execute("UPDATE prospects SET injured_until=0, injury_games=0 WHERE id=?", (p["id"],))
+                out["injury"] = p["injury"]
+            elif item == "mental":
+                if p["confidence"] >= 20:
+                    return {"ok": False, "reason": "useless", "why": "자신감이 이미 최고예요."}
+                conf = min(20, p["confidence"] + MENTAL_GAIN)
+                con.execute("UPDATE prospects SET confidence=? WHERE id=?", (conf, p["id"]))
+                out.update(conf0=p["confidence"], conf=conf)
+            elif item == "elixir":
+                if p["age"] <= PROSPECT_START_AGE:
+                    return {"ok": False, "reason": "useless", "why": f"{PROSPECT_START_AGE}세보다 어려질 수는 없어요."}
+                # 만든 시각을 1년 뒤로 → 나이 -1. 노화 반영(aged)도 함께 내려서 다시 늙을 때 또 깎인다
+                con.execute("UPDATE prospects SET created_ts = created_ts + ?, aged = MAX(?, aged - 1) WHERE id=?",
+                            (PROSPECT_YEAR, PROSPECT_START_AGE, p["id"]))
+                out.update(age0=p["age"], age=p["age"] - 1)
+            con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item=?", (int(user_id), item))
+            return out
         return await self._tx(fn)
 
     async def retire_prospect(self, user_id: int, prospect_id: int, now_ts: int, retire_number: bool) -> Optional[dict]:
