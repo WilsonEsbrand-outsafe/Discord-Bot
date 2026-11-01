@@ -12,7 +12,13 @@
 #       4) 정리 — 선발에 못 드는 남는 선수 · 늙어서 떨어질 선수를 시세보다 조금 비싸게 내놓는다,
 #          오래 안 팔린 매물은 내린다
 #   · 감독 성향(부자 · 셀링 · 알뜰 · 급한 구단)에 따라 노리는 선수(나이 · OVR) · 쓰는 돈 · 파는 값이 다르다.
-# 돈은 매주 구단 수입(BUDGET_WEEKLY, BUDGET_CAP 까지)과 선수를 판 돈이 전부 — 돈을 무한히 찍지 않는다.
+# 규완님: "봇이 완전 사람처럼" — 그래서 유저가 하는 걸 똑같이 한다:
+#   · 하루 일과(스카우트 · 훈련 · 직관 같은)로 돈을 벌고, 쉬는 날도 있다 (그날은 접속 안 함)
+#   · /공식경기를 직접 뛴다 (공개 뒤엔 주간 랭킹 · 상금도 유저와 똑같이)
+#   · 돈이 넉넉하고 전력이 아쉬우면 선수팩을 깐다
+#   · 싸게 나온 매물은 필요 없어도 사 뒀다가 비싸게 되판다 (알뜰 · 부자 구단)
+#   · 트레이드가 조금 모자라면 바로 거절하지 않고 역제안을 보낸다 · 제안 · 답장에 감독 말투가 있다
+# 돈은 하루 일과 수입(DAILY_INCOME, BUDGET_CAP 까지) · 경기 상금 · 선수를 판 돈이 전부 — 돈을 무한히 찍지 않는다.
 import random
 from typing import Optional
 
@@ -49,7 +55,29 @@ SCHEDULES = {
     "office":  (((8, 9), (12, 13), (18, 21)), 90),
 }
 START_BUDGET = 200_000_000
-BUDGET_WEEKLY, BUDGET_CAP = 50_000_000, 300_000_000
+BUDGET_CAP = 300_000_000
+DAILY_INCOME = (4_000_000, 9_000_000)   # 하루 일과로 버는 돈 (그날 첫 접속 때) — 부지런함(act)을 곱한다
+REST_PROB = 0.12             # 쉬는 날 (하루 종일 접속 안 함)
+COUNTER_MIN = 0.80           # 받는 가치가 주는 가치의 이만큼은 되면 거절 대신 역제안
+PACKS_FOR_BOTS = ("플래티넘", "다이아몬드", "아이콘", "얼티밋")
+LINES = {   # 감독 말투 — 제안 · 수락 · 거절 · 역제안
+    "rich":    {"offer": ("우리 구단에 딱 필요한 선수예요. 돈은 걱정 마세요.", "이 정도면 충분히 후한 조건일 겁니다."),
+                "accept": ("좋습니다, 거래하죠.", "환영합니다! 좋은 거래였어요."),
+                "reject": ("이 조건으론 어렵겠네요.", "우리 핵심 선수라 그 값엔 못 보내요."),
+                "counter": ("조금만 더 얹어 주시면 바로 사인할게요.",)},
+    "seller":  {"offer": ("이 선수, 우리 팀에서 더 크게 키워 볼게요!", "어린 선수 좋아하시나요? 저희는 좋아합니다."),
+                "accept": ("거래 성사! 잘 키워 주세요.", "좋은 값이네요, 받겠습니다."),
+                "reject": ("아직 더 오를 선수라서요…", "그 값이면 안 팔래요."),
+                "counter": ("이 값이면 바로 보내 드릴게요.",)},
+    "bargain": {"offer": ("예산이 빠듯해서… 이 정도로 어떠세요?", "싸게 사서 오래 쓰는 게 저희 철학입니다."),
+                "accept": ("좋아요, 이 값이면 남는 장사네요.", "콜!"),
+                "reject": ("음… 그건 좀 비싸네요.", "다음에 더 좋은 조건으로 오세요!"),
+                "counter": ("여기서 조금만 맞춰 주시죠.",)},
+    "needy":   {"offer": ("급해요! 이 자리 꼭 메워야 해서요.", "이번 주 경기 전에 꼭 데려오고 싶어요!"),
+                "accept": ("살았다! 고맙습니다.", "바로 선발로 쓸게요!"),
+                "reject": ("지금 그 선수 빠지면 우리 팀 무너져요.", "미안하지만 안 되겠어요."),
+                "counter": ("이 조건이면 지금 바로 할게요!",)},
+}
 START_PLAYERS = 11
 LIST_MAX = 3                 # 동시에 올려 두는 매물 수
 LIST_STALE = 36 * 3600       # 이만큼 안 팔린 매물은 내린다
@@ -99,16 +127,25 @@ def online(bid: int, ts: float) -> bool:
     return any(a <= h < b for a, b in SCHEDULES[BOT_CLUBS[bid][4]][0])
 
 
+def kst_day(ts: float) -> int:
+    return (int(ts) + 9 * 3600) // 86400
+
+
+def rest_day(bid: int, day: int) -> bool:
+    """쉬는 날 — 감독 · 날짜로 정해진다 (같은 날은 늘 같은 답)."""
+    return random.Random(bid * 100_003 + day).random() < REST_PROB
+
+
 def next_visit(bid: int, now: int, rng=random) -> int:
-    """다음 접속 시각 — 접속 시간대 안이면 평균 간격의 들쭉날쭉한 간격, 밖이면 다음 시간대 시작 무렵."""
+    """다음 접속 시각 — 접속 시간대 안이면 평균 간격의 들쭉날쭉한 간격, 밖이면 다음 시간대 시작 무렵. 쉬는 날은 건너뛴다."""
     windows, mean = SCHEDULES[BOT_CLUBS[bid][4]]
     gap = int(max(15, rng.expovariate(1 / mean)) * 60)
     t = now + gap
-    if online(bid, t):
+    if online(bid, t) and not rest_day(bid, kst_day(t)):
         return t
-    for step in range(1, 25 * 4):   # 15분씩 앞으로 — 다음 시간대 시작 + 0~40분
+    for step in range(1, 8 * 24 * 4):   # 15분씩 앞으로 — 다음 시간대 시작 + 0~40분
         u = now + step * 900
-        if online(bid, u):
+        if online(bid, u) and not rest_day(bid, kst_day(u)):
             return u + rng.randint(0, 40 * 60)
     return t
 
@@ -118,6 +155,10 @@ def init_tables(con) -> None:
                 "next_ts INTEGER NOT NULL DEFAULT 0)")
     try:
         con.execute("ALTER TABLE bot_club_state ADD COLUMN next_ts INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        con.execute("ALTER TABLE bot_club_state ADD COLUMN day INTEGER NOT NULL DEFAULT 0")
     except Exception:
         pass
     con.execute("CREATE TABLE IF NOT EXISTS bot_offer_log (bot_id INTEGER, user_id INTEGER, player_id TEXT, ts INTEGER)")
@@ -165,17 +206,20 @@ def bootstrap(con, now_ts: int, rng=random) -> int:
     return made
 
 
-def weekly_budget(con, now_ts: int) -> None:
-    """월요일마다 구단 수입 +BUDGET_WEEKLY (BUDGET_CAP 까지)."""
+def daily_routine(con, bid: int, now_ts: int, rng=random) -> int:
+    """그날 첫 접속이면 하루 일과 수입 (BUDGET_CAP 까지) → 번 돈 (이미 했으면 0)."""
     init_tables(con)
-    wk = week_key(now_ts)
-    for bid, last in con.execute("SELECT bot_id, week FROM bot_club_state").fetchall():
-        if int(last) >= wk:
-            continue
-        con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (bid,))
-        con.execute("UPDATE wallets SET balance=MIN(?, balance + ?) WHERE user_id=?",
-                    (BUDGET_CAP, BUDGET_WEEKLY * (wk - int(last)), bid))
-        con.execute("UPDATE bot_club_state SET week=? WHERE bot_id=?", (wk, bid))
+    day = kst_day(now_ts)
+    r = con.execute("SELECT day FROM bot_club_state WHERE bot_id=?", (bid,)).fetchone()
+    if not r or int(r[0]) >= day:
+        return 0
+    con.execute("UPDATE bot_club_state SET day=? WHERE bot_id=?", (day, bid))
+    bal = balance(con, bid)
+    earn = max(0, min(BUDGET_CAP - bal, int(rng.uniform(*DAILY_INCOME) * PERSONALITY[kind(bid)]["act"])))
+    earn = int(round(earn, -4))
+    if earn:
+        con.execute("UPDATE wallets SET balance=balance+? WHERE user_id=?", (earn, bid))
+    return earn
 
 
 def due_bots(con, now_ts: int) -> list[int]:
@@ -323,7 +367,13 @@ def stale_listings(con, bid: int, now_ts: int) -> list[int]:
 
 
 def judge_trade(con, bid: int, trade_id: int) -> Optional[bool]:
-    """받은 트레이드 제안 → True 수락 · False 거절 · None (못 보는 제안).
+    """받은 트레이드 제안 → True 수락 · False 거절 · None (못 보는 제안)."""
+    v = trade_value(con, bid, trade_id)
+    return None if v is None else v[0] >= v[1]
+
+
+def trade_value(con, bid: int, trade_id: int) -> Optional[tuple]:
+    """받은 트레이드 제안 → (받는 가치, 주는 가치) · None (못 보는 제안). 돈이 모자라면 받는 가치 0.
     받는 가치 = 현금 + 받는 선수 시세 (내 약한 자리를 채우면 ×1.15, 아니면 ×0.8)
     주는 가치 = 현금 + 주는 선수 시세 × 아끼는 정도 (선발이면 ×1.2 더)."""
     t = con.execute("SELECT proposer_id, receiver_id, proposer_cash, receiver_cash, status FROM pm_trades WHERE trade_id=?",
@@ -335,7 +385,7 @@ def judge_trade(con, bid: int, trade_id: int) -> Optional[bool]:
     weak = {pos: w for pos, w, _ in needs(con, bid)}
     get, give = int(t[2]), int(t[3])
     if give > balance(con, bid):
-        return False
+        return 0, max(1, give)
     for side, pid, qty, pos, ovr, age, price in con.execute(
             "SELECT ti.side, ti.player_id, ti.qty, p.position, p.ovr, p.age, COALESCE(m.price, p.base_value) "
             "FROM pm_trade_items ti JOIN pm_players p ON p.player_id=ti.player_id LEFT JOIN pm_market m ON m.player_id=ti.player_id "
@@ -346,7 +396,7 @@ def judge_trade(con, bid: int, trade_id: int) -> Optional[bool]:
             get += int(v * (1.15 if useful else 0.8))
         else:
             give += int(v * p["keep"] * (1.2 if pid in lineup else 1.0))
-    return get >= give
+    return get, give
 
 
 def pending_trades(con, bid: int) -> list[int]:
@@ -357,3 +407,54 @@ def pending_trades(con, bid: int) -> list[int]:
 def log_offer(con, bid: int, uid: int, pid: str, now_ts: int) -> None:
     con.execute("INSERT INTO bot_offer_log(bot_id, user_id, player_id, ts) VALUES(?,?,?,?)", (bid, uid, pid, int(now_ts)))
     con.execute("DELETE FROM bot_offer_log WHERE ts<?", (int(now_ts) - 7 * 86400,))
+
+
+def trade_items(con, trade_id: int) -> tuple:
+    """(제안자 선수 목록, 수신자 선수 목록, 제안자 현금, 수신자 현금, 제안자)."""
+    t = con.execute("SELECT proposer_id, proposer_cash, receiver_cash FROM pm_trades WHERE trade_id=?", (int(trade_id),)).fetchone()
+    prop, recv = [], []
+    for side, pid, qty in con.execute("SELECT side, player_id, qty FROM pm_trade_items WHERE trade_id=?", (int(trade_id),)):
+        (prop if side == "proposer" else recv).extend([pid] * int(qty))
+    return prop, recv, int(t[1]), int(t[2]), int(t[0])
+
+
+def line(bid: int, key: str, rng=random) -> str:
+    return rng.choice(LINES[kind(bid)][key])
+
+
+def find_bargain(con, bid: int, now_ts: int, allowed=None) -> Optional[dict]:
+    """시세보다 한참 싸게 나온 유저 매물 (필요 없어도 사 뒀다가 되판다) — 알뜰 · 부자 구단만."""
+    k = kind(bid)
+    if k not in ("bargain", "rich"):
+        return None
+    cap = int(balance(con, bid) * 0.15)
+    best = None
+    for lid, seller, pid, price, mkt in con.execute(
+            "SELECT l.listing_id, l.seller_id, l.player_id, l.price_per, COALESCE(m.price, p.base_value) FROM pm_listings l "
+            "JOIN pm_players p ON p.player_id=l.player_id LEFT JOIN pm_market m ON m.player_id=l.player_id "
+            "WHERE l.status='active' AND l.expires_at>? AND l.qty>0 AND p.retired=0", (int(now_ts),)):
+        if is_bot(seller) or (allowed is not None and not allowed(int(seller))):
+            continue
+        if int(price) <= int(mkt) * 0.8 and int(price) <= cap:
+            d = int(mkt) / max(1, int(price))
+            if best is None or d > best["deal"]:
+                best = {"how": "listing", "listing_id": int(lid), "seller_id": int(seller), "player_id": pid,
+                        "price": int(price), "deal": d}
+    return best
+
+
+def pick_pack(con, bid: int, rng=random) -> Optional[tuple]:
+    """돈이 넉넉하고 전력이 아쉬우면 선수팩 → (팩 이름, 장수) 또는 None."""
+    from services.player_market_db import PACKS
+    bal = balance(con, bid)
+    weak = min((w for _p, w, _s in needs(con, bid)), default=0)
+    if bal < 60_000_000 or weak >= 85:
+        return None
+    ok = [k for k in PACKS_FOR_BOTS if k in PACKS and PACKS[k]["price"] * 2 <= bal * 0.12]
+    if not ok:
+        return None
+    k = ok[-1] if kind(bid) == "rich" else rng.choice(ok)
+    n = max(1, min(3, int(bal * 0.12 // PACKS[k]["price"])))
+    if len([x for x in squad(con, bid) if not x["amateur"]]) + n > PERSONALITY[kind(bid)]["squad"] + 4:
+        return None
+    return k, n

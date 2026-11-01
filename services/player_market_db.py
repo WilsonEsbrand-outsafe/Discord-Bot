@@ -290,8 +290,8 @@ def pool_size(now_ts: Optional[float] = None) -> int:
 
 # ── 3.7.0 선수 1명 1주인 · 봇 구단 (release.ctx_370: 테스트 서버 먼저, 백그라운드는 released_370) ──
 HOLD_CAP_370 = 40          # 한 사람이 가질 수 있는 선수 수 (아마추어 빼고) — 더 사려면 팔거나 방출
-PACK_TICKET_PACK = "골드"   # 🎫 교환권으로 여는 팩
-PACK_TICKETS_370 = 3        # 전환 보상: 골드팩 교환권 (카드가 한 장이라도 있었으면)
+PACK_TICKET_PACK = "얼티밋"   # 🎫 교환권으로 여는 팩 (규완님: 얼티밋팩 10장)
+PACK_TICKETS_370 = 10       # 전환 보상: 얼티밋팩 교환권 (카드가 한 장이라도 있었으면)
 FREE_MIN_370 = 600         # 아무도 안 가진 선수를 시장에 이만큼은 둔다 (1명 1주인이라 팩이 마르지 않게)
 _OWNED_SQL = ("SELECT player_id FROM pm_holdings WHERE qty>0 "
               "UNION SELECT player_id FROM pm_listings WHERE status='active' "
@@ -1679,7 +1679,7 @@ class PlayerMarketDB:
                         con.execute("ROLLBACK;")
                         return ("CAP", [])
                     tickets = 0
-                    if pack_type == PACK_TICKET_PACK:   # 3.7.0 🎫 골드팩 교환권을 돈보다 먼저 쓴다
+                    if pack_type == PACK_TICKET_PACK:   # 3.7.0 🎫 얼티밋팩 교환권을 돈보다 먼저 쓴다
                         try:
                             r = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='pack_ticket'",
                                             (int(user_id),)).fetchone()
@@ -2866,7 +2866,7 @@ class PlayerMarketDB:
     async def convert_owners_370(self, now_ts: int, force: bool = False) -> dict:
         """3.7.0 공개 때 한 번: 선수 1명 1주인 전환 (규완님: 유망주 빼고 선수를 돈으로 환산 + 선수팩 지급).
         모든 사람이 가진 선수 카드(아마추어 빼고 · 이적시장 매물 · 트레이드에 걸어 둔 선수 포함)를 지금 시세로 돈으로 바꿔 주고,
-        카드가 한 장이라도 있었으면 골드팩 교환권 PACK_TICKETS_370 장. 유망주 · 유스는 다른 테이블이라 그대로.
+        카드가 한 장이라도 있었으면 얼티밋팩 교환권 PACK_TICKETS_370 장. 유망주 · 유스는 다른 테이블이라 그대로.
         → {user_id: {"cards": 장수, "money": 환산액, "tickets": 교환권}} (봇 구단도 정리하지만 돈 · 교환권은 없다)."""
         async with self._lock:
             def work():
@@ -2947,7 +2947,7 @@ class PlayerMarketDB:
                         GROUP BY w.user_id
                         ORDER BY total DESC
                         LIMIT ?
-                        """ % ",".join(str(b) for b in _bc.BOT_IDS),
+                        """ % (",".join(str(b) for b in _bc.BOT_IDS) if not release.released_370() else "0"),
                         (int(limit),),
                     ).fetchall()
                 finally:

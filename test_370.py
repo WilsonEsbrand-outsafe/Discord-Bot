@@ -260,15 +260,15 @@ def test_convert():
     assert left == [("AMT_GK1",)]                             # 아마추어만 남는다
     assert not con.execute("SELECT 1 FROM club_lineup WHERE player_id=?", (free[0],)).fetchone()
     assert run(pm.convert_owners_370(now)) == {}              # 한 번만
-    # 🎫 교환권으로 골드팩
+    # 🎫 교환권으로 얼티밋팩
     eco = edb.EconomyDB()
     tok = release.GUILD.set(T)
     try:
         bal = run(eco.get_balance(41))
-        ok, msg, res = run(pm.buy_pack(user_id=41, pack_type="골드", pulls=2, now_ts=now,
+        ok, msg, res = run(pm.buy_pack(user_id=41, pack_type="얼티밋", pulls=2, now_ts=now,
                                        get_balance=eco.get_balance, add_balance=eco.add_balance))
         assert ok and "교환권 2장" in msg and run(eco.get_balance(41)) == bal
-        assert con.execute("SELECT qty FROM inventory WHERE user_id=41 AND item='pack_ticket'").fetchone()[0] == 1
+        assert con.execute("SELECT qty FROM inventory WHERE user_id=41 AND item='pack_ticket'").fetchone()[0] == pmdb.PACK_TICKETS_370 - 2
     finally:
         release.GUILD.reset(tok)
     con.close()
@@ -280,7 +280,7 @@ def test_bot_clubs():
     eco = edb.EconomyDB()
     cdb.ClubDB()
     cog = BotClubs.__new__(BotClubs)
-    cog.pm, cog.money, cog.rng, cog.bot = pm, eco, random.Random(7), None
+    cog.pm, cog.money, cog.rng, cog.bot, cog.clubs = pm, eco, random.Random(7), None, cdb.ClubDB()
     pm._is_market_open = lambda ts: True
     con = sqlite3.connect(TMP)
     con.execute("DELETE FROM bot_club_state") if con.execute(
@@ -302,12 +302,24 @@ def test_bot_clubs():
     ok, high, _ = run(pm.create_trade(proposer_id=51, receiver_id=101, proposer_pids=[], receiver_pids=[pid],
                                       proposer_cash=price * 3, receiver_cash=0, now_ts=now, get_balance=eco.get_balance))
     assert bc.judge_trade(con, 101, low) is False and bc.judge_trade(con, 101, high) is True
-    before = con.execute("SELECT COUNT(*) FROM pm_holdings WHERE user_id=101 AND qty>0").fetchone()[0]
+    pid2 = con.execute("SELECT player_id FROM club_lineup WHERE user_id=101 AND player_id NOT LIKE 'AMT_%' AND player_id<>? "
+                       "LIMIT 1", (pid,)).fetchone()[0]
+    p2 = con.execute("SELECT price FROM pm_market WHERE player_id=?", (pid2,)).fetchone()[0]
+    ok, close, _ = run(pm.create_trade(proposer_id=51, receiver_id=101, proposer_pids=[], receiver_pids=[pid2],
+                                       proposer_cash=int(p2 * 1.4), receiver_cash=0, now_ts=now, get_balance=eco.get_balance))
     did = run(cog.visit(101, now, allowed=lambda u: u == 51, rng=random.Random(1)))
     assert f"trade:{low}:reject" in did and f"trade:{high}:accept" in did
+    assert any(d.startswith(f"trade:{close}:counter:") for d in did)            # 조금 모자라면 역제안
+    ctid = int(next(d for d in did if d.startswith(f"trade:{close}:counter:")).split(":")[-1])
+    ct = con.execute("SELECT proposer_id, receiver_id, receiver_cash FROM pm_trades WHERE trade_id=?", (ctid,)).fetchone()
+    assert ct[0] == 101 and ct[1] == 51 and ct[2] > int(p2 * 1.4)
+    assert any(d.startswith("routine:+") for d in did)                           # 하루 일과로 돈을 번다
     assert run(pm.get_holding(51, pid)) == 1
-    tot = sum(len(run(cog.visit(b, now, allowed=lambda u: u == 51, rng=random.Random(b)))) for b in bc.BOT_IDS)
-    assert tot > 0
+    logs = [d for b in bc.BOT_IDS for d in run(cog.visit(b, now, allowed=lambda u: u == 51, rng=random.Random(b)))]
+    assert any(d.startswith("match:") for d in logs)                             # 공식경기를 직접 뛴다
+    assert not any(d.startswith("routine:") for d in run(cog.visit(101, now, allowed=lambda u: u == 51)))   # 일과는 하루 한 번
+    # 쉬는 날 · 접속 시간대
+    assert any(bc.rest_day(101, d) for d in range(100)) and not all(bc.rest_day(101, d) for d in range(100))
     # 봇 매물은 3.7.0 서버에서만 · 봇은 랭킹에서 빠진다 · 공식경기 상대도 3.7.0 서버에서만
     assert not any(bc.is_bot(x[1]) for x in run(pm.get_listings("", limit=25)))
     assert not any(bc.is_bot(r[0]) for r in run(pm.get_ranking(50)))
