@@ -199,3 +199,8 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = out | LEGACY_311 if preview_311(guild_id, now) else out
     out = out if preview_360(guild_id, now) else out | PREVIEW_360
     return out if preview_310(guild_id, now) else out | PREVIEW_310
+
+
+def ctx_370() -> bool:
+    """3.7.0 이 공개된 서버에서 온 상호작용인가 (선수 1명 1주인 · 봇 구단 매물 — DB 안쪽에서 쓴다)."""
+    return preview_370(GUILD.get())

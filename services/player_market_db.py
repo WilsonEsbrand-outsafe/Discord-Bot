@@ -7,6 +7,7 @@ import random
 import zlib
 import sqlite3
 import release
+from services import bot_clubs as _bc
 import time
 from collections import Counter
 from collections.abc import Mapping
@@ -287,6 +288,39 @@ POOL_SIZE_360 = 1_200
 def pool_size(now_ts: Optional[float] = None) -> int:
     return POOL_SIZE_360 if release.released_360(now_ts) else POOL_SIZE
 
+# ── 3.7.0 선수 1명 1주인 · 봇 구단 (release.ctx_370: 테스트 서버 먼저, 백그라운드는 released_370) ──
+HOLD_CAP_370 = 40          # 한 사람이 가질 수 있는 선수 수 (아마추어 빼고) — 더 사려면 팔거나 방출
+FREE_MIN_370 = 600         # 아무도 안 가진 선수를 시장에 이만큼은 둔다 (1명 1주인이라 팩이 마르지 않게)
+_OWNED_SQL = ("SELECT player_id FROM pm_holdings WHERE qty>0 "
+              "UNION SELECT player_id FROM pm_listings WHERE status='active' "
+              "UNION SELECT ti.player_id FROM pm_trade_items ti JOIN pm_trades t ON t.trade_id=ti.trade_id "
+              "WHERE t.status='pending' AND ti.side='proposer'")
+
+
+def unique_on() -> bool:
+    return release.released_370() or release.ctx_370()
+
+
+def _owned(con) -> set:
+    return {str(r[0]) for r in con.execute(_OWNED_SQL)}
+
+
+def _is_owned(con, pid: str) -> bool:
+    return con.execute(f"SELECT 1 FROM ({_OWNED_SQL}) WHERE player_id=? LIMIT 1", (str(pid),)).fetchone() is not None
+
+
+def held_count(con, user_id: int) -> int:
+    return int(con.execute("SELECT COUNT(*) FROM pm_holdings WHERE user_id=? AND qty>0 AND player_id NOT LIKE 'AMT_%'",
+                           (int(user_id),)).fetchone()[0])
+
+
+def _bot_filter(alias: str = "l") -> str:
+    """봇 구단 매물을 숨기는 SQL 조각 — 3.7.0 이 안 열린 서버에선 봇 매물이 안 보인다."""
+    if unique_on():
+        return ""
+    return f" AND {alias}.seller_id NOT IN ({','.join(str(b) for b in _bc.BOT_IDS)})"
+
+
 def _pack_weight(player_price: int, pack_price: int) -> float:
     """팩 가격 기준 대칭 가우시안 가중치.
     - peak  : player_price == pack_price → 1.0
@@ -447,7 +481,7 @@ def player_profile(player_id: str, pos: str) -> dict:
     return {"foot": foot, "height": height, "weight": weight}
 
 
-def _draw_from_pool(con, pack: dict, pack_price: int, pulls: int) -> tuple[str, list]:
+def _draw_from_pool(con, pack: dict, pack_price: int, pulls: int, unique: bool = False) -> tuple[str, list]:
     """풀 쿼리·가중치·추첨 — buy_pack 헬퍼.
 
     Returns:
@@ -469,6 +503,9 @@ def _draw_from_pool(con, pack: dict, pack_price: int, pulls: int) -> tuple[str, 
                 for r in rows]
     if pack.get("pos"):   # 포지션 팩은 그 포지션 선수만 (잭팟 포함)
         everyone = [p for p in everyone if p[4] == pack["pos"]]
+    if unique:   # 3.7.0 선수 1명 1주인: 누가 가진 선수는 안 나온다 (아래에서 한 팩 안 중복도 막는다)
+        owned = _owned(con)
+        everyone = [p for p in everyone if p[0] not in owned]
 
     min_p = int(pack.get("min_price", 0) or 0)
     max_p = pack.get("max_price", None)
@@ -494,7 +531,15 @@ def _draw_from_pool(con, pack: dict, pack_price: int, pulls: int) -> tuple[str, 
         if jackpot_pool and random.random() < JACKPOT_PROB:
             picks.append((_pick(jackpot_pool, jackpot_w), True))
         else:
+            if not normal:
+                return ("EMPTY_TIER", [])
             picks.append((_pick(normal, normal_w), False))
+        if unique:
+            got = picks[-1][0][0]
+            for pool, w in ((normal, normal_w), (jackpot_pool, jackpot_w)):
+                for i in range(len(pool) - 1, -1, -1):
+                    if pool[i][0] == got:
+                        del pool[i]; del w[i]
     return ("OK", picks)
 
 # ───────────── 국적 풀(가중치) ─────────────
@@ -1169,6 +1214,11 @@ class PlayerMarketDB:
                         "SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"
                     ).fetchone()[0]
                     need = max(0, int(target) - int(active))
+                    if release.released_370(now_ts):   # 3.7.0 1명 1주인: 안 가진 선수가 FREE_MIN_370 밑이면 더 만든다
+                        free = con.execute(
+                            f"SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' "
+                            f"AND player_id NOT IN ({_OWNED_SQL})").fetchone()[0]
+                        need = max(need, FREE_MIN_370 - int(free))
                     if need <= 0:
                         return
 
@@ -1483,6 +1533,9 @@ class PlayerMarketDB:
         if int(retired) == 1:
             return False, "은퇴 선수는 구매할 수 없습니다."
 
+        uniq = unique_on()
+        if uniq and qty != 1:
+            return False, "선수는 한 명당 한 장만 가질 수 있습니다. (수량 1)"
         cost = int(price) * qty
 
         # 차감과 지급을 한 트랜잭션으로 묶는다. 둘로 나뉘어 있던 탓에
@@ -1492,6 +1545,12 @@ class PlayerMarketDB:
                 con = self._connect()
                 try:
                     con.execute("BEGIN IMMEDIATE;")
+                    if uniq and _is_owned(con, pid):
+                        con.execute("ROLLBACK;")
+                        return "OWNED"
+                    if uniq and held_count(con, user_id) >= HOLD_CAP_370:
+                        con.execute("ROLLBACK;")
+                        return "CAP"
                     if not _take_cash(con, user_id, cost):
                         con.execute("ROLLBACK;")
                         return False
@@ -1513,6 +1572,10 @@ class PlayerMarketDB:
                     con.close()
             paid = await self._run(work)
 
+        if paid == "OWNED":
+            return False, f"**{name}**은(는) 이미 주인이 있는 선수입니다. 이적시장 매물이나 트레이드로 데려오세요."
+        if paid == "CAP":
+            return False, f"선수는 최대 **{HOLD_CAP_370}명**까지 가질 수 있습니다. 먼저 팔거나 방출해 주세요."
         if not paid:
             bal = await get_balance(user_id)
             return False, f"잔액이 부족합니다. 필요: {cost:,} / 보유: {bal:,}"
@@ -1600,6 +1663,7 @@ class PlayerMarketDB:
         pack = PACKS[pack_type]
         pack_price = int(pack["price"])
         total_cost = pack_price * pulls
+        uniq = unique_on()
 
         # 차감·추첨·지급을 한 트랜잭션으로 묶는다. 예전엔 먼저 돈을 빼고
         # 실패 시 환불하는 구조라, 추첨 중 예외가 나면 돈만 사라졌다.
@@ -1608,10 +1672,13 @@ class PlayerMarketDB:
                 con = self._connect()
                 try:
                     con.execute("BEGIN IMMEDIATE;")
+                    if uniq and held_count(con, user_id) + pulls > HOLD_CAP_370:
+                        con.execute("ROLLBACK;")
+                        return ("CAP", [])
                     if not _take_cash(con, user_id, total_cost):
                         con.execute("ROLLBACK;")
                         return ("NO_FUNDS", [])
-                    status, drawn = _draw_from_pool(con, pack, pack_price, pulls)
+                    status, drawn = _draw_from_pool(con, pack, pack_price, pulls, unique=uniq)
                     if status == "EMPTY_TIER":
                         con.execute("ROLLBACK;")
                         return ("EMPTY_TIER", [])
@@ -1635,6 +1702,9 @@ class PlayerMarketDB:
 
             status, results = await self._run(work)
 
+        if status == "CAP":
+            return False, (f"선수는 최대 **{HOLD_CAP_370}명**까지 가질 수 있습니다. 먼저 팔거나 방출해 주세요.\n"
+                           "💸 비용은 차감되지 않았습니다."), None
         if status == "NO_FUNDS":
             bal = await get_balance(user_id)
             return False, f"잔액이 부족합니다. 필요: {total_cost:,} / 보유: {bal:,}", None
@@ -2088,7 +2158,7 @@ class PlayerMarketDB:
                                    p.name, p.nation, p.position, p.age, p.ovr, p.pot_grade, p.base_value
                             FROM pm_listings l
                             JOIN pm_players p ON p.player_id=l.player_id
-                            WHERE l.status='active' AND l.expires_at > ?
+                            WHERE l.status='active' AND l.expires_at > ?""" + _bot_filter() + """
                             ORDER BY l.listed_at DESC
                             LIMIT ? OFFSET ?
                             """,
@@ -2105,7 +2175,7 @@ class PlayerMarketDB:
                         JOIN pm_players p ON p.player_id=l.player_id
                         WHERE l.status='active' AND l.expires_at > ?
                           AND (p.name LIKE ? OR p.nation LIKE ? OR p.position LIKE ?
-                               OR p.pot_grade LIKE ? OR l.player_id LIKE ?)
+                               OR p.pot_grade LIKE ? OR l.player_id LIKE ?)""" + _bot_filter() + """
                         ORDER BY l.price_per ASC
                         LIMIT ? OFFSET ?
                         """,
@@ -2125,7 +2195,7 @@ class PlayerMarketDB:
                 try:
                     if not q:
                         row = con.execute(
-                            "SELECT COUNT(*) FROM pm_listings WHERE status='active' AND expires_at > ?",
+                            "SELECT COUNT(*) FROM pm_listings l WHERE status='active' AND expires_at > ?" + _bot_filter(),
                             (now_ts,),
                         ).fetchone()
                     else:
@@ -2136,7 +2206,7 @@ class PlayerMarketDB:
                             JOIN pm_players p ON p.player_id=l.player_id
                             WHERE l.status='active' AND l.expires_at > ?
                               AND (p.name LIKE ? OR p.nation LIKE ? OR p.position LIKE ?
-                                   OR p.pot_grade LIKE ? OR l.player_id LIKE ?)
+                                   OR p.pot_grade LIKE ? OR l.player_id LIKE ?)""" + _bot_filter() + """
                             """,
                             (now_ts, like, like, like, like, like),
                         ).fetchone()
@@ -2172,6 +2242,7 @@ class PlayerMarketDB:
     ) -> Tuple[bool, str, dict | None]:
         """이적시장 매물 구매 (수수료 5%). 성공 시 3번째 원소에 알림용 dict 반환."""
         qty = int(qty)
+        uniq = unique_on()
         if qty <= 0:
             return False, "수량은 1 이상이어야 합니다.", None
 
@@ -2194,6 +2265,12 @@ class PlayerMarketDB:
 
                     seller_id, pid, avail_qty, price_per, expires_at, name = row
 
+                    if _bc.is_bot(seller_id) and not uniq and not _bc.is_bot(buyer_id):
+                        return None, "매물을 찾을 수 없습니다. (이미 판매됐거나 취소된 매물)"
+                    if uniq and not _bc.is_bot(buyer_id) and held_count(con, buyer_id) >= HOLD_CAP_370 \
+                            and not con.execute("SELECT 1 FROM pm_holdings WHERE user_id=? AND player_id=? AND qty>0",
+                                                (int(buyer_id), str(pid))).fetchone():
+                        return None, f"선수는 최대 **{HOLD_CAP_370}명**까지 가질 수 있습니다. 먼저 팔거나 방출해 주세요."
                     if int(buyer_id) == int(seller_id):
                         return None, "자신의 매물은 구매할 수 없습니다."
                     if now_ts > int(expires_at):
@@ -2767,6 +2844,78 @@ class PlayerMarketDB:
                     con.close()
             return await self._run(work)
 
+    async def dedupe_owners_370(self, now_ts: int, force: bool = False) -> list:
+        """3.7.0 공개 때 한 번: 선수 1명 1주인으로 정리. 같은 선수를 여러 명(또는 한 명이 여러 장) 가졌으면
+        선발 명단에 올린 사람 → 먼저 산 사람(먼저 생긴 보유 행) 한 장만 남기고, 나머지는 지금 시세 100% 로 환불.
+        이적시장에 올라간 중복 매물은 내리고 같은 값으로 환불. → [(user_id, 선수 이름, 장수, 환불액)]."""
+        async with self._lock:
+            def work():
+                con = self._connect()
+                try:
+                    con.execute("CREATE TABLE IF NOT EXISTS pm_flags (key TEXT PRIMARY KEY, ts INTEGER)")
+                    if not force and con.execute("SELECT 1 FROM pm_flags WHERE key='dedupe-3.7.0'").fetchone():
+                        return []
+                    con.execute("BEGIN IMMEDIATE;")
+                    rows = con.execute(
+                        "SELECT h.rowid, h.user_id, h.player_id, h.qty, p.name, COALESCE(m.price, p.base_value) "
+                        "FROM pm_holdings h JOIN pm_players p ON p.player_id=h.player_id "
+                        "LEFT JOIN pm_market m ON m.player_id=h.player_id "
+                        "WHERE h.qty>0 AND h.player_id NOT LIKE 'AMT_%' ORDER BY h.rowid").fetchall()
+                    by_pid: dict = {}
+                    for r in rows:
+                        by_pid.setdefault(str(r[2]), []).append(r)
+                    lineup: dict = {}
+                    out: dict = {}
+
+                    def refund(uid, name, n, price):
+                        if n <= 0:
+                            return
+                        con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(uid),))
+                        con.execute("UPDATE wallets SET balance=balance+? WHERE user_id=?", (int(price) * n, int(uid)))
+                        k = (int(uid), name)
+                        a, b = out.get(k, (0, 0))
+                        out[k] = (a + n, b + int(price) * n)
+
+                    keep_pid = set()
+                    for pid, hs in by_pid.items():
+                        def in_lineup(uid):
+                            if uid not in lineup:
+                                lineup[uid] = self._lineup_ids(con, uid)
+                            return pid in lineup[uid]
+                        keeper = next((h for h in hs if in_lineup(int(h[1]))), hs[0])
+                        keep_pid.add(pid)
+                        for rid, uid, _pid, qty, name, price in hs:
+                            extra = int(qty) - 1 if rid == keeper[0] else int(qty)
+                            if extra <= 0:
+                                continue
+                            con.execute("UPDATE pm_holdings SET qty=qty-? WHERE rowid=?", (extra, rid))
+                            refund(uid, name, extra, price)
+                    # 이적시장 매물: 이미 주인이 있는 선수면 내리고 환불, 매물끼리 겹치면 먼저 올린 것 하나만
+                    lst = con.execute(
+                        "SELECT l.listing_id, l.seller_id, l.player_id, l.qty, p.name, COALESCE(m.price, p.base_value) "
+                        "FROM pm_listings l JOIN pm_players p ON p.player_id=l.player_id "
+                        "LEFT JOIN pm_market m ON m.player_id=l.player_id WHERE l.status='active' ORDER BY l.listing_id").fetchall()
+                    for lid, uid, pid, qty, name, price in lst:
+                        pid = str(pid)
+                        if pid in keep_pid:
+                            con.execute("UPDATE pm_listings SET status='cancelled', qty=0 WHERE listing_id=?", (lid,))
+                            refund(uid, name, int(qty), price)
+                            continue
+                        keep_pid.add(pid)
+                        if int(qty) > 1:
+                            con.execute("UPDATE pm_listings SET qty=1 WHERE listing_id=?", (lid,))
+                            refund(uid, name, int(qty) - 1, price)
+                    con.execute("INSERT OR REPLACE INTO pm_flags(key, ts) VALUES('dedupe-3.7.0', ?)", (int(now_ts),))
+                    con.commit()
+                    return [(u, n, a, b) for (u, n), (a, b) in out.items()]
+                except Exception:
+                    try: con.execute("ROLLBACK;")
+                    except Exception: pass
+                    raise
+                finally:
+                    con.close()
+            return await self._run(work)
+
     async def get_ranking(self, limit: int = 10) -> list:
         """잔액 + 보유 선수 현재가 합산 랭킹"""
         async with self._lock:
@@ -2782,10 +2931,11 @@ class PlayerMarketDB:
                         FROM wallets w
                         LEFT JOIN pm_holdings h  ON w.user_id  = h.user_id  AND h.qty > 0
                         LEFT JOIN pm_market   mk ON h.player_id = mk.player_id
+                        WHERE w.user_id NOT IN (%s)
                         GROUP BY w.user_id
                         ORDER BY total DESC
                         LIMIT ?
-                        """,
+                        """ % ",".join(str(b) for b in _bc.BOT_IDS),
                         (int(limit),),
                     ).fetchall()
                 finally:
