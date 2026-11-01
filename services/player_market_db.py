@@ -2947,7 +2947,7 @@ class PlayerMarketDB:
                         GROUP BY w.user_id
                         ORDER BY total DESC
                         LIMIT ?
-                        """ % (",".join(str(b) for b in _bc.BOT_IDS) if not release.released_370() else "0"),
+                        """ % ",".join(str(b) for b in _bc.BOT_IDS),
                         (int(limit),),
                     ).fetchall()
                 finally:

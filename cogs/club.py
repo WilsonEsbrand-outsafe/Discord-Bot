@@ -14,7 +14,7 @@ import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, NEWBIE_GAP, NEWBIE_OFFICIAL, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
-    WEEKLY_DAILY, WEEKLY_REWARDS, WEEKLY_SHOW, match_highlights, official_odds, official_prize, PRIZE_STAKE, PRIZE_STAKE_370, season_key, simulate_match, win_probs,
+    WEEKLY_DAILY, WEEKLY_REWARDS, OFFICIAL_GAP_370, weekly_daily, WEEKLY_SHOW, match_highlights, official_odds, official_prize, PRIZE_STAKE, PRIZE_STAKE_370, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
 from services.fishing import FishingDB
@@ -581,6 +581,15 @@ class Club(commands.Cog):
             return await interaction.response.send_message("⏳ 지금 경기가 진행 중이에요.", ephemeral=True)
         if 상대 is not None and await self._shielded(interaction, user, 상대):
             return
+        if release.preview_370(interaction.guild_id):   # 3.7.0 하루 15판 · 판마다 2분 간격 (스킵도)
+            t = await self.clubs.official_today(user.id, now)
+            if t["n"] >= weekly_daily(True):
+                return await interaction.response.send_message(
+                    f"🏁 오늘 공식경기 **{weekly_daily(True)}판**을 다 뛰었어요! 내일 00:00에 다시 열려요.", ephemeral=True)
+            if now - t["last"] < OFFICIAL_GAP_370:
+                return await interaction.response.send_message(
+                    f"😮‍💨 선수들이 숨을 고르는 중이에요. 다음 공식경기는 <t:{t['last'] + OFFICIAL_GAP_370}:R>에 뛸 수 있어요.",
+                    ephemeral=True)
         await interaction.response.defer()
         self._playing.add(user.id)
         try:
@@ -641,8 +650,8 @@ class Club(commands.Cog):
                     f"`정산` **{ui.won(r['delta'])}** · `잔액` **{r['balance']:,}원**\n"
                     f"`이번 시즌` {r['points']}점 · {r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d} · "
                     "순위는 `/공식순위`"
-                    + ((f"\n`이번 주` **{r['week']['points']}점** · 오늘 랭킹 {r['week']['day_n']}/{WEEKLY_DAILY}판"
-                        if r["week"]["counted"] else f"\n`이번 주` {r['week']['points']}점 · 오늘 랭킹 {WEEKLY_DAILY}판을 다 채웠어요")
+                    + ((f"\n`이번 주` **{r['week']['points']}점** · 오늘 랭킹 {r['week']['day_n']}/{weekly_daily()}판"
+                        if r["week"]["counted"] else f"\n`이번 주` {r['week']['points']}점 · 오늘 랭킹 {weekly_daily()}판을 다 채웠어요")
                        if r.get("week") else "")
                     + ((f"\n🩹 **{r['rehab']['name']}** 부상 복귀!" if r["rehab"]["left"] <= 0 else
                         f"\n🚑 **{r['rehab']['name']}** 복귀까지 공식경기 **{r['rehab']['left']}경기**")
@@ -665,9 +674,9 @@ class Club(commands.Cog):
             p, wk = r["prize"], r["week"]
             got = (f"`상금` **+{p['prize']:,}원** → 이번 주 상금함 **{wk['purse']:,}원** (월요일 정산)" if wk["counted"] and p["prize"]
                    else f"`상금` 없음 · 이번 주 상금함 **{wk['purse']:,}원**" if wk["counted"] else
-                   f"`상금` 오늘 {WEEKLY_DAILY}판을 다 채워서 상금 · 랭킹 없이 기록만 했어요")
+                   f"`상금` 오늘 {weekly_daily()}판을 다 채워서 상금 · 랭킹 없이 기록만 했어요")
             return (f"\n\n`결과` **{mark}** · {got}\n"
-                    f"`이번 주` **{wk['points']}점** · 오늘 {min(wk['day_n'], WEEKLY_DAILY)}/{WEEKLY_DAILY}판 · "
+                    f"`이번 주` **{wk['points']}점** · 오늘 {min(wk['day_n'], weekly_daily())}/{weekly_daily()}판 · "
                     f"`이번 시즌` {r['points']}점 {r['w']}승 {r['d']}무 {r['l']}패 · 순위는 `/공식순위`"
                     + ((f"\n🩹 **{r['rehab']['name']}** 부상 복귀!" if r["rehab"]["left"] <= 0 else
                         f"\n🚑 **{r['rehab']['name']}** 복귀까지 공식경기 **{r['rehab']['left']}경기**")
@@ -710,7 +719,7 @@ class Club(commands.Cog):
         e = ui.card("🏆 이번 주 공식경기 랭킹",
                     ("\n".join(lines) or "아직 이번 주 공식경기가 없어요.") + mine + f"\n\n⏰ 보상 지급 <t:{next_mon}:R>",
                     ui.GOLD, user, "🏆 공식경기")
-        e.set_footer(text=f"내가 건 공식경기만 · 하루 {WEEKLY_DAILY}판까지 · 승 3점 · 무 1점 · 매주 월요일 00시 1~3위 보상")
+        e.set_footer(text=f"내가 건 공식경기만 · 하루 {weekly_daily()}판까지 · 승 3점 · 무 1점 · 매주 월요일 00시 1~3위 보상")
         return e
 
     # ───────────── 감독 ─────────────
