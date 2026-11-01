@@ -1247,10 +1247,13 @@ class ClubDB:
 
     async def official_opponents(self, user_id: int) -> list[int]:
         """선발이 있는 다른 유저 구단 목록 (공식경기 상대 후보)."""
+        from services.bot_clubs import is_bot
+        bots = release.ctx_370()   # 3.7.0 봇 구단은 공개된 서버에서만 상대로 나온다
+
         def fn(con):
             return [r[0] for r in con.execute(
                 "SELECT DISTINCT c.user_id FROM clubs c JOIN club_lineup l ON l.user_id=c.user_id WHERE c.user_id<>?",
-                (int(user_id),))]
+                (int(user_id),)) if bots or not is_bot(r[0])]
         return await self._tx(fn)
 
     async def record_official(self, user_id: int, opp_id: int, gf: int, ga: int, now_ts: int,

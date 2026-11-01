@@ -91,12 +91,13 @@ ITEMS = {
     "elixir":      ("⏳", "회춘 주사",       "내 유망주 나이 -1살 (17세 밑으로는 안 내려가요)"),
     # ── 3.7.0 ──
     "youth_reroll": ("🔄", "유스 리롤권",     "오늘 유스 입단 테스트 지원자를 새로 뽑아요 (테스트 전에만 · /2군 화면에서)"),
+    "pack_ticket": ("🎫", "골드팩 교환권",    "/선수팩상점에서 골드팩을 고르면 돈 대신 이 교환권을 먼저 써요 (1장 = 골드팩 1장)"),
     "auto_reserve": ("🤖", "자동 2군 경기권", "12시간 동안 10분마다 2군 경기를 자동으로 (경험치 절반 · 유스 성장은 2판에 1번)"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
                  "bow_pro", "windbreaker", "focus", "torch", "potion", "antidote", "dkey", "scroll", "feather",
-                 "first_team", "special_training", "scout_coupon", "enh_stone", "youth_reroll"}
+                 "first_team", "special_training", "scout_coupon", "enh_stone", "youth_reroll", "pack_ticket"}
 # 점검 보상 상자: 6종을 한 장씩 뒤집어 섞고, 고른 한 장을 받는다
 BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
 BOX_CHOICES = len(BOX_REWARDS)

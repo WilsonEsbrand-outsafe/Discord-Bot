@@ -1,42 +1,73 @@
-# services/bot_clubs.py — 3.7.0 🤖 봇 구단: 이적시장 · 트레이드가 조용해서 늘 사고파는 상대를 둔다.
-# 봇은 유저처럼 지갑(wallets)과 보유 선수(pm_holdings)를 갖는다 — user_id 는 BOT_IDS (디스코드 ID 와 겹치지 않는 작은 수).
-# 하는 일 (시장 열린 시간, 10분마다 봇마다 확률로):
-#   · 매물 사기: 이적시장 매물 중 성격에 맞고 가격이 맞으면 산다 (올린 유저는 상대가 없어도 팔린다)
-#   · 선수 팔기: 가진 선수를 이적시장에 올린다
-#   · 이적 제안: 유저가 가진 선수를 현금으로 사겠다고 트레이드 제안 (유저는 /트레이드목록 에서 수락 · 거절)
-# 봇 돈은 예산 안에서만 — 매주 월요일 BUDGET_WEEKLY 를 받고 BUDGET_CAP 을 넘지 않는다 (돈을 무한히 찍지 않는다).
+# services/bot_clubs.py — 3.7.0 🤖 봇 구단: 일반 플레이어처럼 구단을 굴리는 AI 감독 10명.
+# 봇은 유저와 똑같이 지갑(wallets) · 보유 선수(pm_holdings) · 구단(clubs · club_lineup)을 가진다.
+# user_id 는 BOT_IDS (디스코드 ID 와 겹치지 않는 작은 수) — 공식경기 상대로도 나온다.
+#
+# 움직이는 방식 (규완님: "10분마다 필수적으로 하는 게 아니라 일반 플레이어처럼, 고지능 AI"):
+#   · 감독마다 접속하는 시간대가 있고(아침형 · 저녁형 · 올빼미형 …), 접속 간격도 사람처럼 들쭉날쭉하다.
+#   · 접속하면 구단을 '살펴보고' 할 만한 일만 한다 (아무것도 안 하고 나갈 때도 많다):
+#       1) 받은 트레이드 제안 검토 — 받는 가치가 주는 가치(선발이면 더 아낀다)보다 크면 수락, 아니면 거절
+#       2) 선발 명단 정리 — 가장 강한 11명
+#       3) 보강 — 가장 약한 포지션을 찾아, 그 자리를 확실히 올려 줄 선수를 가성비로 고른다
+#          (아무도 안 가진 선수 · 유저 매물 중 가장 좋은 쪽. 유저가 가진 선수가 훨씬 낫다면 직접 이적 제안)
+#       4) 정리 — 선발에 못 드는 남는 선수 · 늙어서 떨어질 선수를 시세보다 조금 비싸게 내놓는다,
+#          오래 안 팔린 매물은 내린다
+#   · 감독 성향(부자 · 셀링 · 알뜰 · 급한 구단)에 따라 노리는 선수(나이 · OVR) · 쓰는 돈 · 파는 값이 다르다.
+# 돈은 매주 구단 수입(BUDGET_WEEKLY, BUDGET_CAP 까지)과 선수를 판 돈이 전부 — 돈을 무한히 찍지 않는다.
 import random
-import sqlite3
-import time
 from typing import Optional
 
-BOT_CLUBS = {   # id → (엠블럼, 이름, 성격)
-    101: ("🦁", "로열 레온 FC", "rich"),
-    102: ("🦅", "아퀼라 유나이티드", "rich"),
-    103: ("🌱", "그린필드 아카데미", "seller"),
-    104: ("🐺", "볼프스 유스", "seller"),
-    105: ("🪙", "코인 시티", "bargain"),
-    106: ("🦊", "폭스헤이븐", "bargain"),
-    107: ("⚓", "포트 마리너스", "needy"),
-    108: ("🌋", "볼케이노 SC", "needy"),
-    109: ("🏔️", "알파인 레인저스", "seller"),
-    110: ("🌊", "오션사이드 FC", "rich"),
+BOT_CLUBS = {   # id → (엠블럼, 이름, 성향, 포메이션, 생활 패턴)
+    101: ("🦁", "로열 레온 FC", "rich", "4-3-3", "evening"),
+    102: ("🦅", "아퀼라 유나이티드", "rich", "4-2-3-1", "night"),
+    103: ("🌱", "그린필드 아카데미", "seller", "4-4-2", "morning"),
+    104: ("🐺", "볼프스 유스", "seller", "4-3-3", "evening"),
+    105: ("🪙", "코인 시티", "bargain", "4-4-2", "office"),
+    106: ("🦊", "폭스헤이븐", "bargain", "3-5-2", "night"),
+    107: ("⚓", "포트 마리너스", "needy", "5-3-2", "morning"),
+    108: ("🌋", "볼케이노 SC", "needy", "4-2-3-1", "evening"),
+    109: ("🏔️", "알파인 레인저스", "seller", "3-4-3", "office"),
+    110: ("🌊", "오션사이드 FC", "rich", "4-4-2", "night"),
 }
 BOT_IDS = tuple(BOT_CLUBS)
-PERSONALITY = {   # 성격 → 사는 조건 · 사는 최고가(기준가 대비) · 파는 가격(기준가 대비) · 제안 가격(시세 대비)
-    "rich":    {"label": "부자 구단", "min_ovr": 82, "max_age": 99, "buy_max": 1.30, "sell": (1.25, 1.45), "offer": (1.10, 1.30)},
-    "seller":  {"label": "셀링 구단", "min_ovr": 0,  "max_age": 23, "buy_max": 1.00, "sell": (1.15, 1.35), "offer": (1.00, 1.12)},
-    "bargain": {"label": "알뜰 구단", "min_ovr": 0,  "max_age": 99, "buy_max": 0.85, "sell": (1.05, 1.20), "offer": (0.95, 1.05)},
-    "needy":   {"label": "급한 구단", "min_ovr": 70, "max_age": 31, "buy_max": 1.15, "sell": (1.10, 1.30), "offer": (1.05, 1.20)},
+PERSONALITY = {
+    # min_ovr/max_age: 노리는 선수 · spend: 한 명에 쓰는 돈(잔액 대비) · pay: 시세 대비 최고 지불 · gain: 이 정도 좋아져야 산다
+    # sell: 내놓는 값(시세 대비) · offer: 이적 제안 값(시세 대비) · keep: 내 선수 아끼는 정도 · squad: 목표 인원(아마추어 빼고)
+    "rich":    {"label": "부자 구단", "min_ovr": 78, "max_age": 31, "spend": 0.45, "pay": 1.30, "gain": 3,
+                "sell": (1.15, 1.35), "offer": (1.15, 1.35), "keep": 1.25, "squad": 18, "act": 0.85},
+    "seller":  {"label": "셀링 구단", "min_ovr": 0, "max_age": 23, "spend": 0.25, "pay": 1.05, "gain": 2,
+                "sell": (1.20, 1.45), "offer": (1.00, 1.15), "keep": 1.05, "squad": 14, "act": 0.75},
+    "bargain": {"label": "알뜰 구단", "min_ovr": 0, "max_age": 33, "spend": 0.20, "pay": 0.92, "gain": 2,
+                "sell": (1.05, 1.20), "offer": (0.95, 1.05), "keep": 1.10, "squad": 15, "act": 0.6},
+    "needy":   {"label": "급한 구단", "min_ovr": 70, "max_age": 30, "spend": 0.40, "pay": 1.20, "gain": 1,
+                "sell": (1.10, 1.25), "offer": (1.10, 1.25), "keep": 1.15, "squad": 16, "act": 0.9},
+}
+# 생활 패턴: (KST 시작시, 끝시) 접속 시간대 목록 · 평균 접속 간격(분)
+SCHEDULES = {
+    "morning": (((7, 10), (12, 13), (19, 22)), 75),
+    "evening": (((12, 13), (18, 24)), 60),
+    "night":   (((14, 16), (21, 24), (0, 3)), 70),
+    "office":  (((8, 9), (12, 13), (18, 21)), 90),
 }
 START_BUDGET = 200_000_000
 BUDGET_WEEKLY, BUDGET_CAP = 50_000_000, 300_000_000
-START_PLAYERS = 8
-ACT_PROB = 0.35              # 틱마다 봇 하나가 움직일 확률
-OFFER_PROB = 0.12            # 움직일 때 이적 제안까지 할 확률
-LIST_MAX = 3                 # 봇 하나가 동시에 올려 두는 매물 수
-OFFER_COOLDOWN = 86400       # 같은 유저에게 봇 제안은 하루 한 번까지
-SQUAD_MAX = 18               # 봇이 이보다 많이 가지면 사지 않는다
+START_PLAYERS = 11
+LIST_MAX = 3                 # 동시에 올려 두는 매물 수
+LIST_STALE = 36 * 3600       # 이만큼 안 팔린 매물은 내린다
+OFFER_COOLDOWN = 86400       # 같은 유저에게 봇 제안은 하루 한 번까지 (봇 전체)
+SESSION_MAX = 3              # 한 번 접속해서 하는 일 (트레이드 응답 · 명단 정리 빼고)
+FORMATION_NEED = {}          # 포메이션 → {포지션: 선발 수} (아래에서 채운다)
+_GROUP = {"GK": "GK", "LB": "DF", "CB": "DF", "RB": "DF", "LWB": "DF", "RWB": "DF", "LM": "MF", "CM": "MF",
+          "RM": "MF", "DM": "MF", "AM": "MF", "LW": "FW", "RW": "FW", "ST": "FW"}
+
+
+def _formation_need(formation: str) -> dict:
+    if formation not in FORMATION_NEED:
+        from services.club_db import FORMATIONS
+        need = {"GK": 0, "DF": 0, "MF": 0, "FW": 0}
+        for s in FORMATIONS[formation]:
+            need[_GROUP[s]] += 1
+        FORMATION_NEED[formation] = need
+    return FORMATION_NEED[formation]
 
 
 def is_bot(uid) -> bool:
@@ -47,43 +78,95 @@ def is_bot(uid) -> bool:
 
 
 def bot_name(uid: int) -> str:
-    e, n, _ = BOT_CLUBS[int(uid)]
+    e, n, *_ = BOT_CLUBS[int(uid)]
     return f"{e} {n}"
+
+
+def kind(bid: int) -> str:
+    return BOT_CLUBS[int(bid)][2]
 
 
 def week_key(ts: int) -> int:
     return (int(ts) + 9 * 3600) // 86400 // 7
 
 
+def _kst_hour(ts: float) -> float:
+    return ((int(ts) + 9 * 3600) % 86400) / 3600
+
+
+def online(bid: int, ts: float) -> bool:
+    h = _kst_hour(ts)
+    return any(a <= h < b for a, b in SCHEDULES[BOT_CLUBS[bid][4]][0])
+
+
+def next_visit(bid: int, now: int, rng=random) -> int:
+    """다음 접속 시각 — 접속 시간대 안이면 평균 간격의 들쭉날쭉한 간격, 밖이면 다음 시간대 시작 무렵."""
+    windows, mean = SCHEDULES[BOT_CLUBS[bid][4]]
+    gap = int(max(15, rng.expovariate(1 / mean)) * 60)
+    t = now + gap
+    if online(bid, t):
+        return t
+    for step in range(1, 25 * 4):   # 15분씩 앞으로 — 다음 시간대 시작 + 0~40분
+        u = now + step * 900
+        if online(bid, u):
+            return u + rng.randint(0, 40 * 60)
+    return t
+
+
 def init_tables(con) -> None:
-    con.execute("CREATE TABLE IF NOT EXISTS bot_club_state (bot_id INTEGER PRIMARY KEY, week INTEGER NOT NULL DEFAULT 0)")
+    con.execute("CREATE TABLE IF NOT EXISTS bot_club_state (bot_id INTEGER PRIMARY KEY, week INTEGER NOT NULL DEFAULT 0, "
+                "next_ts INTEGER NOT NULL DEFAULT 0)")
+    try:
+        con.execute("ALTER TABLE bot_club_state ADD COLUMN next_ts INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass
     con.execute("CREATE TABLE IF NOT EXISTS bot_offer_log (bot_id INTEGER, user_id INTEGER, player_id TEXT, ts INTEGER)")
     con.execute("CREATE INDEX IF NOT EXISTS bot_offer_log_user ON bot_offer_log(user_id, ts)")
+    con.execute("CREATE TABLE IF NOT EXISTS bot_trade_seen (trade_id INTEGER PRIMARY KEY, ts INTEGER)")
+
+
+def _owned_sql() -> str:
+    from services.player_market_db import _OWNED_SQL
+    return _OWNED_SQL
+
+
+def ensure_club(con, bid: int, now_ts: int) -> None:
+    """봇 구단의 구단 (clubs) — 없으면 만든다. 아마추어 스쿼드도 유저처럼 받는다."""
+    e, name, _k, formation, _s = BOT_CLUBS[bid]
+    if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (bid,)).fetchone():
+        con.execute("INSERT INTO clubs(user_id, club_name, created_ts) VALUES(?, ?, ?)", (bid, name, int(now_ts)))
+    con.execute("UPDATE clubs SET emblem=?, formation=?, club_name=? WHERE user_id=?", (e, formation, name, bid))
+    from services.player_market_db import AMATEUR_SQUAD
+    for p in AMATEUR_SQUAD:
+        con.execute("INSERT OR IGNORE INTO pm_holdings(user_id, player_id, qty) VALUES(?, ?, 1)", (bid, p["player_id"]))
 
 
 def bootstrap(con, now_ts: int, rng=random) -> int:
-    """봇 구단을 처음 만든다 — 지갑 START_BUDGET · 아무도 안 가진 선수 START_PLAYERS 명. → 새로 만든 봇 수."""
+    """봇 구단을 처음 만든다 — 지갑 START_BUDGET · 구단 · 아무도 안 가진 선수 START_PLAYERS 명. → 새로 만든 봇 수."""
     init_tables(con)
     made = 0
     for bid in BOT_IDS:
+        ensure_club(con, bid, now_ts)
         if con.execute("SELECT 1 FROM bot_club_state WHERE bot_id=?", (bid,)).fetchone():
             continue
-        con.execute("INSERT INTO bot_club_state(bot_id, week) VALUES(?, ?)", (bid, week_key(now_ts)))
+        con.execute("INSERT INTO bot_club_state(bot_id, week, next_ts) VALUES(?, ?, ?)",
+                    (bid, week_key(now_ts), next_visit(bid, int(now_ts), rng)))
         con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (bid,))
         con.execute("UPDATE wallets SET balance=? WHERE user_id=?", (START_BUDGET, bid))
+        p = PERSONALITY[kind(bid)]
         free = [r[0] for r in con.execute(
-            "SELECT player_id FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' "
-            "AND player_id NOT IN (SELECT player_id FROM pm_holdings WHERE qty>0) "
-            "AND player_id NOT IN (SELECT player_id FROM pm_listings WHERE status='active')")]
+            f"SELECT player_id FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' AND age<=? AND ovr>=? "
+            f"AND player_id NOT IN ({_owned_sql()})", (p["max_age"], min(p["min_ovr"], 72)))]
         for pid in rng.sample(free, min(START_PLAYERS, len(free))):
             con.execute("INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(?,?,1) "
-                        "ON CONFLICT(user_id, player_id) DO UPDATE SET qty=qty+1", (bid, pid))
+                        "ON CONFLICT(user_id, player_id) DO UPDATE SET qty=1", (bid, pid))
+        set_lineup(con, bid)
         made += 1
     return made
 
 
 def weekly_budget(con, now_ts: int) -> None:
-    """월요일마다 봇 예산 +BUDGET_WEEKLY (BUDGET_CAP 까지)."""
+    """월요일마다 구단 수입 +BUDGET_WEEKLY (BUDGET_CAP 까지)."""
     init_tables(con)
     wk = week_key(now_ts)
     for bid, last in con.execute("SELECT bot_id, week FROM bot_club_state").fetchall():
@@ -95,68 +178,180 @@ def weekly_budget(con, now_ts: int) -> None:
         con.execute("UPDATE bot_club_state SET week=? WHERE bot_id=?", (wk, bid))
 
 
+def due_bots(con, now_ts: int) -> list[int]:
+    init_tables(con)
+    return [int(b) for (b,) in con.execute("SELECT bot_id FROM bot_club_state WHERE next_ts<=?", (int(now_ts),))]
+
+
+def schedule(con, bid: int, now_ts: int, rng=random) -> None:
+    con.execute("UPDATE bot_club_state SET next_ts=? WHERE bot_id=?", (next_visit(bid, int(now_ts), rng), bid))
+
+
 def balance(con, uid: int) -> int:
     r = con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(uid),)).fetchone()
     return int(r[0]) if r else 0
 
 
-def squad_size(con, bid: int) -> int:
-    return int(con.execute("SELECT COALESCE(SUM(qty),0) FROM pm_holdings WHERE user_id=? AND qty>0", (bid,)).fetchone()[0])
+# ───────────── 구단 살펴보기 ─────────────
+def squad(con, bid: int) -> list[dict]:
+    rows = con.execute(
+        "SELECT p.player_id, p.name, p.position, p.ovr, p.age, p.pot, COALESCE(m.price, p.base_value), p.base_value "
+        "FROM pm_holdings h JOIN pm_players p ON p.player_id=h.player_id LEFT JOIN pm_market m ON m.player_id=h.player_id "
+        "WHERE h.user_id=? AND h.qty>0 AND p.retired=0", (int(bid),)).fetchall()
+    return [{"player_id": r[0], "name": r[1], "pos": r[2], "ovr": int(r[3]), "age": int(r[4]), "pot": int(r[5]),
+             "price": int(r[6]), "base": int(r[7]), "amateur": str(r[0]).startswith("AMT_")} for r in rows]
 
 
-def fits(kind: str, ovr: int, age: int) -> bool:
-    p = PERSONALITY[kind]
+def set_lineup(con, bid: int) -> list[str]:
+    """가장 강한 11명으로 선발 명단."""
+    from services.club_db import auto_assign
+    formation = BOT_CLUBS[bid][3]
+    placed = auto_assign(squad(con, bid), formation)
+    con.execute("DELETE FROM club_lineup WHERE user_id=?", (bid,))
+    con.executemany("INSERT INTO club_lineup(user_id, slot, player_id) VALUES(?, ?, ?)",
+                    [(bid, i, pid) for i, pid in enumerate(placed) if pid])
+    return [pid for pid in placed if pid]
+
+
+def needs(con, bid: int) -> list[tuple]:
+    """포지션별 가장 약한 선발 OVR → [(포지션, 약한 선발 OVR, 선발 수가 모자란가)] 약한 순."""
+    sq = squad(con, bid)
+    need = _formation_need(BOT_CLUBS[bid][3])
+    out = []
+    for pos, n in need.items():
+        mine = sorted((p["ovr"] for p in sq if p["pos"] == pos), reverse=True)
+        weakest = mine[n - 1] if len(mine) >= n else 0
+        out.append((pos, weakest, len(mine) < n))
+    return sorted(out, key=lambda x: (not x[2], x[1]))
+
+
+def _fits(k: str, ovr: int, age: int) -> bool:
+    p = PERSONALITY[k]
     return int(ovr) >= p["min_ovr"] and int(age) <= p["max_age"]
 
 
-def pick_listing(con, bid: int, now_ts: int, allowed_seller=None, rng=random) -> Optional[tuple]:
-    """봇이 살 만한 매물 → (listing_id, price_per) 또는 None. allowed_seller(seller_id) 가 False 면 건너뛴다 (테스트 서버 먼저)."""
-    kind = BOT_CLUBS[bid][2]
-    if squad_size(con, bid) >= SQUAD_MAX:
+def _value(k: str, gain: int, age: int, pot: int, ovr: int, price: int) -> float:
+    """보강 점수 — 좋아지는 정도(+어린 선수는 잠재력) 를 돈 1억당으로. 셀링 구단은 잠재력을 더 본다."""
+    upside = max(0, pot - ovr) * (0.5 if k == "seller" else 0.15) if age <= 23 else 0
+    return (gain + upside) / max(0.05, price / 100_000_000)
+
+
+def find_upgrade(con, bid: int, now_ts: int, allowed=None) -> Optional[dict]:
+    """가장 약한 자리를 확실히 올려 줄 선수 중 가성비가 가장 좋은 쪽.
+    → {"how": "free"|"listing"|"offer", ...} 또는 None (돈이 없거나 살 만한 선수가 없으면)."""
+    k = kind(bid)
+    p = PERSONALITY[k]
+    if len([x for x in squad(con, bid) if not x["amateur"]]) >= p["squad"] + 4:
         return None
     bal = balance(con, bid)
-    rows = con.execute(
-        "SELECT l.listing_id, l.seller_id, l.price_per, p.ovr, p.age, p.base_value FROM pm_listings l "
-        "JOIN pm_players p ON p.player_id=l.player_id WHERE l.status='active' AND l.expires_at>? AND l.qty>0",
-        (int(now_ts),)).fetchall()
-    good = [(lid, price) for lid, seller, price, ovr, age, base in rows
-            if not is_bot(seller) and (allowed_seller is None or allowed_seller(int(seller)))
-            and fits(kind, ovr, age) and int(price) <= int(base) * PERSONALITY[kind]["buy_max"] and int(price) <= bal]
-    return rng.choice(good) if good else None
+    cap = int(bal * p["spend"])
+    best = None
+    owned = _owned_sql()
+    for pos, weakest, short in needs(con, bid)[:2]:
+        want = weakest + (0 if short else p["gain"])
+        cands = []
+        # 아무도 안 가진 선수 (시장에서 시세로)
+        for pid, ovr, age, pot, price in con.execute(
+                f"SELECT p.player_id, p.ovr, p.age, p.pot, COALESCE(m.price, p.base_value) FROM pm_players p "
+                f"LEFT JOIN pm_market m ON m.player_id=p.player_id WHERE p.retired=0 AND p.position=? AND p.ovr>? "
+                f"AND p.player_id NOT LIKE 'AMT_%' AND p.player_id NOT IN ({owned}) ORDER BY p.ovr DESC LIMIT 60",
+                (pos, want)):
+            cands.append(("free", {"player_id": pid}, ovr, age, pot, int(price), int(price)))
+        # 유저 매물
+        for lid, seller, pid, price, ovr, age, pot, mkt in con.execute(
+                "SELECT l.listing_id, l.seller_id, l.player_id, l.price_per, p.ovr, p.age, p.pot, COALESCE(m.price, p.base_value) "
+                "FROM pm_listings l JOIN pm_players p ON p.player_id=l.player_id LEFT JOIN pm_market m ON m.player_id=l.player_id "
+                "WHERE l.status='active' AND l.expires_at>? AND l.qty>0 AND p.position=? AND p.ovr>?",
+                (int(now_ts), pos, want)):
+            if is_bot(seller) or (allowed is not None and not allowed(int(seller))):
+                continue
+            if int(price) > int(mkt) * p["pay"]:
+                continue
+            cands.append(("listing", {"listing_id": lid, "seller_id": int(seller)}, ovr, age, pot, int(price), int(mkt)))
+        # 유저가 가진 선수 (매물 아님) — 훨씬 좋을 때만 이적 제안
+        since = int(now_ts) - OFFER_COOLDOWN
+        for uid, pid, ovr, age, pot, mkt in con.execute(
+                "SELECT h.user_id, h.player_id, p.ovr, p.age, p.pot, COALESCE(m.price, p.base_value) FROM pm_holdings h "
+                "JOIN pm_players p ON p.player_id=h.player_id LEFT JOIN pm_market m ON m.player_id=h.player_id "
+                "WHERE h.qty>0 AND p.retired=0 AND p.position=? AND p.ovr>? AND h.player_id NOT LIKE 'AMT_%' "
+                "AND h.user_id NOT IN (SELECT user_id FROM bot_offer_log WHERE ts>?)", (pos, want + 3, since)):
+            if is_bot(uid) or (allowed is not None and not allowed(int(uid))):
+                continue
+            cands.append(("offer", {"user_id": int(uid), "player_id": pid}, ovr, age, pot, int(mkt), int(mkt)))
+        for how, ref, ovr, age, pot, cost, mkt in cands:
+            if not _fits(k, ovr, age) or cost <= 0:
+                continue
+            pay = int(round(mkt * random.uniform(*p["offer"]), -3)) if how == "offer" else cost
+            if pay > cap:
+                continue
+            score = _value(k, int(ovr) - weakest, int(age), int(pot), int(ovr), pay) * (1.25 if short else 1.0)
+            if how == "offer":
+                score *= 0.8   # 수락할지 모르니 조금 덜 친다
+            if best is None or score > best["score"]:
+                best = {"how": how, **ref, "price": pay, "score": score, "pos": pos, "ovr": int(ovr),
+                        "player_id": ref.get("player_id") or con.execute(
+                            "SELECT player_id FROM pm_listings WHERE listing_id=?", (ref.get("listing_id"),)).fetchone()[0]}
+    return best
 
 
-def pick_to_list(con, bid: int, rng=random) -> Optional[tuple]:
-    """봇이 이적시장에 올릴 선수 → (player_id, 가격) 또는 None."""
-    kind = BOT_CLUBS[bid][2]
+def pick_to_sell(con, bid: int, rng=random) -> Optional[tuple]:
+    """내놓을 선수 → (player_id, 가격) 또는 None. 선발에 못 드는 남는 선수 · 늙은 선수 · (셀링 구단) 값 오른 유망주."""
+    k = kind(bid)
+    p = PERSONALITY[k]
     if con.execute("SELECT COUNT(*) FROM pm_listings WHERE seller_id=? AND status='active'", (bid,)).fetchone()[0] >= LIST_MAX:
         return None
-    rows = con.execute(
-        "SELECT h.player_id, p.base_value FROM pm_holdings h JOIN pm_players p ON p.player_id=h.player_id "
-        "WHERE h.user_id=? AND h.qty>0 AND p.retired=0", (bid,)).fetchall()
-    if not rows:
+    lineup = {r[0] for r in con.execute("SELECT player_id FROM club_lineup WHERE user_id=?", (bid,))}
+    listed = {r[0] for r in con.execute("SELECT player_id FROM pm_listings WHERE seller_id=? AND status='active'", (bid,))}
+    sq = [x for x in squad(con, bid) if not x["amateur"] and x["player_id"] not in listed]
+    bench = [x for x in sq if x["player_id"] not in lineup]
+    cands = []
+    if len(sq) > p["squad"]:
+        cands += [(x, 3 + (p["squad"] - x["ovr"] / 10)) for x in bench]
+    cands += [(x, 2 + x["age"] - 31) for x in sq if x["age"] >= 32]
+    if k == "seller":
+        cands += [(x, 2 + x["price"] / max(1, x["base"])) for x in bench if x["price"] > x["base"] * 1.15]
+    if not cands:
         return None
-    pid, base = rng.choice(rows)
-    lo, hi = PERSONALITY[kind]["sell"]
-    return pid, int(round(int(base) * rng.uniform(lo, hi), -3))
+    x = max(cands, key=lambda c: c[1])[0]
+    return x["player_id"], int(round(x["price"] * rng.uniform(*p["sell"]), -3))
 
 
-def pick_offer(con, bid: int, now_ts: int, allowed_user=None, rng=random) -> Optional[tuple]:
-    """봇이 유저에게 낼 이적 제안 → (user_id, player_id, 제안 금액) 또는 None."""
-    kind = BOT_CLUBS[bid][2]
-    if squad_size(con, bid) >= SQUAD_MAX:
+def stale_listings(con, bid: int, now_ts: int) -> list[int]:
+    return [int(r[0]) for r in con.execute(
+        "SELECT listing_id FROM pm_listings WHERE seller_id=? AND status='active' AND listed_at<?",
+        (bid, int(now_ts) - LIST_STALE))]
+
+
+def judge_trade(con, bid: int, trade_id: int) -> Optional[bool]:
+    """받은 트레이드 제안 → True 수락 · False 거절 · None (못 보는 제안).
+    받는 가치 = 현금 + 받는 선수 시세 (내 약한 자리를 채우면 ×1.15, 아니면 ×0.8)
+    주는 가치 = 현금 + 주는 선수 시세 × 아끼는 정도 (선발이면 ×1.2 더)."""
+    t = con.execute("SELECT proposer_id, receiver_id, proposer_cash, receiver_cash, status FROM pm_trades WHERE trade_id=?",
+                    (int(trade_id),)).fetchone()
+    if not t or int(t[1]) != bid or t[4] != "pending":
         return None
-    bal = balance(con, bid)
-    since = int(now_ts) - OFFER_COOLDOWN
-    rows = con.execute(
-        "SELECT h.user_id, h.player_id, p.ovr, p.age, COALESCE(m.price, p.base_value) FROM pm_holdings h "
-        "JOIN pm_players p ON p.player_id=h.player_id LEFT JOIN pm_market m ON m.player_id=h.player_id "
-        "WHERE h.qty>0 AND p.retired=0 AND h.player_id NOT LIKE 'AMT_%' "
-        "AND h.user_id NOT IN (SELECT user_id FROM bot_offer_log WHERE ts>?)", (since,)).fetchall()
-    lo, hi = PERSONALITY[kind]["offer"]
-    good = [(uid, pid, int(round(int(price) * rng.uniform(lo, hi), -3))) for uid, pid, ovr, age, price in rows
-            if not is_bot(uid) and (allowed_user is None or allowed_user(int(uid))) and fits(kind, ovr, age)]
-    good = [g for g in good if 0 < g[2] <= bal]
-    return rng.choice(good) if good else None
+    p = PERSONALITY[kind(bid)]
+    lineup = {r[0] for r in con.execute("SELECT player_id FROM club_lineup WHERE user_id=?", (bid,))}
+    weak = {pos: w for pos, w, _ in needs(con, bid)}
+    get, give = int(t[2]), int(t[3])
+    if give > balance(con, bid):
+        return False
+    for side, pid, qty, pos, ovr, age, price in con.execute(
+            "SELECT ti.side, ti.player_id, ti.qty, p.position, p.ovr, p.age, COALESCE(m.price, p.base_value) "
+            "FROM pm_trade_items ti JOIN pm_players p ON p.player_id=ti.player_id LEFT JOIN pm_market m ON m.player_id=ti.player_id "
+            "WHERE ti.trade_id=?", (int(trade_id),)):
+        v = int(price) * int(qty)
+        if side == "proposer":
+            useful = int(ovr) > weak.get(pos, 99) and _fits(kind(bid), ovr, age)
+            get += int(v * (1.15 if useful else 0.8))
+        else:
+            give += int(v * p["keep"] * (1.2 if pid in lineup else 1.0))
+    return get >= give
+
+
+def pending_trades(con, bid: int) -> list[int]:
+    return [int(r[0]) for r in con.execute(
+        "SELECT trade_id FROM pm_trades WHERE receiver_id=? AND status='pending' ORDER BY trade_id", (bid,))]
 
 
 def log_offer(con, bid: int, uid: int, pid: str, now_ts: int) -> None:
