@@ -16,6 +16,8 @@ from auth import owner_only
 from patch_notes_data import NOTICES, PATCH_NOTES
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
+# 패치노트(@everyone)를 알림 채널 대신 보낼 스레드: 서버 ID → 스레드 ID (점검 안내 등 다른 공지는 원래 채널로)
+PATCH_THREADS = {1408836309971243251: 1566465295202123836}
 
 
 def notice_text(key: str, title: str, content, now: int):
@@ -52,7 +54,8 @@ class PatchNotesCog(commands.Cog):
         embeds = embed if isinstance(embed, list) else [embed]
         success, fail = 0, 0
         for guild in self.bot.guilds:
-            channel = await asyncio.to_thread(self._pick_channel, guild)
+            channel = await self._patch_thread(guild) if everyone else None   # 3.7.0 이 서버는 패치노트를 정해진 스레드에
+            channel = channel or await asyncio.to_thread(self._pick_channel, guild)
             try:
                 if everyone:
                     await channel.send(content="@everyone", embeds=embeds,
@@ -63,6 +66,21 @@ class PatchNotesCog(commands.Cog):
             except Exception:
                 fail += 1
         return success, fail
+
+    async def _patch_thread(self, guild: discord.Guild):
+        """PATCH_THREADS 에 적힌 서버면 그 스레드 (못 찾거나 못 쓰면 None → 원래 알림 채널)."""
+        tid = PATCH_THREADS.get(guild.id)
+        if not tid:
+            return None
+        ch = guild.get_channel_or_thread(tid)
+        if ch is None:
+            try:
+                ch = await self.bot.fetch_channel(tid)   # 보관된 스레드는 캐시에 없다
+            except discord.HTTPException:
+                return None
+        if getattr(ch, "guild", None) is None or ch.guild.id != guild.id:
+            return None
+        return ch if ch.permissions_for(guild.me).send_messages_in_threads or ch.permissions_for(guild.me).send_messages else None
 
     @tasks.loop(minutes=1)
     async def notice_loop(self):

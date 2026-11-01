@@ -353,13 +353,14 @@ WEEKLY_SHOW = 10          # 주간 랭킹 화면에 보이는 구단 수
 # 상금 = PRIZE_STAKE × 그 결과의 배당(승 · 무 · 패 확률로 정한 official_odds) × 결과 배율(승 1 · 무 0.5 · 패 0)
 #        × 인기도(0.5 + 팬 만족도/100) — 강한 상대를 이길수록 배당이 높아 상금이 크다
 PRIZE_STAKE = 150_000
+PRIZE_STAKE_370 = 100_000   # 3.7.0 (release.preview_370 서버): 공식경기 상금 너프 (⅔)
 PRIZE_RESULT = {"W": 1.0, "D": 0.5, "L": 0.0}
 
 
-def official_prize(res: str, odds: dict, sat: float) -> dict:
+def official_prize(res: str, odds: dict, sat: float, stake: int = PRIZE_STAKE) -> dict:
     """공식경기 한 판 상금 → {prize, odds(그 결과 배당), popularity(인기도 배율)}."""
     popularity = round(0.5 + max(0.0, min(100.0, sat)) / 100, 2)
-    return {"prize": int(round(PRIZE_STAKE * odds[res] * PRIZE_RESULT[res] * popularity, -2)), "odds": odds[res],
+    return {"prize": int(round(stake * odds[res] * PRIZE_RESULT[res] * popularity, -2)), "odds": odds[res],
             "popularity": popularity}
 
 
@@ -476,6 +477,12 @@ STEROID_TABLE = {
     "doping": 0.12,   # 🚨 약물 검출: 징계 후유증으로 OVR -2~4
     "retire": 0.05,   # ⚰️ 부작용으로 은퇴
 }
+# 3.7.0 (release.preview_370 서버): 확률 버프 — 좋은 결과 60% → 75% · 나쁜 결과 25% → 15%
+STEROID_TABLE_370 = {"ovr": 0.40, "pot": 0.30, "awaken": 0.05, "none": 0.10, "fragile": 0.06, "doping": 0.06, "retire": 0.03}
+
+
+def steroid_table(v370: bool = False) -> dict:
+    return STEROID_TABLE_370 if v370 else STEROID_TABLE
 
 
 def prospect_xp_need(ovr: int) -> int:
@@ -988,7 +995,9 @@ class ClubDB:
             bal = self._pay(con, user_id, cost)
             if bal is None:
                 return {"ok": False, "reason": "balance", "cost": cost}
-            if owner:
+            if owner:   # 3.7.0 전 주인이 아직 안 받은 수입은 넘기기 전에 전 주인에게
+                day = con.execute("SELECT income_day FROM elite_clubs WHERE key=?", (key,)).fetchone()[0]
+                self._elite_payout(con, key, owner, int(day or 0), kst_day(now_ts))
                 con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (owner,))
                 con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (cost, owner))
             con.execute("UPDATE elite_clubs SET owner_id=?, price=?, bought_ts=?, income_day=? WHERE key=?",
@@ -1005,13 +1014,49 @@ class ClubDB:
                 return {"ok": False, "reason": "none"}
             key, paid = row[0], int(row[1])
             pay = int(paid * ELITE_SELL_RATE)
+            day = con.execute("SELECT income_day FROM elite_clubs WHERE key=?", (key,)).fetchone()[0]
+            income = self._elite_payout(con, key, int(user_id), int(day or 0), kst_day(int(time.time())))["amount"]   # 3.7.0 밀린 수입도
             con.execute("UPDATE elite_clubs SET owner_id=NULL, price=?, bought_ts=0 WHERE key=?",
                         (ELITE_SIZES[ELITE_CLUBS[key][2]][0], key))
             con.execute("UPDATE clubs SET squad_b=0 WHERE user_id=?", (int(user_id),))
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (pay, int(user_id)))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0])
-            return {"ok": True, "key": key, "paid": paid, "pay": pay, "balance": bal}
+            return {"ok": True, "key": key, "paid": paid, "pay": pay, "income": income, "balance": bal}
+        return await self._tx(fn)
+
+    @staticmethod
+    def _elite_payout(con, key: str, owner: int, day: int, today: int) -> dict:
+        """밀린 하루 수입을 주인 지갑에 넣고 income_day 를 오늘로. → {owner_id, key, days, amount}."""
+        days = max(0, today - int(day))
+        amount = days * ELITE_SIZES[ELITE_CLUBS[key][2]][1]
+        if amount:
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (owner,))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, owner))
+        con.execute("UPDATE elite_clubs SET income_day=? WHERE key=?", (today, key))
+        return {"owner_id": owner, "key": key, "days": days, "amount": amount}
+
+    async def elite_pending(self, user_id: int, now_ts: int) -> Optional[dict]:
+        """3.7.0 내 명문 구단에 쌓인 (아직 안 받은) 수입 → {key, days, amount} · 명문 구단이 없으면 None."""
+        def fn(con):
+            r = con.execute("SELECT key, income_day FROM elite_clubs WHERE owner_id=?", (int(user_id),)).fetchone()
+            if not r or r[0] not in ELITE_CLUBS:
+                return None
+            days = max(0, kst_day(now_ts) - int(r[1] or 0))
+            return {"key": r[0], "days": days, "amount": days * ELITE_SIZES[ELITE_CLUBS[r[0]][2]][1]}
+        return await self._tx(fn)
+
+    async def claim_elite(self, user_id: int, now_ts: int) -> dict:
+        """3.7.0 명문 구단 수입 직접 수령 — 밀린 날수만큼 한 번에. reason: none(명문 구단 없음) / empty(받을 수입 없음)."""
+        def fn(con):
+            r = con.execute("SELECT key, income_day FROM elite_clubs WHERE owner_id=?", (int(user_id),)).fetchone()
+            if not r or r[0] not in ELITE_CLUBS:
+                return {"ok": False, "reason": "none"}
+            if int(r[1] or 0) >= kst_day(now_ts):
+                return {"ok": False, "reason": "empty"}
+            x = self._elite_payout(con, r[0], int(user_id), int(r[1] or 0), kst_day(now_ts))
+            bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0])
+            return {"ok": True, **x, "balance": bal}
         return await self._tx(fn)
 
     async def settle_elite_income(self, now_ts: int) -> list[dict]:
@@ -1025,12 +1070,7 @@ class ClubDB:
                     (today,)).fetchall():
                 if key not in ELITE_CLUBS:
                     continue
-                days = today - int(day)
-                amount = days * ELITE_SIZES[ELITE_CLUBS[key][2]][1]
-                con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (owner,))
-                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, owner))
-                con.execute("UPDATE elite_clubs SET income_day=? WHERE key=?", (today, key))
-                out.append({"owner_id": owner, "key": key, "days": days, "amount": amount})
+                out.append(self._elite_payout(con, key, owner, day, today))
             return out
         return await self._tx(fn)
 
@@ -1215,7 +1255,7 @@ class ClubDB:
 
     async def record_official(self, user_id: int, opp_id: int, gf: int, ga: int, now_ts: int,
                               amount: int, pick: str, odds: float, weekly: bool = False,
-                              prize_odds: Optional[dict] = None) -> dict:
+                              prize_odds: Optional[dict] = None, stake: int = PRIZE_STAKE) -> dict:
         """공식경기 결과 기록 + 베팅 정산. 예측(pick)이 맞으면 순이익 = 베팅 × (배당 - 1), 틀리면 베팅금을 잃는다.
         승점 · 득실(/공식순위)과 /구단 전적은 건 쪽과 상대 모두에 기록한다 (돈은 건 쪽만).
         prize_odds = 승 · 무 · 패 배당이면 3.6.0 상금 방식: 베팅 없이 official_prize 를 이번 주 상금함에 쌓는다."""
@@ -1247,7 +1287,7 @@ class ClubDB:
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0]
             rec = con.execute("SELECT points, w, d, l, gf, ga FROM club_official WHERE user_id=? AND season=?",
                               (int(user_id), season)).fetchone()
-            prize = official_prize(res, prize_odds, self._popularity(con, user_id)) if prize_odds else None
+            prize = official_prize(res, prize_odds, self._popularity(con, user_id), stake) if prize_odds else None
             week = self._add_weekly(con, user_id, gf, ga, now_ts, prize["prize"] if prize else 0) \
                 if weekly or prize_odds else None   # 3.6.0 주간 랭킹 · 상금함
             if prize and week:
@@ -1769,7 +1809,7 @@ class ClubDB:
         return {"name": rng.choice(names), "grade": label, "kind": grade, "games": games, "heal": heal, "chronic": chronic,
                 "ovr0": ovr, "ovr": new_ovr, "pot0": pot, "pot": max(new_pot, new_ovr)}
 
-    async def use_steroid(self, user_id: int, now_ts: int, rng=random) -> dict:
+    async def use_steroid(self, user_id: int, now_ts: int, rng=random, v370: bool = False) -> dict:
         """가방의 스테로이드 주사기 1개를 내 현역 유망주에게. 결과 kind 는 STEROID_TABLE 의 키.
         실패 reason: none(주사기 없음) / no_prospect(현역 유망주 없음) — 주사기는 그대로."""
         def fn(con):
@@ -1780,7 +1820,8 @@ class ClubDB:
             if not p:
                 return {"ok": False, "reason": "no_prospect"}
             con.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='steroid'", (int(user_id),))
-            kind = rng.choices(list(STEROID_TABLE), weights=list(STEROID_TABLE.values()))[0]
+            table = steroid_table(v370)
+            kind = rng.choices(list(table), weights=list(table.values()))[0]
             ovr, pot = p["ovr"], p["pot"]
             if kind == "ovr":
                 ovr = min(99, ovr + rng.randint(1, 3))

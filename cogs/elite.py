@@ -51,7 +51,8 @@ class BuyConfirm(discord.ui.View):
         prev = f"\n`전 구단주` <@{r['prev_owner']}> — 인수 금액을 받았어요" if r["prev_owner"] else ""
         e = ui.card(f"{c['emblem']} {c['name']} 인수 완료!",
                     f"`인수 금액` **{r['cost']:,}원** · `잔액` **{r['balance']:,}원**{prev}\n"
-                    f"`하루 수입` **{c['income']:,}원** (매일 00시)\n\n"
+                    f"`하루 수입` **{c['income']:,}원** "
+                    + ("(매일 쌓이고 `/명문구단`에서 수령)" if release.preview_370(interaction.guild_id) else "(매일 00시)") + "\n\n"
                     "`/스쿼드 선택:B`로 바꾸면 이 구단으로 경기해요.", ui.GOLD, self.user, SECTION)
         await interaction.response.edit_message(embed=e, view=None)
 
@@ -60,6 +61,39 @@ class BuyConfirm(discord.ui.View):
         self.stop()
         await interaction.response.edit_message(
             embed=ui.card("인수 취소", "아무것도 바뀌지 않았어요.", ui.EVEN, self.user, SECTION), view=None)
+
+
+class ClaimView(discord.ui.View):
+    """3.7.0 명문 구단 하루 수입 직접 수령 (자동 지급 대신)."""
+
+    def __init__(self, cog: "Elite", user, amount: int):
+        super().__init__(timeout=300)
+        self.cog, self.user = cog, user
+        self.claim.disabled = amount <= 0
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("🙅 구단주만 누를 수 있어요.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="수입 수령", emoji="💰", style=discord.ButtonStyle.success)
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        r = await self.cog.clubs.claim_elite(self.user.id, int(time.time()))
+        if not r["ok"]:
+            msg = "가진 명문 구단이 없어요." if r["reason"] == "none" else "지금은 받을 수입이 없어요. 내일 00시에 다시 쌓여요."
+            return await interaction.response.send_message(
+                embed=ui.card("🙅 수령할 수 없어요", msg, ui.LOSE, self.user, SECTION), ephemeral=True)
+        fan = await self.cog.mgmt.elite_bonus(self.user.id, r["amount"])   # 팬 만족도 보너스
+        emblem, name, _ = ELITE_CLUBS[r["key"]]
+        days = f" ({r['days']}일치)" if r["days"] > 1 else ""
+        e = ui.card(f"{emblem} {name} 수입 수령!",
+                    f"`수입` **+{r['amount']:,}원**{days}" + (f"\n`팬 만족도 보너스` **+{fan:,}원**" if fan else "")
+                    + f"\n`잔액` **{r['balance'] + fan:,}원**", ui.WIN, self.user, "🏰 명문 구단")
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(embed=e)
 
 
 class SellConfirm(discord.ui.View):
@@ -86,6 +120,7 @@ class SellConfirm(discord.ui.View):
                 embed=ui.card("❌ 매각 실패", "가진 명문 구단이 없어요.", ui.LOSE, self.user, SECTION), view=None)
         e = ui.card(f"{c['emblem']} {c['name']} 매각 완료",
                     f"`받은 돈` **+{r['pay']:,}원** (인수 금액 {r['paid']:,}원의 {ELITE_SELL_RATE:.0%}) · `잔액` **{r['balance']:,}원**\n"
+                    + (f"`밀린 수입` **+{r['income']:,}원**도 함께 받았어요.\n" if r.get("income") else "") +
                     "스쿼드는 **A**(내 구단)로 돌아갔어요. 이제 다른 명문 구단을 인수할 수 있어요.",
                     ui.WIN, self.user, SECTION)
         await interaction.response.edit_message(embed=e, view=None)
@@ -109,6 +144,8 @@ class Elite(commands.Cog):
 
     @tasks.loop(minutes=10)
     async def income_loop(self):
+        if release.released_370():   # 3.7.0: 자동 지급 대신 /명문구단 [수령] 으로 직접 받는다
+            return
         for x in await self.clubs.settle_elite_income(int(time.time())):
             x["fan"] = await self.mgmt.elite_bonus(x["owner_id"], x["amount"])   # 2.8 팬 만족도 70↑ +5% · 85↑ +10%
             print(f"[명문] {x['key']} → {x['owner_id']} +{x['amount']:,} ({x['days']}일)")
@@ -147,7 +184,16 @@ class Elite(commands.Cog):
             e = ui.card("🏰 명문 구단", "\n".join(lines), ui.GOLD, user, SECTION)
             e.set_footer(text=f"주인 없음은 표시 가격 · 주인 있으면 지금 가격 ×{ELITE_TAKEOVER} (전 주인에게) · "
                               "한 사람 한 구단 · /명문구단 구단:<이름> · 내 구단은 거기서 매각(낸 돈의 70%)")
-            return await interaction.response.send_message(embed=e)
+            view = None
+            if release.preview_370(interaction.guild_id):   # 3.7.0 수입 직접 수령
+                p = await self.clubs.elite_pending(user.id, int(time.time()))
+                if p:
+                    emblem, name, _ = ELITE_CLUBS[p["key"]]
+                    e.description += (f"\n\n💰 **{emblem} {name}** 받을 수입 **{p['amount']:,}원** ({p['days']}일치)" if p["amount"]
+                                      else f"\n\n💰 **{emblem} {name}** 오늘 수입은 받았어요. 내일 00시에 다시 쌓여요.")
+                    view = ClaimView(self, user, p["amount"])
+            return await interaction.response.send_message(embed=e, view=view) if view else \
+                await interaction.response.send_message(embed=e)
 
         c = next(x for x in clubs if x["key"] == 구단)
         team = elite_team(구단)

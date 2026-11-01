@@ -89,12 +89,14 @@ ITEMS = {
     "rehab":       ("🩹", "재활 치료권",     "부상 중인 내 유망주를 바로 복귀"),
     "mental":      ("🧠", "멘탈 코칭",       "내 유망주 자신감 +5 (골 · 도움 기회 ↑)"),
     "elixir":      ("⏳", "회춘 주사",       "내 유망주 나이 -1살 (17세 밑으로는 안 내려가요)"),
+    # ── 3.7.0 ──
+    "youth_reroll": ("🔄", "유스 리롤권",     "오늘 유스 입단 테스트 지원자를 새로 뽑아요 (테스트 전에만 · /2군 화면에서)"),
     "auto_reserve": ("🤖", "자동 2군 경기권", "12시간 동안 10분마다 2군 경기를 자동으로 (경험치 절반 · 유스 성장은 2판에 1번)"),
 }
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
                  "bow_pro", "windbreaker", "focus", "torch", "potion", "antidote", "dkey", "scroll", "feather",
-                 "first_team", "special_training", "scout_coupon", "enh_stone"}
+                 "first_team", "special_training", "scout_coupon", "enh_stone", "youth_reroll"}
 # 점검 보상 상자: 6종을 한 장씩 뒤집어 섞고, 고른 한 장을 받는다
 BOX_REWARDS = ("scout_skip", "train_skip", "watch_skip", "scout_reset", "train_reset", "watch_reset")
 BOX_CHOICES = len(BOX_REWARDS)
@@ -107,7 +109,7 @@ ITEM_PRICES = {
     # 양궁
     "bow_pro": 300_000, "windbreaker": 300_000, "focus": 500_000,
     # 유스
-    "first_team": 3_000_000, "special_training": 300_000, "scout_coupon": 500_000,
+    "first_team": 3_000_000, "special_training": 300_000, "scout_coupon": 500_000, "youth_reroll": 500_000,
     # 전술
     "tactic_note": 500_000, "analysis_report": 300_000,
     # 3.4.0 유망주 강화
@@ -120,13 +122,14 @@ ITEM_PRICES = {
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
                ("🎣 낚시", ("bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "fish_charm", "spice")),
                ("🏹 양궁", ("bow_pro", "windbreaker", "focus")),
-               ("🎓 유스", ("first_team", "special_training", "scout_coupon")),
+               ("🎓 유스", ("first_team", "special_training", "scout_coupon", "youth_reroll")),
                ("⚔️ 전술", ("tactic_note", "analysis_report")),
                ("🌟 유망주", ("enh_stone", "xp_boost", "xp_book", "rehab", "mental", "elixir", "auto_reserve")))
 SHOP_310: set[str] = set()   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템 (⚖️ 변호사 선임권 · 🤖 자동 낚시는 상점에서 팔지 않는다)
 SHOP_340: set[str] = {"enh_stone"}   # 3.4.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템
 SHOP_360: set[str] = {"xp_boost", "xp_book", "rehab", "mental", "elixir", "auto_reserve"}   # 3.6.0 유망주 아이템 (테스트 서버 먼저)
-SHOP_DAILY_LIMITS = {"steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3, "elixir": 1, "auto_reserve": 2, "xp_book": 3}   # 하루(KST) 구매 한도가 있는 아이템 (3.6.1 훈련 교본 3권)
+SHOP_370: set[str] = {"youth_reroll"}   # 3.7.0 (테스트 서버 먼저)
+SHOP_DAILY_LIMITS = {"youth_reroll": 3, "steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3, "elixir": 1, "auto_reserve": 2, "xp_book": 3}   # 하루(KST) 구매 한도가 있는 아이템 (3.6.1 훈련 교본 3권)
 # 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
 SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST
 SHOP_BASE = ("muffler", "steroid")
@@ -142,6 +145,8 @@ def shop_open(item: str, now_ts: Optional[float] = None, guild_id: Optional[int]
     if item in SHOP_340 and not release.preview_340(guild_id, now_ts):
         return False
     if item in SHOP_360 and not release.preview_360(guild_id, now_ts):
+        return False
+    if item in SHOP_370 and not release.preview_370(guild_id, now_ts):
         return False
     if item in ARCHERY_ITEMS and release.preview_311(guild_id, now_ts):   # 3.1.1 양궁 아이템 삭제
         return False
@@ -193,6 +198,16 @@ def give_item(con, user_id: int, item: str, qty: int = 1) -> None:
     """같은 트랜잭션 안에서 아이템 지급 (직관 드롭 등)."""
     con.execute("INSERT INTO inventory(user_id, item, qty) VALUES(?,?,?) "
                 "ON CONFLICT(user_id, item) DO UPDATE SET qty = qty + excluded.qty", (int(user_id), item, int(qty)))
+
+ROD_ITEMS = {"rod_carbon", "rod_pro", "rod_legend"}
+
+
+def _reset_rod(con, user_id: int, rod: str) -> None:
+    """3.7.0 낚싯대 내구도 기록 지우기 — 팔거나 새로 살 때 (기록이 없으면 새것)."""
+    try:
+        con.execute("DELETE FROM fish_rod WHERE user_id=? AND rod=?", (int(user_id), rod))
+    except sqlite3.OperationalError:   # 낚시 테이블이 아직 없다
+        pass
 
 # 출석: 누적 출석 일수가 이 날에 닿으면 보너스 (빠져도 초기화되지 않는다)
 ATTEND_BONUS = {7: 50_000, 14: 100_000, 30: 300_000, 50: 500_000, 100: 1_000_000, 200: 2_000_000, 365: 5_000_000}
@@ -1660,6 +1675,8 @@ class EconomyDB:
             if qty < 1 or have < qty:
                 return {"ok": False, "reason": "short", "have": have}
             con.execute("UPDATE inventory SET qty = qty - ? WHERE user_id=? AND item=?", (qty, user_id, item))
+            if have == qty and item in ROD_ITEMS and release.preview_370(guild_id):
+                _reset_rod(con, user_id, item)   # 3.7.0 판 낚싯대의 내구도는 버린다 (다시 사면 새것)
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (each * qty, user_id))
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]
@@ -1729,6 +1746,8 @@ class EconomyDB:
             if cap:
                 con.execute("INSERT OR REPLACE INTO shop_daily(user_id, item, day_key, cnt) VALUES(?,?,?,?)",
                             (user_id, item, day, bought + qty))
+            if item in ROD_ITEMS and release.preview_370(guild_id):
+                _reset_rod(con, user_id, item)   # 3.7.0 새로 산 낚싯대는 새것 (SHOP_ONE_ONLY 라 지금 가진 게 없다)
             give_item(con, user_id, item, qty)
             have = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()[0]
             return {"ok": True, "price": price, "each": each, "n": qty, "balance": bal - price, "qty": int(have),

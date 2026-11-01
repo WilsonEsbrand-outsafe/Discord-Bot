@@ -14,7 +14,7 @@ import release
 from services import ui
 from services.club_db import (
     CLUB_NAME_MAX, ELITE_CLUBS, FORMATIONS, NEWBIE_GAP, NEWBIE_OFFICIAL, MANAGERS, MEDICS, OFFICIAL_MIN_BET, PROSPECT_XP_LABEL, SLOT_GROUP, ClubDB, effective_ovr,
-    WEEKLY_DAILY, WEEKLY_REWARDS, WEEKLY_SHOW, match_highlights, official_odds, official_prize, season_key, simulate_match, win_probs,
+    WEEKLY_DAILY, WEEKLY_REWARDS, WEEKLY_SHOW, match_highlights, official_odds, official_prize, PRIZE_STAKE, PRIZE_STAKE_370, season_key, simulate_match, win_probs,
 )
 from services.economy_db import MUFFLER_BONUS, EconomyDB
 from services.fishing import FishingDB
@@ -653,13 +653,14 @@ class Club(commands.Cog):
                               odds: dict):
         """3.6.0 공식경기: 베팅 없이 승 · 무 배당만큼 상금이 이번 주 상금함에 쌓이고 월요일에 받는다."""
         pop = await self.clubs.popularity(user.id)
-        pre = {k: official_prize(k, odds, pop)["prize"] for k in "WD"}
+        stake = PRIZE_STAKE_370 if release.preview_370(interaction.guild_id) else PRIZE_STAKE   # 3.7.0 상금 너프
+        pre = {k: official_prize(k, odds, pop, stake)["prize"] for k in "WD"}
         note = (f"\n`배당` 승 **{odds['W']:.2f}배** · 무 {odds['D']:.2f}배 · 패 {odds['L']:.2f}배 · 인기도 ×{0.5 + pop / 100:.2f}\n"
                 f"`상금` 승 **{pre['W']:,}원** · 무 {pre['D']:,}원 · 패 없음")
 
         async def record(result):
             r = await self.clubs.record_official(user.id, opp_id, result["home"], result["away"], now, 0, "W", 1.0,
-                                                 weekly=True, prize_odds=odds)
+                                                 weekly=True, prize_odds=odds, stake=stake)
             mark = {"W": "승리", "D": "무승부", "L": "패배"}[r["result"]]
             p, wk = r["prize"], r["week"]
             got = (f"`상금` **+{p['prize']:,}원** → 이번 주 상금함 **{wk['purse']:,}원** (월요일 정산)" if wk["counted"] and p["prize"]

@@ -24,6 +24,21 @@ def _emoji(cmd) -> str:
             "cogs.players_market": "⚽"}.get(cmd.callback.__module__, "⚙️")
 
 
+def _fields(p) -> list[discord.ui.Label]:
+    """명령어 입력값 하나 → 모달 칸들. 선택지가 25개(드롭다운 한도)를 넘으면 드롭다운을 여러 개로 나눈다
+    (예: /아이템지급 — 넘는 아이템(변호사 선임권 등)이 잘려 안 보이던 문제). 그중 하나만 고르면 된다."""
+    if not p.choices or len(p.choices) <= 25:
+        return [_field(p)]
+    chunks = [p.choices[i:i + 25] for i in range(0, len(p.choices), 25)]
+    out = []
+    for n, chunk in enumerate(chunks, 1):
+        comp = discord.ui.Select(placeholder=f"선택 ({n}/{len(chunks)})", required=False, options=[
+            discord.SelectOption(label=c.name[:100], value=str(c.value)) for c in chunk])
+        hint = "목록 중 한 곳에서만 골라 주세요" + ("" if p.required else " (선택)")
+        out.append(discord.ui.Label(text=f"{p.display_name} ({n}/{len(chunks)})"[:45], description=hint, component=comp))
+    return out
+
+
 def _field(p) -> discord.ui.Label:
     """명령어 입력값 하나 → 모달 칸. 유저 · 채널 · 선택지는 드롭다운, 나머지는 글자 입력."""
     if p.type is _T.user:
@@ -73,10 +88,22 @@ class Runner:
     def __init__(self, cmd):
         self.cmd, self.kwargs, self.page = cmd, {}, 0
         self.params = sorted(cmd.parameters, key=lambda p: not p.required)   # 필수 입력이 앞 페이지로
-        self.pages = -(-len(self.params) // PAGE)
+        self.pages = max(1, len(self.sizes)) if self.params else 0
 
     def rest(self) -> list:
-        return self.params[self.page * PAGE:]
+        return self.params[sum(self.sizes[:self.page]):]
+
+    @property
+    def sizes(self) -> list[int]:
+        """페이지마다 들어가는 입력 수 — 칸(드롭다운이 나뉘면 여러 칸)이 PAGE 를 넘지 않게."""
+        out, n, cells = [], 0, 0
+        for p in self.params:
+            c = len(_fields(p))
+            if n and cells + c > PAGE:
+                out.append(n)
+                n, cells = 0, 0
+            n, cells = n + 1, cells + c
+        return out + [n] if n else out
 
     async def next(self, interaction: discord.Interaction):
         if not self.params:   # 입력이 없는 명령어(초기화 · 동기화 등)는 한 번 더 확인
@@ -111,7 +138,7 @@ class ParamModal(discord.ui.Modal):
         page = f" ({run.page + 1}/{run.pages})" if run.pages > 1 else ""
         super().__init__(title=f"/{run.cmd.name}{page}"[:45], timeout=600)
         self.run = run
-        self.fields = [(p, _field(p)) for p in run.rest()[:PAGE]]
+        self.fields = [(p, label) for p in run.rest()[:run.sizes[run.page]] for label in _fields(p)]
         for _, label in self.fields:
             self.add_item(label)
 
@@ -124,6 +151,10 @@ class ParamModal(discord.ui.Modal):
                     f"❌ `{p.display_name}` 에는 숫자를 넣어 주세요. `/관리자명령어`에서 다시 골라 주세요.", ephemeral=True)
             if v is not _SKIP:
                 self.run.kwargs[p.name] = v
+        missing = [p.display_name for p, _ in self.fields if p.required and p.name not in self.run.kwargs]
+        if missing:   # 나뉜 드롭다운을 하나도 안 골랐다
+            return await interaction.response.send_message(
+                f"❌ `{missing[0]}` 을(를) 골라 주세요. `/관리자명령어`에서 다시 골라 주세요.", ephemeral=True)
         self.run.page += 1
         rest = self.run.rest()
         if not rest:

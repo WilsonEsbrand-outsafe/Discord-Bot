@@ -264,14 +264,15 @@ class Hubs(commands.Cog):
         pages.append(Page("💼", "경영", self._p_mgmt, "관중 수입 · 팬 만족도 · 티켓 가격"))
         if release.preview_2101(guild_id):   # 2.10.1 (테스트 서버 먼저)
             pages.append(Page("🎨", "꾸미기 · 설정", self._p_decor, "구단명 · 엠블럼 · 경기장 이름 · 구단 삭제"))
-        return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page, ctx={"g311": g311, "g360": g360})
+        return HubView(user, "내 구단", "🏟️ 구단", pages, "/구단", page,
+                       ctx={"g311": g311, "g360": g360, "g370": release.preview_370(guild_id)})
 
     # ───────────── /2군 (3.6.0 · 유망주 · 2군 경기 · 유스) ─────────────
     def reserve_view(self, user, page: int = 0, guild_id: int | None = None) -> HubView:
         pages = [Page("🎓", "2군 · 유스", self._p_youth, "2군 명단 · 입단 테스트 · 훈련 · 판매 · 1군 등록"),
                  Page("🌟", "유망주", self._p_prospect, "나만의 선수 · 1군 승격 · 강화는 `/유망주`")]
         return HubView(user, "2군", "🎓 2군", pages, "/2군", page,
-                       ctx={"g311": release.preview_311(guild_id), "g360": True})
+                       ctx={"g311": release.preview_311(guild_id), "g360": True, "g370": release.preview_370(guild_id)})
 
     @app_commands.command(name="2군", description="🎓 2군 · 유스 · 유망주 — 2군 명단 · 입단 테스트 · 훈련 · 1군 등록")
     async def reserve(self, interaction: discord.Interaction):
@@ -563,6 +564,9 @@ class Hubs(commands.Cog):
                 ("tryout", "지원자 보기" if not apps else "지원자 다시 보기", "🔎", not st["tried"] and not full),
                 ("coupon", f"쿠폰으로 테스트 ({items['scout_coupon']})", "🎟️",
                  not st["tried"] and not full and not apps and items["scout_coupon"] > 0),
+                *((("reroll", f"리롤권으로 다시 뽑기 ({items['youth_reroll']})", "🔄",
+                    not st["tried"] and not full and bool(apps) and items["youth_reroll"] > 0),)
+                  if view.ctx.get("g370") else ()),   # 3.7.0 유스 리롤권
                 *(() if g360 else (("match", "주간 연습경기", "⚽", not st["matched"] and bool(youth)),))):   # 3.6.0: 2군 경기는 /유스경기
             b = discord.ui.Button(label=label, emoji=emoji, row=2, disabled=not ok,
                                   style=discord.ButtonStyle.primary if key == "tryout" else discord.ButtonStyle.secondary)
@@ -592,6 +596,14 @@ class Hubs(commands.Cog):
                 else:
                     note = ui.card("🙅 입단 테스트", {"done": "오늘은 이미 테스트했어요. 내일 다시!", "full": "유스 슬롯이 꽉 찼어요.",
                                                     "coupon": "🎟️ 스카우트 쿠폰이 없어요."}[r["reason"]], ui.LOSE, user, "🎓 유스")
+            elif key == "reroll":   # 3.7.0
+                r = await self.youth.reroll(user.id, now, v311=bool(view.ctx.get("g311")))
+                if r["ok"]:
+                    view.ctx["apps"] = r["applicants"]
+                    note = ui.card("🔄 지원자를 다시 뽑았어요", "새 지원자 중에서 테스트할 선수를 골라 보세요.", ui.INFO, user, "🎓 유스")
+                else:
+                    note = ui.card("🙅 다시 뽑기", {"done": "오늘은 이미 테스트했어요. 내일 다시!", "none": "먼저 지원자를 봐 주세요.",
+                                                  "item": "🔄 유스 리롤권이 없어요."}[r["reason"]], ui.LOSE, user, "🎓 유스")
             elif key in ("train", "ticket"):
                 r = await self.youth.train(user.id, yid, now, ticket=key == "ticket")
                 note = ui.card(f"🏋️ {r['name']} 훈련!", f"OVR {r['before']:.1f} → **{r['ovr']:.1f}** · 누적 훈련 {r['trains']}번"
