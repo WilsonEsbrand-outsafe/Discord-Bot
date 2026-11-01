@@ -11,7 +11,7 @@ from services import ui
 from services.club_db import (
     PROSPECT_DAILY_GROWTH, PROSPECT_FEET, PROSPECT_FOCUS_GROWTH, PROSPECT_FOCUS_N, PROSPECT_HEIGHT, PROSPECT_NAME_MAX, PROSPECT_POSITIONS, PROSPECT_PRICE,
     PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR, XP_BOOK, PROMOTE_OVR, ClubDB, focus_parts, in_reserve, focus_pool, hidden_tier, kst_day, prospect_attrs,
-    prospect_input, prospect_xp_need,
+    prospect_input, prospect_xp_need, GEAR,
 )
 from services.player_market_db import NATIONS
 from services import enhance as EH
@@ -63,7 +63,7 @@ def prospect_embed(p: dict, owner, now: int) -> discord.Embed:
                 + ("" if v360 else f"\n`오늘 성장 경기` {min(played, PROSPECT_DAILY_GROWTH)}/{PROSPECT_DAILY_GROWTH}")
                 + (f"\n🏟️ **2군 소속** — `/유스경기`로 경기해 OVR {PROMOTE_OVR}이 되면 1군 승격"
                    if v360 and in_reserve(p) else "\n🏟️ **1군**" if v360 else "")
-                + _enh_line(p)
+                + _enh_line(p) + _gear_line(p)
                 + (f"\n🚑 **부상** — {p['injury']} · "
                    + (f"복귀까지 공식경기 **{p['injury_games']}경기** (내 구단이 공식경기를 치를 때마다 1경기씩)"
                       if p["injury_games"] else f"복귀 <t:{p['injured_until']}:R> (그때까지 경기에 못 나가요)")
@@ -93,6 +93,16 @@ def _enh_line(p: dict) -> str:
     t = " · ".join(f"{EH.TRAITS[k][0]} {EH.TRAITS[k][1]}" for k in traits)
     return (f"\n🔷 `강화` **+{p['enh']}** (경기 OVR **{min(99, p['ovr'] + EH.enh_ovr(p['enh'], p.get('traits', '')))}**)"
             + (f" · `특성` {t}" if t else ""))
+
+
+def _gear_line(p: dict) -> str:
+    """3.7.0 🎽 장비 한 줄 (없으면 빈 줄)."""
+    from services.club_db import GEAR_SLOTS, parse_gear
+    from services.economy_db import ITEMS
+    gear = parse_gear(p.get("gear", ""))
+    if not gear:
+        return ""
+    return "\n🎽 `장비` " + " · ".join(f"{ITEMS[i][0]} {ITEMS[i][1]}" for s, i in gear.items() if s in GEAR_SLOTS)
 
 
 def _legend_line(p: dict) -> str:
@@ -461,7 +471,8 @@ class Prospect(commands.Cog):
         self.bot = bot
         self.clubs = ClubDB()
 
-    ITEMS_360 = ("xp_boost", "xp_book", "rehab", "mental", "elixir")   # 3.6.0 유망주 아이템 — 가방 [사용]
+    ITEMS_360 = ("xp_boost", "xp_book", "rehab", "mental", "elixir",   # 3.6.0 유망주 아이템 — 가방 [사용]
+                 *GEAR)   # 3.7.0 🎽 장비 (착용)
 
     async def cog_load(self):
         from cogs.economy import ITEM_HANDLERS
@@ -482,6 +493,12 @@ class Prospect(commands.Cog):
                        "useless": r.get("why", "")}[r["reason"]]
                 return await interaction.response.send_message(f"🙅 {msg}", ephemeral=True)
             who = f"**{r['name']}** #{r['number']}"
+            from services.club_db import GEAR, GEAR_SLOTS
+            if key in GEAR:   # 3.7.0 🎽 장비 착용
+                back = f"\n쓰던 {ITEMS[r['old']][0]} {ITEMS[r['old']][1]}은(는) 가방으로 돌아갔어요." if r.get("old") else ""
+                return await interaction.response.send_message(embed=ui.card(
+                    f"{emoji} {name} 착용!", f"{who}이(가) {GEAR_SLOTS[r['slot']]}에 **{name}**을(를) 착용했어요!\n"
+                    f"> {ITEMS[key][2]}{back}\n-# 장비는 은퇴하면 선수와 함께 은퇴해요", ui.GOLD, user, SECTION))
             text = {"xp_boost": lambda: f"{who}이(가) 다음 **{r['uses']}경기** 동안 +경험치 **2배**!",
                     "xp_book": lambda: f"{who} 경험치 **+{XP_BOOK}**" + (f" · OVR {r['ovr0']} → **{r['ovr']}** ⬆️" if r["ovr"] > r["ovr0"]
                                                                        else f" · 성장 {r['xp']}/{r['need']}"),

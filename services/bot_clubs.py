@@ -1,7 +1,7 @@
 # services/bot_clubs.py — 3.7.0 🤖 봇 구단: 이적시장 · 트레이드를 살리는 AI 감독 10명.
-# 규완님: "봇은 이적시장 활성화에만 도움 주면 돼" — 경기 · 팩 · 랭킹에는 안 나온다.
+# 규완님: "봇은 이적시장 활성화에만 도움 주면 돼" — 스스로 경기 · 팩은 안 하고 랭킹에도 안 나온다.
 # 봇은 지갑(wallets) · 보유 선수(pm_holdings) · 선발 명단(club_lineup, 누굴 팔지 고르는 데만)을 가진다.
-# user_id 는 BOT_IDS (디스코드 ID 와 겹치지 않는 작은 수). clubs 행은 없어서 공식경기 상대로 안 나온다.
+# user_id 는 BOT_IDS (디스코드 ID 와 겹치지 않는 작은 수). 공식경기는 상대로만 나온다 (규완님 11/02) — 순위 · 랭킹엔 안 나온다.
 #
 # 움직이는 방식 (사람처럼):
 #   · 감독마다 접속하는 시간대가 있고(아침형 · 저녁형 · 올빼미형 …), 접속 간격도 들쭉날쭉하다 · 쉬는 날도 있다.
@@ -140,7 +140,8 @@ def next_visit(bid: int, now: int, rng=random) -> int:
     for step in range(1, 8 * 24 * 4):   # 15분씩 앞으로 — 다음 시간대 시작 + 0~40분
         u = now + step * 900
         if online(bid, u) and not rest_day(bid, kst_day(u)):
-            return u + rng.randint(0, 40 * 60)
+            j = u + rng.randint(0, 40 * 60)
+            return j if online(bid, j) else u
     return t
 
 
@@ -166,12 +167,11 @@ def _owned_sql() -> str:
 
 
 def ensure_club(con, bid: int, now_ts: int) -> None:
-    """봇의 아마추어 스쿼드 (유저처럼). 구단(clubs) 행은 두지 않는다 — 경기 상대 · 순위에 안 나오게 (예전에 만든 건 지운다)."""
-    for t in ("clubs", "club_official", "club_official_week"):
-        try:
-            con.execute(f"DELETE FROM {t} WHERE user_id=?", (bid,))
-        except Exception:
-            pass
+    """봇의 구단 (공식경기 상대로만 나온다 — 봇이 먼저 경기를 걸지는 않고, 순위 · 랭킹엔 안 나온다) · 아마추어 스쿼드."""
+    e, name, _k, formation, _s = BOT_CLUBS[bid]
+    if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (bid,)).fetchone():
+        con.execute("INSERT INTO clubs(user_id, club_name, created_ts) VALUES(?, ?, ?)", (bid, name, int(now_ts)))
+    con.execute("UPDATE clubs SET emblem=?, formation=?, club_name=? WHERE user_id=?", (e, formation, name, bid))
     from services.player_market_db import AMATEUR_SQUAD
     for p in AMATEUR_SQUAD:
         con.execute("INSERT OR IGNORE INTO pm_holdings(user_id, player_id, qty) VALUES(?, ?, 1)", (bid, p["player_id"]))

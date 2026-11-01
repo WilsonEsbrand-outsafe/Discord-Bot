@@ -28,3 +28,20 @@ def payout(amount: int, passed: int) -> int:
     if passed <= 0:
         return amount
     return min(int(amount * MULTS[passed - 1]), amount + MAX_PAYOUT)
+
+
+# ── 3.7.0 (release.preview_370): 더 극적으로 — 확률 · 배당은 그대로, 중계만 (규완님 "/드리블 조금 더 극적으로") ──
+SUSPENSE_SEC = 1.3           # 돌파 시도 → 결과 사이에 숨 고르는 시간
+SKILLS = ("헛다리 짚기", "마르세유 턴", "넛멕(가랑이 사이)", "엘라스티코", "라 크로케타", "스텝오버 세 번", "힐 플릭", "급정거 후 방향 전환")
+TRY_LINES = ("{side}으로 파고듭니다… {skill}!!", "{skill} 시도!! {side} 공간을 노립니다…", "속도를 붙여 {side}으로… {skill}!!")
+PASS_LINES = ("벗겨냅니다!!! {name}이(가) 엉덩방아를 찧어요!", "완벽하게 속였어요!! {name}은(는) 반대쪽으로 넘어졌습니다!",
+              "태클이 발끝을 스쳤지만… 버텨냅니다!!! 살아남았어요!", "어깨싸움을 이겨냅니다!! {name}을(를) 떨쳐냈어요!")
+TACKLE_LINES = ("아아아!! {name}이(가) 그쪽을 읽었어요! 깔끔한 태클!", "슬라이딩 태클!!! 공이 터치라인 밖으로…",
+                "몸을 날린 {name}!! 공을 빼앗깁니다…", "VAR 확인 중… 정당한 태클입니다. 여기서 끝나요!")
+SHOT_LINES = ("슛!!!", "때립니다!!!", "감아 찹니다!!!")
+SHOT_END = ("골대 맞고… 들어갑니다!!! 골!!!", "골키퍼 손끝을 스치고… 골!!!", "골망이 출렁입니다!!! 골!!!")
+
+
+def heat(passed: int) -> str:
+    """관중석 열기 — 깊이 들어갈수록 뜨거워진다."""
+    return "🔥" * min(5, passed) + ("📣" if passed >= 4 else "")
