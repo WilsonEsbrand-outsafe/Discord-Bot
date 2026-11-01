@@ -733,3 +733,10 @@ NOTICES: list[tuple[str, int, str, "str | list[tuple[str, str]]"]] = [
      "• 점검 보상 쿠폰 **SORRYKIKO** — 🔷 강화석 1개"),
     ("patch-3.6.1", _NOTICE_361, "📢 3.6.1 패치노트", PATCH_NOTES["3.6.1"]),
 ]
+
+
+# 패치 스레드(cogs.patch_notes.PATCH_THREADS)에만 보내는 한 번짜리 글: (key, 보낼 시각, 서버 ID, 제목, 내용)
+THREAD_NOTICES: list[tuple[str, int, int, str, str]] = [
+    ("thread-test-1102", 0, 1408836309971243251, "🔧 패치노트 스레드 확인",
+     "봇이 닫힌 패치노트 스레드에도 글을 쓸 수 있는지 확인하는 테스트 메시지예요. 다음 패치노트부터 이 스레드로 올라와요."),
+]
