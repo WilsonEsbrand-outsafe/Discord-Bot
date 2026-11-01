@@ -13,7 +13,7 @@ from discord.ext import commands, tasks
 
 import release
 from auth import owner_only
-from patch_notes_data import NOTICES, PATCH_NOTES
+from patch_notes_data import NOTICES, PATCH_NOTES, THREAD_NOTICES
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
 # 패치노트(@everyone)를 알림 채널 대신 보낼 스레드: 서버 ID → 스레드 ID (점검 안내 등 다른 공지는 원래 채널로)
@@ -80,11 +80,27 @@ class PatchNotesCog(commands.Cog):
                 return None
         if getattr(ch, "guild", None) is None or ch.guild.id != guild.id:
             return None
-        return ch if ch.permissions_for(guild.me).send_messages_in_threads or ch.permissions_for(guild.me).send_messages else None
+        perms = ch.permissions_for(guild.me)
+        if isinstance(ch, discord.Thread) and (ch.archived or ch.locked):
+            # 닫힌(보관) 스레드는 다시 열고 보낸다. 잠긴 스레드는 '스레드 관리' 권한이 있어야 쓸 수 있다 (잠금은 그대로 둔다)
+            if ch.locked and not perms.manage_threads:
+                print(f"[패치 스레드] {guild.id}/{tid} 잠겨 있고 '스레드 관리' 권한이 없어 못 씀")
+                return None
+            if ch.archived:
+                try:
+                    ch = await ch.edit(archived=False)
+                except discord.HTTPException as e:
+                    print(f"[패치 스레드] {guild.id}/{tid} 다시 열기 실패: {e!r}")
+                    return None
+        return ch if perms.send_messages_in_threads or perms.send_messages else None
 
     @tasks.loop(minutes=1)
     async def notice_loop(self):
         now = int(time.time())
+        try:
+            await self._thread_notices(now)
+        except Exception as e:
+            print(f"[스레드 공지] 오류: {e!r}")
         for key, ts, title, content in NOTICES:
             if ts > now or key in self._notices_done:
                 continue
@@ -98,6 +114,25 @@ class PatchNotesCog(commands.Cog):
                 es[-1].timestamp = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
                 ok, fail = await self.send_all(es, everyone=key.startswith("patch-"))
                 print(f"[공지] {key} 성공 {ok} / 실패 {fail}")
+
+    async def _thread_notices(self, now: int):
+        """THREAD_NOTICES — 패치 스레드(PATCH_THREADS)에만 보내는 한 번짜리 글 (원래 채널로 대신 보내지 않는다)."""
+        for key, ts, gid, title, text in THREAD_NOTICES:
+            if ts > now or key in self._notices_done:
+                continue
+            self._notices_done.add(key)
+            guild = self.bot.get_guild(gid)
+            if guild is None or not await asyncio.to_thread(self._claim_notice, key):
+                continue
+            ch = await self._patch_thread(guild)
+            if ch is None:
+                print(f"[스레드 공지] {key} 실패 — 스레드를 못 찾거나 쓸 수 없음")
+                continue
+            try:
+                await ch.send(embed=discord.Embed(title=title, description=text, color=0x95A5A6))
+                print(f"[스레드 공지] {key} 성공 (보관 {ch.archived} · 잠김 {ch.locked})")
+            except discord.HTTPException as e:
+                print(f"[스레드 공지] {key} 실패: {e!r}")
 
     @notice_loop.before_loop
     async def _before_notice(self):
