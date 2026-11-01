@@ -709,8 +709,14 @@ class Economy(commands.Cog):
         return cls.SCOUT_LEVEL_NAMES[min(int(level), SCOUT_MAX_LEVEL) - 1]
 
     SCOUT_WIN_360 = 1.5   # 3.6.0 (release.preview_360 서버): 스카우트 성공 기본 보상 1.5배
+    # 3.7.0 (release.preview_370 서버): 훈련 · 직관보다 효율이 낮아 크게 올림 — 성공 보상 3배(원래 기준) ·
+    # 선수 발굴 확률 2배 · 성공하면 가끔 유스 아이템을 같이 얻는다
+    SCOUT_WIN_370 = 3.0
+    SCOUT_FIND_MULT_370 = 2.0
+    SCOUT_ITEM_PROB_370 = 0.05
+    SCOUT_ITEMS_370 = {"scout_coupon": 45, "special_training": 45, "youth_reroll": 10}
 
-    def _scout_roll(self, level: int, con, user_id: int, v360: bool = False):
+    def _scout_roll(self, level: int, con, user_id: int, v360: bool = False, v370: bool = False):
         """(돈 변동, 경험치 변동, 표시 정보). 성공하면 레벨별 확률로 선수 카드를 같은 트랜잭션에서 지급한다."""
         ev = random.choice(self.SCOUT_EVENTS)
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
@@ -720,15 +726,19 @@ class Economy(commands.Cog):
             return base * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "found": None,
                                      "base": base, "mult": mult}
         found = None
-        if random.random() < SCOUT_FIND_PROB[min(level, SCOUT_MAX_LEVEL) - 1]:
+        if random.random() < SCOUT_FIND_PROB[min(level, SCOUT_MAX_LEVEL) - 1] * (self.SCOUT_FIND_MULT_370 if v370 else 1):
             found = scout_find_player(con, level)
             if found:
                 give_player(con, user_id, found["player_id"])
         base = random.randint(*ev["win"])
-        if v360:
-            base = round(base * self.SCOUT_WIN_360, -2)
+        if v360 or v370:
+            base = round(base * (self.SCOUT_WIN_370 if v370 else self.SCOUT_WIN_360), -2)
+        item = None
+        if v370 and random.random() < self.SCOUT_ITEM_PROB_370:   # 3.7.0 현지에서 유스 아이템도 챙겨 온다
+            item = random.choices(list(self.SCOUT_ITEMS_370), weights=list(self.SCOUT_ITEMS_370.values()))[0]
+            give_item(con, user_id, item)
         return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "found": found,
-                                "base": base, "mult": mult}
+                                "base": base, "mult": mult, "item": item}
 
     def _scout_status(self, r: dict, xp_gain: int | None = None) -> str:
         lv = r["level"]
@@ -744,7 +754,8 @@ class Economy(commands.Cog):
         user = interaction.user
         now_ts = int(time.time())
         try:
-            r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(getattr(interaction, "guild_id", None))),
+            r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(getattr(interaction, "guild_id", None)),
+                                                                                  release.preview_370(getattr(interaction, "guild_id", None))),
                                          cooldown_sec=self.SCOUT_COOLDOWN)
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
@@ -776,6 +787,9 @@ class Economy(commands.Cog):
                 f"{found['nation']} · {found['pos']} · OVR **{found['ovr']}** · 잠재 {found['pot_grade']} · "
                 f"시세 **{found['price']:,}원**"
             )
+        if info.get("item"):   # 3.7.0
+            emoji, name, _ = ITEMS[info["item"]]
+            e.description += f"\n\n🎁 현지에서 **{emoji} {name}**도 챙겨 왔어요! (가방에 1개)"
         e.description += (
             "\n\n" + self._settle_line(r["delta"], info, r.get("boost")) + "\n"
             f"`잔액` **{r['new_bal']:,}원**\n"
@@ -1059,7 +1073,7 @@ class Economy(commands.Cog):
         table = SKIP_ITEMS[item]
         what = self.GRIND_NAMES[table]
         v311 = release.preview_311(_gid(user))   # 3.1.1 훈련 레벨 간격 · 배율
-        roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(_gid(user))),
+        roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(_gid(user)), release.preview_370(_gid(user))),
                 "training": lambda lv, con=None: self._train_roll(lv, con, v311),
                 "spectating": lambda lv, con: self._watch_roll(lv, con, user.id, release.preview_310(_gid(user)))}[table]
         status = {"scouting": self._scout_status, "training": self._train_status, "spectating": self._watch_status}[table]

@@ -123,3 +123,29 @@ def test_admin_item_autocomplete():
 def test_patch_thread():
     from cogs.patch_notes import PATCH_THREADS
     assert PATCH_THREADS[1408836309971243251] == 1566465295202123836
+
+
+def test_scout_buff_370():
+    from cogs.economy import Economy as E
+    import cogs.economy as ce
+    random.seed(370)
+    con = sqlite3.connect(TMP)
+    con.execute("CREATE TABLE IF NOT EXISTS inventory (user_id INTEGER, item TEXT, qty INTEGER, PRIMARY KEY(user_id, item))")
+
+    class Me:
+        SCOUT_EVENTS = [dict(E.SCOUT_EVENTS[0], success_rate=1.0)]
+        TRAIN_RATE_CAP, TRAIN_RATE_PER_LV = 1.0, 0
+        SCOUT_WIN_360, SCOUT_WIN_370, SCOUT_FIND_MULT_370 = E.SCOUT_WIN_360, E.SCOUT_WIN_370, E.SCOUT_FIND_MULT_370
+        SCOUT_ITEM_PROB_370, SCOUT_ITEMS_370 = 1.0, E.SCOUT_ITEMS_370
+        scout_money_mult = staticmethod(E.scout_money_mult)
+    old = ce.SCOUT_FIND_PROB
+    ce.SCOUT_FIND_PROB = (0,) * 5
+    try:
+        lo, hi = E.SCOUT_EVENTS[0]["win"]
+        for _ in range(30):
+            d, _, info = E._scout_roll(Me, 1, con, 77, v360=True, v370=True)
+            assert lo * 3 - 100 <= d <= hi * 3 + 100 and info["item"] in E.SCOUT_ITEMS_370
+        assert sum(q for (q,) in con.execute("SELECT qty FROM inventory WHERE user_id=77")) == 30
+    finally:
+        ce.SCOUT_FIND_PROB = old
+        con.close()
