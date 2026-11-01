@@ -347,6 +347,14 @@ def kst_day(ts: int) -> int:
 # 3.6.0 (release.preview_360): 공식경기 주간 랭킹 — 내가 건 공식경기만, 하루(KST) WEEKLY_DAILY 판까지 승점(승 3 · 무 1)을 쌓는다.
 # 매주 월요일 00시(KST)에 지난주 순위대로 보상 (돈, 강화석). 같은 승점이면 득실차 → 다득점 → 먼저 도달.
 WEEKLY_DAILY = 30
+# 3.7.0 (release.preview_370 서버): 공식경기는 하루 15판까지만 (그 뒤엔 못 뛴다) · 스킵해도 판마다 2분 간격
+WEEKLY_DAILY_370 = 15
+OFFICIAL_GAP_370 = 120
+
+
+def weekly_daily(v370: Optional[bool] = None) -> int:
+    """하루 공식경기 판수 — v370 을 안 주면 지금 상호작용의 서버로 (release.ctx_370)."""
+    return WEEKLY_DAILY_370 if (release.ctx_370() if v370 is None else v370) else WEEKLY_DAILY
 WEEKLY_REWARDS = ((30_000_000, 3), (20_000_000, 2), (10_000_000, 1))   # 1~3위 (돈, 🔷 강화석)
 WEEKLY_SHOW = 10          # 주간 랭킹 화면에 보이는 구단 수
 # 3.6.0 공식경기 상금 (베팅 대신): 경기마다 이번 주 상금함에 쌓이고 월요일 주간 정산 때 한 번에 받는다 (랭킹에 들어간 판만).
@@ -1247,13 +1255,12 @@ class ClubDB:
 
     async def official_opponents(self, user_id: int) -> list[int]:
         """선발이 있는 다른 유저 구단 목록 (공식경기 상대 후보)."""
-        from services.bot_clubs import is_bot
-        bots = release.ctx_370()   # 3.7.0 봇 구단은 공개된 서버에서만 상대로 나온다
+        from services.bot_clubs import is_bot   # 3.7.0 봇 구단은 이적시장 전용 — 경기 상대로 안 나온다
 
         def fn(con):
             return [r[0] for r in con.execute(
                 "SELECT DISTINCT c.user_id FROM clubs c JOIN club_lineup l ON l.user_id=c.user_id WHERE c.user_id<>?",
-                (int(user_id),)) if bots or not is_bot(r[0])]
+                (int(user_id),)) if not is_bot(r[0])]
         return await self._tx(fn)
 
     async def record_official(self, user_id: int, opp_id: int, gf: int, ga: int, now_ts: int,
@@ -1309,7 +1316,7 @@ class ClubDB:
         dk, dn = con.execute("SELECT day_key, day_n FROM club_official_week WHERE user_id=? AND week=?",
                              (int(user_id), wk)).fetchone()
         dn = dn if dk == day else 0
-        counted = dn < WEEKLY_DAILY
+        counted = dn < weekly_daily()
         if counted:
             r = "W" if gf > ga else ("D" if gf == ga else "L")
             con.execute("UPDATE club_official_week SET points=points+?, w=w+?, d=d+?, l=l+?, gf=gf+?, ga=ga+?, day_key=?, "
@@ -1320,6 +1327,16 @@ class ClubDB:
         pts, bag = con.execute("SELECT points, purse FROM club_official_week WHERE user_id=? AND week=?",
                                (int(user_id), wk)).fetchone()
         return {"counted": counted, "day_n": dn, "points": int(pts), "purse": int(bag)}
+
+    async def official_today(self, user_id: int, now_ts: int) -> dict:
+        """3.7.0 오늘 뛴 공식경기 판수 · 마지막 경기 시각 → {n, last}."""
+        def fn(con):
+            r = con.execute("SELECT day_key, day_n, last_ts FROM club_official_week WHERE user_id=? AND week=?",
+                            (int(user_id), week_key(now_ts))).fetchone()
+            if not r:
+                return {"n": 0, "last": 0}
+            return {"n": int(r[1]) if int(r[0]) == kst_day(now_ts) else 0, "last": int(r[2] or 0)}
+        return await self._tx(fn)
 
     @staticmethod
     def _popularity(con, user_id: int) -> float:
@@ -1396,10 +1413,10 @@ class ClubDB:
         return await self._tx(fn)
 
     async def official_table(self, now_ts: int, limit: int = 10) -> list[dict]:
-        """이번 시즌 순위: 승점 → 득실차 → 다득점. 3.7.0 봇 구단은 공개된 서버에서만 순위에 보인다."""
+        """이번 시즌 순위: 승점 → 득실차 → 다득점. 3.7.0 봇 구단은 순위에 안 나온다 (이적시장 전용)."""
         season = season_key(now_ts)
         from services.bot_clubs import BOT_IDS
-        hide = "" if release.ctx_370() else f" AND o.user_id NOT IN ({','.join(map(str, BOT_IDS))})"
+        hide = f" AND o.user_id NOT IN ({','.join(map(str, BOT_IDS))})"
 
         def fn(con):
             rows = con.execute(

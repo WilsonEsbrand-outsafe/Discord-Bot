@@ -1,7 +1,7 @@
 # cogs/bot_clubs.py — 3.7.0 🤖 봇 구단 (services/bot_clubs.py)
 # 봇 감독마다 접속 시간이 달라서, 1분마다 '지금 접속할 차례인 감독'만 구단을 살펴본다 (services.bot_clubs.next_visit).
-# 접속하면 유저처럼: 하루 일과 → 받은 트레이드(수락 · 거절 · 역제안) → 공식경기 → 보강 · 팩 · 되팔기 · 판매.
-# 공개 전(release.released_370 아님)에는 테스트 서버 사람하고만 거래 · 경기하고, 주간 랭킹 · 상금은 공개 뒤부터.
+# 접속하면: 하루 일과 → 받은 트레이드(수락 · 거절 · 역제안) → 보강 · 되팔기 · 판매 (이적시장 일만 한다).
+# 공개 전(release.released_370 아님)에는 테스트 서버 사람하고만 거래한다.
 # 공개 때 한 번: 선수 1명 1주인 전환 (PlayerMarketDB.convert_owners_370 — 유망주 빼고 선수 전부 시세로 환산 + 얼티밋팩 교환권).
 import random
 import time
@@ -11,14 +11,10 @@ from discord.ext import commands, tasks
 
 import release
 from services import bot_clubs as bc
-from services.club_db import (ClubDB, PRIZE_STAKE_370, WEEKLY_DAILY, kst_day, official_odds, simulate_match, week_key,
-                              win_probs)
+from services.club_db import ClubDB
 from services.economy_db import EconomyDB
 from services.notifier import send_notify
 from services.player_market_db import PlayerMarketDB
-
-MATCH_PLAYS = (0, 1, 1, 2, 2, 3, 4)   # 한 번 접속해서 뛰는 공식경기 수 (사람처럼 들쭉날쭉)
-
 
 class BotClubs(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -82,7 +78,6 @@ class BotClubs(commands.Cog):
             if ok:
                 did.append(f"unlist:{lid}")
         await self._db(lambda con: bc.set_lineup(con, bid))
-        did += await self._play_officials(bid, now, allowed, rng)
         # 할 만한 일 — 매번 다 하지 않는다 (성향마다 의욕이 다르다)
         p = bc.PERSONALITY[bc.kind(bid)]
         for _ in range(rng.randint(1, bc.SESSION_MAX)):
@@ -95,17 +90,7 @@ class BotClubs(commands.Cog):
                     did.append(f"{up['how']}:{up['player_id']}")
                     await self._db(lambda con: bc.set_lineup(con, bid))
                     continue
-            elif roll < 0.62:
-                pick = await self._db(lambda con: bc.pick_pack(con, bid, rng))
-                if pick:
-                    ok, _msg, _res = await self.pm.buy_pack(user_id=bid, pack_type=pick[0], pulls=pick[1], now_ts=now,
-                                                            get_balance=self.money.get_balance,
-                                                            add_balance=self.money.add_balance)
-                    if ok:
-                        did.append(f"pack:{pick[0]}x{pick[1]}")
-                        await self._db(lambda con: bc.set_lineup(con, bid))
-                        continue
-            elif roll < 0.75:
+            elif roll < 0.7:
                 deal = await self._db(lambda con: bc.find_bargain(con, bid, now, allowed))
                 if deal and await self._sign(bid, deal, now, rng):
                     did.append(f"bargain:{deal['player_id']}")
@@ -166,40 +151,6 @@ class BotClubs(commands.Cog):
                                    color=0xe74c3c)
             await self._notify(proposer, "트레이드_결과", em)
         return did
-
-    # ───────────── 공식경기 ─────────────
-    async def _play_officials(self, bid: int, now: int, allowed, rng) -> list[str]:
-        done = await self._db(lambda con: con.execute(
-            "SELECT day_key, day_n FROM club_official_week WHERE user_id=? AND week=?", (bid, week_key(now))).fetchone())
-        today_n = int(done[1]) if done and int(done[0]) == kst_day(now) else 0
-        n = min(rng.choice(MATCH_PLAYS), max(0, WEEKLY_DAILY - today_n))
-        if n <= 0:
-            return []
-        me = await self.clubs.match_team(bid, auto_fill=True)
-        if not me or not me.get("filled"):
-            return []
-        pool = []
-        for uid in await self.clubs.official_opponents(bid):
-            if not bc.is_bot(uid) and allowed is not None and not allowed(int(uid)):
-                continue
-            t = await self.clubs.match_team(uid)
-            if t and t.get("filled"):
-                pool.append((abs(t["rating"] - me["rating"]), uid, t))
-        if not pool:
-            return []
-        pool.sort(key=lambda x: x[0])
-        out, weekly = [], release.released_370()
-        for _ in range(n):
-            _gap, opp, t = rng.choice(pool[:5])
-            h = {"name": me["name"], "rating": me["rating"], "xi": [s for s in me["lineup"] if s.get("player_id")]}
-            a = {"name": t["name"], "rating": t["rating"], "xi": [s for s in t["lineup"] if s.get("player_id")]}
-            res = simulate_match(h, a, rng)
-            odds = official_odds(win_probs(h["rating"], a["rating"]))
-            # 공개 전: 기록만 (주간 랭킹 · 상금은 모든 서버가 같이 보므로 공개 뒤부터)
-            await self.clubs.record_official(bid, opp, res["home"], res["away"], now, 0, "W", 1.0,
-                                             weekly=weekly, prize_odds=odds if weekly else None, stake=PRIZE_STAKE_370)
-            out.append(f"match:{opp}:{res['home']}-{res['away']}")
-        return out
 
     # ───────────── 영입 ─────────────
     async def _sign(self, bid: int, up: dict, now: int, rng=random) -> bool:

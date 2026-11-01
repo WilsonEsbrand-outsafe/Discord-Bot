@@ -1,24 +1,19 @@
-# services/bot_clubs.py — 3.7.0 🤖 봇 구단: 일반 플레이어처럼 구단을 굴리는 AI 감독 10명.
-# 봇은 유저와 똑같이 지갑(wallets) · 보유 선수(pm_holdings) · 구단(clubs · club_lineup)을 가진다.
-# user_id 는 BOT_IDS (디스코드 ID 와 겹치지 않는 작은 수) — 공식경기 상대로도 나온다.
+# services/bot_clubs.py — 3.7.0 🤖 봇 구단: 이적시장 · 트레이드를 살리는 AI 감독 10명.
+# 규완님: "봇은 이적시장 활성화에만 도움 주면 돼" — 경기 · 팩 · 랭킹에는 안 나온다.
+# 봇은 지갑(wallets) · 보유 선수(pm_holdings) · 선발 명단(club_lineup, 누굴 팔지 고르는 데만)을 가진다.
+# user_id 는 BOT_IDS (디스코드 ID 와 겹치지 않는 작은 수). clubs 행은 없어서 공식경기 상대로 안 나온다.
 #
-# 움직이는 방식 (규완님: "10분마다 필수적으로 하는 게 아니라 일반 플레이어처럼, 고지능 AI"):
-#   · 감독마다 접속하는 시간대가 있고(아침형 · 저녁형 · 올빼미형 …), 접속 간격도 사람처럼 들쭉날쭉하다.
-#   · 접속하면 구단을 '살펴보고' 할 만한 일만 한다 (아무것도 안 하고 나갈 때도 많다):
-#       1) 받은 트레이드 제안 검토 — 받는 가치가 주는 가치(선발이면 더 아낀다)보다 크면 수락, 아니면 거절
-#       2) 선발 명단 정리 — 가장 강한 11명
-#       3) 보강 — 가장 약한 포지션을 찾아, 그 자리를 확실히 올려 줄 선수를 가성비로 고른다
-#          (아무도 안 가진 선수 · 유저 매물 중 가장 좋은 쪽. 유저가 가진 선수가 훨씬 낫다면 직접 이적 제안)
-#       4) 정리 — 선발에 못 드는 남는 선수 · 늙어서 떨어질 선수를 시세보다 조금 비싸게 내놓는다,
-#          오래 안 팔린 매물은 내린다
-#   · 감독 성향(부자 · 셀링 · 알뜰 · 급한 구단)에 따라 노리는 선수(나이 · OVR) · 쓰는 돈 · 파는 값이 다르다.
-# 규완님: "봇이 완전 사람처럼" — 그래서 유저가 하는 걸 똑같이 한다:
-#   · 하루 일과(스카우트 · 훈련 · 직관 같은)로 돈을 벌고, 쉬는 날도 있다 (그날은 접속 안 함)
-#   · /공식경기를 직접 뛴다 (공개 뒤엔 주간 랭킹 · 상금도 유저와 똑같이)
-#   · 돈이 넉넉하고 전력이 아쉬우면 선수팩을 깐다
-#   · 싸게 나온 매물은 필요 없어도 사 뒀다가 비싸게 되판다 (알뜰 · 부자 구단)
-#   · 트레이드가 조금 모자라면 바로 거절하지 않고 역제안을 보낸다 · 제안 · 답장에 감독 말투가 있다
-# 돈은 하루 일과 수입(DAILY_INCOME, BUDGET_CAP 까지) · 경기 상금 · 선수를 판 돈이 전부 — 돈을 무한히 찍지 않는다.
+# 움직이는 방식 (사람처럼):
+#   · 감독마다 접속하는 시간대가 있고(아침형 · 저녁형 · 올빼미형 …), 접속 간격도 들쭉날쭉하다 · 쉬는 날도 있다.
+#   · 접속하면 할 만한 일만 한다 (아무것도 안 하고 나갈 때도 많다):
+#       1) 받은 트레이드 검토 — 받는 가치가 주는 가치(선발이면 더 아낀다)보다 크면 수락,
+#          조금 모자라면 역제안, 많이 모자라면 거절 (감독 말투로 DM)
+#       2) 보강 — 가장 약한 포지션을 확실히 올려 줄 선수를 가성비로 (아무도 안 가진 선수 · 유저 매물 ·
+#          유저가 가진 선수가 훨씬 낫다면 직접 이적 제안)
+#       3) 싸게 나온 매물은 필요 없어도 사 뒀다가 되판다 (알뜰 · 부자 구단)
+#       4) 정리 — 남는 · 늙은 선수를 시세보다 조금 비싸게 내놓고, 오래 안 팔린 매물은 내린다
+#   · 성향(부자 · 셀링 · 알뜰 · 급한 구단)마다 노리는 선수(나이 · OVR) · 쓰는 돈 · 파는 값이 다르다.
+# 돈은 하루 일과 수입(DAILY_INCOME, BUDGET_CAP 까지) · 선수를 판 돈이 전부 — 돈을 무한히 찍지 않는다.
 import random
 from typing import Optional
 
@@ -59,7 +54,6 @@ BUDGET_CAP = 300_000_000
 DAILY_INCOME = (4_000_000, 9_000_000)   # 하루 일과로 버는 돈 (그날 첫 접속 때) — 부지런함(act)을 곱한다
 REST_PROB = 0.12             # 쉬는 날 (하루 종일 접속 안 함)
 COUNTER_MIN = 0.80           # 받는 가치가 주는 가치의 이만큼은 되면 거절 대신 역제안
-PACKS_FOR_BOTS = ("플래티넘", "다이아몬드", "아이콘", "얼티밋")
 LINES = {   # 감독 말투 — 제안 · 수락 · 거절 · 역제안
     "rich":    {"offer": ("우리 구단에 딱 필요한 선수예요. 돈은 걱정 마세요.", "이 정도면 충분히 후한 조건일 겁니다."),
                 "accept": ("좋습니다, 거래하죠.", "환영합니다! 좋은 거래였어요."),
@@ -172,11 +166,12 @@ def _owned_sql() -> str:
 
 
 def ensure_club(con, bid: int, now_ts: int) -> None:
-    """봇 구단의 구단 (clubs) — 없으면 만든다. 아마추어 스쿼드도 유저처럼 받는다."""
-    e, name, _k, formation, _s = BOT_CLUBS[bid]
-    if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (bid,)).fetchone():
-        con.execute("INSERT INTO clubs(user_id, club_name, created_ts) VALUES(?, ?, ?)", (bid, name, int(now_ts)))
-    con.execute("UPDATE clubs SET emblem=?, formation=?, club_name=? WHERE user_id=?", (e, formation, name, bid))
+    """봇의 아마추어 스쿼드 (유저처럼). 구단(clubs) 행은 두지 않는다 — 경기 상대 · 순위에 안 나오게 (예전에 만든 건 지운다)."""
+    for t in ("clubs", "club_official", "club_official_week"):
+        try:
+            con.execute(f"DELETE FROM {t} WHERE user_id=?", (bid,))
+        except Exception:
+            pass
     from services.player_market_db import AMATEUR_SQUAD
     for p in AMATEUR_SQUAD:
         con.execute("INSERT OR IGNORE INTO pm_holdings(user_id, player_id, qty) VALUES(?, ?, 1)", (bid, p["player_id"]))
@@ -441,20 +436,3 @@ def find_bargain(con, bid: int, now_ts: int, allowed=None) -> Optional[dict]:
                 best = {"how": "listing", "listing_id": int(lid), "seller_id": int(seller), "player_id": pid,
                         "price": int(price), "deal": d}
     return best
-
-
-def pick_pack(con, bid: int, rng=random) -> Optional[tuple]:
-    """돈이 넉넉하고 전력이 아쉬우면 선수팩 → (팩 이름, 장수) 또는 None."""
-    from services.player_market_db import PACKS
-    bal = balance(con, bid)
-    weak = min((w for _p, w, _s in needs(con, bid)), default=0)
-    if bal < 60_000_000 or weak >= 85:
-        return None
-    ok = [k for k in PACKS_FOR_BOTS if k in PACKS and PACKS[k]["price"] * 2 <= bal * 0.12]
-    if not ok:
-        return None
-    k = ok[-1] if kind(bid) == "rich" else rng.choice(ok)
-    n = max(1, min(3, int(bal * 0.12 // PACKS[k]["price"])))
-    if len([x for x in squad(con, bid) if not x["amateur"]]) + n > PERSONALITY[kind(bid)]["squad"] + 4:
-        return None
-    return k, n

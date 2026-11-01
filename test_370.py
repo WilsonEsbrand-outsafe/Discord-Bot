@@ -288,7 +288,7 @@ def test_bot_clubs():
     con.commit()
     run(cog.run_once(now, allowed=lambda u: u == 51, rng=random.Random(7)))
     assert con.execute("SELECT COUNT(*) FROM bot_club_state").fetchone()[0] == len(bc.BOT_IDS)
-    assert con.execute("SELECT COUNT(*) FROM clubs WHERE user_id BETWEEN 101 AND 110").fetchone()[0] == 10   # 구단이 있다
+    assert con.execute("SELECT COUNT(*) FROM clubs WHERE user_id BETWEEN 101 AND 110").fetchone()[0] == 0    # 경기엔 안 나온다
     assert con.execute("SELECT COUNT(*) FROM club_lineup WHERE user_id=101").fetchone()[0] == 11            # 선발 11명
     # 접속 시간은 감독마다 다르고, 접속 시간대 안에서만
     nxt = [con.execute("SELECT next_ts FROM bot_club_state WHERE bot_id=?", (b,)).fetchone()[0] for b in bc.BOT_IDS]
@@ -316,17 +316,35 @@ def test_bot_clubs():
     assert any(d.startswith("routine:+") for d in did)                           # 하루 일과로 돈을 번다
     assert run(pm.get_holding(51, pid)) == 1
     logs = [d for b in bc.BOT_IDS for d in run(cog.visit(b, now, allowed=lambda u: u == 51, rng=random.Random(b)))]
-    assert any(d.startswith("match:") for d in logs)                             # 공식경기를 직접 뛴다
+    assert not any(d.startswith(("match:", "pack:")) for d in logs)              # 이적시장 일만 한다
+    assert any(d.startswith(("free:", "listing:", "offer:", "list:", "bargain:")) for d in logs)
     assert not any(d.startswith("routine:") for d in run(cog.visit(101, now, allowed=lambda u: u == 51)))   # 일과는 하루 한 번
     # 쉬는 날 · 접속 시간대
     assert any(bc.rest_day(101, d) for d in range(100)) and not all(bc.rest_day(101, d) for d in range(100))
     # 봇 매물은 3.7.0 서버에서만 · 봇은 랭킹에서 빠진다 · 공식경기 상대도 3.7.0 서버에서만
     assert not any(bc.is_bot(x[1]) for x in run(pm.get_listings("", limit=25)))
     assert not any(bc.is_bot(r[0]) for r in run(pm.get_ranking(50)))
-    assert not any(bc.is_bot(u) for u in run(cdb.ClubDB().official_opponents(51)))
     tok = release.GUILD.set(T)
     try:
-        assert any(bc.is_bot(u) for u in run(cdb.ClubDB().official_opponents(51)))
+        assert not any(bc.is_bot(u) for u in run(cdb.ClubDB().official_opponents(51)))
     finally:
         release.GUILD.reset(tok)
     con.close()
+
+
+def test_official_daily_370():
+    db = cdb.ClubDB()
+    now = int(time.time())
+    assert cdb.weekly_daily(True) == 15 and cdb.weekly_daily(False) == 30
+    con = sqlite3.connect(TMP)
+    con.execute("DELETE FROM club_official_week WHERE user_id=61")
+    con.commit()
+    con.close()
+    tok = release.GUILD.set(T)
+    try:
+        for i in range(17):
+            run(db.record_official(61, 62, 1, 0, now + i, 0, "W", 1.0, weekly=True))
+    finally:
+        release.GUILD.reset(tok)
+    t = run(db.official_today(61, now + 20))
+    assert t["n"] == 15 and t["last"] > 0     # 3.7.0 서버: 하루 15판까지만 센다
