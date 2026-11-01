@@ -1396,14 +1396,16 @@ class ClubDB:
         return await self._tx(fn)
 
     async def official_table(self, now_ts: int, limit: int = 10) -> list[dict]:
-        """이번 시즌 순위: 승점 → 득실차 → 다득점."""
+        """이번 시즌 순위: 승점 → 득실차 → 다득점. 3.7.0 봇 구단은 공개된 서버에서만 순위에 보인다."""
         season = season_key(now_ts)
+        from services.bot_clubs import BOT_IDS
+        hide = "" if release.ctx_370() else f" AND o.user_id NOT IN ({','.join(map(str, BOT_IDS))})"
 
         def fn(con):
             rows = con.execute(
                 "SELECT o.user_id, c.club_name, o.points, o.w, o.d, o.l, o.gf, o.ga FROM club_official o "
-                "JOIN clubs c ON c.user_id=o.user_id WHERE o.season=? AND (o.w+o.d+o.l)>0 "
-                "ORDER BY o.points DESC, (o.gf-o.ga) DESC, o.gf DESC LIMIT ?", (season, limit)).fetchall()
+                "JOIN clubs c ON c.user_id=o.user_id WHERE o.season=? AND (o.w+o.d+o.l)>0" + hide +
+                " ORDER BY o.points DESC, (o.gf-o.ga) DESC, o.gf DESC LIMIT ?", (season, limit)).fetchall()
             return [dict(zip(("user_id", "name", "points", "w", "d", "l", "gf", "ga"), r)) for r in rows]
         return await self._tx(fn)
 

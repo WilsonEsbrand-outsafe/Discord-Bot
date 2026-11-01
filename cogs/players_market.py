@@ -928,8 +928,8 @@ class PlayersMarket(commands.Cog):
         if kind == "pack":
             packs = "\n".join(f"{PACK_EMOJI.get(k, '🎁')} **{k}팩** · {p['price']:,}원" for k, p in PACKS.items())
             e.add_field(name="🃏 선수팩 (장당)", value=packs, inline=False)
-            if inv.get("pack_ticket"):   # 3.7.0 🎫 골드팩 교환권
-                e.add_field(name="🎫 골드팩 교환권", value=f"**{inv['pack_ticket']}장** — 골드팩을 고르면 돈 대신 먼저 써요",
+            if inv.get("pack_ticket"):   # 3.7.0 🎫 얼티밋팩 교환권
+                e.add_field(name="🎫 얼티밋팩 교환권", value=f"**{inv['pack_ticket']}장** — 얼티밋팩을 고르면 돈 대신 먼저 써요",
                             inline=False)
             e.set_footer(text=f"아래 메뉴에서 팩을 고르면 1~{PACK_MAX_PULLS}장 선택 · 팩별 가격대 · 잭팟은 /팩정보 · 아이템은 /아이템상점")
             return e, ShopView(self, user, inv, kind)
