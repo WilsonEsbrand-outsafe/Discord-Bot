@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import time
 import discord
-from services.bot_clubs import is_bot, bot_name
+from services.bot_clubs import is_bot, bot_name, BOT_CLUBS
+import release
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -247,6 +248,28 @@ class Trade(commands.Cog):
 
     # ───────────────── 커맨드 ─────────────────
 
+    async def _propose_bot(self, interaction, bid: int, 내선수: str, 원하는선수: str, 내현금: int, 원하는현금: int):
+        if 내현금 < 0 or 원하는현금 < 0:
+            return await interaction.followup.send("❌ 현금 금액은 0 이상이어야 합니다.")
+        prop_pids, recv_pids = self._parse_pids(내선수), self._parse_pids(원하는선수)
+        if not prop_pids and not recv_pids and 내현금 == 0 and 원하는현금 == 0:
+            return await interaction.followup.send("❌ 트레이드 내용이 비어 있습니다.")
+        for pid in recv_pids:
+            if await self.pm.get_holding(bid, pid) <= 0:
+                return await interaction.followup.send(f"❌ {bot_name(bid)}은(는) `#{pid}` 선수를 갖고 있지 않아요.")
+        ok, result, details = await self.pm.create_trade(
+            proposer_id=interaction.user.id, receiver_id=bid, proposer_pids=prop_pids, receiver_pids=recv_pids,
+            proposer_cash=내현금, receiver_cash=원하는현금, now_ts=int(time.time()), get_balance=self.money.get_balance)
+        if not ok:
+            return await interaction.followup.send(embed=_embed("❌ 트레이드 제안 실패", result, 0xe74c3c))
+        give = [f"{n} x{q}" for _p, n, q in details["proposer_items"]] + ([f"{내현금:,}원"] if 내현금 else [])
+        take = [f"{n} x{q}" for _p, n, q in details["receiver_items"]] + ([f"{원하는현금:,}원"] if 원하는현금 else [])
+        await interaction.followup.send(embed=_embed(
+            "✅ 봇 구단에 트레이드 제안",
+            f"**{bot_name(bid)}**에게 제안했어요. (`#{result}`)\n"
+            f"📤 {', '.join(give) or '없음'} → 📥 {', '.join(take) or '없음'}\n\n"
+            "감독이 다음에 접속하면 따져 보고 수락하거나 거절해요 — 결과는 DM으로 알려 드려요.", 0x2ecc71))
+
     @app_commands.command(name="트레이드", description="다른 유저에게 선수 트레이드를 제안합니다.")
     @app_commands.describe(
         상대방="트레이드 상대",
@@ -254,19 +277,28 @@ class Trade(commands.Cog):
         원하는선수="내가 받을 선수 (자동완성 지원, 여러 명은 선택 후 쉼표로 추가)",
         내현금="내가 추가로 지불할 현금 (없으면 0)",
         원하는현금="상대가 추가로 지불할 현금 (없으면 0)",
+        봇구단="🤖 봇 구단에게 제안할 때 (상대방 대신)",
     )
+    @app_commands.choices(봇구단=[app_commands.Choice(name=f"{e} {n}", value=str(bid)) for bid, (e, n, *_r) in BOT_CLUBS.items()])
     @app_commands.autocomplete(내선수=my_player_autocomplete, 원하는선수=all_player_autocomplete)
     async def propose(
         self,
         interaction: discord.Interaction,
-        상대방: discord.Member,
+        상대방: discord.Member | None = None,
         내선수: str = "",
         원하는선수: str = "",
         내현금: int = 0,
         원하는현금: int = 0,
+        봇구단: str = "",
     ):
         await interaction.response.defer()
 
+        if 봇구단:   # 3.7.0 🤖 봇 구단 — 다음에 접속할 때 따져 보고 수락 · 거절한다
+            if not release.preview_370(interaction.guild_id):
+                return await interaction.followup.send("❌ 봇 구단은 아직 이 서버에 열리지 않았어요.")
+            return await self._propose_bot(interaction, int(봇구단), 내선수, 원하는선수, 내현금, 원하는현금)
+        if 상대방 is None:
+            return await interaction.followup.send("❌ `상대방` 또는 `봇구단`을 골라 주세요.")
         if 상대방.id == interaction.user.id:
             return await interaction.followup.send("❌ 자기 자신에게는 트레이드를 제안할 수 없습니다.")
         if 상대방.bot:

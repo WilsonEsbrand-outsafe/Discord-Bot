@@ -240,32 +240,25 @@ class LawyerView(discord.ui.View):
             + f" (선임된 변호사 **{r['uses']}명**)", ui.GOLD, self.user, "🎒 아이템"))
 
 
-class AgentView(discord.ui.View):
-    """3.7.0 🕴️ 에이전트 리포트 — 제안 3곳 중 하나로 보내기 (본인만)."""
+class AgentAgainView(discord.ui.View):
+    """3.7.0 🕴️ 스카우트 결과 아래 [🔍 다시 스카우트] (본인만)."""
 
-    def __init__(self, cog: "Economy", user, rep: dict):
-        super().__init__(timeout=600)
+    def __init__(self, cog: "Economy", user):
+        super().__init__(timeout=900)
         self.cog, self.user = cog, user
-        for i, o in enumerate(rep["offers"]):
-            b = discord.ui.Button(label=f"{o['club']} ({o['prob']:.0%})"[:80], emoji=("🏠", "🏟️", "🏰")[i],
-                                  style=(discord.ButtonStyle.secondary, discord.ButtonStyle.primary, discord.ButtonStyle.danger)[i])
-            b.callback = self._send(i)
-            self.add_item(b)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
-            await interaction.response.send_message("🙅 리포트를 받은 사람만 누를 수 있어요.", ephemeral=True)
+            await interaction.response.send_message("🙅 `/스카우트`를 직접 써 주세요!", ephemeral=True)
             return False
         return True
 
-    def _send(self, idx: int):
-        async def cb(interaction: discord.Interaction):
-            self.stop()
-            for c in self.children:
-                c.disabled = True
-            await interaction.response.edit_message(view=self)
-            await self.cog._agent_send(interaction, self.user, idx)
-        return cb
+    @discord.ui.button(label="다시 스카우트", emoji="🔍", style=discord.ButtonStyle.primary)
+    async def again(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.cog._agent_scout(interaction)
 
 
 class SteroidView(discord.ui.View):
@@ -779,68 +772,48 @@ class Economy(commands.Cog):
                                                     "found": None, "item": item, "base": res["offer"]["fee"], "mult": mult,
                                                     "line": rep["line"]}
 
-    def _agent_roll(self, level: int, con, user_id: int, idx: int):
-        rep = agent.take(con, user_id)
-        if rep is None:   # 이미 보낸 리포트 (버튼 두 번) — 새로 뽑아 자동으로
-            rep = agent.make_report(level)
-            idx = agent.best_auto(rep)
-        return self._agent_settle(level, con, user_id, rep, idx)
-
-    def _agent_embed(self, user, rep: dict, level: int) -> discord.Embed:
-        mult = self.scout_money_mult(level)
-        stars = "★" * rep["stars"] + "☆" * (5 - rep["stars"])
-        lines = [f"**{rep['name']}** · {rep['nation']} · {rep['pos']} · {rep['age']}세",
-                 f"`OVR` **{rep['ovr']}** · `잠재력` {stars}", f"> 🎙️ *\"{rep['line']}\"*", "", "**📨 구단 제안**"]
-        for i, o in enumerate(rep["offers"]):
-            lines.append(f"{('🏠', '🏟️', '🏰')[i]} **{o['club']}** — 수수료 **{int(o['fee'] * mult):,}원** · 성사 {o['prob']:.0%}")
-        e = ui.card("🕴️ 에이전트 리포트 — 어디로 보낼까요?", "\n".join(lines), ui.INFO, user, "🕴️ 선수 에이전트")
-        e.set_footer(text=f"수수료는 {self.scout_tier(level)} Lv.{level} 배율 ×{mult} 적용 · 실패하면 0원 · 보내면 스카우트 1회")
-        return e
+    def _agent_auto(self, level: int, con, user_id: int):
+        """3.7.0 간단 모드: 선수를 찾으면 가장 괜찮은 구단(기대값)으로 알아서 보낸다."""
+        rep = agent.make_report(level)
+        return self._agent_settle(level, con, user_id, rep, agent.best_auto(rep))
 
     async def _agent_scout(self, interaction: discord.Interaction):
+        """🕴️ /스카우트 — 누르면 바로 결과: 선수 발견 → 에이전트가 알아서 가장 좋은 조건으로 계약 → 수수료."""
         user, now_ts = interaction.user, int(time.time())
-
-        def fn(con):
-            lv = con.execute("SELECT level FROM scouting WHERE user_id=?", (user.id,)).fetchone()
-            lv = int(lv[0]) if lv else 1
-            rep = agent.pending(con, user.id)
-            if rep is None:
-                rep = agent.make_report(lv)
-                agent.save(con, user.id, rep, now_ts)
-            return lv, rep
-        lv, rep = await self.db._tx(fn)
-        await interaction.followup.send(embed=self._agent_embed(user, rep, lv), view=AgentView(self, user, rep))
-
-    async def _agent_send(self, interaction: discord.Interaction, user, idx: int):
-        now_ts = int(time.time())
-        r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._agent_roll(lv, con, user.id, idx),
+        r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._agent_auto(lv, con, user.id),
                                      cooldown_sec=self.SCOUT_COOLDOWN)
         if not r["ok"]:
             return await self._grind_blocked(
                 interaction, r, now_ts, self._scout_card, self._scout_status(r),
-                ("🧳 오늘 출장 끝", "오늘 에이전트 업무는 여기까지! 리포트는 내일까지 그대로 둘게요."),
-                ("✈️ 협상 준비 중", "다음 구단과 통화하려면 조금만 기다려 주세요! 리포트는 그대로예요."),
-                ("✅ 협상 준비 완료", "지금 바로 다시 보낼 수 있어요. `/스카우트`로 리포트를 열어 주세요."),
+                ("🧳 오늘 출장 끝", "오늘 에이전트 업무는 여기까지! 내일 00:00에 다시 떠나죠."),
+                ("✈️ 이동 중", "다음 선수를 만나러 가는 중이에요. 조금만 기다려 주세요!"),
+                ("✅ 출장 준비 완료", "지금 바로 `/스카우트` 가능해요."),
             )
         info = r["info"]
         rep, o = info["report"], info["offer"]
+        stars = "★" * rep["stars"] + "☆" * (5 - rep["stars"])
         if r["leveled"]:
             title, color = f"🆙 레벨 업! Lv.{r['level'] - r['leveled']} → Lv.{r['level']}", ui.GOLD
         elif info["ok"]:
-            title, color = f"🤝 계약 성사! {rep['name']} → {o['club']}", ui.WIN
+            title, color = f"🤝 이적 성사! +{r['delta']:,}원", ui.WIN
         else:
-            title, color = f"📵 {o['club']}이(가) 거절했어요…", ui.LOSE
-        body = (f"**{rep['name']}** ({'★' * rep['stars']}) 을(를) **{o['club']}** 에 보냈어요.\n"
-                + (f"수수료 **+{r['delta']:,}원**" if info["ok"] else "이번엔 수수료가 없어요.")
-                + (f" · 🚀 신인 부스트" if r.get("boost") else ""))
+            title, color = "📵 계약이 엎어졌어요…", ui.LOSE
+        body = (f"🔍 **{rep['name']}** · {rep['nation']} · {rep['pos']} · {stars}\n"
+                + (f"➡️ **{o['club']}** 이적 · 수수료 **+{r['delta']:,}원**" if info["ok"]
+                   else f"➡️ **{o['club']}** 이(가) 마지막에 거절 · 수수료 없음")
+                + (" · 🚀 신인 부스트" if r.get("boost") else ""))
         if info.get("item"):
             emoji, name, _ = ITEMS[info["item"]]
-            body += f"\n🎁 구단이 고맙다며 **{emoji} {name}**을(를) 줬어요! (가방에 1개)"
+            body += f"\n🎁 구단이 고맙다며 **{emoji} {name}**을(를) 줬어요!"
         e = ui.card(title, body + f"\n\n`잔액` **{r['new_bal']:,}원**\n" + self._scout_status(r, 3 if info["ok"] else -1),
                     color, user, "🕴️ 선수 에이전트")
+        view = None
         if r["used"] >= r["limit"]:
             e.description += "\n\n🔓 오늘 스카우트 완료! 이제 `/훈련`을 할 수 있어요."
-        await interaction.followup.send(embed=e)
+        else:
+            e.set_footer(text=f"{self.SCOUT_COOLDOWN}초 뒤 아래 버튼으로 바로 다시 · 별이 많을수록 큰 구단이 데려가요")
+            view = AgentAgainView(self, user)
+        await interaction.followup.send(embed=e, view=view) if view else await interaction.followup.send(embed=e)
 
     def _scout_status(self, r: dict, xp_gain: int | None = None) -> str:
         lv = r["level"]

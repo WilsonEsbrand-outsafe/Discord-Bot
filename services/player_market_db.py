@@ -290,6 +290,8 @@ def pool_size(now_ts: Optional[float] = None) -> int:
 
 # ── 3.7.0 선수 1명 1주인 · 봇 구단 (release.ctx_370: 테스트 서버 먼저, 백그라운드는 released_370) ──
 HOLD_CAP_370 = 40          # 한 사람이 가질 수 있는 선수 수 (아마추어 빼고) — 더 사려면 팔거나 방출
+PACK_TICKET_PACK = "골드"   # 🎫 교환권으로 여는 팩
+PACK_TICKETS_370 = 3        # 전환 보상: 골드팩 교환권 (카드가 한 장이라도 있었으면)
 FREE_MIN_370 = 600         # 아무도 안 가진 선수를 시장에 이만큼은 둔다 (1명 1주인이라 팩이 마르지 않게)
 _OWNED_SQL = ("SELECT player_id FROM pm_holdings WHERE qty>0 "
               "UNION SELECT player_id FROM pm_listings WHERE status='active' "
@@ -1664,6 +1666,7 @@ class PlayerMarketDB:
         pack_price = int(pack["price"])
         total_cost = pack_price * pulls
         uniq = unique_on()
+        used_tickets: list = []
 
         # 차감·추첨·지급을 한 트랜잭션으로 묶는다. 예전엔 먼저 돈을 빼고
         # 실패 시 환불하는 구조라, 추첨 중 예외가 나면 돈만 사라졌다.
@@ -1675,9 +1678,21 @@ class PlayerMarketDB:
                     if uniq and held_count(con, user_id) + pulls > HOLD_CAP_370:
                         con.execute("ROLLBACK;")
                         return ("CAP", [])
-                    if not _take_cash(con, user_id, total_cost):
+                    tickets = 0
+                    if pack_type == PACK_TICKET_PACK:   # 3.7.0 🎫 골드팩 교환권을 돈보다 먼저 쓴다
+                        try:
+                            r = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='pack_ticket'",
+                                            (int(user_id),)).fetchone()
+                            tickets = min(pulls, int(r[0]) if r else 0)
+                        except sqlite3.OperationalError:
+                            tickets = 0
+                    if not _take_cash(con, user_id, pack_price * (pulls - tickets)):
                         con.execute("ROLLBACK;")
                         return ("NO_FUNDS", [])
+                    if tickets:
+                        con.execute("UPDATE inventory SET qty=qty-? WHERE user_id=? AND item='pack_ticket'",
+                                    (tickets, int(user_id)))
+                    used_tickets.append(tickets)
                     status, drawn = _draw_from_pool(con, pack, pack_price, pulls, unique=uniq)
                     if status == "EMPTY_TIER":
                         con.execute("ROLLBACK;")
@@ -1717,6 +1732,10 @@ class PlayerMarketDB:
                 "💸 비용은 차감되지 않았습니다."
             ), None
 
+        t = used_tickets[-1] if used_tickets else 0
+        if t:
+            paid = total_cost - pack_price * t
+            return True, f"🎁 {pack_type}팩 {pulls}장 개봉 완료! (🎫 교환권 {t}장" + (f" + {paid:,}원)" if paid else ")"), results
         return True, f"🎁 {pack_type}팩 {pulls}장 개봉 완료! (총 {total_cost:,}원)", results
 
     # ───────────────── 시장 틱 / 월 처리 ─────────────────
@@ -2844,70 +2863,63 @@ class PlayerMarketDB:
                     con.close()
             return await self._run(work)
 
-    async def dedupe_owners_370(self, now_ts: int, force: bool = False) -> list:
-        """3.7.0 공개 때 한 번: 선수 1명 1주인으로 정리. 같은 선수를 여러 명(또는 한 명이 여러 장) 가졌으면
-        선발 명단에 올린 사람 → 먼저 산 사람(먼저 생긴 보유 행) 한 장만 남기고, 나머지는 지금 시세 100% 로 환불.
-        이적시장에 올라간 중복 매물은 내리고 같은 값으로 환불. → [(user_id, 선수 이름, 장수, 환불액)]."""
+    async def convert_owners_370(self, now_ts: int, force: bool = False) -> dict:
+        """3.7.0 공개 때 한 번: 선수 1명 1주인 전환 (규완님: 유망주 빼고 선수를 돈으로 환산 + 선수팩 지급).
+        모든 사람이 가진 선수 카드(아마추어 빼고 · 이적시장 매물 · 트레이드에 걸어 둔 선수 포함)를 지금 시세로 돈으로 바꿔 주고,
+        카드가 한 장이라도 있었으면 골드팩 교환권 PACK_TICKETS_370 장. 유망주 · 유스는 다른 테이블이라 그대로.
+        → {user_id: {"cards": 장수, "money": 환산액, "tickets": 교환권}} (봇 구단도 정리하지만 돈 · 교환권은 없다)."""
         async with self._lock:
             def work():
                 con = self._connect()
                 try:
                     con.execute("CREATE TABLE IF NOT EXISTS pm_flags (key TEXT PRIMARY KEY, ts INTEGER)")
-                    if not force and con.execute("SELECT 1 FROM pm_flags WHERE key='dedupe-3.7.0'").fetchone():
-                        return []
+                    if not force and con.execute("SELECT 1 FROM pm_flags WHERE key='convert-3.7.0'").fetchone():
+                        return {}
                     con.execute("BEGIN IMMEDIATE;")
-                    rows = con.execute(
-                        "SELECT h.rowid, h.user_id, h.player_id, h.qty, p.name, COALESCE(m.price, p.base_value) "
-                        "FROM pm_holdings h JOIN pm_players p ON p.player_id=h.player_id "
-                        "LEFT JOIN pm_market m ON m.player_id=h.player_id "
-                        "WHERE h.qty>0 AND h.player_id NOT LIKE 'AMT_%' ORDER BY h.rowid").fetchall()
-                    by_pid: dict = {}
-                    for r in rows:
-                        by_pid.setdefault(str(r[2]), []).append(r)
-                    lineup: dict = {}
+                    price = ("CASE WHEN p.retired=1 THEN p.base_value/2 ELSE COALESCE(NULLIF(m.price,0), p.base_value) END")
                     out: dict = {}
 
-                    def refund(uid, name, n, price):
-                        if n <= 0:
-                            return
-                        con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(uid),))
-                        con.execute("UPDATE wallets SET balance=balance+? WHERE user_id=?", (int(price) * n, int(uid)))
-                        k = (int(uid), name)
-                        a, b = out.get(k, (0, 0))
-                        out[k] = (a + n, b + int(price) * n)
-
-                    keep_pid = set()
-                    for pid, hs in by_pid.items():
-                        def in_lineup(uid):
-                            if uid not in lineup:
-                                lineup[uid] = self._lineup_ids(con, uid)
-                            return pid in lineup[uid]
-                        keeper = next((h for h in hs if in_lineup(int(h[1]))), hs[0])
-                        keep_pid.add(pid)
-                        for rid, uid, _pid, qty, name, price in hs:
-                            extra = int(qty) - 1 if rid == keeper[0] else int(qty)
-                            if extra <= 0:
-                                continue
-                            con.execute("UPDATE pm_holdings SET qty=qty-? WHERE rowid=?", (extra, rid))
-                            refund(uid, name, extra, price)
-                    # 이적시장 매물: 이미 주인이 있는 선수면 내리고 환불, 매물끼리 겹치면 먼저 올린 것 하나만
-                    lst = con.execute(
-                        "SELECT l.listing_id, l.seller_id, l.player_id, l.qty, p.name, COALESCE(m.price, p.base_value) "
-                        "FROM pm_listings l JOIN pm_players p ON p.player_id=l.player_id "
-                        "LEFT JOIN pm_market m ON m.player_id=l.player_id WHERE l.status='active' ORDER BY l.listing_id").fetchall()
-                    for lid, uid, pid, qty, name, price in lst:
-                        pid = str(pid)
-                        if pid in keep_pid:
-                            con.execute("UPDATE pm_listings SET status='cancelled', qty=0 WHERE listing_id=?", (lid,))
-                            refund(uid, name, int(qty), price)
+                    def add(uid, n, v):
+                        o = out.setdefault(int(uid), {"cards": 0, "money": 0, "tickets": 0})
+                        o["cards"] += int(n)
+                        o["money"] += int(v)
+                    for uid, n, v in con.execute(
+                            f"SELECT h.user_id, SUM(h.qty), SUM(h.qty * ({price})) FROM pm_holdings h "
+                            f"JOIN pm_players p ON p.player_id=h.player_id LEFT JOIN pm_market m ON m.player_id=h.player_id "
+                            f"WHERE h.qty>0 AND h.player_id NOT LIKE 'AMT_%' GROUP BY h.user_id").fetchall():
+                        add(uid, n, v)
+                    for uid, n, v in con.execute(
+                            f"SELECT l.seller_id, SUM(l.qty), SUM(l.qty * ({price})) FROM pm_listings l "
+                            f"JOIN pm_players p ON p.player_id=l.player_id LEFT JOIN pm_market m ON m.player_id=l.player_id "
+                            f"WHERE l.status='active' AND l.qty>0 GROUP BY l.seller_id").fetchall():
+                        add(uid, n, v)
+                    for uid, n, v in con.execute(
+                            f"SELECT t.proposer_id, SUM(ti.qty), SUM(ti.qty * ({price})) FROM pm_trades t "
+                            f"JOIN pm_trade_items ti ON ti.trade_id=t.trade_id AND ti.side='proposer' "
+                            f"JOIN pm_players p ON p.player_id=ti.player_id LEFT JOIN pm_market m ON m.player_id=ti.player_id "
+                            f"WHERE t.status='pending' GROUP BY t.proposer_id").fetchall():
+                        add(uid, n, v)
+                    con.execute("UPDATE pm_listings SET status='cancelled', qty=0 WHERE status='active'")
+                    con.execute("UPDATE pm_trades SET status='cancelled' WHERE status='pending'")
+                    con.execute("DELETE FROM pm_holdings WHERE player_id NOT LIKE 'AMT_%'")
+                    try:   # 선발 명단 · 주장에서 빠진 카드 (유망주 · 유스 · 아마추어는 그대로)
+                        con.execute("DELETE FROM club_lineup WHERE player_id IN (SELECT player_id FROM pm_players "
+                                    "WHERE player_id NOT LIKE 'AMT_%')")
+                        con.execute("UPDATE clubs SET captain=NULL WHERE captain IN (SELECT player_id FROM pm_players "
+                                    "WHERE player_id NOT LIKE 'AMT_%')")
+                    except sqlite3.OperationalError:
+                        pass
+                    for uid, o in out.items():
+                        if _bc.is_bot(uid):
                             continue
-                        keep_pid.add(pid)
-                        if int(qty) > 1:
-                            con.execute("UPDATE pm_listings SET qty=1 WHERE listing_id=?", (lid,))
-                            refund(uid, name, int(qty) - 1, price)
-                    con.execute("INSERT OR REPLACE INTO pm_flags(key, ts) VALUES('dedupe-3.7.0', ?)", (int(now_ts),))
+                        con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (uid,))
+                        con.execute("UPDATE wallets SET balance=balance+? WHERE user_id=?", (o["money"], uid))
+                        o["tickets"] = PACK_TICKETS_370
+                        con.execute("INSERT INTO inventory(user_id, item, qty) VALUES(?, 'pack_ticket', ?) "
+                                    "ON CONFLICT(user_id, item) DO UPDATE SET qty=qty+excluded.qty", (uid, PACK_TICKETS_370))
+                    con.execute("INSERT OR REPLACE INTO pm_flags(key, ts) VALUES('convert-3.7.0', ?)", (int(now_ts),))
                     con.commit()
-                    return [(u, n, a, b) for (u, n), (a, b) in out.items()]
+                    return out
                 except Exception:
                     try: con.execute("ROLLBACK;")
                     except Exception: pass
