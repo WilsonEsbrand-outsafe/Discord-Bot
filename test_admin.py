@@ -109,11 +109,36 @@ async def _flow():
     await m.on_submit(boss)
     assert "지급" in sent[-1][1]["embed"].title and (await eco.db.inventory(55))[0] == {"muffler": 2}
 
+    # 3.7.0 아이템이 25개를 넘으면 드롭다운이 나뉜다 — 뒤쪽(변호사 선임권)도 고를 수 있다
+    await menu._pick(boss)
+    m = modals[-1]
+    items = [label.component for p, label in m.fields if p.name == "아이템"]
+    assert len(items) == 2 and "lawyer" in {o.value for o in items[1].options}
+    for p, label in m.fields:
+        if p.type is discord.AppCommandOptionType.user:
+            label.component._values = [target]
+        elif p.name == "수량":
+            label.component._value = "1"
+    items[0]._values, items[1]._values = [], ["lawyer"]
+    await m.on_submit(boss)
+    assert (await eco.db.inventory(55))[0] == {"muffler": 2, "lawyer": 1}
+    await menu._pick(boss)   # 아무것도 안 고르면 안내만
+    m = modals[-1]
+    for p, label in m.fields:
+        if p.type is discord.AppCommandOptionType.user:
+            label.component._values = [target]
+        elif p.name == "수량":
+            label.component._value = "1"
+        else:
+            label.component._values = []
+    await m.on_submit(boss)
+    assert "골라 주세요" in sent[-1][0][0] and (await eco.db.inventory(55))[0] == {"muffler": 2, "lawyer": 1}
+
     # 숫자 칸에 글자 → 안내만 하고 실행 안 함
     await menu._pick(boss)
     fill(modals[-1], {"user": target, "아이템": "muffler", "수량": "두 개"})
     await modals[-1].on_submit(boss)
-    assert "숫자" in sent[-1][0][0] and (await eco.db.inventory(55))[0] == {"muffler": 2}
+    assert "숫자" in sent[-1][0][0] and (await eco.db.inventory(55))[0] == {"muffler": 2, "lawyer": 1}
 
     # 입력 7개: 필수 5개가 첫 장 → 남은 칸이 모두 선택이면 [바로 실행] (비운 칸은 기본값)
     menu.menu._values = ["입력7"]

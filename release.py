@@ -165,6 +165,19 @@ def preview_360(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_360(now)
 
 
+# 3.7.0 — 테스트 서버 먼저. preview_370(guild): 어항 신선도 · 낚싯대 재구매 내구도 · 공식경기 상금 · 명문 구단 직접 수령 ·
+# 스테로이드 확률 · 유스 리롤권. 모든 서버가 같이 쓰는 것(명문 구단 자동 지급 끄기)은 RELEASE_370_TS 부터. None = 아직
+RELEASE_370_TS: Optional[int] = None
+
+
+def released_370(now: Optional[float] = None) -> bool:
+    return RELEASE_370_TS is not None and _now(now) >= RELEASE_370_TS
+
+
+def preview_370(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_370(now)
+
+
 # 지금 처리 중인 상호작용의 서버 — bot.py 가 / 명령어 · 버튼 · 메뉴마다 넣는다 (DB 안쪽처럼 서버를 넘겨받지 못하는 곳용).
 # 백그라운드 작업에선 None.
 GUILD: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("guild", default=None)

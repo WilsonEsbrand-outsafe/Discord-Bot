@@ -15,7 +15,7 @@ from services.economy_db import (
     TRAIN_MAX_LEVEL,
     BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
-from services.club_db import STEROID_TABLE, ClubDB, hidden_tier
+from services.club_db import ClubDB, hidden_tier, steroid_table
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
 from services import ui
@@ -252,7 +252,7 @@ class SteroidView(discord.ui.View):
     @discord.ui.button(label="주사하기", emoji="💉", style=discord.ButtonStyle.danger)
     async def inject(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
-        r = await self.cog.clubs.use_steroid(self.user.id, int(time.time()))
+        r = await self.cog.clubs.use_steroid(self.user.id, int(time.time()), v370=release.preview_370(interaction.guild_id))
         if not r["ok"]:
             msg = {"none": "주사기가 없어요.", "no_prospect": "현역 유망주가 없어요."}[r["reason"]]
             return await interaction.response.edit_message(
@@ -974,7 +974,7 @@ class Economy(commands.Cog):
                 "💉 주사할 유망주가 없어요",
                 "스테로이드는 **내 유망주**에게만 쓸 수 있어요.\n`/유망주`에서 나만의 선수를 만들어 보세요.",
                 ui.LOSE, user, "🎒 아이템"), ephemeral=True)
-        cells = [f"{self.STEROID_TEXT[k][0].split()[0]} {self.STEROID_TEXT[k][1]} **{w:.0%}**" for k, w in STEROID_TABLE.items()]
+        cells = [f"{self.STEROID_TEXT[k][0].split()[0]} {self.STEROID_TEXT[k][1]} **{w:.0%}**" for k, w in steroid_table(release.preview_370(interaction.guild_id)).items()]
         odds = " · ".join(cells[:3]) + "\n" + " · ".join(cells[3:])
         e = ui.card(f"💉 {p['name']} #{p['number']}에게 주사할까요?",
                     f"`OVR` **{p['ovr']}** · `잠재력` **{p['pot']}** ({p['pot_grade']}) · {p['age']}세\n\n"

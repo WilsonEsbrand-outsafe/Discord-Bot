@@ -278,7 +278,7 @@ class YouthDB(EconomyDB):
                     "matched": bool(w and w[0]), "registered": bool(w and w[1]), "heat": heat(now_ts),
                     "first": self._youth(con, uid, "first"),
                     "items": {k: int(con.execute("SELECT COALESCE(SUM(qty),0) FROM inventory WHERE user_id=? AND item=?",
-                                                 (uid, k)).fetchone()[0]) for k in ("scout_coupon", "special_training", "first_team")}}
+                                                 (uid, k)).fetchone()[0]) for k in ("scout_coupon", "special_training", "first_team", "youth_reroll")}}
         return await self._tx(fn)
 
     async def open_tryout(self, uid: int, now_ts: int, rng=random, coupon: bool = False, v311: bool = False) -> dict:
@@ -306,6 +306,30 @@ class YouthDB(EconomyDB):
                 a["free"] = free
             con.execute("INSERT INTO youth_daily(user_id, day_key, tryout, applicants) VALUES(?,?,0,?) "
                         "ON CONFLICT(user_id, day_key) DO UPDATE SET applicants=excluded.applicants", (uid, day, json.dumps(apps)))
+            return {"ok": True, "applicants": apps}
+        return await self._tx(fn)
+
+    async def reroll(self, uid: int, now_ts: int, rng=random, v311: bool = True) -> dict:
+        """3.7.0 🔄 유스 리롤권: 오늘 지원자를 새로 뽑는다 (테스트 전에만 · 인원 · 무료 여부는 그대로).
+        reason: done(오늘 테스트함) / none(아직 지원자를 안 봄) / item(리롤권 없음)."""
+        day = _kst_day(now_ts)
+
+        def fn(con):
+            d = con.execute("SELECT tryout, applicants FROM youth_daily WHERE user_id=? AND day_key=?", (uid, day)).fetchone()
+            if d and d[0]:
+                return {"ok": False, "reason": "done"}
+            if not d or not d[1]:
+                return {"ok": False, "reason": "none"}
+            old = json.loads(d[1])
+            if not self._take_item(con, uid, "youth_reroll"):
+                return {"ok": False, "reason": "item"}
+            lv = self._level(con, uid)
+            acc = scout_acc(self._scouter(con, uid)) if v311 else 0.7
+            free = bool(old and old[0].get("free"))
+            apps = [make_applicant(lv, rng, acc) for _ in range(len(old) or APPLICANTS[lv])]
+            for a in apps:
+                a["free"] = free
+            con.execute("UPDATE youth_daily SET applicants=? WHERE user_id=? AND day_key=?", (json.dumps(apps), uid, day))
             return {"ok": True, "applicants": apps}
         return await self._tx(fn)
 

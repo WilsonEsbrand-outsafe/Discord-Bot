@@ -257,6 +257,11 @@ class Fishing(commands.Cog):
         """3.5.0 공개 서버 — 희귀 · 영웅 · 전설 확률 상향."""
         return release.preview_350(getattr(getattr(user, "guild", None), "id", None))
 
+    @staticmethod
+    def _v370(user) -> bool:
+        """3.7.0 공개 서버 — 수족관 전시 중 신선도 멈춤."""
+        return release.preview_370(getattr(getattr(user, "guild", None), "id", None))
+
     def _new(self, c: dict) -> bool:
         """찌를 던진 채널의 서버가 3.1.0 공개 서버인가."""
         return release.preview_310(getattr(getattr(self.bot.get_channel(c["channel_id"]), "guild", None), "id", None))
@@ -712,11 +717,11 @@ class Fishing(commands.Cog):
         return e
 
     async def _show_fish(self, interaction, view: HubView, ids: list[int]):
-        r = await self.db.display(view.user.id, ids[0], True)
+        r = await self.db.display(view.user.id, ids[0], True, v370=self._v370(view.user))
         await view.refresh(interaction, None if r["ok"] else ui.card("🙅 전시할 수 없어요", "수족관이 가득 찼어요.", ui.LOSE, view.user, SECTION))
 
     async def _hide_fish(self, interaction, view: HubView, ids: list[int]):
-        await self.db.display(view.user.id, ids[0], False)
+        await self.db.display(view.user.id, ids[0], False, v370=self._v370(view.user))
         await view.refresh(interaction)
 
     async def _p_dex(self, view: HubView) -> discord.Embed:

@@ -264,6 +264,12 @@ class FishingDB(EconomyDB):
             con.execute("CREATE TABLE IF NOT EXISTS fish_auto (user_id INTEGER PRIMARY KEY, until INTEGER, next_ts INTEGER)")
             con.execute("CREATE TABLE IF NOT EXISTS fish_migrations (key TEXT PRIMARY KEY)")
             con.execute("CREATE TABLE IF NOT EXISTS fish_rod (user_id INTEGER, rod TEXT, dur INTEGER, PRIMARY KEY(user_id, rod))")
+            try:   # 3.7.0 수족관에 올린 시각 — 전시 중엔 신선도가 멈춘다
+                con.execute("ALTER TABLE fish_bag ADD COLUMN disp_ts INTEGER")
+            except sqlite3.OperationalError:
+                pass
+            if con.execute("INSERT OR IGNORE INTO fish_migrations VALUES('disp-ts-3.7.0')").rowcount:
+                con.execute("UPDATE fish_bag SET disp_ts=? WHERE displayed=1 AND disp_ts IS NULL", (int(time.time()),))
             if con.execute("INSERT OR IGNORE INTO fish_migrations VALUES('reset-trade-2.82b')").rowcount:
                 con.execute("UPDATE fish_trade SET used=0 WHERE day_key=?", (_kst_day(RESET_282B_TS),))
             con.commit()
@@ -720,14 +726,24 @@ class FishingDB(EconomyDB):
         return await self._tx(lambda con: {k: u for k, u in con.execute(
             "SELECT kind, until FROM fish_buffs WHERE user_id=? AND until>?", (uid, now_ts))})
 
-    async def display(self, uid: int, fish_id: int, on: bool) -> dict:
-        """수족관 전시 / 내리기. 전시 중인 물고기는 팔거나 먹일 수 없다. reason: none / full."""
+    async def display(self, uid: int, fish_id: int, on: bool, now_ts: Optional[int] = None, v370: bool = False) -> dict:
+        """수족관 전시 / 내리기. 전시 중인 물고기는 팔거나 먹일 수 없다. reason: none / full.
+        3.7.0 (v370): 전시한 날수만큼 잡은 시각을 뒤로 미뤄, 전시 중엔 신선도가 떨어지지 않게 한다."""
+        now_ts = int(time.time()) if now_ts is None else int(now_ts)
+
         def fn(con):
-            if not self._fish_rows(con, uid, [fish_id]):
+            rows = self._fish_rows(con, uid, [fish_id])
+            if not rows:
                 return {"ok": False, "reason": "none"}
             if on and con.execute("SELECT COUNT(*) FROM fish_bag WHERE user_id=? AND displayed=1", (uid,)).fetchone()[0] >= AQUARIUM_MAX:
                 return {"ok": False, "reason": "full"}
-            con.execute("UPDATE fish_bag SET displayed=? WHERE id=?", (int(on), fish_id))
+            if on and not rows[0]["displayed"]:
+                con.execute("UPDATE fish_bag SET displayed=1, disp_ts=? WHERE id=?", (now_ts, fish_id))
+            elif not on and rows[0]["displayed"]:
+                d = con.execute("SELECT disp_ts FROM fish_bag WHERE id=?", (fish_id,)).fetchone()[0]
+                days = max(0, _kst_day(now_ts) - _kst_day(int(d))) if v370 and d else 0
+                con.execute("UPDATE fish_bag SET displayed=0, disp_ts=NULL, caught_ts=caught_ts+? WHERE id=?",
+                            (days * 86400, fish_id))
             return {"ok": True}
         return await self._tx(fn)
 
