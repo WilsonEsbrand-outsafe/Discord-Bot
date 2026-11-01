@@ -288,7 +288,7 @@ def test_bot_clubs():
     con.commit()
     run(cog.run_once(now, allowed=lambda u: u == 51, rng=random.Random(7)))
     assert con.execute("SELECT COUNT(*) FROM bot_club_state").fetchone()[0] == len(bc.BOT_IDS)
-    assert con.execute("SELECT COUNT(*) FROM clubs WHERE user_id BETWEEN 101 AND 110").fetchone()[0] == 0    # 경기엔 안 나온다
+    assert con.execute("SELECT COUNT(*) FROM clubs WHERE user_id BETWEEN 101 AND 110").fetchone()[0] == 10   # 상대로 나올 구단
     assert con.execute("SELECT COUNT(*) FROM club_lineup WHERE user_id=101").fetchone()[0] == 11            # 선발 11명
     # 접속 시간은 감독마다 다르고, 접속 시간대 안에서만
     nxt = [con.execute("SELECT next_ts FROM bot_club_state WHERE bot_id=?", (b,)).fetchone()[0] for b in bc.BOT_IDS]
@@ -324,9 +324,11 @@ def test_bot_clubs():
     # 봇 매물은 3.7.0 서버에서만 · 봇은 랭킹에서 빠진다 · 공식경기 상대도 3.7.0 서버에서만
     assert not any(bc.is_bot(x[1]) for x in run(pm.get_listings("", limit=25)))
     assert not any(bc.is_bot(r[0]) for r in run(pm.get_ranking(50)))
+    assert not any(bc.is_bot(u) for u in run(cdb.ClubDB().official_opponents(51)))   # 공개 전 다른 서버엔 안 나온다
     tok = release.GUILD.set(T)
     try:
-        assert not any(bc.is_bot(u) for u in run(cdb.ClubDB().official_opponents(51)))
+        assert any(bc.is_bot(u) for u in run(cdb.ClubDB().official_opponents(51)))   # 3.7.0 서버: 공식경기 상대
+        assert not any(bc.is_bot(r["user_id"]) for r in run(cdb.ClubDB().official_table(now + 1)))
     finally:
         release.GUILD.reset(tok)
     con.close()
@@ -348,3 +350,34 @@ def test_official_daily_370():
         release.GUILD.reset(tok)
     t = run(db.official_today(61, now + 20))
     assert t["n"] == 15 and t["last"] > 0     # 3.7.0 서버: 하루 15판까지만 센다
+
+
+def test_prospect_gear():
+    async def flow():
+        now = int(time.time())
+        db, clubs = edb.EconomyDB(), cdb.ClubDB()
+        U = 3701
+        await db.add_balance(U, 100_000_000)
+        assert edb.shop_open("boots_pro", guild_id=T) and not edb.shop_open("boots_pro", guild_id=OTHER, now_ts=0)
+        info, _ = cdb.prospect_input("장비맨", "대한민국", "ST", 9, "1-1")
+        p = await clubs.create_prospect(U, info, now - 3 * cdb.PROSPECT_YEAR)
+        con = sqlite3.connect(TMP)
+        con.execute("UPDATE prospects SET ovr=70, pot=90 WHERE id=?", (p["id"],))
+        con.commit()
+        await db.give_item(U, "boots_basic", 1)
+        await db.give_item(U, "boots_gold", 1)
+        await db.give_item(U, "guard_carbon", 1)
+        await db.give_item(U, "wear_gps", 1)
+        assert (await clubs.use_prospect_item(U, "boots_basic", now))["ok"]
+        r = await clubs.use_prospect_item(U, "boots_gold", now)
+        assert r["ok"] and r["old"] == "boots_basic"                      # 쓰던 축구화는 가방으로
+        assert (await db.inventory(U))[0].get("boots_basic") == 1
+        assert (await clubs.use_prospect_item(U, "guard_carbon", now))["ok"]
+        assert (await clubs.use_prospect_item(U, "wear_gps", now))["ok"]
+        g = con.execute("SELECT gear FROM prospects WHERE id=?", (p["id"],)).fetchone()[0]
+        assert cdb.parse_gear(g) == {"boots": "boots_gold", "guard": "guard_carbon", "wear": "wear_gps"}
+        assert cdb.gear_effect(g, "ovr") == 3 and cdb.gear_effect(g, "injury") == 0.6 and cdb.gear_effect(g, "xp") == 1.3
+        squad = clubs._squad(con, U)
+        assert squad[p["pid"]]["ovr"] == 73                                # 경기 OVR +3
+        con.close()
+    run(flow())

@@ -91,6 +91,14 @@ ITEMS = {
     "elixir":      ("⏳", "회춘 주사",       "내 유망주 나이 -1살 (17세 밑으로는 안 내려가요)"),
     # ── 3.7.0 ──
     "youth_reroll": ("🔄", "유스 리롤권",     "오늘 유스 입단 테스트 지원자를 새로 뽑아요 (테스트 전에만 · /2군 화면에서)"),
+    # 3.7.0 🎽 유망주 장비 — 가방에서 [사용]하면 내 현역 유망주가 착용 (부위마다 하나 · 바꾸면 쓰던 건 가방으로)
+    "boots_basic": ("👟", "기본 축구화",      "유망주 장비 · 축구화 — 경기 OVR +1"),
+    "boots_pro":   ("👟", "프로 축구화",      "유망주 장비 · 축구화 — 경기 OVR +2"),
+    "boots_gold":  ("🥇", "황금 축구화",      "유망주 장비 · 축구화 — 경기 OVR +3"),
+    "guard_basic": ("🦵", "정강이 보호대",    "유망주 장비 · 보호대 — 부상 확률 -30%"),
+    "guard_carbon": ("🦿", "카본 보호대",     "유망주 장비 · 보호대 — 부상 확률 -60%"),
+    "wear_basic":  ("🎽", "기능성 트레이닝복", "유망주 장비 · 훈련복 — 경기 +경험치 ×1.15"),
+    "wear_gps":    ("📡", "GPS 조끼",         "유망주 장비 · 훈련복 — 경기 +경험치 ×1.3"),
     "pack_ticket": ("🎫", "얼티밋팩 교환권",  "/선수팩상점에서 얼티밋팩을 고르면 돈 대신 이 교환권을 먼저 써요 (1장 = 얼티밋팩 1장)"),
     "auto_reserve": ("🤖", "자동 2군 경기권", "12시간 동안 10분마다 2군 경기를 자동으로 (경험치 절반 · 유스 성장은 2판에 1번)"),
 }
@@ -118,6 +126,9 @@ ITEM_PRICES = {
     # 3.6.0 유망주
     "xp_boost": 2_000_000, "xp_book": 5_000_000, "rehab": 2_000_000, "mental": 1_000_000, "elixir": 30_000_000,
     "auto_reserve": 10_000_000,
+    # 3.7.0 유망주 장비
+    "boots_basic": 3_000_000, "boots_pro": 15_000_000, "boots_gold": 60_000_000,
+    "guard_basic": 5_000_000, "guard_carbon": 20_000_000, "wear_basic": 8_000_000, "wear_gps": 25_000_000,
 }
 # 아이템 상점 화면 묶음 (임베드 필드 하나 = 1024자 제한)
 SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
@@ -125,11 +136,13 @@ SHOP_GROUPS = (("🎒 기본", ("muffler", "steroid")),
                ("🏹 양궁", ("bow_pro", "windbreaker", "focus")),
                ("🎓 유스", ("first_team", "special_training", "scout_coupon", "youth_reroll")),
                ("⚔️ 전술", ("tactic_note", "analysis_report")),
-               ("🌟 유망주", ("enh_stone", "xp_boost", "xp_book", "rehab", "mental", "elixir", "auto_reserve")))
+               ("🌟 유망주", ("enh_stone", "xp_boost", "xp_book", "rehab", "mental", "elixir", "auto_reserve")),
+               ("🎽 유망주 장비", ("boots_basic", "boots_pro", "boots_gold", "guard_basic", "guard_carbon", "wear_basic", "wear_gps")))
 SHOP_310: set[str] = set()   # 3.1.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템 (⚖️ 변호사 선임권 · 🤖 자동 낚시는 상점에서 팔지 않는다)
 SHOP_340: set[str] = {"enh_stone"}   # 3.4.0 공개 서버(테스트 서버 먼저)에서만 사고파는 아이템
 SHOP_360: set[str] = {"xp_boost", "xp_book", "rehab", "mental", "elixir", "auto_reserve"}   # 3.6.0 유망주 아이템 (테스트 서버 먼저)
-SHOP_370: set[str] = {"youth_reroll"}   # 3.7.0 (테스트 서버 먼저)
+SHOP_370: set[str] = {"youth_reroll", "boots_basic", "boots_pro", "boots_gold", "guard_basic", "guard_carbon",
+                      "wear_basic", "wear_gps"}   # 3.7.0 (테스트 서버 먼저)
 SHOP_DAILY_LIMITS = {"youth_reroll": 3, "steroid": 3, "bow_pro": 3, "windbreaker": 3, "focus": 3, "elixir": 1, "auto_reserve": 2, "xp_book": 3}   # 하루(KST) 구매 한도가 있는 아이템 (3.6.1 훈련 교본 3권)
 # 2.81 무점검 패치: 머플러 · 스테로이드 말고는 이 시각부터 사고판다
 SHOP_281_TS = calendar.timegm((2026, 10, 19, 21, 0, 0))   # 2026-10-20 06:00 KST

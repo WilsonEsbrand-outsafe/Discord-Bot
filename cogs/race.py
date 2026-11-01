@@ -201,6 +201,7 @@ ROW_SEGS = ("500m", "1000m", "1500m", "라스트 스퍼트", "결승선 앞")
 ROW_SEC = 5.0             # 구간 하나 길이 (초) — 2.8: 3 → 4 · 2.82: 4 → 5
 ROW_TARGET = 3            # 구간당 이만큼 저으면 전속력 (그 이상은 같음) — 2.8: 6 → 4 · 2.82: 4 → 3
 ROW_NOISE = 0.5           # 구간마다 물살 운 (±)
+ROW_BOOST_370 = 0.02       # 3.7.0 (preview_370): 전속력이면 구간마다 이만큼 더 (1위 17% → 20%) — 규완님 "조정 난이도 미세 하향"
 ROW_LAZY = 0.9            # 하나도 안 저었을 때 속도 (전속력 = 1) — 2.8: 0.75 → 0.85 · 2.82: 0.85 → 0.9
 
 
@@ -209,12 +210,13 @@ def row_rules(guild_id) -> tuple[float, int, float]:
     return ROW_SEC, ROW_TARGET, ROW_LAZY
 
 
-def row_step(dist: list[float], me: int, taps: int, rng=random, target: int = ROW_TARGET, lazy: float = ROW_LAZY) -> float:
+def row_step(dist: list[float], me: int, taps: int, rng=random, target: int = ROW_TARGET, lazy: float = ROW_LAZY,
+             boost: float = 0.0) -> float:
     """한 구간 진행. 상대는 1 ± 물살, 나는 (최저 + (1 - 최저) × 젓기 비율) ± 물살 — 전속력이면 상대와 똑같은 분포.
     덜 저을수록 불리하지만 물살 운으로 뒤집을 여지는 남는다 (반은 운). 젓기 비율을 돌려준다."""
     e = min(1.0, taps / target)
     for i in range(len(dist)):
-        dist[i] += (lazy + (1 - lazy) * e if i == me else 1.0) + rng.uniform(-ROW_NOISE, ROW_NOISE)
+        dist[i] += (lazy + (1 - lazy) * e + boost * e if i == me else 1.0) + rng.uniform(-ROW_NOISE, ROW_NOISE)
     return e
 
 
@@ -328,6 +330,8 @@ F1_SIMS = 6000
 F1_SHAPE = (1.0, 0.4, 0.15)   # 3.1.0: 수익 구간 비율 (우승 · 포디움 · 포인트)
 F1_LOSS = (0, 0, 1, 1, 2)       # 3.1.0: 손실 구간 배수 (포인트 · 11위 이하 1배 · 리타이어 2배)
 F1_EDGE_310 = 0.92
+# 3.7.0 (release.preview_370 서버): 규완님 "F1 돈을 더 잘 벌 수 있게" — 기대값을 손익분기의 F1_EDGE_370 배로 · 오차 여유를 2σ → 0.5σ
+F1_EDGE_370, F1_SIGMA_370 = 1.2, 0.5   # 평균 기대값 약 -7% → +2% (5개 서킷 시뮬)
 F1_CAP_310 = 200.0
 F1_RETIRE_311 = 3   # 3.1.1: 예상 구간보다 한 칸 못하면 1배 · 두 칸 2배 손실 · 💥 리타이어 3배 손실 (예전엔 최대 1배 · 리타이어 2배)
 # 3.4.0: 포인트권에서 4위를 따로 떼어 4위는 언제나 본전 이상 (강팀이 4위를 해도 손실이 아니다). 나머지 구간 · 손실은 3.1.1 그대로,
@@ -539,7 +543,7 @@ def f1_ladder(counts: list[list[int]], deep: bool = False) -> list[tuple[float, 
     return res
 
 
-def f1_ladder6(counts6: list[list[int]]) -> list[tuple[float, ...]]:
+def f1_ladder6(counts6: list[list[int]], edge: float = F1_EDGE_310, sigma: float = 2.0) -> list[tuple[float, ...]]:
     """3.4.0 배당: 구간 6개 (우승, 포디움, 4위, 5~10위, 11위 이하, 리타이어). f1_ladder(deep) 와 같은데 4위만 손실이 없다.
     예상 구간 m 은 3.1.1 처럼 5구간(4~10위를 한 구간)으로 정하고, 기대값은 손해 쪽 (오차 ±2σ)."""
     res = []
@@ -558,10 +562,10 @@ def f1_ladder6(counts6: list[list[int]]) -> list[tuple[float, ...]]:
             o = tier[t]
             return 0 if o <= m or t == 2 else f1_loss(o, m, True)   # 4위(t=2)는 손실 없음
         up = sum(F1_SHAPE[tier[t]] * n[t] for t in range(5) if tier[t] < m)
-        up += 2 * math.sqrt(sum(F1_SHAPE[tier[t]] ** 2 * n[t] for t in range(5) if tier[t] < m) + 1)
+        up += sigma * math.sqrt(sum(F1_SHAPE[tier[t]] ** 2 * n[t] for t in range(5) if tier[t] < m) + 1)
         lose = [(loss(t), n[t]) for t in range(6) if loss(t)]
-        lost = max(0.0, sum(l * k for l, k in lose) - 2 * math.sqrt(sum(l * l * k for l, k in lose) + 1))
-        w = max(0.01, min(F1_CAP_310, F1_EDGE_310 * lost / up))
+        lost = max(0.0, sum(l * k for l, k in lose) - sigma * math.sqrt(sum(l * l * k for l, k in lose) + 1))
+        w = max(0.01, min(F1_CAP_310, edge * lost / up))
         res.append(tuple(max(0.01, math.floor(w * F1_SHAPE[tier[t]] * 100) / 100) if tier[t] < m else -loss(t)
                          for t in range(6)))
     return res
@@ -1053,7 +1057,8 @@ class Race(commands.Cog):
             rivals = iter(random.sample(ROWERS, ROW_N - 1))
             boats = [None if i == me else next(rivals) for i in range(ROW_N)]
             race = {"no": random.randint(1, 12), "me": me, "boats": boats, "prizes": race_prizes(ROW_N, interaction.guild_id),
-                    "rules": row_rules(interaction.guild_id)}
+                    "rules": row_rules(interaction.guild_id),
+                    "boost": ROW_BOOST_370 if release.preview_370(interaction.guild_id) else 0.0}
             lines = [f"`{i + 1}` 🚣 **{user.display_name}** 👈 · 내 보트" if b is None else
                      f"`{i + 1}` {b[0]} **{b[1]}** · {b[2]}kg · {random.choice(MOODS)}\n　 *{b[3]}*" for i, b in enumerate(boats)]
             e = ui.card(f"🚣 제{race['no']}경주 · 싱글 스컬 2000m",
@@ -1081,7 +1086,7 @@ class Race(commands.Cog):
             view.taps = 0
             await asyncio.sleep(seg_sec)
             taps = view.taps
-            e = row_step(dist, me, taps, random, target, lazy)
+            e = row_step(dist, me, taps, random, target, lazy, race.get("boost", 0.0))
             lead = max(range(ROW_N), key=lambda i: dist[i])
             rank = sorted(range(ROW_N), key=lambda i: -dist[i]).index(me) + 1
             last = k == len(ROW_SEGS) - 1
@@ -1144,14 +1149,18 @@ class Race(commands.Cog):
             snap = dict(f1_grid_snap(grid), wet=rain)
             soft = f1_ladder6(counts6)   # 3.4.0 서버 (4위는 언제나 본전 이상)
             png340 = f1_render(gp, "출발 그리드", snap, -1, None, soft)
+            rich = f1_ladder6(counts6, F1_EDGE_370, F1_SIGMA_370)   # 3.7.0 서버 (더 잘 번다)
+            png370 = f1_render(gp, "출발 그리드", snap, -1, None, rich)
+            if release.released_370():
+                return rich, png370, rich, png370, rich, png370, rich, png370, rich, png370
             if release.released_340():   # 3.4.0 공개 뒤엔 모든 서버가 이것만 쓴다
-                return soft, png340, soft, png340, soft, png340, soft, png340
+                return soft, png340, soft, png340, soft, png340, soft, png340, rich, png370
             deep = f1_ladder(counts, deep=True)   # 3.1.1 서버 (못할수록 손실 ↑) — 3.2.0 공개로 다른 모든 서버
             png311 = f1_render(gp, "출발 그리드", snap, -1, None, deep)
-            return deep, png311, deep, png311, deep, png311, soft, png340
-        odds, png, ladder, png310, deep, png311, soft, png340 = await asyncio.to_thread(work)
+            return deep, png311, deep, png311, deep, png311, soft, png340, rich, png370
+        odds, png, ladder, png310, deep, png311, soft, png340, rich, png370 = await asyncio.to_thread(work)
         return {"gp": gp, "rain": rain, "grid": grid, "odds": odds, "png": png, "odds310": ladder, "png310": png310,
-                "odds311": deep, "png311": png311, "odds340": soft, "png340": png340}
+                "odds311": deep, "png311": png311, "odds340": soft, "png340": png340, "odds370": rich, "png370": png370}
 
     def _refill(self):
         """준비된 경주가 F1_READY 개가 되게 뒤에서 채운다 (이미 채우는 중이면 그대로)."""
@@ -1190,7 +1199,9 @@ class Race(commands.Cog):
             race = self.f1_ready.pop(0) if self.f1_ready else await self._prepare_f1()   # 보통은 미리 만들어 둔 경주
             self._refill()
             gid = getattr(getattr(interaction, "guild", None), "id", None)
-            if release.preview_340(gid):   # 3.4.0: 손실 완화 (한 구간 못하면 0.5배)
+            if release.preview_370(gid) and "odds370" in race:   # 3.7.0: 더 잘 버는 배당
+                race = dict(race, odds=race["odds370"], png=race["png370"], new=True, deep=True, soft=True)
+            elif release.preview_340(gid):   # 3.4.0: 손실 완화 (한 구간 못하면 0.5배)
                 race = dict(race, odds=race["odds340"], png=race["png340"], new=True, deep=True, soft=True)
             elif release.preview_311(gid):   # 3.1.1: 못할수록 손실이 커진다
                 race = dict(race, odds=race["odds311"], png=race["png311"], new=True, deep=True)

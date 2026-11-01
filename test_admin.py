@@ -113,7 +113,7 @@ async def _flow():
     await menu._pick(boss)
     m = modals[-1]
     items = [label.component for p, label in m.fields if p.name == "아이템"]
-    assert len(items) == 2 and "lawyer" in {o.value for o in items[1].options}
+    assert len(items) == 3 and "lawyer" in {x.value for it in items for x in it.options} and len(m.fields) <= 5
     for p, label in m.fields:
         if p.type is discord.AppCommandOptionType.user:
             label.component._values = [target]

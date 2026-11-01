@@ -2,6 +2,7 @@
 # 키코가 하프라인부터 솔로 드리블: 수비수마다 [왼쪽] · [오른쪽] 중 하나. 제칠수록 성공 확률(65% → 35%)은 내려가고 배당은 오른다.
 # 언제든 [슛!]으로 지금 배당을 받고 끝낼 수 있고, 골키퍼까지 제치면 골 — 140배. 막히면 베팅금을 잃는다.
 # 베팅금은 시작할 때 먼저 빼고, 끝날 때 받는 돈(원금 포함)을 넣는다.
+import asyncio
 import random
 
 import discord
@@ -71,28 +72,48 @@ class DribbleView(discord.ui.View):
             return False
         return True
 
+    async def _suspense(self, interaction: discord.Interaction, line: str):
+        """3.7.0 돌파 시도 장면 — 결과 전에 잠깐 숨을 고른다 (버튼은 잠깐 숨긴다)."""
+        emoji, name, where = D.STAGES[self.passed]
+        e = ui.card(f"⚡ {where} — 돌파 시도!!", f'> 🎙️ *"{line}"*\n\n{field(self.passed)}\n\n'
+                    f"관중석 {D.heat(self.passed + 1)} 숨죽인 경기장…", ui.KIKO, self.user, SECTION)
+        await interaction.response.edit_message(embed=e, view=None)
+        await asyncio.sleep(D.SUSPENSE_SEC)
+
+    async def _show(self, interaction: discord.Interaction, embed, view, dramatic: bool):
+        if dramatic:
+            await interaction.edit_original_response(embed=embed, view=view)
+        else:
+            await interaction.response.edit_message(embed=embed, view=view)
+
     def _go(self, pick: int):
         async def cb(interaction: discord.Interaction):
             if self.done:
                 return await interaction.response.defer()
             emoji, name, _ = D.STAGES[self.passed]
+            dramatic = release.preview_370(getattr(interaction, "guild_id", None))   # 3.7.0 더 극적으로
+            if dramatic:
+                await self._suspense(interaction, random.choice(D.TRY_LINES).format(side=D.SIDES[pick], skill=random.choice(D.SKILLS)))
             if D.tackled(self.passed, random):   # 막는 쪽으로 들어갔다 — 태클
                 self.done = True
                 self.stop()
-                e = await self.cog.settle(self.user, self.amount, self.passed, tackled=True,
-                                          caster=f"{D.SIDES[pick]}으로 파고들었지만 {name}이(가) 그쪽을 읽었어요! 태클에 걸립니다!")
-                return await interaction.response.edit_message(embed=e, view=None)
+                caster = (random.choice(D.TACKLE_LINES).format(name=name) if dramatic else
+                          f"{D.SIDES[pick]}으로 파고들었지만 {name}이(가) 그쪽을 읽었어요! 태클에 걸립니다!")
+                e = await self.cog.settle(self.user, self.amount, self.passed, tackled=True, caster=caster)
+                return await self._show(interaction, e, None, dramatic)
             self.passed += 1
             if self.passed == len(D.STAGES):   # 골키퍼까지 제쳤다 — 골
                 self.done = True
                 self.stop()
                 e = await self.cog.settle(self.user, self.amount, self.passed,
-                                          caster="골키퍼까지 제쳤습니다!! 빈 골문에 밀어 넣습니다 — 골!!! 70m 솔로 골!!!")
-                return await interaction.response.edit_message(embed=e, view=None)
+                                          caster="골키퍼까지 제쳤습니다!! 빈 골문에 밀어 넣습니다 — 골!!! 70m 솔로 골!!!"
+                                          + (" 경기장이 무너질 것 같습니다!!! 🔥🔥🔥📣" if dramatic else ""))
+                return await self._show(interaction, e, None, dramatic)
             nxt = D.STAGES[self.passed]
-            caster = f"{D.SIDES[pick]}으로 치고 나갑니다! {name} 제쳤어요! 이번엔 {nxt[0]} {nxt[1]}!"
+            caster = (f"{random.choice(D.PASS_LINES).format(name=name)} 이번엔 {nxt[0]} {nxt[1]}! 관중석 {D.heat(self.passed)}"
+                      if dramatic else f"{D.SIDES[pick]}으로 치고 나갑니다! {name} 제쳤어요! 이번엔 {nxt[0]} {nxt[1]}!")
             self._draw()
-            await interaction.response.edit_message(embed=play_card(self.user, self.amount, self.passed, caster), view=self)
+            await self._show(interaction, play_card(self.user, self.amount, self.passed, caster), self, dramatic)
         return cb
 
     async def _shoot(self, interaction: discord.Interaction):
@@ -101,6 +122,13 @@ class DribbleView(discord.ui.View):
         self.done = True
         self.stop()
         where = D.STAGES[self.passed - 1][1]
+        if release.preview_370(getattr(interaction, "guild_id", None)):   # 3.7.0: 슛 — 숨 고르고 골
+            e = ui.card(f"🥅 {random.choice(D.SHOT_LINES)}", f'> 🎙️ *"{where}을(를) 제치고… {random.choice(D.SHOT_LINES)}"*\n\n'
+                        f"{field(self.passed)}\n\n공이 날아갑니다… 관중석 {D.heat(self.passed)}", ui.KIKO, self.user, SECTION)
+            await interaction.response.edit_message(embed=e, view=None)
+            await asyncio.sleep(D.SUSPENSE_SEC)
+            e = await self.cog.settle(self.user, self.amount, self.passed, caster=random.choice(D.SHOT_END))
+            return await interaction.edit_original_response(embed=e, view=None)
         e = await self.cog.settle(self.user, self.amount, self.passed,
                                   caster=f"{where}을(를) 제치고 바로 슈팅!! 골망을 흔듭니다!")
         await interaction.response.edit_message(embed=e, view=None)

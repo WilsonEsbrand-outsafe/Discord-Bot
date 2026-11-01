@@ -347,9 +347,9 @@ def kst_day(ts: int) -> int:
 # 3.6.0 (release.preview_360): 공식경기 주간 랭킹 — 내가 건 공식경기만, 하루(KST) WEEKLY_DAILY 판까지 승점(승 3 · 무 1)을 쌓는다.
 # 매주 월요일 00시(KST)에 지난주 순위대로 보상 (돈, 강화석). 같은 승점이면 득실차 → 다득점 → 먼저 도달.
 WEEKLY_DAILY = 30
-# 3.7.0 (release.preview_370 서버): 공식경기는 하루 15판까지만 (그 뒤엔 못 뛴다) · 스킵해도 판마다 2분 간격
+# 3.7.0 (release.preview_370 서버): 공식경기는 하루 15판까지만 (그 뒤엔 못 뛴다) · 스킵해도 판마다 30초 간격
 WEEKLY_DAILY_370 = 15
-OFFICIAL_GAP_370 = 120
+OFFICIAL_GAP_370 = 30
 
 
 def weekly_daily(v370: Optional[bool] = None) -> int:
@@ -574,8 +574,42 @@ _P_COLS = ("id", "user_id", "name", "nation", "position", "number", "birthday", 
            "aged", "peak_ovr", "peak_age", "apps", "goals", "assists", "day_key", "day_n", "created_ts",
            "retired_ts", "retire_reason", "retired_number",
            "confidence", "proneness", "pro", "injured_until", "injury", "injuries", "injury_games", "focus",
-           "enh", "traits")
+           "enh", "traits", "gear")
 _P_SELECT = f"SELECT {', '.join(_P_COLS)} FROM prospects"
+
+
+# 3.7.0 🎽 유망주 장비: 아이템 → (부위, 효과, 값). 부위마다 하나 · 은퇴하면 장비도 함께 은퇴한다.
+GEAR = {
+    "boots_basic": ("boots", "ovr", 1), "boots_pro": ("boots", "ovr", 2), "boots_gold": ("boots", "ovr", 3),
+    "guard_basic": ("guard", "injury", 0.30), "guard_carbon": ("guard", "injury", 0.60),
+    "wear_basic": ("wear", "xp", 1.15), "wear_gps": ("wear", "xp", 1.30),
+}
+GEAR_SLOTS = {"boots": "👟 축구화", "guard": "🦵 보호대", "wear": "🎽 훈련복"}
+
+
+def parse_gear(text: str) -> dict:
+    """'boots:boots_pro,guard:guard_basic' → {부위: 아이템} (모르는 건 뺀다)."""
+    out = {}
+    for part in (text or "").split(","):
+        slot, _, item = part.partition(":")
+        if item in GEAR and GEAR[item][0] == slot:
+            out[slot] = item
+    return out
+
+
+def gear_text(gear: dict) -> str:
+    return ",".join(f"{k}:{v}" for k, v in gear.items())
+
+
+def gear_effect(text: str, kind: str):
+    """장비 효과 합 — ovr: +OVR (정수) · injury: 부상 확률 줄이는 비율 · xp: +경험치 배율."""
+    vals = [GEAR[i][2] for i in parse_gear(text).values() if GEAR[i][1] == kind]
+    if kind == "xp":
+        m = 1.0
+        for v in vals:
+            m *= v
+        return m
+    return sum(vals) if vals else 0
 
 
 def _prospect(row, now_ts: int) -> dict:
@@ -675,7 +709,8 @@ class ClubDB:
                         "pro INTEGER NOT NULL DEFAULT 10", "injured_until INTEGER NOT NULL DEFAULT 0", "injury TEXT",
                         "injuries INTEGER NOT NULL DEFAULT 0", "injury_games INTEGER NOT NULL DEFAULT 0",
                         "focus TEXT NOT NULL DEFAULT ''",   # 3.1.0 특화 능력치
-                        "enh INTEGER NOT NULL DEFAULT 0", "traits TEXT NOT NULL DEFAULT ''"):   # 3.4.0 강화 · 특성
+                        "enh INTEGER NOT NULL DEFAULT 0", "traits TEXT NOT NULL DEFAULT ''",   # 3.4.0 강화 · 특성
+                        "gear TEXT NOT NULL DEFAULT ''"):   # 3.7.0 장비 (부위:아이템,…)
                 try:
                     con.execute(f"ALTER TABLE prospects ADD COLUMN {col}")
                 except sqlite3.OperationalError:
@@ -825,7 +860,7 @@ class ClubDB:
         p = ClubDB._active_prospect(con, user_id, int(time.time()))
         if p and not p["injured"] and not (v360 and in_reserve(p)):   # 3.6.0 강화 전 유망주는 2군
             squad[p["pid"]] = {"player_id": p["pid"], "name": p["name"], "pos": p["group"],
-                               "ovr": min(99, p["ovr"] + enh_ovr(p["enh"], p["traits"])),   # 3.4.0 강화 · 특성
+                               "ovr": min(99, p["ovr"] + enh_ovr(p["enh"], p["traits"]) + gear_effect(p.get("gear", ""), "ovr")),   # 3.4.0 강화 · 특성 · 3.7.0 장비
                                "nation": p["nation"], "number": p["number"], "prospect": True, "focus": p["focus"],
                                "conf_mult": 0.6 + p["confidence"] * 0.04}   # 자신감 10 → 1.0
         from services.youth import first_team_squad   # 1군 등록한 유스 (2.8 · 주인 구단 전용)
@@ -1255,12 +1290,13 @@ class ClubDB:
 
     async def official_opponents(self, user_id: int) -> list[int]:
         """선발이 있는 다른 유저 구단 목록 (공식경기 상대 후보)."""
-        from services.bot_clubs import is_bot   # 3.7.0 봇 구단은 이적시장 전용 — 경기 상대로 안 나온다
+        from services.bot_clubs import is_bot
+        bots = release.ctx_370() and not is_bot(user_id)   # 3.7.0 봇 구단은 공개된 서버에서 상대로만 나온다 (순위엔 안 나온다)
 
         def fn(con):
             return [r[0] for r in con.execute(
                 "SELECT DISTINCT c.user_id FROM clubs c JOIN club_lineup l ON l.user_id=c.user_id WHERE c.user_id<>?",
-                (int(user_id),)) if not is_bot(r[0])]
+                (int(user_id),)) if bots or not is_bot(r[0])]
         return await self._tx(fn)
 
     async def record_official(self, user_id: int, opp_id: int, gf: int, ga: int, now_ts: int,
@@ -1768,6 +1804,10 @@ class ClubDB:
                         if m != 1:
                             mult *= m
                             mods.append(f"같은 상대 오늘 {n}번째 ×{m:g}")
+                    gm = gear_effect(p.get("gear", ""), "xp")   # 3.7.0 🎽 훈련복
+                    if gm != 1 and delta > 0:
+                        mult *= gm
+                        mods.append(f"🎽 장비 ×{gm:g}")
                     if boost and delta > 0:
                         mult *= XP_BOOST_MULT
                         mods.append(f"📗 부스터 ×{XP_BOOST_MULT:g} (남은 {boost[0] - 1}경기)")
@@ -1794,6 +1834,7 @@ class ClubDB:
                                        - parts["rout"] - parts["card"] - parts["miss"]))
                     injury, pot = None, p["pot"]
                     medical = 1 - self._facility(con, owner[0], "medical") * FACILITIES["medical"][3] / 100
+                    medical *= 1 - gear_effect(p.get("gear", ""), "injury")   # 3.7.0 🦵 보호대
                     if rng.random() < (INJURY_BASE + p["proneness"] * INJURY_PER_PRONE) * medical:
                         injury = self._injure(con, owner[0], p, ovr, pot, rng)
                         ovr, pot = injury["ovr"], injury["pot"]
@@ -1876,7 +1917,19 @@ class ClubDB:
             if not p:
                 return {"ok": False, "reason": "no_prospect"}
             out = {"ok": True, "item": item, "name": p["name"], "number": p["number"]}
-            if item == "xp_boost":
+            if item in GEAR:   # 3.7.0 🎽 장비 착용 — 같은 부위에 쓰던 건 가방으로
+                gear = parse_gear(p.get("gear", ""))
+                slot = GEAR[item][0]
+                if gear.get(slot) == item:
+                    return {"ok": False, "reason": "useless", "why": "이미 그 장비를 착용하고 있어요."}
+                old = gear.get(slot)
+                if old:
+                    con.execute("INSERT INTO inventory(user_id, item, qty) VALUES(?, ?, 1) "
+                                "ON CONFLICT(user_id, item) DO UPDATE SET qty = qty + 1", (int(user_id), old))
+                gear[slot] = item
+                con.execute("UPDATE prospects SET gear=? WHERE id=?", (gear_text(gear), p["id"]))
+                out.update(slot=slot, old=old)
+            elif item == "xp_boost":
                 con.execute("INSERT INTO buffs(user_id, item, uses) VALUES(?, 'xp_boost', ?) "
                             "ON CONFLICT(user_id, item) DO UPDATE SET uses = uses + excluded.uses", (int(user_id), XP_BOOST_USES))
                 out["uses"] = con.execute("SELECT uses FROM buffs WHERE user_id=? AND item='xp_boost'",
