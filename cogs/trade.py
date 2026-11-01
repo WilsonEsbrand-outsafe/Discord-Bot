@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 import discord
+from services.bot_clubs import is_bot, bot_name
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -384,7 +385,8 @@ class Trade(commands.Cog):
             if int(p_cash) > 0: prop_parts.append(f"{int(p_cash):,}원")
             if int(r_cash) > 0: recv_parts.append(f"{int(r_cash):,}원")
             lines.append(
-                f"`#{trade_id}` {role} | 만료 **{h_left}h**\n"
+                f"`#{trade_id}` {role} | 만료 **{h_left}h**"
+                + (f" | 🤖 {bot_name(proposer_id)} 제안" if is_bot(proposer_id) else "") + "\n"
                 f"　📤 {', '.join(prop_parts) or '없음'} → 📥 {', '.join(recv_parts) or '없음'}"
             )
 

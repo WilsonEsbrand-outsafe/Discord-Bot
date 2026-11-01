@@ -16,6 +16,7 @@ from services.economy_db import (
     BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
 from services.club_db import ClubDB, hidden_tier, steroid_table
+from services import agent
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
 from services import ui
@@ -237,6 +238,34 @@ class LawyerView(discord.ui.View):
             + ("빚이 있으면 기다리지 않고 파산 신청을 **한 번 더** 할 수 있어요." if release.preview_311(_gid(self.user)) else
                "파산 탕감 **0%**가 나오면 다시 변론해 줘요.")
             + f" (선임된 변호사 **{r['uses']}명**)", ui.GOLD, self.user, "🎒 아이템"))
+
+
+class AgentView(discord.ui.View):
+    """3.7.0 🕴️ 에이전트 리포트 — 제안 3곳 중 하나로 보내기 (본인만)."""
+
+    def __init__(self, cog: "Economy", user, rep: dict):
+        super().__init__(timeout=600)
+        self.cog, self.user = cog, user
+        for i, o in enumerate(rep["offers"]):
+            b = discord.ui.Button(label=f"{o['club']} ({o['prob']:.0%})"[:80], emoji=("🏠", "🏟️", "🏰")[i],
+                                  style=(discord.ButtonStyle.secondary, discord.ButtonStyle.primary, discord.ButtonStyle.danger)[i])
+            b.callback = self._send(i)
+            self.add_item(b)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("🙅 리포트를 받은 사람만 누를 수 있어요.", ephemeral=True)
+            return False
+        return True
+
+    def _send(self, idx: int):
+        async def cb(interaction: discord.Interaction):
+            self.stop()
+            for c in self.children:
+                c.disabled = True
+            await interaction.response.edit_message(view=self)
+            await self.cog._agent_send(interaction, self.user, idx)
+        return cb
 
 
 class SteroidView(discord.ui.View):
@@ -709,15 +738,16 @@ class Economy(commands.Cog):
         return cls.SCOUT_LEVEL_NAMES[min(int(level), SCOUT_MAX_LEVEL) - 1]
 
     SCOUT_WIN_360 = 1.5   # 3.6.0 (release.preview_360 서버): 스카우트 성공 기본 보상 1.5배
-    # 3.7.0 (release.preview_370 서버): 훈련 · 직관보다 효율이 낮아 크게 올림 — 성공 보상 3배(원래 기준) ·
-    # 선수 발굴 확률 2배 · 성공하면 가끔 유스 아이템을 같이 얻는다
-    SCOUT_WIN_370 = 3.0
-    SCOUT_FIND_MULT_370 = 2.0
+    # 3.7.0 (release.preview_370 서버): /스카우트 = 🕴️ 선수 에이전트 (services/agent.py) — 성사되면 가끔 유스 아이템도
     SCOUT_ITEM_PROB_370 = 0.05
     SCOUT_ITEMS_370 = {"scout_coupon": 45, "special_training": 45, "youth_reroll": 10}
 
     def _scout_roll(self, level: int, con, user_id: int, v360: bool = False, v370: bool = False):
-        """(돈 변동, 경험치 변동, 표시 정보). 성공하면 레벨별 확률로 선수 카드를 같은 트랜잭션에서 지급한다."""
+        """(돈 변동, 경험치 변동, 표시 정보). 성공하면 레벨별 확률로 선수 카드를 같은 트랜잭션에서 지급한다.
+        3.7.0 (v370): 선수 에이전트 — 스킵권처럼 고를 수 없을 때는 기대값이 가장 큰 제안으로 자동으로 보낸다."""
+        if v370:
+            rep = agent.make_report(level)
+            return self._agent_settle(level, con, user_id, rep, agent.best_auto(rep))
         ev = random.choice(self.SCOUT_EVENTS)
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
         mult = self.scout_money_mult(level)
@@ -726,19 +756,91 @@ class Economy(commands.Cog):
             return base * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "found": None,
                                      "base": base, "mult": mult}
         found = None
-        if random.random() < SCOUT_FIND_PROB[min(level, SCOUT_MAX_LEVEL) - 1] * (self.SCOUT_FIND_MULT_370 if v370 else 1):
+        if random.random() < SCOUT_FIND_PROB[min(level, SCOUT_MAX_LEVEL) - 1]:
             found = scout_find_player(con, level)
             if found:
                 give_player(con, user_id, found["player_id"])
         base = random.randint(*ev["win"])
-        if v360 or v370:
-            base = round(base * (self.SCOUT_WIN_370 if v370 else self.SCOUT_WIN_360), -2)
+        if v360:
+            base = round(base * self.SCOUT_WIN_360, -2)
+        return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "found": found,
+                                "base": base, "mult": mult}
+
+    # ───────────── 3.7.0 🕴️ 선수 에이전트 (release.preview_370 서버의 /스카우트) ─────────────
+    def _agent_settle(self, level: int, con, user_id: int, rep: dict, idx: int):
+        """리포트의 제안 idx 로 보낸다 → (돈, 경험치, 표시 정보). 성공 +3 · 실패 -1 경험치 (예전 스카우트와 같다)."""
+        mult = self.scout_money_mult(level)
+        res = agent.resolve(rep, idx, mult)
         item = None
-        if v370 and random.random() < self.SCOUT_ITEM_PROB_370:   # 3.7.0 현지에서 유스 아이템도 챙겨 온다
+        if res["ok"] and random.random() < self.SCOUT_ITEM_PROB_370:   # 가끔 유스 아이템도 챙겨 온다
             item = random.choices(list(self.SCOUT_ITEMS_370), weights=list(self.SCOUT_ITEMS_370.values()))[0]
             give_item(con, user_id, item)
-        return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "found": found,
-                                "base": base, "mult": mult, "item": item}
+        return res["fee"], 3 if res["ok"] else -1, {"ok": res["ok"], "agent": True, "report": rep, "offer": res["offer"],
+                                                    "found": None, "item": item, "base": res["offer"]["fee"], "mult": mult,
+                                                    "line": rep["line"]}
+
+    def _agent_roll(self, level: int, con, user_id: int, idx: int):
+        rep = agent.take(con, user_id)
+        if rep is None:   # 이미 보낸 리포트 (버튼 두 번) — 새로 뽑아 자동으로
+            rep = agent.make_report(level)
+            idx = agent.best_auto(rep)
+        return self._agent_settle(level, con, user_id, rep, idx)
+
+    def _agent_embed(self, user, rep: dict, level: int) -> discord.Embed:
+        mult = self.scout_money_mult(level)
+        stars = "★" * rep["stars"] + "☆" * (5 - rep["stars"])
+        lines = [f"**{rep['name']}** · {rep['nation']} · {rep['pos']} · {rep['age']}세",
+                 f"`OVR` **{rep['ovr']}** · `잠재력` {stars}", f"> 🎙️ *\"{rep['line']}\"*", "", "**📨 구단 제안**"]
+        for i, o in enumerate(rep["offers"]):
+            lines.append(f"{('🏠', '🏟️', '🏰')[i]} **{o['club']}** — 수수료 **{int(o['fee'] * mult):,}원** · 성사 {o['prob']:.0%}")
+        e = ui.card("🕴️ 에이전트 리포트 — 어디로 보낼까요?", "\n".join(lines), ui.INFO, user, "🕴️ 선수 에이전트")
+        e.set_footer(text=f"수수료는 {self.scout_tier(level)} Lv.{level} 배율 ×{mult} 적용 · 실패하면 0원 · 보내면 스카우트 1회")
+        return e
+
+    async def _agent_scout(self, interaction: discord.Interaction):
+        user, now_ts = interaction.user, int(time.time())
+
+        def fn(con):
+            lv = con.execute("SELECT level FROM scouting WHERE user_id=?", (user.id,)).fetchone()
+            lv = int(lv[0]) if lv else 1
+            rep = agent.pending(con, user.id)
+            if rep is None:
+                rep = agent.make_report(lv)
+                agent.save(con, user.id, rep, now_ts)
+            return lv, rep
+        lv, rep = await self.db._tx(fn)
+        await interaction.followup.send(embed=self._agent_embed(user, rep, lv), view=AgentView(self, user, rep))
+
+    async def _agent_send(self, interaction: discord.Interaction, user, idx: int):
+        now_ts = int(time.time())
+        r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._agent_roll(lv, con, user.id, idx),
+                                     cooldown_sec=self.SCOUT_COOLDOWN)
+        if not r["ok"]:
+            return await self._grind_blocked(
+                interaction, r, now_ts, self._scout_card, self._scout_status(r),
+                ("🧳 오늘 출장 끝", "오늘 에이전트 업무는 여기까지! 리포트는 내일까지 그대로 둘게요."),
+                ("✈️ 협상 준비 중", "다음 구단과 통화하려면 조금만 기다려 주세요! 리포트는 그대로예요."),
+                ("✅ 협상 준비 완료", "지금 바로 다시 보낼 수 있어요. `/스카우트`로 리포트를 열어 주세요."),
+            )
+        info = r["info"]
+        rep, o = info["report"], info["offer"]
+        if r["leveled"]:
+            title, color = f"🆙 레벨 업! Lv.{r['level'] - r['leveled']} → Lv.{r['level']}", ui.GOLD
+        elif info["ok"]:
+            title, color = f"🤝 계약 성사! {rep['name']} → {o['club']}", ui.WIN
+        else:
+            title, color = f"📵 {o['club']}이(가) 거절했어요…", ui.LOSE
+        body = (f"**{rep['name']}** ({'★' * rep['stars']}) 을(를) **{o['club']}** 에 보냈어요.\n"
+                + (f"수수료 **+{r['delta']:,}원**" if info["ok"] else "이번엔 수수료가 없어요.")
+                + (f" · 🚀 신인 부스트" if r.get("boost") else ""))
+        if info.get("item"):
+            emoji, name, _ = ITEMS[info["item"]]
+            body += f"\n🎁 구단이 고맙다며 **{emoji} {name}**을(를) 줬어요! (가방에 1개)"
+        e = ui.card(title, body + f"\n\n`잔액` **{r['new_bal']:,}원**\n" + self._scout_status(r, 3 if info["ok"] else -1),
+                    color, user, "🕴️ 선수 에이전트")
+        if r["used"] >= r["limit"]:
+            e.description += "\n\n🔓 오늘 스카우트 완료! 이제 `/훈련`을 할 수 있어요."
+        await interaction.followup.send(embed=e)
 
     def _scout_status(self, r: dict, xp_gain: int | None = None) -> str:
         lv = r["level"]
@@ -751,6 +853,8 @@ class Economy(commands.Cog):
     @app_commands.command(name="스카우트", description="세계를 돌며 선수를 찾아요 — 돈을 벌고, 드물게 실제 선수를 영입!")
     async def scout(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if release.preview_370(getattr(interaction, "guild_id", None)):   # 3.7.0 선수 에이전트
+            return await self._agent_scout(interaction)
         user = interaction.user
         now_ts = int(time.time())
         try:
@@ -787,9 +891,6 @@ class Economy(commands.Cog):
                 f"{found['nation']} · {found['pos']} · OVR **{found['ovr']}** · 잠재 {found['pot_grade']} · "
                 f"시세 **{found['price']:,}원**"
             )
-        if info.get("item"):   # 3.7.0
-            emoji, name, _ = ITEMS[info["item"]]
-            e.description += f"\n\n🎁 현지에서 **{emoji} {name}**도 챙겨 왔어요! (가방에 1개)"
         e.description += (
             "\n\n" + self._settle_line(r["delta"], info, r.get("boost")) + "\n"
             f"`잔액` **{r['new_bal']:,}원**\n"

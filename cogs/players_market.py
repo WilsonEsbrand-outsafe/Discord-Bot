@@ -5,6 +5,7 @@ import io
 import time
 import asyncio
 import discord
+from services.bot_clubs import is_bot, bot_name
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -1178,6 +1179,7 @@ class PlayersMarket(commands.Cog):
             lines.append(
                 f"`#{lid}` **{name}** | {pos} OVR **{ovr}** / {potg}등급\n"
                 f"　{nation} · {age}세 | **{int(price_per):,}원** × {qty}장 | 만료 {h}h"
+                + (f" | 🤖 {bot_name(seller_id)}" if is_bot(seller_id) else "")   # 3.7.0 봇 구단 매물
             )
 
         header = f"총 **{total}건** 매물 | 페이지 {페이지}/{total_pages}\n\n"

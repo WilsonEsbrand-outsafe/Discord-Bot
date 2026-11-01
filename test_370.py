@@ -125,27 +125,171 @@ def test_patch_thread():
     assert PATCH_THREADS[1408836309971243251] == 1566465295202123836
 
 
-def test_scout_buff_370():
+def test_agent():
+    from services import agent
+    rng = random.Random(370)
+    r = agent.make_report(1, rng)
+    assert len(r["offers"]) == 3 and 1 <= r["stars"] <= 5
+    fees = [o["fee"] for o in r["offers"]]
+    probs = [o["prob"] for o in r["offers"]]
+    assert fees == sorted(fees) and probs == sorted(probs, reverse=True)   # 큰 구단일수록 크고 어렵다
+    assert agent.resolve(r, 2, 3, random.Random(1))["fee"] in (0, r["offers"][2]["fee"] * 3)
+    ev1 = agent.expected_per_play(1, 3000)
+    assert 30_000 < ev1 < 80_000   # 예전 스카우트(1.5배) 한 판 약 2.2만원보다 크게
+    con = sqlite3.connect(TMP)
+    assert agent.pending(con, 5) is None
+    agent.save(con, 5, r, 0)
+    assert agent.pending(con, 5) == r and agent.take(con, 5) == r and agent.take(con, 5) is None
+    con.close()
+
+
+def test_agent_settle():
     from cogs.economy import Economy as E
-    import cogs.economy as ce
-    random.seed(370)
+    from services import agent
     con = sqlite3.connect(TMP)
     con.execute("CREATE TABLE IF NOT EXISTS inventory (user_id INTEGER, item TEXT, qty INTEGER, PRIMARY KEY(user_id, item))")
+    eco = E.__new__(E)
+    rep = agent.make_report(2, random.Random(3))
+    agent.save(con, 9, rep, 0)
+    d, xp, info = eco._agent_roll(2, con, 9, 0)
+    assert info["agent"] and info["report"] == rep and xp in (3, -1)
+    assert d == (int(rep["offers"][0]["fee"] * 2) if info["ok"] else 0)
+    assert agent.pending(con, 9) is None
+    d, xp, info = eco._scout_roll(1, con, 9, True, True)   # 스킵권: 자동으로 보낸다
+    assert info["agent"] and info["found"] is None
+    con.close()
 
-    class Me:
-        SCOUT_EVENTS = [dict(E.SCOUT_EVENTS[0], success_rate=1.0)]
-        TRAIN_RATE_CAP, TRAIN_RATE_PER_LV = 1.0, 0
-        SCOUT_WIN_360, SCOUT_WIN_370, SCOUT_FIND_MULT_370 = E.SCOUT_WIN_360, E.SCOUT_WIN_370, E.SCOUT_FIND_MULT_370
-        SCOUT_ITEM_PROB_370, SCOUT_ITEMS_370 = 1.0, E.SCOUT_ITEMS_370
-        scout_money_mult = staticmethod(E.scout_money_mult)
-    old = ce.SCOUT_FIND_PROB
-    ce.SCOUT_FIND_PROB = (0,) * 5
+
+def _pm():
+    pm = pmdb.PlayerMarketDB()
+    now = int(time.time())
+    run(pm.ensure_active_pool(now, target=300))
+    return pm, now
+
+
+def _holders(pid):
+    con = sqlite3.connect(TMP)
+    r = con.execute("SELECT COALESCE(SUM(qty),0) FROM pm_holdings WHERE player_id=? AND qty>0", (pid,)).fetchone()[0]
+    con.close()
+    return int(r)
+
+
+def test_unique_pack_and_market():
+    pm, now = _pm()
+    eco = edb.EconomyDB()
+    tok = release.GUILD.set(T)
     try:
-        lo, hi = E.SCOUT_EVENTS[0]["win"]
-        for _ in range(30):
-            d, _, info = E._scout_roll(Me, 1, con, 77, v360=True, v370=True)
-            assert lo * 3 - 100 <= d <= hi * 3 + 100 and info["item"] in E.SCOUT_ITEMS_370
-        assert sum(q for (q,) in con.execute("SELECT qty FROM inventory WHERE user_id=77")) == 30
-    finally:
-        ce.SCOUT_FIND_PROB = old
+        con = sqlite3.connect(TMP)
+        pack = {"price": 10_000_000, "min_price": 0, "max_price": None}
+        st, drawn = pmdb._draw_from_pool(con, pack, 10_000_000, 30, unique=True)
+        ids = [r[0][0] for r in drawn]
+        assert st == "OK" and len(set(ids)) == len(ids)          # 한 팩 안 중복 없음
+        pid = ids[0]
+        con.execute("INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(31, ?, 1)", (pid,))
+        con.commit()
+        st, drawn = pmdb._draw_from_pool(con, pack, 10_000_000, 30, unique=True)
+        assert pid not in [r[0][0] for r in drawn]               # 누가 가진 선수는 안 나온다
         con.close()
+        run(eco.add_balance(32, 10**12))
+        pm._is_market_open = lambda ts: True
+        ok, msg = run(pm.buy_from_market(user_id=32, player_id=pid, qty=1, now_ts=now,
+                                         get_balance=eco.get_balance, add_balance=eco.add_balance))
+        assert not ok and "주인" in msg
+        ok, msg = run(pm.buy_from_market(user_id=32, player_id=ids[1], qty=2, now_ts=now,
+                                         get_balance=eco.get_balance, add_balance=eco.add_balance))
+        assert not ok
+        ok, msg = run(pm.buy_from_market(user_id=32, player_id=ids[1], qty=1, now_ts=now,
+                                         get_balance=eco.get_balance, add_balance=eco.add_balance))
+        assert ok and _holders(ids[1]) == 1
+    finally:
+        release.GUILD.reset(tok)
+    # 다른 서버(공개 전): 예전처럼 중복 가능
+    ok, _ = run(pm.buy_from_market(user_id=33, player_id=pid, qty=1, now_ts=now,
+                                   get_balance=eco.get_balance, add_balance=eco.add_balance))
+    run(eco.add_balance(33, 10**12))
+    ok, _ = run(pm.buy_from_market(user_id=33, player_id=pid, qty=1, now_ts=now,
+                                   get_balance=eco.get_balance, add_balance=eco.add_balance))
+    assert ok and _holders(pid) == 2
+
+
+def test_hold_cap():
+    pm, now = _pm()
+    eco = edb.EconomyDB()
+    con = sqlite3.connect(TMP)
+    free = [r[0] for r in con.execute(
+        f"SELECT player_id FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' "
+        f"AND player_id NOT IN ({pmdb._OWNED_SQL}) LIMIT ?", (pmdb.HOLD_CAP_370 + 1,))]
+    for p in free[:-1]:
+        con.execute("INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(34, ?, 1)", (p,))
+    con.commit()
+    con.close()
+    run(eco.add_balance(34, 10**12))
+    pm._is_market_open = lambda ts: True
+    tok = release.GUILD.set(T)
+    try:
+        ok, msg = run(pm.buy_from_market(user_id=34, player_id=free[-1], qty=1, now_ts=now,
+                                         get_balance=eco.get_balance, add_balance=eco.add_balance))
+        assert not ok and "최대" in msg
+        ok, msg, _ = run(pm.buy_pack(user_id=34, pack_type="브론즈", pulls=1, now_ts=now,
+                                     get_balance=eco.get_balance, add_balance=eco.add_balance))
+        assert not ok and "최대" in msg
+    finally:
+        release.GUILD.reset(tok)
+
+
+def test_dedupe():
+    pm, now = _pm()
+    con = sqlite3.connect(TMP)
+    pid = con.execute(f"SELECT player_id FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' "
+                      f"AND player_id NOT IN ({pmdb._OWNED_SQL}) LIMIT 1").fetchone()[0]
+    price = con.execute("SELECT price FROM pm_market WHERE player_id=?", (pid,)).fetchone()[0]
+    con.execute("INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(41, ?, 2)", (pid,))   # 먼저 산 사람 2장
+    con.execute("INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(42, ?, 1)", (pid,))   # 선발 명단
+    con.execute("CREATE TABLE IF NOT EXISTS club_lineup (user_id INTEGER, slot INTEGER, player_id TEXT)")
+    con.execute("INSERT INTO club_lineup(user_id, slot, player_id) VALUES(42, 1, ?)", (pid,))
+    for u in (41, 42):
+        con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (u,))
+    con.commit()
+    b41 = con.execute("SELECT balance FROM wallets WHERE user_id=41").fetchone()[0]
+    out = run(pm.dedupe_owners_370(now, force=True))
+    q = dict(con.execute("SELECT user_id, qty FROM pm_holdings WHERE player_id=?", (pid,)).fetchall())
+    assert q[42] == 1 and q[41] == 0                      # 명단에 올린 사람이 갖는다
+    assert con.execute("SELECT balance FROM wallets WHERE user_id=41").fetchone()[0] == b41 + 2 * price
+    assert any(u == 41 and n == 2 for u, _nm, n, _a in out)
+    assert run(pm.dedupe_owners_370(now)) == []           # 한 번만
+    con.close()
+
+
+def test_bot_clubs():
+    from services import bot_clubs as bc
+    from cogs.bot_clubs import BotClubs
+    pm, now = _pm()
+    eco = edb.EconomyDB()
+    cog = BotClubs.__new__(BotClubs)
+    cog.pm, cog.money, cog.rng, cog.bot = pm, eco, random.Random(7), None
+    con = sqlite3.connect(TMP)
+    # 유저 매물 하나 (봇이 살 만한 값) + 유저 보유 선수 하나
+    pid = con.execute(f"SELECT player_id FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' "
+                      f"AND player_id NOT IN ({pmdb._OWNED_SQL}) ORDER BY base_value LIMIT 1").fetchone()[0]
+    con.execute("INSERT INTO pm_holdings(user_id, player_id, qty) VALUES(51, ?, 1)", (pid,))
+    con.commit()
+    bc.ACT_PROB, bc.OFFER_PROB = 1.0, 1.0
+    try:
+        r = run(cog.run_once(now, allowed=lambda u: u == 51, rng=random.Random(7), notify=False))
+    finally:
+        bc.ACT_PROB, bc.OFFER_PROB = 0.35, 0.12
+    n_bots = con.execute("SELECT COUNT(*) FROM bot_club_state").fetchone()[0]
+    assert n_bots == len(bc.BOT_IDS)
+    assert con.execute("SELECT balance FROM wallets WHERE user_id=101").fetchone()[0] > 0
+    assert r["list"] > 0
+    offers = con.execute("SELECT proposer_id, receiver_id FROM pm_trades WHERE status='pending' AND proposer_id BETWEEN 101 AND 110").fetchall()
+    assert r["offer"] == len(offers) and all(rv == 51 for _p, rv in offers) and len(offers) == 1   # 하루 한 번
+    # 봇 매물은 3.7.0 서버에서만 보인다
+    assert not any(bc.is_bot(x[1]) for x in run(pm.get_listings("", limit=25)))
+    tok = release.GUILD.set(T)
+    try:
+        assert any(bc.is_bot(x[1]) for x in run(pm.get_listings("", limit=25)))
+    finally:
+        release.GUILD.reset(tok)
+    assert not any(bc.is_bot(r[0]) for r in run(pm.get_ranking(50)))
+    con.close()

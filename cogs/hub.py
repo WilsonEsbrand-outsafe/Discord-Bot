@@ -1050,8 +1050,10 @@ class Hubs(commands.Cog):
 
     async def _p_listings(self, view: HubView) -> discord.Embed:
         rows = await self.pm.get_listings("", limit=10, offset=0)
+        from services.bot_clubs import is_bot, bot_name
         lines = [f"`#{lid}` **{name}** · {pos} OVR **{ovr}** · **{int(price):,}원** × {qty}장"
-                 for lid, _, _, qty, price, _, _, _, name, _, pos, _, ovr, *_ in rows]
+                 + (f" · 🤖 {bot_name(seller)}" if is_bot(seller) else "")
+                 for lid, seller, _, qty, price, _, _, _, name, _, pos, _, ovr, *_ in rows]
         return ui.card("🏟️ 이적시장 · 최신 매물", "\n".join(lines) or "현재 등록된 매물이 없습니다.", ui.INFO, view.user, "📈 시장")
 
     async def _p_packs(self, view: HubView) -> discord.Embed:
