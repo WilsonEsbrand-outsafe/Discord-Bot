@@ -96,3 +96,15 @@ def test_buy():
     con.execute("UPDATE wallets SET balance=10000000000 WHERE user_id=7")
     gems.buy(con, 7, "rough", 0, 0)
     assert gems.bag(con, 7)["rough"] == gems.cap("rough") and gems.buy(con, 7, "rough", 1, 0)["reason"] == "full"
+
+
+def test_dribble_no_cap_372():
+    from services import dribble as D
+    big = 10 ** 15
+    assert D.payout(big, 7) == big + D.MAX_PAYOUT                  # 다른 서버: 50억 제한 그대로
+    tok = release.GUILD.set(release.TEST_GUILD)
+    try:
+        assert D.payout(big, 7) == big * 140 and D.payout(big, 1) == big * 145 // 100
+        assert D.payout(10 ** 18 + 7, 2) == (10 ** 18 + 7) * 240 // 100   # 큰 금액도 정확히
+    finally:
+        release.GUILD.reset(tok)

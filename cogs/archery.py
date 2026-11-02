@@ -6,6 +6,7 @@ import asyncio
 import io
 import math
 import random
+from fractions import Fraction
 import time
 
 import discord
@@ -313,7 +314,10 @@ class Archery(commands.Cog):
 
         total, xs = sum(s for s, _ in results), sum(x for _, x in results)
         mult = A.payout(total, xs)
-        delta = min(int(amount * mult), A.MAX_PAYOUT)
+        if release.preview_372(interaction.guild_id):   # 3.7.2 규완님: 한 판 50억 제한 없앰 (큰 금액도 정확히)
+            delta = int(amount * Fraction(mult).limit_denominator(1000))
+        else:
+            delta = min(int(amount * mult), A.MAX_PAYOUT)
         new_bal = await self.db.add_balance(user.id, amount + delta)
         place_emoji = "🏆" if mult >= 1.5 else ("🎯" if mult > 0 else ("😐" if mult == 0 else "💨"))
         head = ("X 보너스 대박!!" if xs >= 3 else "고득점!" if mult > 0 else "본전" if mult == 0 else "아쉬워요…")
