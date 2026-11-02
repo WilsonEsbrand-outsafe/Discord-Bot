@@ -27,6 +27,8 @@ jobs:
             sudo journalctl -u discord-bot --since "${{ github.event.inputs.minutes }} min ago" --no-pager | tail -n 200
             echo "── 토토 자동 정산 로그 ──"
             sudo journalctl -u discord-bot --since "${{ github.event.inputs.minutes }} min ago" --no-pager | grep -E "AUTO-SETTLE|IMPORT" | tail -n 60
+            echo "── 렉 로그 ──"
+            sudo journalctl -u discord-bot --since "${{ github.event.inputs.minutes }} min ago" --no-pager | grep -F "[렉]" | tail -n 60
             echo "── 배당 API · UFC 로그 ──"
             sudo journalctl -u discord-bot --since "${{ github.event.inputs.minutes }} min ago" --no-pager | grep -E "\[ODDS\]|\[UFC\]|\[SPORTS\]" | tail -n 40
             python3 - <<'PY'
