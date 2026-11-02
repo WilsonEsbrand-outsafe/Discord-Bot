@@ -201,6 +201,9 @@ COUPONS_340 = {"UPGRADEBOT"}    # 3.4.0 공개(점검 시작) 뒤에만
 COUPONS["YOUTHTOKIKO"] = ({"xp_boost": 1}, calendar.timegm((2026, 11, 7, 15, 0, 0)))
 COUPONS_360 = {"YOUTHTOKIKO"}   # 3.6.0 공개(점검 시작) 뒤에만 (테스트 서버 먼저)
 COUPONS["SORRYKIKO"] = ({"enh_stone": 1}, calendar.timegm((2026, 11, 7, 15, 0, 0)))   # 3.6.1 긴급 점검 보상 · 2026-11-08 00:00 KST 만료
+# 3.7.0 점검 보상: 변호사 선임권 · 훈련 리셋권 · 훈련 스킵권 1장씩 (만료는 공개 시각이 정해지면 맞춘다)
+COUPONS["KIKO370"] = ({"lawyer": 1, "train_reset": 1, "train_skip": 1}, calendar.timegm((2026, 11, 15, 15, 0, 0)))
+COUPONS_370 = {"KIKO370"}   # 3.7.0 공개(점검 시작) 뒤에만 (테스트 서버 먼저)
 
 
 # 창단 멤버 영구 칭호 (2.8) — 마이그레이션으로 한 번만 지급 (eco_migrations 에 'founder-2.8' 표시)
@@ -1774,7 +1777,8 @@ class EconomyDB:
         if code not in COUPONS or (code in COUPONS_310 and not release.preview_310(guild_id, now_ts)) \
                 or (code in COUPONS_321 and not release.preview_321(guild_id, now_ts)) \
                 or (code in COUPONS_340 and not release.preview_340(guild_id, now_ts)) \
-                or (code in COUPONS_360 and not release.preview_360(guild_id, now_ts)):
+                or (code in COUPONS_360 and not release.preview_360(guild_id, now_ts)) \
+                or (code in COUPONS_370 and not release.preview_370(guild_id, now_ts)):
             return {"ok": False, "reason": "unknown"}
         items, expires = COUPONS[code]
         if now_ts >= expires:
