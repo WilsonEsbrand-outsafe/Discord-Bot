@@ -45,3 +45,34 @@ def test_pool_and_ticket_with_debt():
                                  get_balance=eco.get_balance, add_balance=eco.add_balance))
     assert not ok and "잔액" in msg                             # 교환권이 없으면 여전히 돈이 있어야
     con.close()
+
+
+def test_bot_club_shop():
+    import random
+    from services import bot_clubs as bc
+    from cogs.bot_clubs import BotClubs
+    pm = pmdb.PlayerMarketDB()
+    now = int(time.time())
+    run(pm.ensure_active_pool(now, target=0))
+    eco = edb.EconomyDB()
+    cdb.ClubDB()
+    cog = BotClubs.__new__(BotClubs)
+    cog.pm, cog.money, cog.rng, cog.bot, cog.clubs = pm, eco, random.Random(3), None, cdb.ClubDB()
+    pm._is_market_open = lambda ts: True
+    run(cog._db(lambda con: bc.bootstrap(con, now, random.Random(3))))
+    bid = bc.BOT_IDS[0]
+    em, view = run(cog.club_page(61, bid))
+    assert em.title and len(view.children) >= 2
+    pid = run(cog._db(lambda con: [x for x in bc.squad(con, bid) if not x["amateur"]][0]["player_id"]))
+    price, _w, _n = run(cog.quote(bid, pid, True))
+    run(eco.add_balance(61, price))
+    ok, msg = run(cog.deal(61, bid, pid, True))                 # 바로 산다
+    assert ok, msg
+    assert run(pm.get_holding(61, pid)) == 1 and run(pm.get_holding(bid, pid)) == 0 and run(eco.get_balance(61)) == 0
+    sell, why, _n = run(cog.quote(bid, pid, False))
+    assert sell is not None, why
+    ok, msg = run(cog.deal(61, bid, pid, False))                # 바로 판다
+    assert ok, msg
+    assert run(pm.get_holding(61, pid)) == 0 and run(pm.get_holding(bid, pid)) == 1 and run(eco.get_balance(61)) == sell
+    ok, msg = run(cog.deal(61, bid, pid, True))                 # 돈이 없으면 안 된다
+    assert not ok and "잔액" in msg

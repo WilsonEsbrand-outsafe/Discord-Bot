@@ -7,6 +7,7 @@ import random
 import time
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 import release
@@ -14,7 +15,7 @@ from services import bot_clubs as bc
 from services.club_db import ClubDB
 from services.economy_db import EconomyDB
 from services.notifier import send_notify
-from services.player_market_db import PlayerMarketDB
+from services.player_market_db import HOLD_CAP_370, PlayerMarketDB, held_count
 
 class BotClubs(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -185,6 +186,83 @@ class BotClubs(commands.Cog):
                 color=0x3498db))
         return ok
 
+    # ───────────── 3.7.1 /봇구단 바로 사고팔기 ─────────────
+    async def club_page(self, user_id: int, bid: int):
+        def read(con):
+            p = bc.PERSONALITY[bc.kind(bid)]
+            lineup = {r[0] for r in con.execute("SELECT player_id FROM club_lineup WHERE user_id=?", (bid,))}
+            theirs = sorted((x for x in bc.squad(con, bid) if not x["amateur"]), key=lambda x: -x["ovr"])
+            for x in theirs:
+                x["quote"], x["start"] = bc.quote_buy(con, bid, x["player_id"]), x["player_id"] in lineup
+            listed = {r[0] for r in con.execute("SELECT player_id FROM pm_listings WHERE seller_id=? AND status='active'",
+                                                (int(user_id),))}
+            mine = sorted((x for x in bc.squad(con, user_id) if not x["amateur"] and x["player_id"] not in listed),
+                          key=lambda x: -x["price"])
+            return p["label"], bc.balance(con, bid), theirs, mine
+        label, bal, theirs, mine = await self._db(read)
+        e, n = bc.BOT_CLUBS[bid][0], bc.BOT_CLUBS[bid][1]
+        rows = [f"{'⭐' if x['start'] else '▫️'} **{x['name']}** {x['pos']} · OVR {x['ovr']} · {x['age']}세 — {_won(x['quote'])}"
+                for x in theirs[:15]]
+        em = discord.Embed(title=f"{e} {n}", color=0x3498db, description=(
+            f"{label} · 구단 자금 {_won(bal)}\n"
+            "아래 메뉴에서 고르면 그 자리에서 바로 거래돼요. (⭐ 선발 선수는 조금 더 비싸요)\n\n"
+            + ("\n".join(rows) or "지금 팔 선수가 없어요.")))
+        if len(theirs) > 15:
+            em.set_footer(text=f"외 {len(theirs) - 15}명 — 사기 메뉴에서 볼 수 있어요")
+        return em, BotClubView(self, user_id, bid, theirs, mine)
+
+    async def quote(self, bid: int, pid: str, buy: bool):
+        def read(con):
+            r = con.execute("SELECT name FROM pm_players WHERE player_id=?", (pid,)).fetchone()
+            name = r[0] if r else pid
+            if buy:
+                q = bc.quote_buy(con, bid, pid)
+                return q, ("그 선수는 이제 우리 구단에 없어요." if q is None else ""), name
+            q, why = bc.quote_sell(con, bid, pid)
+            return q, why, name
+        return await self._db(read)
+
+    async def deal(self, user_id: int, bid: int, pid: str, buy: bool) -> tuple[bool, str]:
+        """바로 거래 — 값을 다시 매기고 트레이드를 만들어 그 자리에서 수락한다."""
+        now = int(time.time())
+        price, why, name = await self.quote(bid, pid, buy)
+        if price is None:
+            return False, f"{bc.bot_name(bid)}: {why}"
+        if buy:
+            if await self._db(lambda con: held_count(con, user_id)) >= HOLD_CAP_370:
+                return False, f"선수는 최대 **{HOLD_CAP_370}명**까지 가질 수 있어요. 먼저 팔거나 방출해 주세요."
+            if await self.money.get_balance(user_id) < price:
+                return False, f"잔액이 부족해요. 필요 {_won(price)}"
+            ok, tid, _d = await self.pm.create_trade(
+                proposer_id=user_id, receiver_id=bid, proposer_pids=[], receiver_pids=[pid],
+                proposer_cash=price, receiver_cash=0, now_ts=now, get_balance=self.money.get_balance)
+        else:
+            if await self.pm.get_holding(user_id, pid) <= 0:
+                return False, "그 선수를 갖고 있지 않아요."
+            ok, tid, _d = await self.pm.create_trade(
+                proposer_id=user_id, receiver_id=bid, proposer_pids=[pid], receiver_pids=[],
+                proposer_cash=0, receiver_cash=price, now_ts=now, get_balance=self.money.get_balance)
+        if not ok:
+            return False, str(tid)
+        ok, msg, _p = await self.pm.accept_trade(trade_id=tid, receiver_id=bid, now_ts=now,
+                                                 get_balance=self.money.get_balance, add_balance=self.money.add_balance)
+        if not ok:
+            await self.pm.cancel_trade(trade_id=tid, proposer_id=user_id)
+            return False, msg
+
+        def tidy(con):
+            if not buy:
+                con.execute("DELETE FROM club_lineup WHERE user_id=? AND player_id=?", (int(user_id), pid))
+                try:
+                    con.execute("UPDATE clubs SET captain=NULL WHERE user_id=? AND captain=?", (int(user_id), pid))
+                except Exception:
+                    pass
+            bc.set_lineup(con, bid)
+        await self._db(tidy)
+        line = bc.line(bid, "accept")
+        return True, (f"**{name}**을(를) {_won(price)}에 데려왔어요." if buy else
+                      f"**{name}**을(를) {_won(price)}에 팔았어요.") + f"\n**{bc.bot_name(bid)}**: \"{line}\""
+
     async def run_once(self, now: int, allowed=None, rng=None) -> dict:
         """접속할 차례인 감독들만 → {bot_id: 한 일}."""
         rng = rng or self.rng
@@ -232,5 +310,101 @@ class BotClubs(commands.Cog):
         await self.bot.wait_until_ready()
 
 
+# ───────────── 3.7.1 /봇구단 — 구단을 고르고 버튼으로 바로 사고판다 ─────────────
+def _won(n: int) -> str:
+    return f"{int(n):,}원"
+
+
+class _ConfirmView(discord.ui.View):
+    def __init__(self, cog: "BotClubs", user_id: int, bid: int, pid: str, buy: bool):
+        super().__init__(timeout=120)
+        self.cog, self.user_id, self.bid, self.pid, self.buy = cog, user_id, bid, pid, buy
+
+    async def interaction_check(self, it: discord.Interaction) -> bool:
+        return it.user.id == self.user_id
+
+    @discord.ui.button(label="확인", style=discord.ButtonStyle.success)
+    async def ok(self, it: discord.Interaction, _b: discord.ui.Button):
+        self.stop()
+        await it.response.defer(ephemeral=True)
+        ok, msg = await self.cog.deal(self.user_id, self.bid, self.pid, self.buy)
+        await it.edit_original_response(embed=discord.Embed(
+            title=("✅ 거래 완료" if ok else "❌ 거래 실패"), description=msg,
+            color=0x2ecc71 if ok else 0xe74c3c), view=None)
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
+    async def no(self, it: discord.Interaction, _b: discord.ui.Button):
+        self.stop()
+        await it.response.edit_message(content="거래를 취소했어요.", embed=None, view=None)
+
+
+class BotClubView(discord.ui.View):
+    """구단 고르기 · 이 구단 선수 사기 · 내 선수 팔기 (메뉴 셋)."""
+
+    def __init__(self, cog: "BotClubs", user_id: int, bid: int, theirs: list, mine: list):
+        super().__init__(timeout=300)
+        self.cog, self.user_id, self.bid = cog, user_id, bid
+        pick = discord.ui.Select(placeholder="🏟️ 다른 구단 보기", row=0, options=[
+            discord.SelectOption(label=f"{e} {n}"[:100], value=str(b), default=(b == bid))
+            for b, (e, n, *_r) in bc.BOT_CLUBS.items()])
+        pick.callback = self._pick
+        self.add_item(pick)
+        if theirs:
+            buy = discord.ui.Select(placeholder="🛒 이 구단 선수 사기", row=1, options=[
+                discord.SelectOption(label=f"{x['name']} · {x['pos']} OVR {x['ovr']}"[:100], value=x["player_id"],
+                                     description=f"{_won(x['quote'])}에 살 수 있어요"[:100]) for x in theirs[:25]])
+            buy.callback = self._buy
+            self.add_item(buy)
+        if mine:
+            sell = discord.ui.Select(placeholder="💰 내 선수 팔기", row=2, options=[
+                discord.SelectOption(label=f"{x['name']} · {x['pos']} OVR {x['ovr']}"[:100], value=x["player_id"],
+                                     description=f"시세 {_won(x['price'])}"[:100]) for x in mine[:25]])
+            sell.callback = self._sell
+            self.add_item(sell)
+
+    async def interaction_check(self, it: discord.Interaction) -> bool:
+        if it.user.id != self.user_id:
+            await it.response.send_message("❌ `/봇구단`을 직접 열어 주세요.", ephemeral=True)
+            return False
+        return True
+
+    async def _pick(self, it: discord.Interaction):
+        em, view = await self.cog.club_page(self.user_id, int(it.data["values"][0]))
+        await it.response.edit_message(embed=em, view=view)
+
+    async def _ask(self, it: discord.Interaction, buy: bool):
+        pid = it.data["values"][0]
+        price, why, name = await self.cog.quote(self.bid, pid, buy)
+        if price is None:
+            return await it.response.send_message(f"❌ {bc.bot_name(self.bid)}: {why}", ephemeral=True)
+        text = (f"**{name}**을(를) **{bc.bot_name(self.bid)}**에서 **{_won(price)}**에 살까요?" if buy else
+                f"**{name}**을(를) **{bc.bot_name(self.bid)}**에 **{_won(price)}**에 팔까요?")
+        await it.response.send_message(embed=discord.Embed(title="🤝 거래 확인", description=text, color=0x3498db),
+                                        view=_ConfirmView(self.cog, self.user_id, self.bid, pid, buy), ephemeral=True)
+
+    async def _buy(self, it: discord.Interaction):
+        await self._ask(it, True)
+
+    async def _sell(self, it: discord.Interaction):
+        await self._ask(it, False)
+
+
+class BotClubShop(commands.Cog):
+    def __init__(self, bot: commands.Bot, clubs: "BotClubs"):
+        self.bot, self.c = bot, clubs
+
+    @app_commands.command(name="봇구단", description="🤖 봇 구단 선수를 바로 사거나, 내 선수를 바로 팔아요.")
+    @app_commands.describe(구단="볼 구단 (안 고르면 첫 구단)")
+    @app_commands.choices(구단=[app_commands.Choice(name=f"{e} {n}", value=str(b)) for b, (e, n, *_r) in bc.BOT_CLUBS.items()])
+    async def shop(self, interaction: discord.Interaction, 구단: str = ""):
+        if not release.preview_371(interaction.guild_id):
+            return await interaction.response.send_message("❌ 아직 이 서버에 열리지 않았어요.", ephemeral=True)
+        await interaction.response.defer()
+        em, view = await self.c.club_page(interaction.user.id, int(구단) if 구단 else bc.BOT_IDS[0])
+        await interaction.followup.send(embed=em, view=view)
+
+
 async def setup(bot: commands.Bot):
-    await bot.add_cog(BotClubs(bot))
+    clubs = BotClubs(bot)
+    await bot.add_cog(clubs)
+    await bot.add_cog(BotClubShop(bot, clubs))
