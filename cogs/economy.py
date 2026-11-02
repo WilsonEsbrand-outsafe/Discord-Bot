@@ -13,7 +13,7 @@ from services.economy_db import (
     BANKRUPT_310, BANKRUPT_350, BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS, SKIP_ITEMS, shop_open,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
-    BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
+    BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, transfer_limit, WATCH_MAX_LEVEL, give_item,
 )
 from services.club_db import ClubDB, hidden_tier, steroid_table
 from services import agent, gems
@@ -611,7 +611,7 @@ class Economy(commands.Cog):
                     ui.GOLD if bonus else ui.WIN, user, "📅 출석")
         await interaction.followup.send(embed=e)
 
-    @app_commands.command(name="송금", description=f"다른 유저에게 돈을 보냅니다. (하루 최대 {TRANSFER_DAILY_LIMIT:,}원)")
+    @app_commands.command(name="송금", description="다른 유저에게 돈을 보냅니다. (하루 송금 한도가 있어요)")
     @app_commands.describe(to_user="받을 유저", amount="보낼 금액(1 이상)")
     async def transfer(self, interaction: discord.Interaction, to_user: discord.Member, amount: int):
         await interaction.response.defer()
@@ -630,7 +630,7 @@ class Economy(commands.Cog):
         left = await self.db.transfer_remaining(user.id, now_ts)
         e = ui.card("✅ 송금 완료",
                     f"{user.mention} → {to_user.mention}\n\n`금액` **{amount:,}원**\n"
-                    f"`내 잔액` **{my_bal:,}원**\n`오늘 남은 한도` **{left:,}원** / {TRANSFER_DAILY_LIMIT:,}원",
+                    f"`내 잔액` **{my_bal:,}원**\n`오늘 남은 한도` **{left:,}원** / {transfer_limit():,}원",
                     ui.WIN, user, "💸 송금")
         await interaction.followup.send(embed=e)
 

@@ -30,13 +30,13 @@ def test_prices_stay_in_range():
 
 def test_give_cap_sell():
     con = _con()
-    r = gems.give(con, 7, {"diamond": 25, "rough": 3})
-    assert r["got"] == {"diamond": 20, "rough": 3} and r["lost"] == {"diamond": 5}
+    r = gems.give(con, 7, {"diamond": 65, "rough": 3})
+    assert r["got"] == {"diamond": 60, "rough": 3} and r["lost"] == {"diamond": 5}
     p = gems.prices(con, 0)
     s = gems.sell(con, 7, "rough", 0)
-    assert s["total"] == 3 * p["rough"][0] and gems.bag(con, 7) == {"diamond": 20}
+    assert s["total"] == 3 * p["rough"][0] and gems.bag(con, 7) == {"diamond": 60}
     s = gems.sell(con, 7, None, 0)
-    assert s["balance"] == 3 * p["rough"][0] + 20 * p["diamond"][0] and gems.bag(con, 7) == {}
+    assert s["balance"] == 3 * p["rough"][0] + 60 * p["diamond"][0] and gems.bag(con, 7) == {}
 
 
 def test_craft():
@@ -48,7 +48,7 @@ def test_craft():
     assert b.get("rough") == 1 and b.get("emerald", 0) + b.get("sapphire", 0) == sum(r["made"].values())
     assert gems.craft(con, 7, "rough")["reason"] == "few"
     assert gems.craft(con, 7, "diamond")["reason"] == "top"
-    gems.give(con, 7, {"diamond": 20, "ruby": 4})
+    gems.give(con, 7, {"diamond": 60, "ruby": 4})
     assert gems.craft(con, 7, "ruby")["reason"] == "full"
 
 
@@ -57,5 +57,16 @@ def test_scout_roll_gives_gems():
     con = _con()
     eco = E.__new__(E)
     d, xp, info = eco._scout_roll(3, con, 9, True, True, True)
-    assert d == 0 and xp == E.GEM_XP_372 and sum(info["got"].values()) == 3
-    assert sum(gems.bag(con, 9).values()) == 3
+    n = sum(info["got"].values())
+    assert d == 0 and xp == E.GEM_XP_372 and 4 <= n <= 6      # Lv.3: 2~4개 + 2
+    assert sum(gems.bag(con, 9).values()) == n
+
+
+def test_transfer_limit_372():
+    from services.economy_db import transfer_limit
+    tok = release.GUILD.set(release.TEST_GUILD)
+    try:
+        assert transfer_limit() == 1_000_000_000
+    finally:
+        release.GUILD.reset(tok)
+    assert transfer_limit() == 100_000_000
