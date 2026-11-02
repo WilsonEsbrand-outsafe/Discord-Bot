@@ -381,3 +381,13 @@ def test_prospect_gear():
         assert squad[p["pid"]]["ovr"] == 73                                # 경기 OVR +3
         con.close()
     run(flow())
+
+
+def test_coupon_kiko370():
+    db = edb.EconomyDB()
+    now = int(time.time())
+    assert run(db.redeem_coupon(9370, "KIKO370", now, OTHER))["reason"] == "unknown"   # 공개 전엔 다른 서버에서 안 됨
+    assert run(db.redeem_coupon(9370, "kiko370", now, T))["ok"]
+    inv, _ = run(db.inventory(9370))
+    assert inv.get("lawyer") == 1 and inv.get("train_reset") == 1 and inv.get("train_skip") == 1
+    assert run(db.redeem_coupon(9370, "KIKO370", now, T))["reason"] == "used"
