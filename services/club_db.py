@@ -250,8 +250,12 @@ FACILITY_COSTS = (10_000_000, 30_000_000, 100_000_000, 300_000_000, 1_000_000_00
 FACILITY_MAX = len(FACILITY_COSTS)
 
 
+STADIUM_TEXT_372 = "공식경기 상금 +{}%"   # 3.7.2 (release.preview_372 서버): 공식경기는 베팅이 없어서 '적중 상금' → 경기 상금에 붙는다
+
+
 def facility_effect(key: str, level: int) -> str:
-    return FACILITIES[key][2].format(level * FACILITIES[key][3])
+    text = STADIUM_TEXT_372 if key == "stadium" and release.ctx_372() else FACILITIES[key][2]
+    return text.format(level * FACILITIES[key][3])
 
 
 # ───────────── 구단 꾸미기 (2.5) ─────────────
@@ -1334,6 +1338,11 @@ class ClubDB:
             rec = con.execute("SELECT points, w, d, l, gf, ga FROM club_official WHERE user_id=? AND season=?",
                               (int(user_id), season)).fetchone()
             prize = official_prize(res, prize_odds, self._popularity(con, user_id), stake) if prize_odds else None
+            if prize and prize["prize"] > 0 and release.ctx_372():   # 3.7.2 경기장: 공식경기 상금 + 레벨 × 4%
+                lv = self._facility(con, user_id, "stadium")
+                if lv:
+                    prize["prize"] = int(round(prize["prize"] * (1 + lv * FACILITIES["stadium"][3] / 100), -2))
+                    prize["stadium"] = lv * FACILITIES["stadium"][3]
             week = self._add_weekly(con, user_id, gf, ga, now_ts, prize["prize"] if prize else 0) \
                 if weekly or prize_odds else None   # 3.6.0 주간 랭킹 · 상금함
             if prize and week:

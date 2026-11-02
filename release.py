@@ -231,6 +231,11 @@ def preview_372(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_372(now)
 
 
+def ctx_372() -> bool:
+    """3.7.2 이 공개된 서버에서 온 상호작용인가 (경기장 효과 — DB 안쪽 · 문구에서 쓴다)."""
+    return preview_372(GUILD.get())
+
+
 def ctx_370() -> bool:
     """3.7.0 이 공개된 서버에서 온 상호작용인가 (선수 1명 1주인 · 봇 구단 매물 — DB 안쪽에서 쓴다)."""
     return preview_370(GUILD.get())
