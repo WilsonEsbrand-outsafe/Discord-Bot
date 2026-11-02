@@ -231,6 +231,12 @@ def _reset_rod(con, user_id: int, rod: str) -> None:
 ATTEND_BONUS = {7: 50_000, 14: 100_000, 30: 300_000, 50: 500_000, 100: 1_000_000, 200: 2_000_000, 365: 5_000_000}
 
 TRANSFER_DAILY_LIMIT = 100_000_000   # 하루(KST) 보낼 수 있는 송금 총액
+TRANSFER_DAILY_LIMIT_372 = 1_000_000_000   # 3.7.2 (release.preview_372 서버): 규완님 "송금 한도를 10억으로"
+
+
+def transfer_limit() -> int:
+    """지금 상호작용 서버의 하루 송금 한도 (release.GUILD — 3.7.2 공개 서버는 10억)."""
+    return TRANSFER_DAILY_LIMIT_372 if release.preview_372(release.GUILD.get()) else TRANSFER_DAILY_LIMIT
 
 # ───────────── 신인 (2.5) ─────────────
 # 신인 부스트: 처음 시작(첫 출석 · 스카우트 · 훈련 · 직관)부터 ROOKIE_DAYS 일 동안 스카우트 · 훈련 · 직관 +보상 ×2,
@@ -577,7 +583,8 @@ class EconomyDB:
 
     async def transfer_remaining(self, user_id: int, now_ts: int) -> int:
         """오늘 더 보낼 수 있는 송금액."""
-        return await self._tx(lambda con: TRANSFER_DAILY_LIMIT - self._sent_today(con, user_id, _kst_day(now_ts)))
+        limit = transfer_limit()
+        return await self._tx(lambda con: limit - self._sent_today(con, user_id, _kst_day(now_ts)))
 
     async def transfer(self, from_user: int, to_user: int, amount: int, now_ts: int = 0) -> Optional[str]:
         """송금. 실패하면 이유를 돌려준다. 하루(KST) 송금 총액은 TRANSFER_DAILY_LIMIT 까지."""
@@ -586,13 +593,14 @@ class EconomyDB:
         if from_user == to_user:
             return "자기 자신에게는 송금할 수 없습니다."
         day = _kst_day(now_ts)
+        limit = transfer_limit()
 
         def fn(con):
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (from_user,))
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (to_user,))
             sent = self._sent_today(con, from_user, day)
-            if sent + amount > TRANSFER_DAILY_LIMIT:
-                return f"오늘 송금 한도를 넘어요. (하루 {TRANSFER_DAILY_LIMIT:,}원 · 남은 한도 {TRANSFER_DAILY_LIMIT - sent:,}원)"
+            if sent + amount > limit:
+                return f"오늘 송금 한도를 넘어요. (하루 {limit:,}원 · 남은 한도 {limit - sent:,}원)"
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (from_user,)).fetchone()[0])
             if bal < amount:
                 return "잔액이 부족합니다."

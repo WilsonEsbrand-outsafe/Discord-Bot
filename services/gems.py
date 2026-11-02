@@ -7,13 +7,14 @@ from typing import Optional
 
 # key → (이모지, 이름, 기준가, 스카우트 한 번에 나올 비중, 가질 수 있는 최대 개수)
 GEMS = {
-    "rough":    ("🪨", "원석",        12_000, 46, 300),
-    "emerald":  ("🟢", "에메랄드",    30_000, 30, 150),
-    "sapphire": ("🔵", "사파이어",    75_000, 15, 80),
-    "ruby":     ("🔴", "루비",       180_000, 6, 40),
-    "diamond":  ("💎", "다이아몬드", 450_000, 3, 20),
+    "rough":    ("🪨", "원석",        12_000, 46, 1000),
+    "emerald":  ("🟢", "에메랄드",    30_000, 30, 500),
+    "sapphire": ("🔵", "사파이어",    75_000, 15, 250),
+    "ruby":     ("🔴", "루비",       180_000, 6, 120),
+    "diamond":  ("💎", "다이아몬드", 450_000, 3, 60),
 }
 ORDER = tuple(GEMS)
+PER_SCOUT = (2, 4)                   # 3.7.2 규완님 "한 번에 여러 개" — 스카우트 한 번에 2~4개 (+ 레벨 − 1)
 PRICE_LO, PRICE_HI = 0.5, 1.5        # 시세 범위 (기준가 배수)
 TICK = 600                           # 10분마다 시세가 바뀐다
 VOL, PULL = 0.08, 0.10               # 한 번에 움직이는 폭(표준편차) · 기준가로 돌아오는 힘
@@ -37,9 +38,9 @@ def label(key: str) -> str:
 
 
 def roll_gems(level: int, rng=random) -> dict:
-    """스카우트 한 번 → {종류: 개수}. 레벨만큼 원석을 캔다 (Lv.1 1개 … Lv.5 5개)."""
+    """스카우트 한 번 → {종류: 개수}. 한 번에 여러 개: 2~4개 + (레벨 − 1) (Lv.1 2~4개 … Lv.5 6~8개)."""
     out: dict = {}
-    for _ in range(max(1, int(level))):
+    for _ in range(rng.randint(*PER_SCOUT) + max(1, int(level)) - 1):
         k = rng.choices(ORDER, weights=[GEMS[g][3] for g in ORDER])[0]
         out[k] = out.get(k, 0) + 1
     return out
@@ -47,7 +48,7 @@ def roll_gems(level: int, rng=random) -> dict:
 
 def expected_value(level: int = 1) -> float:
     tot = sum(GEMS[g][3] for g in ORDER)
-    return max(1, int(level)) * sum(GEMS[g][2] * GEMS[g][3] for g in ORDER) / tot
+    return (sum(PER_SCOUT) / 2 + max(1, int(level)) - 1) * sum(GEMS[g][2] * GEMS[g][3] for g in ORDER) / tot
 
 
 def step(price: int, base: int, rng=random) -> int:
