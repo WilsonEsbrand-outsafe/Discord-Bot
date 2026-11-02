@@ -199,7 +199,21 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = out | LEGACY_2101 if preview_2101(guild_id, now) else out
     out = out | LEGACY_311 if preview_311(guild_id, now) else out
     out = out if preview_360(guild_id, now) else out | PREVIEW_360
+    out = out if preview_371(guild_id, now) else out | PREVIEW_371
     return out if preview_310(guild_id, now) else out | PREVIEW_310
+
+
+# 3.7.1 — 테스트 서버 먼저. /봇구단(버튼으로 바로 사고팔기). None = 아직
+RELEASE_371_TS: Optional[int] = None
+PREVIEW_371: set[str] = {"봇구단"}
+
+
+def released_371(now: Optional[float] = None) -> bool:
+    return RELEASE_371_TS is not None and _now(now) >= RELEASE_371_TS
+
+
+def preview_371(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_371(now)
 
 
 def ctx_370() -> bool:

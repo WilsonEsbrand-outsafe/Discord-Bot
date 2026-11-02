@@ -436,3 +436,39 @@ def find_bargain(con, bid: int, now_ts: int, allowed=None) -> Optional[dict]:
                 best = {"how": "listing", "listing_id": int(lid), "seller_id": int(seller), "player_id": pid,
                         "price": int(price), "deal": d}
     return best
+
+
+# ───────────── 3.7.1 /봇구단: 버튼으로 바로 사고팔기 ─────────────
+# 규완님 '봇 구단 트레이드가 너무 복잡해' → 감독 접속을 기다리지 않고 그 자리에서 정해진 값으로 거래한다.
+LINEUP_MARKUP = 1.20     # 선발 선수는 이만큼 더 받는다
+SELL_USEFUL = 1.00       # 약한 자리를 채우는 선수는 시세 × 이만큼 (구단 성향 pay 가 더 낮으면 그 값)
+SELL_OTHER = 0.80        # 그 밖의 선수는 시세 × 이만큼
+
+
+def quote_buy(con, bid: int, pid: str) -> Optional[int]:
+    """유저가 봇 구단 선수를 살 때 값 (안 파는 선수면 None)."""
+    x = next((s for s in squad(con, bid) if s["player_id"] == pid and not s["amateur"]), None)
+    if x is None:
+        return None
+    lineup = {r[0] for r in con.execute("SELECT player_id FROM club_lineup WHERE user_id=?", (bid,))}
+    mult = PERSONALITY[kind(bid)]["keep"] * (LINEUP_MARKUP if pid in lineup else 1.0)
+    return max(1_000, int(round(x["price"] * mult, -3)))
+
+
+def quote_sell(con, bid: int, pid: str) -> tuple[Optional[int], str]:
+    """유저가 봇 구단에 선수를 팔 때 값 → (값, '') 또는 (None, 안 사는 이유)."""
+    k = kind(bid)
+    p = PERSONALITY[k]
+    r = con.execute("SELECT p.position, p.ovr, p.age, COALESCE(m.price, p.base_value) FROM pm_players p "
+                    "LEFT JOIN pm_market m ON m.player_id=p.player_id WHERE p.player_id=? AND p.retired=0", (pid,)).fetchone()
+    if not r or str(pid).startswith("AMT_"):
+        return None, "거래할 수 없는 선수예요."
+    pos, ovr, age, price = r[0], int(r[1]), int(r[2]), int(r[3])
+    if len([x for x in squad(con, bid) if not x["amateur"]]) >= p["squad"] + 4:
+        return None, "명단이 꽉 차서 더 사지 않아요."
+    weak = {ps: w for ps, w, _ in needs(con, bid)}
+    useful = ovr > weak.get(pos, 99) and _fits(k, ovr, age)
+    offer = max(1_000, int(round(price * (min(p["pay"], SELL_USEFUL) if useful else SELL_OTHER), -3)))
+    if offer > balance(con, bid):
+        return None, "지금은 그만한 돈이 없어요."
+    return offer, ""
