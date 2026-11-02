@@ -70,3 +70,13 @@ def test_transfer_limit_372():
     finally:
         release.GUILD.reset(tok)
     assert transfer_limit() == 100_000_000
+
+
+def test_stadium_text_372():
+    from services.club_db import facility_effect
+    tok = release.GUILD.set(release.TEST_GUILD)
+    try:
+        assert facility_effect("stadium", 2) == "공식경기 상금 +8%"
+    finally:
+        release.GUILD.reset(tok)
+    assert facility_effect("stadium", 2) == "공식경기 적중 상금 +8%"

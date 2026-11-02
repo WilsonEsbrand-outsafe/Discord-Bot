@@ -665,14 +665,16 @@ class Club(commands.Cog):
         stake = PRIZE_STAKE_370 if release.preview_370(interaction.guild_id) else PRIZE_STAKE   # 3.7.0 상금 너프
         pre = {k: official_prize(k, odds, pop, stake)["prize"] for k in "WD"}
         note = (f"\n`배당` 승 **{odds['W']:.2f}배** · 무 {odds['D']:.2f}배 · 패 {odds['L']:.2f}배 · 인기도 ×{0.5 + pop / 100:.2f}\n"
-                f"`상금` 승 **{pre['W']:,}원** · 무 {pre['D']:,}원 · 패 없음")
+                f"`상금` 승 **{pre['W']:,}원** · 무 {pre['D']:,}원 · 패 없음"
+                + (" · 🏟️ 경기장 보너스는 따로 붙어요" if release.preview_372(interaction.guild_id) else ""))
 
         async def record(result):
             r = await self.clubs.record_official(user.id, opp_id, result["home"], result["away"], now, 0, "W", 1.0,
                                                  weekly=True, prize_odds=odds, stake=stake)
             mark = {"W": "승리", "D": "무승부", "L": "패배"}[r["result"]]
             p, wk = r["prize"], r["week"]
-            got = (f"`상금` **+{p['prize']:,}원** → 이번 주 상금함 **{wk['purse']:,}원** (월요일 정산)" if wk["counted"] and p["prize"]
+            got = (f"`상금` **+{p['prize']:,}원**" + (f" (🏟️ 경기장 +{p['stadium']}%)" if p.get("stadium") else "")
+                   + f" → 이번 주 상금함 **{wk['purse']:,}원** (월요일 정산)" if wk["counted"] and p["prize"]
                    else f"`상금` 없음 · 이번 주 상금함 **{wk['purse']:,}원**" if wk["counted"] else
                    f"`상금` 오늘 {weekly_daily()}판을 다 채워서 상금 · 랭킹 없이 기록만 했어요")
             return (f"\n\n`결과` **{mark}** · {got}\n"
