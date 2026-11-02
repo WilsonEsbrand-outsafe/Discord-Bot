@@ -201,8 +201,9 @@ COUPONS_340 = {"UPGRADEBOT"}    # 3.4.0 공개(점검 시작) 뒤에만
 COUPONS["YOUTHTOKIKO"] = ({"xp_boost": 1}, calendar.timegm((2026, 11, 7, 15, 0, 0)))
 COUPONS_360 = {"YOUTHTOKIKO"}   # 3.6.0 공개(점검 시작) 뒤에만 (테스트 서버 먼저)
 COUPONS["SORRYKIKO"] = ({"enh_stone": 1}, calendar.timegm((2026, 11, 7, 15, 0, 0)))   # 3.6.1 긴급 점검 보상 · 2026-11-08 00:00 KST 만료
-# 3.7.0 점검 보상: 변호사 선임권 · 훈련 리셋권 · 훈련 스킵권 1장씩 (만료는 공개 시각이 정해지면 맞춘다)
-COUPONS["KIKO370"] = ({"lawyer": 1, "train_reset": 1, "train_skip": 1}, calendar.timegm((2026, 11, 15, 15, 0, 0)))
+# 3.7.0 점검 보상: 변호사 선임권 + 스카우트 · 훈련 · 직관 리셋권 · 스킵권 1장씩 (만료는 공개 시각이 정해지면 맞춘다)
+COUPONS["KIKO370"] = ({"lawyer": 1, "scout_reset": 1, "train_reset": 1, "watch_reset": 1,
+                       "scout_skip": 1, "train_skip": 1, "watch_skip": 1}, calendar.timegm((2026, 11, 15, 15, 0, 0)))
 COUPONS_370 = {"KIKO370"}   # 3.7.0 공개(점검 시작) 뒤에만 (테스트 서버 먼저)
 
 
