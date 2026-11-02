@@ -293,6 +293,10 @@ HOLD_CAP_370 = 40          # 한 사람이 가질 수 있는 선수 수 (아마�
 PACK_TICKET_PACK = "얼티밋"   # 🎫 교환권으로 여는 팩 (규완님: 얼티밋팩 10장)
 PACK_TICKETS_370 = 10       # 전환 보상: 얼티밋팩 교환권 (카드가 한 장이라도 있었으면)
 FREE_MIN_370 = 600         # 아무도 안 가진 선수를 시장에 이만큼은 둔다 (1명 1주인이라 팩이 마르지 않게)
+# 3.7.1 (규완님: 선수풀을 늘려야 함, 특히 비싼 선수): 안 가진 선수 1,000명 + 비싼 팩 등급마다 안 가진 선수를 최소 이만큼
+FREE_MIN_371 = 1_000
+FREE_TIER_MIN_371 = {"플래티넘": 150, "다이아몬드": 120, "아이콘": 100, "얼티밋": 100}
+_TIER_SPAWN_TRIES_371 = 400   # 한 명 만들 때 그 가격대가 나올 때까지 다시 뽑는 횟수
 _OWNED_SQL = ("SELECT player_id FROM pm_holdings WHERE qty>0 "
               "UNION SELECT player_id FROM pm_listings WHERE status='active' "
               "UNION SELECT ti.player_id FROM pm_trade_items ti JOIN pm_trades t ON t.trade_id=ti.trade_id "
@@ -1220,17 +1224,20 @@ class PlayerMarketDB:
                         free = con.execute(
                             f"SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%' "
                             f"AND player_id NOT IN ({_OWNED_SQL})").fetchone()[0]
-                        need = max(need, FREE_MIN_370 - int(free))
-                    if need <= 0:
+                        need = max(need, FREE_MIN_371 - int(free))
+                    tier_need = self._tier_need_371(con) if release.released_370(now_ts) else {}
+                    if need <= 0 and not tier_need:
                         return
 
                     # S 최소 1명 보장(생성 전 기준)
                     s_count = con.execute("SELECT COUNT(*) FROM pm_players WHERE retired=0 AND pot_grade='S'").fetchone()[0]
                     force_s = (int(s_count) == 0)
 
-                    for i in range(need):
-                        p = self._spawn_player(month_index, now_ts, force_grade=("S" if (force_s and i == 0) else None),
-                                                   pid=_next_player_id(con))
+                    spawns = [self._spawn_player(month_index, now_ts, force_grade=("S" if (force_s and i == 0) else None))
+                              for i in range(max(0, need))]
+                    spawns += self._spawn_tier_371(month_index, now_ts, tier_need)
+                    for p in spawns:
+                        p["player_id"] = _next_player_id(con)
                         con.execute(
                             """
                             INSERT INTO pm_players(player_id, name, nation, position, age, ovr, pot, pot_grade, base_value, retired, created_month, updated_ts)
@@ -1259,6 +1266,36 @@ class PlayerMarketDB:
                     con.close()
 
             await self._run(work)
+
+    @staticmethod
+    def _tier_need_371(con) -> dict:
+        """3.7.1 비싼 팩 등급마다 안 가진 선수가 FREE_TIER_MIN_371 보다 모자란 수 {팩: 모자란 수}."""
+        out = {}
+        for name, lo in FREE_TIER_MIN_371.items():
+            pk = PACKS_360[name]
+            mn, mx = int(pk["min_price"]), pk.get("max_price")
+            have = con.execute(
+                f"SELECT COUNT(*) FROM pm_players p LEFT JOIN pm_market m ON m.player_id=p.player_id "
+                f"WHERE p.retired=0 AND p.player_id NOT LIKE 'AMT_%' AND p.player_id NOT IN ({_OWNED_SQL}) "
+                f"AND COALESCE(m.price, p.base_value) >= ? AND (? IS NULL OR COALESCE(m.price, p.base_value) <= ?)",
+                (mn, mx, mx)).fetchone()[0]
+            if int(have) < lo:
+                out[name] = lo - int(have)
+        return out
+
+    def _spawn_tier_371(self, month_index: int, now_ts: int, tier_need: dict) -> list:
+        """3.7.1 그 팩 가격대에 드는 선수를 모자란 만큼 만든다 (S · A 등급으로 다시 뽑기)."""
+        out = []
+        for name, n in tier_need.items():
+            pk = PACKS_360[name]
+            mn, mx = int(pk["min_price"]), pk.get("max_price")
+            for _ in range(n):
+                for t in range(_TIER_SPAWN_TRIES_371):
+                    p = self._spawn_player(month_index, now_ts, force_grade="S" if t % 2 == 0 else "A")
+                    if p["price"] >= mn and (mx is None or p["price"] <= int(mx)):
+                        out.append(p)
+                        break
+        return out
 
     async def count_pack_pool(self) -> dict:
         """각 팩 등급별 현재 풀 내 선수 수 반환 {pack_name: count}"""
@@ -1686,7 +1723,8 @@ class PlayerMarketDB:
                             tickets = min(pulls, int(r[0]) if r else 0)
                         except sqlite3.OperationalError:
                             tickets = 0
-                    if not _take_cash(con, user_id, pack_price * (pulls - tickets)):
+                    cost = pack_price * (pulls - tickets)   # 3.7.1 교환권으로만 열면 돈을 안 본다 (빚이 있어도 열린다)
+                    if cost > 0 and not _take_cash(con, user_id, cost):
                         con.execute("ROLLBACK;")
                         return ("NO_FUNDS", [])
                     if tickets:
