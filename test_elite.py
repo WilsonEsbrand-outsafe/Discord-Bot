@@ -154,7 +154,7 @@ def test_release():
     assert release.preview(T, before) and not release.preview(other, before) and release.preview(other, after)
     new310 = set() if release.released_310(before) else release.PREVIEW_310   # 3.1.0 새 명령어는 공개 전까지 다른 서버에서 빠진다
     new360 = release.PREVIEW_360   # 3.6.0 새 명령어 (/2군) 는 RELEASE_360_TS 전까지 다른 서버에서 빠진다
-    new360 = new360 | release.PREVIEW_371   # 3.7.1 /봇구단 도 공개 전엔 빠진다
+    new360 = new360 | release.PREVIEW_371 | release.PREVIEW_372   # 3.7.1 /봇구단 · 3.7.2 /원석 도 공개 전엔 빠진다
     assert release.hidden_commands(other, before) - new360 == release.PREVIEW_ONLY | new310
     assert release.hidden_commands(other, after) - release.PREVIEW_310 - new360 == release.LEGACY_ONLY
     assert release.hidden_commands(T, before) == release.LEGACY_ONLY | release.LEGACY_2101 | release.LEGACY_311   # 없어지는 명령어는 테스트 서버부터

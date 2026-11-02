@@ -201,6 +201,7 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = out | LEGACY_311 if preview_311(guild_id, now) else out
     out = out if preview_360(guild_id, now) else out | PREVIEW_360
     out = out if preview_371(guild_id, now) else out | PREVIEW_371
+    out = out if preview_372(guild_id, now) else out | PREVIEW_372
     return out if preview_310(guild_id, now) else out | PREVIEW_310
 
 
@@ -215,6 +216,19 @@ def released_371(now: Optional[float] = None) -> bool:
 
 def preview_371(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_371(now)
+
+
+# 3.7.2 — 테스트 서버 먼저. /스카우트 = 돈 대신 💎 원석 5종 (services/gems.py) · /원석(시세 · 환전 · 세공). None = 아직
+RELEASE_372_TS: Optional[int] = None
+PREVIEW_372: set[str] = {"원석"}
+
+
+def released_372(now: Optional[float] = None) -> bool:
+    return RELEASE_372_TS is not None and _now(now) >= RELEASE_372_TS
+
+
+def preview_372(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_372(now)
 
 
 def ctx_370() -> bool:

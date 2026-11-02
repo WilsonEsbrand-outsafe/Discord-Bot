@@ -16,7 +16,7 @@ from services.economy_db import (
     BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, WATCH_MAX_LEVEL, give_item,
 )
 from services.club_db import ClubDB, hidden_tier, steroid_table
-from services import agent
+from services import agent, gems
 from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_player
 from services.notifier import send_notify
 from services import ui
@@ -259,6 +259,92 @@ class AgentAgainView(discord.ui.View):
         button.disabled = True
         await interaction.response.edit_message(view=self)
         await self.cog._agent_scout(interaction)
+
+
+class GemScoutView(discord.ui.View):
+    """3.7.2 💎 스카우트 결과 아래 [🔍 다시 스카우트] [💎 원석 보기] (본인만)."""
+
+    def __init__(self, cog: "Economy", user, again: bool = True):
+        super().__init__(timeout=900)
+        self.cog, self.user = cog, user
+        if not again:
+            self.remove_item(self.again)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("🙅 `/스카우트`를 직접 써 주세요!", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="다시 스카우트", emoji="🔍", style=discord.ButtonStyle.primary)
+    async def again(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.cog._gem_scout(interaction)
+
+    @discord.ui.button(label="원석 보기", emoji="💎", style=discord.ButtonStyle.secondary)
+    async def show(self, interaction: discord.Interaction, button: discord.ui.Button):
+        e, view = await self.cog._gem_panel(interaction.user)
+        await interaction.response.send_message(embed=e, view=view, ephemeral=True)
+
+
+class GemPanelView(discord.ui.View):
+    """3.7.2 💎 /원석 — [환전] [세공] 메뉴 (본인에게만 보이는 화면)."""
+
+    def __init__(self, cog: "Economy", user, have: dict):
+        super().__init__(timeout=600)
+        self.cog, self.user = cog, user
+        sell = [discord.SelectOption(label=f"{gems.GEMS[g][1]} 전부 환전 ({have[g]}개)", value=g, emoji=gems.GEMS[g][0])
+                for g in gems.ORDER if have.get(g)]
+        if sell:
+            sell.append(discord.SelectOption(label="모든 원석 환전", value="*", emoji="💰"))
+            sel = discord.ui.Select(placeholder="💰 돈으로 환전할 원석", options=sell, row=0)
+            sel.callback = self._sell
+            self.add_item(sel)
+        craft = []
+        for g in gems.CRAFT_CHANCE:
+            n = have.get(g, 0) // gems.CRAFT_COST
+            if n:
+                up = gems.ORDER[gems.ORDER.index(g) + 1]
+                craft.append(discord.SelectOption(label=f"{gems.GEMS[g][1]} {gems.CRAFT_COST}개 → {gems.GEMS[up][1]} 1번",
+                                                  value=f"{g}:1", emoji=gems.GEMS[up][0]))
+                if n > 1:
+                    craft.append(discord.SelectOption(label=f"{gems.GEMS[g][1]} 가능한 만큼 ({n}번)",
+                                                      value=f"{g}:{n}", emoji="💠"))
+        if craft:
+            sel = discord.ui.Select(placeholder="💠 세공할 원석 (실패하면 재료가 사라져요)", options=craft[:25], row=1)
+            sel.callback = self._craft
+            self.add_item(sel)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user.id
+
+    async def _sell(self, interaction: discord.Interaction):
+        g = interaction.data["values"][0]
+        r = await self.cog.db._tx(lambda con: gems.sell(con, self.user.id, None if g == "*" else g, int(time.time())))
+        lines = [f"{gems.label(k)} × {n} · 개당 {p:,}원" for k, (n, p) in r["sold"].items()]
+        e = ui.card(f"💰 환전 완료! +{r['total']:,}원", "\n".join(lines) + f"\n\n`잔액` **{r['balance']:,}원**",
+                    ui.WIN if r["total"] else ui.EVEN, self.user, "💎 원석")
+        await interaction.response.edit_message(embed=e, view=None)
+
+    async def _craft(self, interaction: discord.Interaction):
+        g, n = interaction.data["values"][0].split(":")
+        r = await self.cog.db._tx(lambda con: gems.craft(con, self.user.id, g, int(n)))
+        if not r["ok"]:
+            msg = {"top": "다이아몬드는 더 세공할 수 없어요.", "few": f"{gems.label(g)}이(가) {gems.CRAFT_COST}개 이상 있어야 해요.",
+                   "full": f"{gems.label(r.get('up', g))}이(가) 이미 가득 차 있어요."}[r["reason"]]
+            return await interaction.response.edit_message(embed=ui.card("🙅 세공할 수 없어요", msg, ui.LOSE, self.user, "💎 원석"),
+                                                           view=None)
+        made = " · ".join(f"{gems.label(k)} × {v}" for k, v in r["made"].items()) or "없음"
+        ok = sum(r["made"].values())
+        jackpot = any(k != r["up"] for k in r["made"])
+        title = ("🌟 대박 세공! 두 단계 위가 나왔어요!" if jackpot else
+                 "💠 세공 성공!" if ok and not r["fail"] else "💥 세공 실패…" if not ok else f"💠 세공 {ok}번 성공 · {r['fail']}번 실패")
+        e = ui.card(title, f"`재료` {gems.label(g)} × {r['used']}\n`결과` {made}",
+                    ui.GOLD if jackpot else (ui.WIN if ok else ui.LOSE), self.user, "💎 원석")
+        e2, view = await self.cog._gem_panel(self.user)
+        e.description += "\n\n" + e2.description
+        await interaction.response.edit_message(embed=e, view=view)
 
 
 class SteroidView(discord.ui.View):
@@ -735,9 +821,26 @@ class Economy(commands.Cog):
     SCOUT_ITEM_PROB_370 = 0.05
     SCOUT_ITEMS_370 = {"scout_coupon": 45, "special_training": 45, "youth_reroll": 10}
 
-    def _scout_roll(self, level: int, con, user_id: int, v360: bool = False, v370: bool = False):
+    # 3.7.2 (release.preview_372 서버): /스카우트 = 돈 대신 💎 원석 (services/gems.py). 매번 원석을 캐니 경험치는 +2 (하루 약 30)
+    GEM_XP_372 = 2
+    GEM_LINES_372 = ("숨은 재능을 찾아냈어요!", "현지 코치가 몰래 알려 준 유망주예요.", "동네 경기에서 번뜩이는 원석을 봤어요!",
+                     "비 오는 날에도 공을 놓지 않던 아이예요.", "이 선수, 조금만 다듬으면 빛나겠어요.")
+
+    def _gem_roll(self, level: int, con, user_id: int):
+        """(돈 0, 경험치, 표시 정보) — 레벨만큼 원석을 캐서 같은 트랜잭션에서 지급. 가끔 유스 아이템도."""
+        res = gems.give(con, user_id, gems.roll_gems(level))
+        item = None
+        if random.random() < self.SCOUT_ITEM_PROB_370:
+            item = random.choices(list(self.SCOUT_ITEMS_370), weights=list(self.SCOUT_ITEMS_370.values()))[0]
+            give_item(con, user_id, item)
+        return 0, self.GEM_XP_372, {"ok": True, "gem": True, "got": res["got"], "lost": res["lost"], "item": item,
+                                    "found": None, "base": 0, "mult": 1, "line": random.choice(self.GEM_LINES_372)}
+
+    def _scout_roll(self, level: int, con, user_id: int, v360: bool = False, v370: bool = False, v372: bool = False):
         """(돈 변동, 경험치 변동, 표시 정보). 성공하면 레벨별 확률로 선수 카드를 같은 트랜잭션에서 지급한다.
         3.7.0 (v370): 선수 에이전트 — 스킵권처럼 고를 수 없을 때는 기대값이 가장 큰 제안으로 자동으로 보낸다."""
+        if v372:
+            return self._gem_roll(level, con, user_id)
         if v370:
             rep = agent.make_report(level)
             return self._agent_settle(level, con, user_id, rep, agent.best_auto(rep))
@@ -815,6 +918,70 @@ class Economy(commands.Cog):
             view = AgentAgainView(self, user)
         await interaction.followup.send(embed=e, view=view) if view else await interaction.followup.send(embed=e)
 
+    # ───────────── 3.7.2 💎 원석 (release.preview_372 서버의 /스카우트 · /원석) ─────────────
+    async def _gem_scout(self, interaction: discord.Interaction):
+        """💎 /스카우트 — 돈 대신 원석. 결과 아래 [다시 스카우트] [원석 보기]."""
+        user, now_ts = interaction.user, int(time.time())
+        r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._gem_roll(lv, con, user.id),
+                                     cooldown_sec=self.SCOUT_COOLDOWN)
+        if not r["ok"]:
+            return await self._grind_blocked(
+                interaction, r, now_ts, self._scout_card, self._scout_status(r),
+                ("🧳 오늘 출장 끝", "오늘 스카우트 일정은 여기까지! 내일 00:00에 다시 떠나죠."),
+                ("✈️ 이동 중", "다음 경기장으로 가는 중이에요. 조금만 기다려 주세요!"),
+                ("✅ 출장 준비 완료", "짐을 다 쌌습니다! 지금 바로 `/스카우트` 가능해요."),
+            )
+        info = r["info"]
+        p = await self.db._tx(lambda con: gems.prices(con, now_ts))
+        got = info["got"]
+        if r["leveled"]:
+            title, color = f"🆙 레벨 업! Lv.{r['level'] - r['leveled']} → Lv.{r['level']}", ui.GOLD
+        else:
+            best = max(got, key=gems.ORDER.index) if got else None
+            title = f"{gems.GEMS[best][0]} 원석 발견!" if best else "🎒 가방이 가득 찼어요"
+            color = ui.GOLD if best in ("ruby", "diamond") else (ui.WIN if got else ui.EVEN)
+        body = f"> 🎙️ *\"{info['line']}\"*\n\n" + "\n".join(
+            f"{gems.label(g)} **× {n}** · 지금 시세 개당 {p[g][0]:,}원" for g, n in sorted(got.items(), key=lambda x: gems.ORDER.index(x[0])))
+        if info["lost"]:
+            body += "\n🎒 " + " · ".join(f"{gems.label(g)} {n}개" for g, n in info["lost"].items()) + "는 가방이 가득 차서 못 챙겼어요"
+        if info.get("item"):
+            emoji, name, _ = ITEMS[info["item"]]
+            body += f"\n🎁 덤으로 **{emoji} {name}**도 챙겼어요!"
+        e = ui.card(title, body + "\n\n" + self._scout_status(r, self.GEM_XP_372), color, user, "🎙️ 스카우트 리포트")
+        if r["used"] >= r["limit"]:
+            e.description += "\n\n🔓 오늘 스카우트 완료! 이제 `/훈련`을 할 수 있어요."
+        else:
+            e.set_footer(text=f"{self.SCOUT_COOLDOWN}초 뒤 다시 스카우트 · 원석은 /원석 에서 환전 · 세공")
+        await interaction.followup.send(embed=e, view=GemScoutView(self, user, again=r["used"] < r["limit"]))
+
+    async def _gem_panel(self, user) -> tuple[discord.Embed, discord.ui.View | None]:
+        """💎 내 원석 · 지금 시세 · 환전/세공 메뉴."""
+        now_ts = int(time.time())
+
+        def fn(con):
+            return gems.prices(con, now_ts), gems.bag(con, user.id)
+        p, have = await self.db._tx(fn)
+        lines, total = [], 0
+        for g in gems.ORDER:
+            price, prev = p[g]
+            arrow = "🔺" if price > prev else ("🔻" if price < prev else "➖")
+            n = have.get(g, 0)
+            total += n * price
+            lines.append(f"{gems.label(g)} `{n}/{gems.cap(g)}` · 시세 **{price:,}원** {arrow}")
+        lines.append(f"\n`모두 환전하면` **{total:,}원** · 다음 시세 <t:{gems.next_tick_ts(now_ts)}:R>")
+        lines.append(f"💠 세공: 같은 원석 {gems.CRAFT_COST}개로 한 단계 위에 도전 (실패하면 사라져요 · 가끔 두 단계 위!)")
+        e = ui.card("💎 내 원석", "\n".join(lines), ui.INFO, user, "💎 원석")
+        view = GemPanelView(self, user, have)
+        return e, (view if view.children else None)
+
+    @app_commands.command(name="원석", description="💎 스카우트로 모은 원석 — 시세 보기 · 돈으로 환전 · 세공")
+    async def gem_cmd(self, interaction: discord.Interaction):
+        e, view = await self._gem_panel(interaction.user)
+        if view:
+            await interaction.response.send_message(embed=e, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=e, ephemeral=True)
+
     def _scout_status(self, r: dict, xp_gain: int | None = None) -> str:
         lv = r["level"]
         return self._grind_status(r, SCOUT_MAX_LEVEL, self.scout_tier(lv), self.scout_money_mult(lv), xp_gain)
@@ -826,6 +993,8 @@ class Economy(commands.Cog):
     @app_commands.command(name="스카우트", description="세계를 돌며 선수를 찾아요 — 돈을 벌고, 드물게 실제 선수를 영입!")
     async def scout(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if release.preview_372(getattr(interaction, "guild_id", None)):   # 3.7.2 💎 원석
+            return await self._gem_scout(interaction)
         if release.preview_370(getattr(interaction, "guild_id", None)):   # 3.7.0 선수 에이전트
             return await self._agent_scout(interaction)
         user = interaction.user
@@ -1147,7 +1316,8 @@ class Economy(commands.Cog):
         table = SKIP_ITEMS[item]
         what = self.GRIND_NAMES[table]
         v311 = release.preview_311(_gid(user))   # 3.1.1 훈련 레벨 간격 · 배율
-        roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(_gid(user)), release.preview_370(_gid(user))),
+        roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(_gid(user)), release.preview_370(_gid(user)),
+                                                             release.preview_372(_gid(user))),
                 "training": lambda lv, con=None: self._train_roll(lv, con, v311),
                 "spectating": lambda lv, con: self._watch_roll(lv, con, user.id, release.preview_310(_gid(user)))}[table]
         status = {"scouting": self._scout_status, "training": self._train_status, "spectating": self._watch_status}[table]
@@ -1169,10 +1339,22 @@ class Economy(commands.Cog):
         lines = [f"`자동 완료` **{r['plays']}회** · " + " · ".join(f"{k} {kinds.count(k)}" for k in order),
                  self._settle_line(r["delta"], {}, r.get("boost")), f"`잔액` **{r['new_bal']:,}원**",
                  status(r, r["xp_gain"])]
+        if any(i.get("gem") for i in infos):   # 3.7.2 💎 원석: 돈은 안 움직이니 정산 · 잔액 줄은 뺀다
+            del lines[1:3]
         found = [i["found"] for i in infos if i.get("found")]
         if found:
             lines.append("\n💎 **선수 발굴!**\n" + "\n".join(
                 f"　{f['tier']} **{f['name']}** `#{f['player_id']}` · {f['pos']} · OVR {f['ovr']}" for f in found))
+        mined, lost = {}, {}
+        for i in infos:   # 3.7.2 💎 원석
+            for g, n in (i.get("got") or {}).items():
+                mined[g] = mined.get(g, 0) + n
+            for g, n in (i.get("lost") or {}).items():
+                lost[g] = lost.get(g, 0) + n
+        if mined or lost:
+            lines.append("\n💎 **캔 원석** " + (" · ".join(f"{gems.label(g)} × {mined[g]}" for g in gems.ORDER if g in mined) or "없음")
+                         + (f"\n🎒 가방이 가득 차서 못 챙김: " + " · ".join(f"{gems.label(g)} {lost[g]}개" for g in gems.ORDER if g in lost)
+                            if lost else "") + "\n`/원석`에서 환전 · 세공")
         got = {}
         for i in infos:
             if i.get("item"):
