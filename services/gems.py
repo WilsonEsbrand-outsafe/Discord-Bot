@@ -146,6 +146,32 @@ def craft(con, uid: int, gem: str, times: int = 1, rng=random) -> dict:
     return {"ok": True, "tries": done, "made": made, "fail": fail, "used": used, "gem": gem, "up": up}
 
 
+# 3.7.2 규완님: 원석은 돈으로도 살 수 있다 (지금 시세 그대로) — 다이아몬드만 못 산다 (스카우트 · 세공으로만)
+BUYABLE = ("rough", "emerald", "sapphire", "ruby")
+BUY_STEPS = (1, 10, 100)
+
+
+def buy(con, uid: int, gem: str, qty: int, now_ts: int) -> dict:
+    """gem 을 지금 시세로 qty 개 산다 (보유 한도 · 잔액만큼까지 줄여서). qty <= 0 이면 살 수 있는 만큼.
+    → {ok, gem, n, price, total, balance} / 실패 reason: no(다이아몬드 등) · full(가득 참) · money(잔액 부족)."""
+    if gem not in BUYABLE:
+        return {"ok": False, "reason": "no"}
+    price = prices(con, now_ts)[gem][0]
+    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(uid),))
+    bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(uid),)).fetchone()[0])
+    room = cap(gem) - bag(con, uid).get(gem, 0)
+    if room <= 0:
+        return {"ok": False, "reason": "full", "price": price}
+    afford = max(0, bal) // price
+    if afford <= 0:
+        return {"ok": False, "reason": "money", "price": price, "balance": bal}
+    n = min(room, afford, int(qty) if int(qty) > 0 else room)
+    total = n * price
+    con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (total, int(uid)))
+    give(con, uid, {gem: n})
+    return {"ok": True, "gem": gem, "n": n, "price": price, "total": total, "balance": bal - total}
+
+
 def sell(con, uid: int, gem: Optional[str], now_ts: int) -> dict:
     """gem 종류를 전부 (None 이면 모든 종류를) 지금 시세로 환전 → {sold: {종류: (개수, 시세)}, total, balance}."""
     p = prices(con, now_ts)
