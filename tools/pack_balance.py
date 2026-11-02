@@ -60,9 +60,15 @@ def build_pool(db_path: str | None) -> sqlite3.Connection:
         return sqlite3.connect(pmdb.DB_PATH)
 
     con = sqlite3.connect(pmdb.DB_PATH)
-    v360 = os.getenv("V360") == "1"   # 3.6.0 선수풀: OVR 65부터 · 1,200명
-    for _ in range(pmdb.POOL_SIZE_360 if v360 else POOL_SIZE):
-        p = pm._spawn_player(0, 0, min_ovr=pmdb.POOL_MIN_OVR_360 if v360 else 50)
+    v371 = os.getenv("V371") == "1"   # 3.7.1 선수풀: 3,000명 · 비싼 쪽으로 · 싼 선수 CHEAP_CAP_371 명만
+    v360 = v371 or os.getenv("V360") == "1"   # 3.6.0 선수풀: OVR 65부터 · 1,200명
+    n = pmdb.POOL_SIZE_371 if v371 else pmdb.POOL_SIZE_360 if v360 else POOL_SIZE
+    spawned = [pm._spawn_player(0, 0, min_ovr=pmdb.POOL_MIN_OVR_360 if v360 else 50, rich=v371) for _ in range(n)]
+    if v371:
+        cheap = sorted((p for p in spawned if p["price"] < pmdb.CHEAP_PRICE_371), key=lambda p: p["price"])
+        cut = {id(p) for p in cheap[:max(0, len(cheap) - pmdb.CHEAP_CAP_371)]}
+        spawned = [p for p in spawned if id(p) not in cut]
+    for p in spawned:
         con.execute(
             "INSERT INTO pm_players(player_id,name,nation,position,age,ovr,pot,pot_grade,"
             "base_value,retired,created_month,updated_ts) VALUES(?,?,?,?,?,?,?,?,?,0,0,0)",

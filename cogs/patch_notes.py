@@ -49,13 +49,15 @@ class PatchNotesCog(commands.Cog):
         finally:
             con.close()
 
-    async def send_all(self, embed: "discord.Embed | list[discord.Embed]", everyone: bool = False) -> tuple[int, int]:
-        """모든 서버 알림 채널에 보낸다. everyone=True 면 @everyone 태그 (패치노트)."""
+    async def send_all(self, embed: "discord.Embed | list[discord.Embed]", everyone: bool = False,
+                       thread: bool = False) -> tuple[int, int]:
+        """모든 서버 알림 채널에 보낸다. everyone=True 면 @everyone 태그 (패치노트).
+        everyone · thread 면 PATCH_THREADS 서버는 패치 스레드로 (3.7.1 점검 안내도 패치노트와 같은 곳에)."""
         embeds = embed if isinstance(embed, list) else [embed]
         success, fail = 0, 0
         for guild in self.bot.guilds:
             try:
-                channel = await self._patch_thread(guild) if everyone else None   # 3.7.0 이 서버는 패치노트를 정해진 스레드에
+                channel = await self._patch_thread(guild) if (everyone or thread) else None   # 3.7.0 이 서버는 패치노트를 정해진 스레드에
                 channel = channel or await asyncio.to_thread(self._pick_channel, guild)
                 if everyone:
                     await channel.send(content="@everyone", embeds=embeds,
@@ -119,7 +121,7 @@ class PatchNotesCog(commands.Cog):
                 es = [discord.Embed(title=f"{title} · {sub}" if sub else title, description=body, color=0xE67E22)
                       for sub, body in parts]
                 es[-1].timestamp = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
-                ok, fail = await self.send_all(es, everyone=key.startswith("patch-"))
+                ok, fail = await self.send_all(es, everyone=key.startswith("patch-"), thread=True)
                 print(f"[공지] {key} 성공 {ok} / 실패 {fail}")
 
     async def _thread_notices(self, now: int):

@@ -286,6 +286,8 @@ POOL_SIZE_360 = 1_200
 
 
 def pool_size(now_ts: Optional[float] = None) -> int:
+    if release.released_370(now_ts):
+        return POOL_SIZE_371
     return POOL_SIZE_360 if release.released_360(now_ts) else POOL_SIZE
 
 # ── 3.7.0 선수 1명 1주인 · 봇 구단 (release.ctx_370: 테스트 서버 먼저, 백그라운드는 released_370) ──
@@ -294,8 +296,15 @@ PACK_TICKET_PACK = "얼티밋"   # 🎫 교환권으로 여는 팩 (규완님: �
 PACK_TICKETS_370 = 10       # 전환 보상: 얼티밋팩 교환권 (카드가 한 장이라도 있었으면)
 FREE_MIN_370 = 600         # 아무도 안 가진 선수를 시장에 이만큼은 둔다 (1명 1주인이라 팩이 마르지 않게)
 # 3.7.1 (규완님: 선수풀을 늘려야 함, 특히 비싼 선수): 안 가진 선수 1,000명 + 비싼 팩 등급마다 안 가진 선수를 최소 이만큼
-FREE_MIN_371 = 1_000
-FREE_TIER_MIN_371 = {"플래티넘": 150, "다이아몬드": 120, "아이콘": 100, "얼티밋": 100}
+# 11/02 규완님: "무작정 많이 늘리고, 낮은 가격대는 줄이고, 비싼 가격대는 대폭" → 현역 3,000명 · 안 가진 선수 2,500명
+POOL_SIZE_371 = 3_000
+FREE_MIN_371 = 2_500
+FREE_TIER_MIN_371 = {"플래티넘": 400, "다이아몬드": 250, "아이콘": 200, "얼티밋": 200}
+CHEAP_PRICE_371 = 200_000   # 이 시세 밑의 안 가진 선수는
+CHEAP_CAP_371 = 400         # 이만큼만 남기고 은퇴 (싼 것부터)
+SPAWN_RICH_371 = True        # 새로 만드는 선수를 비싼 쪽으로 (잠재 등급 · 나이 비율)
+GRADE_CUM_371 = (0.25, 0.55, 0.80, 0.95)   # 잠재 S 25% · A 30% · B 25% · C 15% · D 5% (예전 8 · 14 · 33 · 30 · 15)
+AGE_SPLIT_371 = (0.40, 0.85)               # 유망주 40% · 전성기 45% · 베테랑 15% (예전 55 · 30 · 15)
 _TIER_SPAWN_TRIES_371 = 400   # 한 명 만들 때 그 가격대가 나올 때까지 다시 뽑는 횟수
 _OWNED_SQL = ("SELECT player_id FROM pm_holdings WHERE qty>0 "
               "UNION SELECT player_id FROM pm_listings WHERE status='active' "
@@ -1124,17 +1133,20 @@ class PlayerMarketDB:
         return max(1_000, floor_p), max(floor_p + 1_000, ceil_p)
 
     def _spawn_player(self, month_index: int, now_ts: int, force_grade: Optional[str] = None,
-                      pid: Optional[str] = None, min_ovr: Optional[int] = None) -> Dict:
+                      pid: Optional[str] = None, min_ovr: Optional[int] = None,
+                      rich: Optional[bool] = None) -> Dict:
         """pid 는 DB에 넣는 쪽이 _next_player_id(con) 로 발급해 넘긴다 (도구·테스트는 생략 가능).
         min_ovr: 3.6.0 선수풀 최소 OVR (None 이면 RELEASE_360_TS 뒤에 POOL_MIN_OVR_360)."""
         if min_ovr is None:
             min_ovr = POOL_MIN_OVR_360 if release.released_360(now_ts) else 50
-        # ── 나이 분포: 유망주 55% / 전성기 30% / 베테랑 15%
+        rich = SPAWN_RICH_371 if rich is None else rich
+        # ── 나이 분포: 유망주 55% / 전성기 30% / 베테랑 15% (3.7.1 rich: 유망주 · 전성기 비율은 AGE_SPLIT_371)
         r_age = random.random()
-        if r_age < 0.55:
+        young, prime = AGE_SPLIT_371 if rich else (0.55, 0.85)
+        if r_age < young:
             age = random.randint(17, 22)   # 유망주
             gap_start = random.randint(15, 30)
-        elif r_age < 0.85:
+        elif r_age < prime:
             age = random.randint(23, 29)   # 전성기
             gap_start = random.randint(3, 12)
         else:
@@ -1153,13 +1165,14 @@ class PlayerMarketDB:
             pot = random.randint(66, 71)
         else:
             r = random.random()
-            if r < 0.08:
+            c = GRADE_CUM_371 if rich else (0.08, 0.22, 0.55, 0.85)
+            if r < c[0]:
                 pot = random.randint(90, 95)
-            elif r < 0.22:
+            elif r < c[1]:
                 pot = random.randint(84, 89)
-            elif r < 0.55:
+            elif r < c[2]:
                 pot = random.randint(78, 83)
-            elif r < 0.85:
+            elif r < c[3]:
                 pot = random.randint(72, 77)
             else:
                 pot = random.randint(66, 71)
@@ -1215,6 +1228,20 @@ class PlayerMarketDB:
                         if weak:
                             con.commit()
                             print(f"[PM] 3.6.0 OVR {POOL_MIN_OVR_360} 밑 선수 은퇴: {len(weak)}명")
+                    if release.released_370(now_ts):   # 3.7.1 싼 선수 줄이기: 안 가진 CHEAP_PRICE_371 밑 선수는 CHEAP_CAP_371 명만
+                        cheap = [pid for (pid,) in con.execute(
+                            f"SELECT p.player_id FROM pm_players p LEFT JOIN pm_market m ON m.player_id=p.player_id "
+                            f"WHERE p.retired=0 AND p.player_id NOT LIKE 'AMT_%' AND p.player_id NOT IN ({_OWNED_SQL}) "
+                            f"AND COALESCE(m.price, p.base_value) < ? ORDER BY COALESCE(m.price, p.base_value)",
+                            (CHEAP_PRICE_371,))]
+                        cut = cheap[:max(0, len(cheap) - CHEAP_CAP_371)]
+                        for pid in cut:
+                            con.execute("UPDATE pm_players SET retired=1, updated_ts=? WHERE player_id=?", (int(now_ts), pid))
+                            con.execute("UPDATE pm_market SET price=0, floor_price=0, ceil_price=0, last_update_ts=? "
+                                        "WHERE player_id=?", (int(now_ts), pid))
+                        if cut:
+                            con.commit()
+                            print(f"[PM] 3.7.1 싼 선수 은퇴: {len(cut)}명")
                     # 아마추어 더미(AMT_)는 시장에 나오지 않으므로 정원에서 제외한다.
                     active = con.execute(
                         "SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'"
