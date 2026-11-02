@@ -25,6 +25,11 @@ def test_pool_and_ticket_with_debt():
     free = con.execute("SELECT COUNT(*) FROM pm_players WHERE retired=0 AND player_id NOT LIKE 'AMT_%'").fetchone()[0]
     assert free >= pmdb.FREE_MIN_371
     assert pmdb.PlayerMarketDB._tier_need_371(con) == {}      # 비싼 팩 등급마다 최소 인원이 찼다
+    cheap = con.execute("SELECT COUNT(*) FROM pm_players p JOIN pm_market m ON m.player_id=p.player_id "
+                        "WHERE p.retired=0 AND m.price < ?", (pmdb.CHEAP_PRICE_371,)).fetchone()[0]
+    run(pm.ensure_active_pool(now, target=0))                  # 싼 선수는 CHEAP_CAP_371 명까지만 남는다
+    assert con.execute("SELECT COUNT(*) FROM pm_players p JOIN pm_market m ON m.player_id=p.player_id "
+                       "WHERE p.retired=0 AND m.price < ?", (pmdb.CHEAP_PRICE_371,)).fetchone()[0] == min(cheap, pmdb.CHEAP_CAP_371)
     ids = [r[0] for r in con.execute("SELECT player_id FROM pm_players WHERE player_id NOT LIKE 'AMT_%'")]
     assert len(ids) == len(set(ids))
 
