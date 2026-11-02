@@ -54,16 +54,17 @@ class PatchNotesCog(commands.Cog):
         embeds = embed if isinstance(embed, list) else [embed]
         success, fail = 0, 0
         for guild in self.bot.guilds:
-            channel = await self._patch_thread(guild) if everyone else None   # 3.7.0 이 서버는 패치노트를 정해진 스레드에
-            channel = channel or await asyncio.to_thread(self._pick_channel, guild)
             try:
+                channel = await self._patch_thread(guild) if everyone else None   # 3.7.0 이 서버는 패치노트를 정해진 스레드에
+                channel = channel or await asyncio.to_thread(self._pick_channel, guild)
                 if everyone:
                     await channel.send(content="@everyone", embeds=embeds,
                                        allowed_mentions=discord.AllowedMentions(everyone=True))
                 else:
                     await channel.send(embeds=embeds)
                 success += 1
-            except Exception:
+            except Exception as e:
+                print(f"[공지] {guild.id} 보내기 실패: {e!r}")
                 fail += 1
         return success, fail
 
@@ -96,6 +97,12 @@ class PatchNotesCog(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def notice_loop(self):
+        try:
+            await self._notice_tick()
+        except Exception as e:   # 예외가 나면 루프가 조용히 멈춰 공지가 안 나간다 (3.7.0) — 로그 남기고 다음 분에 다시
+            print(f"[공지] 루프 오류: {e!r}")
+
+    async def _notice_tick(self):
         now = int(time.time())
         try:
             await self._thread_notices(now)

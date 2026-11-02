@@ -212,7 +212,7 @@ def test_370_notices():
     import release
     keys = {k: ts for k, ts, *_ in NOTICES}
     start, end = release.MAINTENANCE
-    assert release.RELEASE_370_TS == start and keys["maint-3.7.0"] == keys["patch-3.7.0"] < start
+    assert release.RELEASE_370_TS == start and keys["maint-3.7.0-r"] == keys["patch-3.7.0-r"] < start
     assert release.maintenance(start) and not release.maintenance(end)
     assert "KIKO370" in PATCH_NOTES["3.7.0"]
     _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.6.1")
