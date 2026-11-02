@@ -24,9 +24,13 @@ def tackled(passed: int, rng=random) -> bool:
 
 
 def payout(amount: int, passed: int) -> int:
-    """passed 명 제치고 멈췄을 때 받는 돈 (원금 포함, 순이익 최대 MAX_PAYOUT). 0명이면 원금 그대로."""
+    """passed 명 제치고 멈췄을 때 받는 돈 (원금 포함, 순이익 최대 MAX_PAYOUT). 0명이면 원금 그대로.
+    3.7.2 (release.ctx_372 서버): 규완님 결정으로 50억 제한 없음 — 큰 금액도 정확히 (정수 계산)."""
     if passed <= 0:
         return amount
+    import release
+    if release.ctx_372():
+        return int(amount) * round(MULTS[passed - 1] * 100) // 100
     return min(int(amount * MULTS[passed - 1]), amount + MAX_PAYOUT)
 
 
