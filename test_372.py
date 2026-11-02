@@ -80,3 +80,19 @@ def test_stadium_text_372():
     finally:
         release.GUILD.reset(tok)
     assert facility_effect("stadium", 2) == "공식경기 적중 상금 +8%"
+
+
+def test_buy():
+    con = _con()
+    con.execute("INSERT INTO wallets VALUES(7, 1000000)")
+    p = gems.prices(con, 0)
+    r = gems.buy(con, 7, "emerald", 10, 0)
+    assert r["ok"] and r["n"] == 10 and r["balance"] == 1_000_000 - 10 * p["emerald"][0]
+    assert gems.bag(con, 7) == {"emerald": 10}
+    assert gems.buy(con, 7, "diamond", 1, 0)["reason"] == "no"
+    r = gems.buy(con, 7, "ruby", 0, 0)          # 살 수 있는 만큼 = 잔액 기준
+    assert r["ok"] and r["n"] == (1_000_000 - 10 * p["emerald"][0]) // p["ruby"][0]
+    assert gems.buy(con, 7, "ruby", 1, 0)["reason"] == "money"
+    con.execute("UPDATE wallets SET balance=10000000000 WHERE user_id=7")
+    gems.buy(con, 7, "rough", 0, 0)
+    assert gems.bag(con, 7)["rough"] == gems.cap("rough") and gems.buy(con, 7, "rough", 1, 0)["reason"] == "full"

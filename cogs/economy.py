@@ -301,6 +301,19 @@ class GemPanelView(discord.ui.View):
             sel = discord.ui.Select(placeholder="💰 돈으로 환전할 원석", options=sell, row=0)
             sel.callback = self._sell
             self.add_item(sel)
+        buy = []
+        for g in gems.BUYABLE:
+            room = gems.cap(g) - have.get(g, 0)
+            if room <= 0:
+                continue
+            for k in gems.BUY_STEPS:
+                if k < room:
+                    buy.append(discord.SelectOption(label=f"{gems.GEMS[g][1]} {k}개 사기", value=f"{g}:{k}", emoji=gems.GEMS[g][0]))
+            buy.append(discord.SelectOption(label=f"{gems.GEMS[g][1]} 살 수 있는 만큼", value=f"{g}:0", emoji="🛒"))
+        if buy:
+            sel = discord.ui.Select(placeholder="🛒 지금 시세로 살 원석 (다이아몬드는 못 사요)", options=buy[:25], row=2)
+            sel.callback = self._buy
+            self.add_item(sel)
         craft = []
         for g in gems.CRAFT_CHANCE:
             n = have.get(g, 0) // gems.CRAFT_COST
@@ -326,6 +339,21 @@ class GemPanelView(discord.ui.View):
         e = ui.card(f"💰 환전 완료! +{r['total']:,}원", "\n".join(lines) + f"\n\n`잔액` **{r['balance']:,}원**",
                     ui.WIN if r["total"] else ui.EVEN, self.user, "💎 원석")
         await interaction.response.edit_message(embed=e, view=None)
+
+    async def _buy(self, interaction: discord.Interaction):
+        g, n = interaction.data["values"][0].split(":")
+        r = await self.cog.db._tx(lambda con: gems.buy(con, self.user.id, g, int(n), int(time.time())))
+        if not r["ok"]:
+            msg = {"no": "다이아몬드는 살 수 없어요. 스카우트와 세공으로만 얻어요.",
+                   "full": f"{gems.label(g)}이(가) 이미 가득 차 있어요.",
+                   "money": f"돈이 모자라요. (개당 {r.get('price', 0):,}원)"}[r["reason"]]
+            e = ui.card("🙅 살 수 없어요", msg, ui.LOSE, self.user, "💎 원석")
+        else:
+            e = ui.card(f"🛒 {gems.label(g)} × {r['n']} 구매!",
+                        f"`개당` {r['price']:,}원 · `합계` **-{r['total']:,}원**\n`잔액` **{r['balance']:,}원**", ui.INFO, self.user, "💎 원석")
+        e2, view = await self.cog._gem_panel(self.user)
+        e.description += "\n\n" + e2.description
+        await interaction.response.edit_message(embed=e, view=view)
 
     async def _craft(self, interaction: discord.Interaction):
         g, n = interaction.data["values"][0].split(":")
@@ -970,11 +998,12 @@ class Economy(commands.Cog):
             lines.append(f"{gems.label(g)} `{n}/{gems.cap(g)}` · 시세 **{price:,}원** {arrow}")
         lines.append(f"\n`모두 환전하면` **{total:,}원** · 다음 시세 <t:{gems.next_tick_ts(now_ts)}:R>")
         lines.append(f"💠 세공: 같은 원석 {gems.CRAFT_COST}개로 한 단계 위에 도전 (실패하면 사라져요 · 가끔 두 단계 위!)")
+        lines.append("🛒 다이아몬드를 뺀 원석은 지금 시세로 살 수 있어요")
         e = ui.card("💎 내 원석", "\n".join(lines), ui.INFO, user, "💎 원석")
         view = GemPanelView(self, user, have)
         return e, (view if view.children else None)
 
-    @app_commands.command(name="원석", description="💎 스카우트로 모은 원석 — 시세 보기 · 돈으로 환전 · 세공")
+    @app_commands.command(name="원석", description="💎 원석 — 시세 보기 · 사기 · 돈으로 환전 · 세공")
     async def gem_cmd(self, interaction: discord.Interaction):
         e, view = await self._gem_panel(interaction.user)
         if view:
