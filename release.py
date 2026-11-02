@@ -10,7 +10,7 @@ from typing import Optional
 TEST_GUILD = 1374213619793006704
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
 MAINT_OPEN_END = calendar.timegm((2100, 1, 1, 0, 0, 0))   # 끝 시각을 정하지 않은 무기한 점검
-MAINTENANCE = (calendar.timegm((2026, 10, 29, 6, 58, 0)), calendar.timegm((2026, 10, 29, 7, 44, 0)))   # 10/29 15:58 ~ 16:44 KST — 3.6.0 오류 긴급 점검 (3.6.1 배포와 함께 끝)
+MAINTENANCE = (calendar.timegm((2026, 11, 2, 0, 40, 0)), calendar.timegm((2026, 11, 2, 0, 45, 0)))   # 11/02 09:40 ~ 09:45 KST — 3.7.0 정기점검
 # 3.6.0 정기점검은 10/29 13:25 ~ 13:30 KST (04:25 ~ 04:30 UTC) 였다
 # (2.8 점검은 RELEASE_TS ± 600초였다. 공개를 다시 단계 배포할 땐 MAINTENANCE 를 RELEASE_TS 에 맞춘다)
 
@@ -167,7 +167,7 @@ def preview_360(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 
 # 3.7.0 — 테스트 서버 먼저. preview_370(guild): 어항 신선도 · 낚싯대 재구매 내구도 · 공식경기 상금 · 명문 구단 직접 수령 ·
 # 스테로이드 확률 · 유스 리롤권. 모든 서버가 같이 쓰는 것(명문 구단 자동 지급 끄기)은 RELEASE_370_TS 부터. None = 아직
-RELEASE_370_TS: Optional[int] = None
+RELEASE_370_TS: Optional[int] = calendar.timegm((2026, 11, 2, 0, 40, 0))   # 2026-11-02 09:40 KST (점검 시작과 함께 공개)
 
 
 def released_370(now: Optional[float] = None) -> bool:
