@@ -900,27 +900,8 @@ async def user_help(interaction: discord.Interaction):
     await interaction.response.send_message("✅ 안내 메시지를 채널에 전송했습니다.", ephemeral=True)
 
 # ───────────────── 실행부 ─────────────────
-async def _lag_watch():
-    """렉 찾기: 이벤트 루프가 0.5초 넘게 멈추면 로그 (DB · 그림 작업이 루프를 막는지 확인용)."""
-    import time as _t
-    while True:
-        t0 = _t.monotonic()
-        await asyncio.sleep(1)
-        late = _t.monotonic() - t0 - 1
-        if late > 0.5:
-            print(f"[렉] 이벤트 루프 {late:.1f}초 멈춤")
-
-
-@bot.event
-async def on_app_command_completion(interaction: discord.Interaction, command):
-    took = (discord.utils.utcnow() - interaction.created_at).total_seconds()
-    if took > 3:
-        print(f"[렉] /{command.qualified_name} {took:.1f}초 걸림")
-
-
 async def main():
     async with bot:
-        asyncio.get_running_loop().create_task(_lag_watch())
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
