@@ -968,14 +968,21 @@ class Economy(commands.Cog):
             best = max(got, key=gems.ORDER.index) if got else None
             title = f"{gems.GEMS[best][0]} 원석 발견!" if best else "🎒 가방이 가득 찼어요"
             color = ui.GOLD if best in ("ruby", "diamond") else (ui.WIN if got else ui.EVEN)
-        body = f"> 🎙️ *\"{info['line']}\"*\n\n" + "\n".join(
-            f"{gems.label(g)} **× {n}** · 지금 시세 개당 {p[g][0]:,}원" for g, n in sorted(got.items(), key=lambda x: gems.ORDER.index(x[0])))
+        big = release.preview_373(getattr(interaction, "guild_id", None))   # 3.7.3: 시세 줄 빼고 나온 원석을 크게
+        ordered = sorted(got.items(), key=lambda x: gems.ORDER.index(x[0]))
+        if big:
+            body = "\n".join(f"# {gems.label(g)} × {n}" for g, n in ordered) + f"\n> 🎙️ *\"{info['line']}\"*"
+        else:
+            body = f"> 🎙️ *\"{info['line']}\"*\n\n" + "\n".join(
+                f"{gems.label(g)} **× {n}** · 지금 시세 개당 {p[g][0]:,}원" for g, n in ordered)
         if info["lost"]:
             body += "\n🎒 " + " · ".join(f"{gems.label(g)} {n}개" for g, n in info["lost"].items()) + "는 가방이 가득 차서 못 챙겼어요"
         if info.get("item"):
             emoji, name, _ = ITEMS[info["item"]]
             body += f"\n🎁 덤으로 **{emoji} {name}**도 챙겼어요!"
         e = ui.card(title, body + "\n\n" + self._scout_status(r, self.GEM_XP_372), color, user, "🎙️ 스카우트 리포트")
+        if big and ordered:
+            e.set_thumbnail(url=ui.emoji_url(gems.GEMS[ordered[-1][0]][0]))
         if r["used"] >= r["limit"]:
             e.description += "\n\n🔓 오늘 스카우트 완료! 이제 `/훈련`을 할 수 있어요."
         else:
