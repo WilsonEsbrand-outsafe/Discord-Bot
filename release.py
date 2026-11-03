@@ -10,7 +10,7 @@ from typing import Optional
 TEST_GUILD = 1374213619793006704
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
 MAINT_OPEN_END = calendar.timegm((2100, 1, 1, 0, 0, 0))   # 끝 시각을 정하지 않은 무기한 점검
-MAINTENANCE = (calendar.timegm((2026, 11, 3, 0, 20, 0)), MAINT_OPEN_END)   # 11/03 09:20 KST ~ 무기한 — 3.7.2 점검 연장 (원래 09:25)
+MAINTENANCE = (calendar.timegm((2026, 11, 3, 0, 20, 0)), calendar.timegm((2026, 11, 3, 1, 5, 0)))   # 11/03 09:20 ~ 10:05 KST — 3.7.2 점검 (연장 → 3.7.3 공개하고 끝)
 # 3.7.1 점검은 11/02 10:50 ~ 11:00 KST 였다
 # 3.7.1 전 긴급 점검은 11/02 10:00 ~ 10:4x KST (무기한으로 걸었다가 3.7.1 배포 때 풀었다)
 # 3.7.0 정기점검은 11/02 09:40 ~ 09:45 KST (00:40 ~ 00:45 UTC) 였다
@@ -238,7 +238,7 @@ def ctx_372() -> bool:
 
 
 # 3.7.3 — 테스트 서버 먼저. /스카우트 원석은 한 번에 한 종류 × 여러 개. None = 아직
-RELEASE_373_TS: Optional[int] = None
+RELEASE_373_TS: Optional[int] = calendar.timegm((2026, 11, 3, 0, 20, 0))   # 3.7.3 연장 점검 중 공개 (배포 즉시)
 
 
 def released_373(now: Optional[float] = None) -> bool:
