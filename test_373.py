@@ -20,7 +20,7 @@ def test_scout_switch():
     con.execute("CREATE TABLE wallets (user_id INTEGER PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0)")
     con.execute("CREATE TABLE inventory (user_id INTEGER, item TEXT, qty INTEGER, PRIMARY KEY(user_id, item))")
     eco = E.__new__(E)
-    assert release.RELEASE_373_TS is None
+    assert release.RELEASE_373_TS == release.MAINTENANCE[0]   # 3.7.3 은 연장 점검 중 공개
     tok = release.GUILD.set(release.TEST_GUILD)
     try:
         for _ in range(30):

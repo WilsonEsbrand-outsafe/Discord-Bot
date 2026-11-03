@@ -205,6 +205,8 @@ COUPONS["SORRYKIKO"] = ({"enh_stone": 1}, calendar.timegm((2026, 11, 7, 15, 0, 0
 COUPONS["KIKO370"] = ({"lawyer": 1, "scout_reset": 1, "train_reset": 1, "watch_reset": 1,
                        "scout_skip": 1, "train_skip": 1, "watch_skip": 1}, calendar.timegm((2026, 11, 8, 15, 0, 0)))
 COUPONS_370 = {"KIKO370"}   # 3.7.0 공개(점검 시작) 뒤에만 (테스트 서버 먼저)
+# 3.7.3 점검 보상: 스카우트 리셋권 + 스카우트 스킵권 1장씩 · 2026-11-10 00:00 KST 만료
+COUPONS["ROADTODIA"] = ({"scout_reset": 1, "scout_skip": 1}, calendar.timegm((2026, 11, 9, 15, 0, 0)))
 
 
 # 창단 멤버 영구 칭호 (2.8) — 마이그레이션으로 한 번만 지급 (eco_migrations 에 'founder-2.8' 표시)
