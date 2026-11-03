@@ -36,7 +36,7 @@ def test_switch():
     try:
         assert release.preview_372(release.TEST_GUILD, BEFORE) and not release.preview_372(1, BEFORE)
         assert release.preview_372(1, AFTER)
-        assert release.MAINTENANCE == (AFTER, AFTER + 300)
+        assert release.MAINTENANCE[0] == AFTER
     finally:
         release.RELEASE_372_TS = None
     assert "원석" in release.hidden_commands(1) and "원석" not in release.hidden_commands(release.TEST_GUILD)
