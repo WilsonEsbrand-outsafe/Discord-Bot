@@ -17,6 +17,8 @@ import release   # noqa: E402
 def test_stadium_prize():
     odds = {"W": 2.4, "D": 3.6, "L": 2.6}
 
+    saved, release.RELEASE_372_TS = release.RELEASE_372_TS, None   # 공개 전 동작 (다른 서버는 그대로)
+
     async def flow():
         edb.EconomyDB()
         clubs = cdb.ClubDB()
@@ -38,4 +40,7 @@ def test_stadium_prize():
             release.GUILD.reset(tok)
         assert r["prize"]["stadium"] == 12 and r["prize"]["prize"] == int(round(base * 1.12, -2))
         assert r["week"]["purse"] == base + r["prize"]["prize"]
-    asyncio.run(flow())
+    try:
+        asyncio.run(flow())
+    finally:
+        release.RELEASE_372_TS = saved
