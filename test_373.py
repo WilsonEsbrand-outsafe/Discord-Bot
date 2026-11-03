@@ -28,3 +28,10 @@ def test_scout_switch():
             assert len(info["got"]) <= 1
     finally:
         release.GUILD.reset(tok)
+
+
+def test_gem_images_exist():
+    from cogs.economy import GEM_IMG_DIR
+    from services import gems
+    for g in gems.ORDER:
+        assert (GEM_IMG_DIR / f"{g}.png").is_file()
