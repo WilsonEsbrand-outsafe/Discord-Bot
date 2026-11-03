@@ -21,6 +21,9 @@ from services.player_market_db import SCOUT_FIND_PROB, give_player, scout_find_p
 from services.notifier import send_notify
 from services import ui
 import release
+from pathlib import Path
+
+GEM_IMG_DIR = Path(__file__).resolve().parent.parent / "assets" / "gems"   # 3.7.3 원석 그림
 
 
 def _format_time_left(seconds: int) -> str:
@@ -981,13 +984,16 @@ class Economy(commands.Cog):
             emoji, name, _ = ITEMS[info["item"]]
             body += f"\n🎁 덤으로 **{emoji} {name}**도 챙겼어요!"
         e = ui.card(title, body + "\n\n" + self._scout_status(r, self.GEM_XP_372), color, user, "🎙️ 스카우트 리포트")
-        if big and ordered:
-            e.set_thumbnail(url=ui.emoji_url(gems.GEMS[ordered[-1][0]][0]))
+        extra = {}
+        if big and ordered:   # 3.7.3 규완님 "원석 이미지를 크게 사진으로" — assets/gems/*.png (tools/make_gems.py)
+            g = ordered[-1][0]
+            extra["file"] = discord.File(GEM_IMG_DIR / f"{g}.png", filename=f"gem_{g}.png")
+            e.set_image(url=f"attachment://gem_{g}.png")
         if r["used"] >= r["limit"]:
             e.description += "\n\n🔓 오늘 스카우트 완료! 이제 `/훈련`을 할 수 있어요."
         else:
             e.set_footer(text=f"{self.SCOUT_COOLDOWN}초 뒤 다시 스카우트 · 원석은 /원석 에서 환전 · 세공")
-        await interaction.followup.send(embed=e, view=GemScoutView(self, user, again=r["used"] < r["limit"]))
+        await interaction.followup.send(embed=e, view=GemScoutView(self, user, again=r["used"] < r["limit"]), **extra)
 
     async def _gem_panel(self, user) -> tuple[discord.Embed, discord.ui.View | None]:
         """💎 내 원석 · 지금 시세 · 환전/세공 메뉴."""
