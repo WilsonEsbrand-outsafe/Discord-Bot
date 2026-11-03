@@ -13,9 +13,32 @@ def _con():
     return con
 
 
+import calendar   # noqa: E402
+
+BEFORE = calendar.timegm((2026, 11, 3, 0, 19, 0))
+AFTER = calendar.timegm((2026, 11, 3, 0, 20, 0))
+
+
+def setup_module():
+    """공개 전 동작(다른 서버는 예전 그대로)을 시험하는 테스트들 — 공개 시각을 잠시 비운다."""
+    global _SAVED
+    _SAVED = release.RELEASE_372_TS
+    release.RELEASE_372_TS = None
+
+
+def teardown_module():
+    release.RELEASE_372_TS = _SAVED
+
+
 def test_switch():
-    assert release.RELEASE_372_TS is None
-    assert release.preview_372(release.TEST_GUILD) and not release.preview_372(1)
+    assert _SAVED == AFTER   # 11/03 09:20 KST (점검 09:20 ~ 09:25)
+    release.RELEASE_372_TS = _SAVED
+    try:
+        assert release.preview_372(release.TEST_GUILD, BEFORE) and not release.preview_372(1, BEFORE)
+        assert release.preview_372(1, AFTER)
+        assert release.MAINTENANCE == (AFTER, AFTER + 300)
+    finally:
+        release.RELEASE_372_TS = None
     assert "원석" in release.hidden_commands(1) and "원석" not in release.hidden_commands(release.TEST_GUILD)
 
 
