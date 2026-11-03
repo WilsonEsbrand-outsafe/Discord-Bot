@@ -37,10 +37,14 @@ def label(key: str) -> str:
     return f"{e} {n}"
 
 
-def roll_gems(level: int, rng=random) -> dict:
-    """스카우트 한 번 → {종류: 개수}. 한 번에 여러 개: 2~4개 + (레벨 − 1) (Lv.1 2~4개 … Lv.5 6~8개)."""
+def roll_gems(level: int, rng=random, single: bool = False) -> dict:
+    """스카우트 한 번 → {종류: 개수}. 한 번에 여러 개: 2~4개 + (레벨 − 1) (Lv.1 2~4개 … Lv.5 6~8개).
+    single (3.7.3, release.ctx_373): 규완님 "종류가 여러 개가 아니라" — 한 종류만 골라 그 원석을 여러 개."""
+    n = rng.randint(*PER_SCOUT) + max(1, int(level)) - 1
+    if single:
+        return {rng.choices(ORDER, weights=[GEMS[g][3] for g in ORDER])[0]: n}
     out: dict = {}
-    for _ in range(rng.randint(*PER_SCOUT) + max(1, int(level)) - 1):
+    for _ in range(n):
         k = rng.choices(ORDER, weights=[GEMS[g][3] for g in ORDER])[0]
         out[k] = out.get(k, 0) + 1
     return out

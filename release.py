@@ -237,6 +237,22 @@ def ctx_372() -> bool:
     return preview_372(GUILD.get())
 
 
+# 3.7.3 — 테스트 서버 먼저. /스카우트 원석은 한 번에 한 종류 × 여러 개. None = 아직
+RELEASE_373_TS: Optional[int] = None
+
+
+def released_373(now: Optional[float] = None) -> bool:
+    return RELEASE_373_TS is not None and _now(now) >= RELEASE_373_TS
+
+
+def preview_373(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_373(now)
+
+
+def ctx_373() -> bool:
+    return preview_373(GUILD.get())
+
+
 def ctx_370() -> bool:
     """3.7.0 이 공개된 서버에서 온 상호작용인가 (선수 1명 1주인 · 봇 구단 매물 — DB 안쪽에서 쓴다)."""
     return preview_370(GUILD.get())

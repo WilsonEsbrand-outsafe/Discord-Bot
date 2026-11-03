@@ -856,7 +856,7 @@ class Economy(commands.Cog):
 
     def _gem_roll(self, level: int, con, user_id: int):
         """(돈 0, 경험치, 표시 정보) — 레벨만큼 원석을 캐서 같은 트랜잭션에서 지급. 가끔 유스 아이템도."""
-        res = gems.give(con, user_id, gems.roll_gems(level))
+        res = gems.give(con, user_id, gems.roll_gems(level, single=release.ctx_373()))   # 3.7.3 한 종류 × 여러 개
         item = None
         if random.random() < self.SCOUT_ITEM_PROB_370:
             item = random.choices(list(self.SCOUT_ITEMS_370), weights=list(self.SCOUT_ITEMS_370.values()))[0]
