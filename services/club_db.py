@@ -1452,7 +1452,11 @@ class ClubDB:
                     if stones:
                         con.execute("INSERT INTO inventory(user_id, item, qty) VALUES(?, 'enh_stone', ?) "
                                     "ON CONFLICT(user_id, item) DO UPDATE SET qty = qty + excluded.qty", (uid, stones))
-                    out.append({"week": wk, "rank": None if i is None else i + 1, "money": money, "stones": stones,
+                    lawyer = 1 if (i is not None and release.released_374(now_ts)) else 0   # 3.7.4 1~3위 ⚖️ 변호사 선임권
+                    if lawyer:
+                        con.execute("INSERT INTO inventory(user_id, item, qty) VALUES(?, 'lawyer', 1) "
+                                    "ON CONFLICT(user_id, item) DO UPDATE SET qty = qty + 1", (uid,))
+                    out.append({"week": wk, "rank": None if i is None else i + 1, "money": money, "stones": stones, "lawyer": lawyer,
                                 "purse": purse, **r})
             return out
         return await self._tx(fn)

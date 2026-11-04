@@ -133,7 +133,8 @@ class Club(commands.Cog):
                 lines.append(f"💰 `공식경기 상금` **+{x['purse']:,}원**")
             if x["rank"]:
                 lines.append(f"🏆 `주간 랭킹 {x['rank']}위` **+{x['money']:,}원**"
-                             + (f" · 🔷 강화석 **{x['stones']}개**" if x["stones"] else ""))
+                             + (f" · 🔷 강화석 **{x['stones']}개**" if x["stones"] else "")
+                             + (" · ⚖️ 변호사 선임권 **1장**" if x.get("lawyer") else ""))
             e = ui.card(f"🏆 공식경기 주간 랭킹 {x['rank']}위!" if x["rank"] else "💰 공식경기 주간 정산",
                         "\n".join(lines), ui.GOLD, None, "🏆 공식경기")
             try:

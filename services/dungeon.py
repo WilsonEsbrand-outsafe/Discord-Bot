@@ -52,6 +52,7 @@ BATTLE_DROP = 0.4               # 일반 전투에서 아이템이 나올 확률
 BATTLE_DROP_311, CHEST_ITEM_311 = 0.2, 0.5          # 일반 전투 · 보물 상자에서 아이템이 나올 확률
 POWER_311, BOSS_311, TRAP_311 = 1.15, (44, 70), (14, 2.4)   # 몬스터 힘 × · 보스(5층, 10층) · 함정 피해(기본 + 층마다)
 LOOT_RARE_311 = {k: v for k, v in LOOT_RARE.items() if k not in ("bow_pro", "windbreaker", "focus")}
+LAWYER_374 = (0.03, 0.10)       # 3.7.4 보물방에서 ⚖️ 변호사 선임권: 그냥 상자 3% · 열쇠로 연 금고 10%
 COIN = (3_000, 12_000)          # 보물 · 전투에서 나오는 돈 (층 × 이만큼)
 XP_PER_FLOOR = 4                # 훈련 경험치 (층마다 진행 보상)
 FIRST_CLEAR = {"dungeon_ticket": 1, "skip_piece": 2, "first_team": 1}   # 테마마다 처음 10층을 깨면
@@ -277,6 +278,9 @@ def act(st: dict, action: str, rng) -> list[str]:
             st["inv_dkey"] -= 1
             st["used"]["dkey"] = st["used"].get("dkey", 0) + 1
             got = _roll_loot(st, rng, 1 if st.get("v311") else 2, 0.8)
+            if st.get("v374") and rng.random() < LAWYER_374[1]:
+                _gain(st, "lawyer")
+                got = ["lawyer"] + got
             log.append("🗝️ 열쇠로 금고를 열었어요! 🎁 " + loot_text(got))
         elif rng.random() < 0.15 * (1 - 0.6 * _n(st, s["luck"])):
             log.append("😱 미믹이었어요!!")
@@ -284,6 +288,9 @@ def act(st: dict, action: str, rng) -> list[str]:
         else:
             rolls = int(rng.random() < CHEST_ITEM_311) if st.get("v311") else 1   # 3.1.1: 가끔은 돈만
             got = _roll_loot(st, rng, rolls, 0.2 + 0.02 * st["floor"])
+            if st.get("v374") and rng.random() < LAWYER_374[0]:
+                _gain(st, "lawyer")
+                got = ["lawyer"] + got
             log.append("📦 상자를 열었어요! 🎁 " + loot_text(got))
         _after_room(st, rng, log)
     elif ph == "merchant":
@@ -406,7 +413,7 @@ class DungeonDB(EconomyDB):
         return await self._tx(fn)
 
     async def start(self, uid: int, stats: dict, now_ts: int, use_torch: bool, rng=random, new: bool = True,
-                    v311: bool = False) -> dict:
+                    v311: bool = False, v374: bool = False) -> dict:
         """입장. reason: active(진행 중) / done(오늘 다 함)."""
         day = _kst_day(now_ts)
 
@@ -420,6 +427,7 @@ class DungeonDB(EconomyDB):
                 "UPDATE inventory SET qty = qty - 1 WHERE user_id=? AND item='torch' AND qty>0", (uid,)).rowcount > 0
             st = new_run(stats, theme_of(now_ts), rng, torch=torch, meal=_cook_buff(con, uid, now_ts, "eel_rice"), new=new,
                          v311=v311)
+            st["v374"] = v374   # 3.7.4 보물방에서 가끔 변호사 선임권
             if torch:
                 st["used"]["torch"] = 1
             self._load_inv(con, uid, st)
