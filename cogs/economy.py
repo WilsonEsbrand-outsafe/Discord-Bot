@@ -93,6 +93,11 @@ def _gid(user):
     return getattr(getattr(user, "guild", None), "id", None)
 
 
+def _use_label(key: str, qty: int) -> str:
+    """가방 [사용] 버튼 글자 — 💵 원석 환전금은 수량이 곧 금액이라 '원'으로 보여 준다 (3.7.4)."""
+    return f"{ITEMS[key][1]} 사용 ({qty:,}원)" if key == "gem_cash" else f"{ITEMS[key][1]} 사용 ({qty})"
+
+
 class BagView(discord.ui.View):
     """/가방(본인에게만 보임) — 가진 아이템마다 [사용] 버튼. 사용 결과는 채널에 공개로 올린다. (판매는 /아이템상점)"""
 
@@ -103,12 +108,12 @@ class BagView(discord.ui.View):
         if len(usable) <= 5:
             for key in usable:
                 emoji, name, _ = ITEMS[key]
-                b = discord.ui.Button(label=f"{name} 사용 ({inv[key]})", emoji=emoji, style=discord.ButtonStyle.primary)
+                b = discord.ui.Button(label=_use_label(key, inv[key]), emoji=emoji, style=discord.ButtonStyle.primary)
                 b.callback = self._use(key)
                 self.add_item(b)
         else:   # 2.8: 아이템이 많아지면 버튼 대신 메뉴 하나 (버튼은 한 화면 25개까지)
             menu = discord.ui.Select(placeholder="🎒 쓸 아이템을 고르세요", options=[
-                discord.SelectOption(label=f"{ITEMS[k][1]} 사용 ({inv[k]})", value=k, emoji=ITEMS[k][0]) for k in usable[:25]])
+                discord.SelectOption(label=_use_label(k, inv[k]), value=k, emoji=ITEMS[k][0]) for k in usable[:25]])
 
             async def chosen(interaction: discord.Interaction):
                 await self._use(menu.values[0])(interaction)
@@ -133,6 +138,14 @@ class BagView(discord.ui.View):
                 return await self.cog._steroid_prompt(interaction, self.user)
             if key == "box":         # 카드 고르는 화면부터 모두에게
                 return await self.cog._box_prompt(interaction, self.user)
+            if key == "gem_cash":    # 3.7.4 💵 원석 환전금 → 전부 지갑으로
+                r = await self.cog.db.use_gem_cash(self.user.id)
+                await self._refresh(interaction)
+                if not r["ok"]:
+                    return await interaction.followup.send(embed=self.cog._no_item_card(self.user, key), ephemeral=True)
+                return await interaction.followup.send(embed=ui.card(
+                    "💵 원석 환전금을 받았어요!", f"`+{r['amount']:,}원` → `잔액` **{r['balance']:,}원**",
+                    ui.WIN, self.user, "🎒 아이템"), ephemeral=True)
             if key == "lawyer":      # 3.1.0: 누구에게 선임할지 고른다 (나 · 다른 유저)
                 return await interaction.response.send_message(
                     embed=ui.card("⚖️ 누구에게 변호사를 선임할까요?",
@@ -1017,8 +1030,20 @@ class Economy(commands.Cog):
         view = GemPanelView(self, user, have)
         return e, (view if view.children else None)
 
+    async def _gem_convert(self, user) -> int:
+        """3.7.4: 3.7.4 서버에서 쓰면 이 사람 원석을 💵 원석 환전금(가방)으로. 전체 공개 뒤엔 모든 유저를 한 번에."""
+        gid = _gid(user)
+        if not release.preview_374(gid):
+            return 0
+        return await self.db.convert_gems(user.id, int(time.time()), everyone=release.released_374())
+
     @app_commands.command(name="원석", description="💎 원석 — 시세 보기 · 사기 · 돈으로 환전 · 세공")
     async def gem_cmd(self, interaction: discord.Interaction):
+        if release.preview_374(getattr(interaction, "guild_id", None)):   # 3.7.4 원석 없앰 (명령어 목록에서도 빠짐)
+            await self._gem_convert(interaction.user)
+            return await interaction.response.send_message(embed=ui.card(
+                "💎 원석은 없어졌어요", "가지고 있던 원석은 돈으로 바꿔 `/가방`에 **💵 원석 환전금**으로 넣어 뒀어요.",
+                ui.INFO, interaction.user, "💎 원석"), ephemeral=True)
         e, view = await self._gem_panel(interaction.user)
         if view:
             await interaction.response.send_message(embed=e, view=view, ephemeral=True)
@@ -1036,15 +1061,18 @@ class Economy(commands.Cog):
     @app_commands.command(name="스카우트", description="세계를 돌며 선수를 찾아요 — 돈을 벌고, 드물게 실제 선수를 영입!")
     async def scout(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if release.preview_372(getattr(interaction, "guild_id", None)):   # 3.7.2 💎 원석
+        v374 = release.preview_374(getattr(interaction, "guild_id", None))   # 3.7.4 3.7.0 전 원래 스카우트로 되돌림
+        if v374:
+            await self._gem_convert(interaction.user)
+        if release.preview_372(getattr(interaction, "guild_id", None)) and not v374:   # 3.7.2 💎 원석
             return await self._gem_scout(interaction)
-        if release.preview_370(getattr(interaction, "guild_id", None)):   # 3.7.0 선수 에이전트
+        if release.preview_370(getattr(interaction, "guild_id", None)) and not v374:   # 3.7.0 선수 에이전트
             return await self._agent_scout(interaction)
         user = interaction.user
         now_ts = int(time.time())
         try:
             r = await self.db.play_scout(user.id, now_ts, lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(getattr(interaction, "guild_id", None)),
-                                                                                  release.preview_370(getattr(interaction, "guild_id", None))),
+                                                                                  release.preview_370(getattr(interaction, "guild_id", None)) and not v374),
                                          cooldown_sec=self.SCOUT_COOLDOWN)
         except Exception as e:
             return await interaction.followup.send(f"❌ DB 오류: {type(e).__name__}")
@@ -1225,8 +1253,10 @@ class Economy(commands.Cog):
 
     # ✅ 가방 · 아이템 사용
     async def _bag_embed(self, user) -> tuple[discord.Embed, dict]:
+        await self._gem_convert(user)   # 3.7.4 원석 → 💵 원석 환전금
         inv, buffs = await self.db.inventory(user.id)
-        lines = [f"{e} **{n}** × {inv[k]}\n　 *{d}*" for k, (e, n, d) in ITEMS.items() if inv.get(k)]
+        lines = [(f"{e} **{n}** · **{inv[k]:,}원**" if k == "gem_cash" else f"{e} **{n}** × {inv[k]}") + f"\n　 *{d}*"
+                 for k, (e, n, d) in ITEMS.items() if inv.get(k)]
         e = ui.card("🎒 내 가방", "\n".join(lines) or "가방이 비어 있어요.", ui.INFO, user, "🎒 아이템")
         if buffs.get("muffler"):
             e.add_field(name="✨ 사용 중", value=f"🧣 응원 머플러 — 남은 경기 **{buffs['muffler']}경기** (전력 +{MUFFLER_BONUS})",
@@ -1359,8 +1389,10 @@ class Economy(commands.Cog):
         table = SKIP_ITEMS[item]
         what = self.GRIND_NAMES[table]
         v311 = release.preview_311(_gid(user))   # 3.1.1 훈련 레벨 간격 · 배율
-        roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(_gid(user)), release.preview_370(_gid(user)),
-                                                             release.preview_372(_gid(user))),
+        v374 = release.preview_374(_gid(user))   # 3.7.4 스킵권도 원래 스카우트로
+        roll = {"scouting": lambda lv, con: self._scout_roll(lv, con, user.id, release.preview_360(_gid(user)),
+                                                             release.preview_370(_gid(user)) and not v374,
+                                                             release.preview_372(_gid(user)) and not v374),
                 "training": lambda lv, con=None: self._train_roll(lv, con, v311),
                 "spectating": lambda lv, con: self._watch_roll(lv, con, user.id, release.preview_310(_gid(user)))}[table]
         status = {"scouting": self._scout_status, "training": self._train_status, "spectating": self._watch_status}[table]

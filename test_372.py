@@ -39,7 +39,7 @@ def test_switch():
         assert release.MAINTENANCE[0] == AFTER
     finally:
         release.RELEASE_372_TS = None
-    assert "원석" in release.hidden_commands(1) and "원석" not in release.hidden_commands(release.TEST_GUILD)
+    assert "원석" in release.hidden_commands(1)   # 3.7.4 부터 테스트 서버에서도 /원석 은 빠진다 (test_374)
 
 
 def test_prices_stay_in_range():

@@ -194,3 +194,35 @@ def sell(con, uid: int, gem: Optional[str], now_ts: int) -> dict:
         con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total, int(uid)))
     bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(uid),)).fetchone()[0]
     return {"sold": sold, "total": total, "balance": int(bal)}
+
+
+# ── 3.7.4 스카우트 되돌리기: 가진 원석을 지금 시세로 돈으로 바꿔 가방의 💵 원석 환전금(qty = 원)으로 ──
+CONVERT_FLAG = "convert-3.7.4"
+
+
+def convert_to_cash(con, uid: int, now_ts: int) -> int:
+    """uid 의 원석을 전부 지금 시세로 환산해 가방 아이템 gem_cash(수량 = 원)로 넣는다 (지갑 X). → 넣은 금액."""
+    init_tables(con)
+    have = bag(con, uid)
+    if not have:
+        return 0
+    p = prices(con, now_ts)
+    total = sum(n * p[g][0] for g, n in have.items())
+    con.execute("UPDATE gem_bag SET qty=0 WHERE user_id=?", (int(uid),))
+    if total:
+        con.execute("INSERT INTO inventory(user_id, item, qty) VALUES(?, 'gem_cash', ?) "
+                    "ON CONFLICT(user_id, item) DO UPDATE SET qty = qty + excluded.qty", (int(uid), total))
+    return total
+
+
+def convert_all(con, now_ts: int) -> int:
+    """공개 때 한 번: 모든 유저의 원석을 환전금으로. 이미 했으면 0. → 바꾼 사람 수."""
+    init_tables(con)
+    con.execute("CREATE TABLE IF NOT EXISTS gem_flags (key TEXT PRIMARY KEY, ts INTEGER)")
+    if con.execute("SELECT 1 FROM gem_flags WHERE key=?", (CONVERT_FLAG,)).fetchone():
+        return 0
+    uids = [int(u) for (u,) in con.execute("SELECT DISTINCT user_id FROM gem_bag WHERE qty>0").fetchall()]
+    for u in uids:
+        convert_to_cash(con, u, now_ts)
+    con.execute("INSERT OR REPLACE INTO gem_flags(key, ts) VALUES(?, ?)", (CONVERT_FLAG, int(now_ts)))
+    return len(uids)
