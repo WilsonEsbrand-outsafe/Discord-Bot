@@ -80,7 +80,7 @@ ITEMS = {
     "scout_coupon": ("🎟️", "스카우트 쿠폰",  "다음 유스 입단 테스트 무료 + 지원자 +2명"),
     # ── 3.1.0 ──
     "auto_fish":   ("🤖", "자동 낚시",       "사용 후 24시간 동안 5~15분마다 한 마리씩 자동으로 낚아 어망에 넣어요 (희귀한 물고기는 잘 안 걸려요 · /낚시 중 아주 가끔)"),
-    "lawyer":      ("⚖️", "변호사 선임권",   "나 또는 다른 유저에게 선임 · 빚이 있으면 한 시간 안 기다리고 파산 신청 한 번 더"),
+    "lawyer":      ("⚖️", "변호사 선임권",   "나 또는 다른 유저에게 선임 · 빚이 있으면 쿨타임을 안 기다리고 파산 신청 한 번 더"),
     # ── 3.4.0 ──
     "enh_stone":   ("🔷", "강화석",          "유망주 강화 재료 · /유망주 → [강화]"),
     # ── 3.6.0 유망주 (가방에서 사용) ──
@@ -285,6 +285,7 @@ TRANSFER_REQUIRE = [
 
 # 파산: 잔액이 마이너스일 때만. 스폰서 계약을 강제 해지해 원금으로 갚고, 남은 빚의 30~70% 를 랜덤 탕감.
 BANKRUPT_COOLDOWN = 3600             # 한 시간에 한 번
+BANKRUPT_COOLDOWN_374 = 1800         # 3.7.4: 30분에 한 번
 BANKRUPT_FORGIVE = (0.3, 0.7)
 BANKRUPT_310 = ((0.25, 0.0), (0.60, None), (0.15, 1.0))   # 3.1.0: 탕감 0% · 30~70%(None = 랜덤) · 100% 확률
 BANKRUPT_350 = ((0.10, 0.0), (0.75, None), (0.15, 1.0))   # 3.5.0: 탕감 0% 를 줄이고 30~70% 를 늘림
@@ -745,13 +746,16 @@ class EconomyDB:
         return await self._tx(fn)
 
     async def declare_bankruptcy(self, user_id: int, now_ts: int, rng=random, new: bool = False, v311: bool = False,
-                                 v350: bool = False) -> dict:
+                                 v350: bool = False, v374: bool = False) -> dict:
         """파산: 진행 중 스폰서 계약을 강제 해지해 원금으로 빚을 갚고, 남은 빚의 30~70% 를 랜덤 탕감한다.
         선수 카드는 건드리지 않는다. 실패 reason: not_negative / cooldown(until).
         new = 3.1.0: 탕감이 0% · 30~70% · 100% 중 하나 (BANKRUPT_310).
         v311 = 3.2.0: 선임한 변호사는 다시 변론하지 않고, 한 시간이 안 지났어도 파산 신청을 한 번 더 하게 해 준다
         (쿨타임일 때만 변호사 한 명을 쓴다 · extra=True).
-        v350 = 3.5.0: 탕감 확률표를 BANKRUPT_350 으로."""
+        v350 = 3.5.0: 탕감 확률표를 BANKRUPT_350 으로.
+        v374 = 3.7.4: 쿨타임 30분 · 변호사로 한 번 더 신청해도 돌던 쿨타임(last_ts)은 그대로 둔다."""
+        cd = BANKRUPT_COOLDOWN_374 if v374 else BANKRUPT_COOLDOWN
+
         def fn(con):
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])
@@ -759,9 +763,9 @@ class EconomyDB:
                 return {"ok": False, "reason": "not_negative", "balance": bal}
             row = con.execute("SELECT last_ts FROM bankruptcy WHERE user_id=?", (user_id,)).fetchone()
             extra = False
-            if row and now_ts - int(row[0]) < BANKRUPT_COOLDOWN:
+            if row and now_ts - int(row[0]) < cd:
                 if not (v311 and self._lawyers(con, user_id) > 0):
-                    return {"ok": False, "reason": "cooldown", "until": int(row[0]) + BANKRUPT_COOLDOWN}
+                    return {"ok": False, "reason": "cooldown", "until": int(row[0]) + cd}
                 con.execute("UPDATE buffs SET uses = uses - 1 WHERE user_id=? AND item='lawyer'", (user_id,))
                 extra = True   # ⚖️ 3.2.0 변호사 덕분에 기다리지 않고 한 번 더
 
@@ -789,11 +793,12 @@ class EconomyDB:
             forgiven = round(-after * rate) if after < 0 else 0
             new_bal = after + forgiven
             con.execute("UPDATE wallets SET balance=? WHERE user_id=?", (new_bal, user_id))
+            last = int(row[0]) if (v374 and extra) else now_ts   # 3.7.4 변호사로 한 번 더 → 쿨타임 시계는 그대로
             con.execute("INSERT INTO bankruptcy(user_id, last_ts, times) VALUES(?, ?, 1) "
-                        "ON CONFLICT(user_id) DO UPDATE SET last_ts=excluded.last_ts, times=times+1", (user_id, now_ts))
+                        "ON CONFLICT(user_id) DO UPDATE SET last_ts=excluded.last_ts, times=times+1", (user_id, last))
             return {"ok": True, "debt": -bal, "sponsor": sponsor, "rate": rate if after < 0 else 0.0, "lawyer": lawyer, "before": before,
                     "extra": extra, "lawyers": self._lawyers(con, user_id),
-                    "forgiven": forgiven, "balance": new_bal, "next": now_ts + BANKRUPT_COOLDOWN}
+                    "forgiven": forgiven, "balance": new_bal, "next": last + cd}
         return await self._tx(fn)
 
     async def play_penalty_kick(

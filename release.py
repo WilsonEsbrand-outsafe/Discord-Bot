@@ -256,3 +256,15 @@ def ctx_373() -> bool:
 def ctx_370() -> bool:
     """3.7.0 이 공개된 서버에서 온 상호작용인가 (선수 1명 1주인 · 봇 구단 매물 — DB 안쪽에서 쓴다)."""
     return preview_370(GUILD.get())
+
+
+# 3.7.4 — 테스트 서버 먼저. 파산 신청 쿨타임 30분 · 변호사로 한 번 더 해도 돌던 쿨타임은 그대로. None = 아직
+RELEASE_374_TS: Optional[int] = None
+
+
+def released_374(now: Optional[float] = None) -> bool:
+    return RELEASE_374_TS is not None and _now(now) >= RELEASE_374_TS
+
+
+def preview_374(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_374(now)

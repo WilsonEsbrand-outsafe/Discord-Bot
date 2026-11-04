@@ -137,7 +137,7 @@ class BagView(discord.ui.View):
                 return await interaction.response.send_message(
                     embed=ui.card("⚖️ 누구에게 변호사를 선임할까요?",
                                   ("나 또는 다른 유저를 고르세요. 그 사람이 빚이 있을 때 `/파산신청`을\n"
-                                   "한 시간 기다리지 않고 **한 번 더** 할 수 있어요. (한 번 쓰면 사라져요)"
+                                   "쿨타임을 기다리지 않고 **한 번 더** 할 수 있어요. (한 번 쓰면 사라져요)"
                                    if release.preview_311(_gid(self.user)) else
                                    "나 또는 다른 유저를 고르세요. 그 사람이 `/파산신청`에서 탕감 **0%**가 나오면\n"
                                    "변호사가 다시 변론해 **30~70% · 100%** 중 하나로 바꿔 줘요. (한 번 쓰면 사라져요)"),
@@ -419,10 +419,11 @@ class BankruptConfirm(discord.ui.View):
         gid = getattr(interaction, "guild_id", None)
         r = await self.cog.db.declare_bankruptcy(self.user.id, int(time.time()), new=release.preview_310(gid),
                                                   v311=release.preview_311(gid),   # 3.2.0 변호사 = 기다리지 않고 한 번 더
-                                                  v350=release.preview_350(gid))   # 3.5.0 탕감 확률
+                                                  v350=release.preview_350(gid),   # 3.5.0 탕감 확률
+                                                  v374=release.preview_374(gid))   # 3.7.4 쿨타임 30분
         if not r["ok"]:
             msg = ("이미 빚이 없어요." if r["reason"] == "not_negative"
-                   else f"파산은 한 시간에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>"
+                   else f"파산은 {'30분' if release.preview_374(gid) else '한 시간'}에 한 번만 가능해요. 다음 가능: <t:{r['until']}:R>"
                    + ("\n⚖️ **변호사 선임권**이 있으면 `/가방`에서 나에게 선임하고 바로 한 번 더 신청할 수 있어요."
                       if release.preview_311(gid) else ""))
             e = ui.card("❌ 파산 신청 불가", msg, ui.LOSE, self.user, "⚖️ 파산")
@@ -690,7 +691,7 @@ class Economy(commands.Cog):
             forgive = f"**0%** ({p0:.0%} 확률) · **{lo:.0%} ~ {hi:.0%}** ({pm:.0%}) · **100%** ({p1:.0%}) 중 하나로 탕감돼요"
             if n := await self.db.lawyers(user.id):
                 forgive += (f"\n　⚖️ 선임된 변호사 **{n}명** — "
-                            + ("한 시간이 안 지났어도 한 번 더 신청할 수 있어요" if release.preview_311(getattr(interaction, "guild_id", None))
+                            + (f"{'30분' if release.preview_374(getattr(interaction, 'guild_id', None)) else '한 시간'}이 안 지났어도 한 번 더 신청할 수 있어요" if release.preview_311(getattr(interaction, "guild_id", None))
                                else "0%가 나오면 다시 변론해 줘요"))
         else:
             forgive = f"**{lo:.0%} ~ {hi:.0%}** 가 랜덤으로 탕감돼요"
@@ -699,7 +700,7 @@ class Economy(commands.Cog):
                     "1️⃣ 진행 중인 스폰서 계약을 **모두 강제 해지**하고 원금으로 빚을 갚아요\n"
                     f"2️⃣ 그래도 남은 빚은 {forgive}\n"
                     "3️⃣ 보유 선수 카드는 **그대로** 남아요\n"
-                    "4️⃣ 파산은 **한 시간에 한 번** 할 수 있어요"
+                    f"4️⃣ 파산은 **{'30분' if release.preview_374(getattr(interaction, 'guild_id', None)) else '한 시간'}에 한 번** 할 수 있어요"
                     + (" · ⚖️ 선임된 변호사가 있으면 기다리지 않고 한 번 더" if release.preview_311(getattr(interaction, "guild_id", None)) else ""),
                     ui.DOOM, user, "⚖️ 파산")
         await interaction.response.send_message(embed=e, view=BankruptConfirm(self, user))
