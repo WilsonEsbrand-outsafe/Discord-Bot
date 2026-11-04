@@ -203,6 +203,7 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = out if preview_360(guild_id, now) else out | PREVIEW_360
     out = out if preview_371(guild_id, now) else out | PREVIEW_371
     out = out if preview_372(guild_id, now) else out | PREVIEW_372
+    out = out | LEGACY_374 if preview_374(guild_id, now) else out
     return out if preview_310(guild_id, now) else out | PREVIEW_310
 
 
@@ -258,8 +259,10 @@ def ctx_370() -> bool:
     return preview_370(GUILD.get())
 
 
-# 3.7.4 — 테스트 서버 먼저. 파산 신청 쿨타임 30분 · 변호사로 한 번 더 해도 돌던 쿨타임은 그대로. None = 아직
+# 3.7.4 — 테스트 서버 먼저. 파산 신청 쿨타임 30분 · 변호사로 한 번 더 해도 돌던 쿨타임은 그대로 ·
+# /스카우트를 3.7.0 전 원래대로 (원석은 가방의 💵 원석 환전금으로 · /원석 없앰). None = 아직
 RELEASE_374_TS: Optional[int] = None
+LEGACY_374: set[str] = {"원석"}   # 3.7.4 공개 서버에선 / 목록에서 뺀다
 
 
 def released_374(now: Optional[float] = None) -> bool:

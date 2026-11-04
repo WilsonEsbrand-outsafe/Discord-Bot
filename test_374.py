@@ -1,9 +1,16 @@
 """3.7.4: 파산 신청 쿨타임 30분 · 변호사로 한 번 더 신청해도 돌던 쿨타임은 그대로 (테스트 서버 먼저)."""
 import asyncio
 import random
+import tempfile
+from pathlib import Path
 
 import release
 from services import economy_db as edb
+
+
+def _db():
+    edb.DB_PATH = Path(tempfile.mkdtemp()) / "t.sqlite3"
+    return edb.EconomyDB()
 
 
 def test_switch():
@@ -11,7 +18,7 @@ def test_switch():
 
 
 def test_bankrupt_30min_and_lawyer_keeps_clock():
-    db = edb.EconomyDB()
+    db = _db()
 
     async def flow():
         uid, t = 3740, 1_000_000
@@ -31,3 +38,47 @@ def test_bankrupt_30min_and_lawyer_keeps_clock():
         r = await db.declare_bankruptcy(uid, t + 1800, random.Random(5), new=True, v311=True, v374=True)
         assert r["ok"] and not r["extra"]                     # 처음 신청한 지 30분 뒤엔 바로 가능
     asyncio.run(flow())
+
+
+def test_gem_to_cash_and_scout_revert():
+    from services import gems
+    db = _db()
+
+    async def flow():
+        uid, t = 3741, 2_000_000
+        await db._tx(lambda con: gems.give(con, uid, {"rough": 10, "ruby": 2}))
+        p = await db._tx(lambda con: gems.prices(con, t))
+        want = 10 * p["rough"][0] + 2 * p["ruby"][0]
+        bal0 = await db.get_balance(uid)
+        assert await db.convert_gems(uid, t) == want
+        assert await db.convert_gems(uid, t) == 0                     # 두 번 바꾸지 않는다
+        inv, _ = await db.inventory(uid)
+        assert inv["gem_cash"] == want and await db.get_balance(uid) == bal0   # 지갑 X · 가방에
+        r = await db.use_gem_cash(uid)
+        assert r["ok"] and r["amount"] == want and r["balance"] == bal0 + want
+        assert not (await db.use_gem_cash(uid))["ok"]
+        # 공개 뒤 한 번: 모든 유저
+        await db._tx(lambda con: gems.give(con, 3742, {"emerald": 3}))
+        await db.convert_gems(uid, t, everyone=True)
+        assert (await db.inventory(3742))[0].get("gem_cash", 0) > 0
+    asyncio.run(flow())
+
+
+def test_hidden_and_scout_roll():
+    assert "원석" in release.hidden_commands(release.TEST_GUILD)
+    assert "원석" not in release.hidden_commands(123)
+
+
+def test_lawyer_routes():
+    from services import dungeon as D, fishing as F
+    assert F.JUNK_374["lawyer"] > 0 and "lawyer" not in F.JUNK
+    rng = random.Random(7)
+    hits = {True: 0, False: 0}
+    for v374 in (True, False):
+        for k in range(3000):
+            st = D.new_run({"atk": 70, "def": 70, "spd": 70, "luck": 70}, 0, rng, new=True, v311=True)
+            st["v374"], st["phase"] = v374, "treasure"
+            st["inv_dkey"] = 1
+            D.act(st, "key" if k % 2 else "open", rng)
+            hits[v374] += st["loot"].get("lawyer", 0)
+    assert hits[True] > 0 and hits[False] == 0

@@ -356,7 +356,8 @@ class Fishing(commands.Cog):
                                new_310=release.preview_310(interaction.guild_id),   # 3.1.0: 새 물고기 15종 · 희귀 확률 하향
                                new_311=release.preview_311(interaction.guild_id),   # 3.1.1: 좋은 낚싯대 = 희귀 확률 살짝 ↑
                                new_340=release.preview_340(interaction.guild_id),   # 3.4.0: 100종 · 확률 · 장비 · 내구도
-                               new_350=release.preview_350(interaction.guild_id))   # 3.5.0: 희귀 확률 상향
+                               new_350=release.preview_350(interaction.guild_id),   # 3.5.0: 희귀 확률 상향
+                               new_374=release.preview_374(interaction.guild_id))   # 3.7.4: 잡템으로 가끔 변호사 선임권
         task = self._tasks.pop(user.id, None)
         if task:
             task.cancel()

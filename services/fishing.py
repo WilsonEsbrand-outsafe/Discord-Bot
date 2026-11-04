@@ -108,6 +108,7 @@ JUNK_PROB = 0.12              # 물고기 대신 잡템
 JUNK = {   # 아이템 → 비중 (old_boot = 낡은 장화, 아무것도 아님)
     "old_boot": 20, "bait": 30, "spice": 22, "skip_piece": 15, "bait_gold": 8, "fish_charm": 3, "box": 2,
 }
+JUNK_374 = {**JUNK, "lawyer": 2}   # 3.7.4: 잡템으로 아주 가끔 ⚖️ 변호사 선임권 ([잡기!] 만)
 BAG_MAX = 100                 # 어망(보관) 한도 — 3.1.0 공개 서버는 낚시 레벨별 (bag_max)
 BAG_310 = (50, 5)             # 3.1.0: Lv.1 50칸 · 레벨마다 +5 (Lv.11 100 · Lv.30 195)
 DAY_FISH_MULT = 2.0           # 3.1.0 오늘의 물고기: 그 종은 하루 동안 판매가 2배
@@ -420,7 +421,7 @@ class FishingDB(EconomyDB):
         return await self._tx(fn)
 
     async def reel(self, uid: int, now_ts: int, rng=random, new_xp: bool = True, new_310: bool = False,
-                   new_311: bool = False, new_340: bool = False, new_350: bool = False) -> dict:
+                   new_311: bool = False, new_340: bool = False, new_350: bool = False, new_374: bool = False) -> dict:
         """[잡기!]. 결과 kind: early(아직 입질 전 — 찌만 회수) / fled(늦음) / junk / fish. 실패 reason: idle."""
         def fn(con):
             s = self._state(con, uid)
@@ -432,7 +433,7 @@ class FishingDB(EconomyDB):
             if now_ts > s["bite_ts"] + s["window"]:
                 return {"ok": True, "kind": "fled", "wait": s["bite_ts"] - s["cast_ts"]}
             r = self._catch(con, uid, s, s["bite_ts"] - s["cast_ts"], s["bait"], now_ts, rng, new_xp, new_310, new_311,
-                            new_340, wear=new_340, new_350=new_350)
+                            new_340, wear=new_340, new_350=new_350, new_374=new_374)
             if new_310 and rng.random() < AUTO_DROP:   # 3.1.0 🤖 자동 낚시 (아주 가끔)
                 give_item(con, uid, "auto_fish")
                 r["auto_drop"] = True
@@ -441,7 +442,7 @@ class FishingDB(EconomyDB):
 
     def _catch(self, con, uid: int, s: dict, wait: float, bait: Optional[str], now_ts: int, rng,
                new_xp: bool = True, new_310: bool = False, new_311: bool = False, new_340: bool = False,
-               wear: bool = False, new_350: bool = False) -> dict:
+               wear: bool = False, new_350: bool = False, new_374: bool = False) -> dict:
         """입질을 잡은 한 번 — 잡템 또는 물고기를 어망에 넣는다 ([잡기!] · 자동 낚시 공용).
         new_340 = 3.4.0 확률 · 물고기 · 장비 효과 · wear = 낚싯대가 닳고 대어는 가끔 줄이 끊긴다 ([잡기!] 만).
         new_350 = 3.5.0 희귀 · 영웅 · 전설 확률 상향."""
@@ -449,7 +450,8 @@ class FishingDB(EconomyDB):
         rod = self._rod(con, uid)
         junk_p = (BAIT_JUNK_340 if new_340 else BAIT_JUNK) if bait == "bait" else JUNK_PROB
         if rng.random() < junk_p:
-            item = rng.choices(list(JUNK), weights=list(JUNK.values()))[0]
+            junk = JUNK_374 if new_374 else JUNK
+            item = rng.choices(list(junk), weights=list(junk.values()))[0]
             if item != "old_boot":
                 give_item(con, uid, item)
             return {"ok": True, "kind": "junk", "item": item, "wait": wait, "rod": self._wear(con, uid, rod, 1) if wear else None}
