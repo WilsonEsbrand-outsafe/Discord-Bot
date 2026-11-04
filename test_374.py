@@ -82,3 +82,12 @@ def test_lawyer_routes():
             D.act(st, "key" if k % 2 else "open", rng)
             hits[v374] += st["loot"].get("lawyer", 0)
     assert hits[True] > 0 and hits[False] == 0
+
+
+def test_release_notice_coupon():
+    from patch_notes_data import NOTICES, PATCH_NOTES
+    start, end = release.MAINTENANCE
+    assert release.RELEASE_374_TS == start and end - start == 300
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    assert keys["maint-3.7.4"] == keys["patch-3.7.4"] < start
+    assert "KIKOLAWYER" in PATCH_NOTES["3.7.4"] and edb.COUPONS["KIKOLAWYER"][0] == {"lawyer": 3}
