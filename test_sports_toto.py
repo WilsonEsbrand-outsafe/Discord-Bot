@@ -161,3 +161,35 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def test_espn_day_by_day_375():
+    """3.7.5: ESPN 은 하루씩 조회 — 기간 조회 안 씀, 한 날짜가 400 이어도 다른 날짜 결과로 정산."""
+    now = int(time.time())
+    seen = []
+
+    async def fake_get(url, params):
+        seen.append(params["dates"])
+        if len(seen) == 1:
+            return 400, None
+        return 200, {"events": [{"competitions": [{"date": _iso(now - 5 * 3600), "status": {"type": {"completed": True}},
+                                                   "competitors": [
+                                                       {"homeAway": "home", "winner": True, "team": {"displayName": "Boston Celtics"}},
+                                                       {"homeAway": "away", "winner": False, "team": {"displayName": "New York Knicks"}}]}]}]}
+    old = st._get
+    st._get = fake_get
+    try:
+        cog = st.SportsToto.__new__(st.SportsToto)
+        fin = asyncio.run(cog._finals("nba", now - 5 * 3600))
+    finally:
+        st._get = old
+    assert all("-" not in d and len(d) == 8 for d in seen) and len(seen) >= 2
+    assert fin and fin[0]["winner"] == "Boston Celtics"
+
+    async def all_fail(url, params):
+        return 400, None
+    st._get = all_fail
+    try:
+        assert asyncio.run(cog._finals("nba", now)) is None
+    finally:
+        st._get = old
