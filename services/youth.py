@@ -333,7 +333,7 @@ class YouthDB(EconomyDB):
             return {"ok": True, "applicants": apps}
         return await self._tx(fn)
 
-    async def tryout(self, uid: int, idx: int, now_ts: int, rng=random) -> dict:
+    async def tryout(self, uid: int, idx: int, now_ts: int, rng=random, v381: bool = False) -> dict:
         """지원자 idx 테스트. {ok, passed, scenes, youth, refund}. reason: none / balance / full / done."""
         day = _kst_day(now_ts)
 
@@ -349,7 +349,7 @@ class YouthDB(EconomyDB):
                 return {"ok": False, "reason": "full"}
             fee = 0 if a.get("free") else TRYOUT_FEE
             bal = self._bal(con, uid)
-            if bal < fee:
+            if bal < fee and (fee or not v381):   # 3.8.1: 쿠폰(무료) 테스트는 잔액이 마이너스여도
                 return {"ok": False, "reason": "balance", "balance": bal}
             scenes = tryout_scenes(a["grade"], rng)
             passed = sum(scenes) >= 2

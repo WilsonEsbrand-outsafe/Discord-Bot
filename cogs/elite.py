@@ -41,11 +41,13 @@ class BuyConfirm(discord.ui.View):
     async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         c = self.club
-        r = await self.cog.clubs.buy_elite(self.user.id, c["key"], int(time.time()))
+        r = await self.cog.clubs.buy_elite(self.user.id, c["key"], int(time.time()),
+                                           v381=release.preview_381(interaction.guild_id))
         if not r["ok"]:
             msg = {"no_club": _NO_CLUB, "mine": "이미 내 구단이에요.",
                    "one": "명문 구단은 한 사람에 하나만 가질 수 있어요.",
-                   "balance": f"인수 금액 **{r.get('cost', 0):,}원**이 필요해요."}[r["reason"]]
+                   "balance": f"인수 금액 **{r.get('cost', 0):,}원**이 필요해요.",
+                   "rebuy": f"이 구단의 인수 대금을 받은 지 7일이 안 됐어요. <t:{r.get('until', 0)}:R>부터 다시 인수할 수 있어요."}[r["reason"]]
             return await interaction.response.edit_message(
                 embed=ui.card("❌ 인수 실패", msg, ui.LOSE, self.user, SECTION), view=None)
         prev = f"\n`전 구단주` <@{r['prev_owner']}> — 인수 금액을 받았어요" if r["prev_owner"] else ""

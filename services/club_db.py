@@ -280,6 +280,7 @@ ELITE_CLUBS = {   # key → (엠블럼, 이름, 규모)
     "ruhr": ("🐝", "루르 옐로우", "미드"), "ideal": ("❌", "암스테르담 아이디얼", "미드"),
 }
 ELITE_TAKEOVER = 1.5
+ELITE_REBUY_381 = 7 * 86400   # 3.8.1: 인수 대금을 받은 전 주인은 7일 동안 그 구단을 다시 인수 못 한다
 ELITE_SELL_RATE = 0.7   # 2.10.1: 혼자 매각하면 낸 인수 금액의 70% (남이 인수하면 지금 가격 × 1.5 를 받는다)
 # 신규 보호 (2.6): 다른 유저가 상대로 지정할 수 없다 (신규끼리는 가능) · 자동 매칭은 전력이 NEWBIE_GAP 이하로 강할 때만
 NEWBIE_OFFICIAL = 10
@@ -763,6 +764,9 @@ class ClubDB:
             con.execute("CREATE TABLE IF NOT EXISTS elite_clubs (key TEXT PRIMARY KEY, owner_id INTEGER, "
                         "price INTEGER NOT NULL, bought_ts INTEGER NOT NULL DEFAULT 0, income_day INTEGER NOT NULL DEFAULT 0)")
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_elite_owner ON elite_clubs(owner_id)")
+            # 3.8.1 인수 대금을 받은 전 주인 → 그 구단을 다시 인수할 수 있는 시각
+            con.execute("CREATE TABLE IF NOT EXISTS elite_rebuy (key TEXT NOT NULL, user_id INTEGER NOT NULL, "
+                        "until INTEGER NOT NULL, PRIMARY KEY(key, user_id))")
             con.executemany("INSERT OR IGNORE INTO elite_clubs(key, price) VALUES(?, ?)",
                             [(k, ELITE_SIZES[size][0]) for k, (_, _, size) in ELITE_CLUBS.items()])
             con.execute("INSERT OR IGNORE INTO club_bonus(user_id) SELECT user_id FROM clubs")
@@ -1027,9 +1031,10 @@ class ClubDB:
             return sorted(out, key=lambda c: order.index(c["key"]))
         return await self._tx(fn)
 
-    async def buy_elite(self, user_id: int, key: str, now_ts: int) -> dict:
+    async def buy_elite(self, user_id: int, key: str, now_ts: int, v381: bool = False) -> dict:
         """명문 구단 인수. 주인이 있으면 지금 가격 × 1.5 를 내고, 그 돈은 전 주인에게.
-        실패 reason: no_club / mine / one(이미 다른 명문 구단 주인) / balance."""
+        v381 = 3.8.1 공개 서버: 인수 대금을 받은 전 주인은 ELITE_REBUY_381 동안 그 구단을 다시 인수 못 함.
+        실패 reason: no_club / mine / one(이미 다른 명문 구단 주인) / balance / rebuy(until)."""
         def fn(con):
             if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (int(user_id),)).fetchone():
                 return {"ok": False, "reason": "no_club"}
@@ -1038,6 +1043,10 @@ class ClubDB:
                 return {"ok": False, "reason": "mine"}
             if con.execute("SELECT 1 FROM elite_clubs WHERE owner_id=?", (int(user_id),)).fetchone():
                 return {"ok": False, "reason": "one"}
+            if v381:
+                lock = con.execute("SELECT until FROM elite_rebuy WHERE key=? AND user_id=?", (key, int(user_id))).fetchone()
+                if lock and int(lock[0]) > int(now_ts):
+                    return {"ok": False, "reason": "rebuy", "until": int(lock[0])}
             cost = elite_price(key, owner, int(price))
             bal = self._pay(con, user_id, cost)
             if bal is None:
@@ -1047,6 +1056,8 @@ class ClubDB:
                 self._elite_payout(con, key, owner, int(day or 0), kst_day(now_ts))
                 con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (owner,))
                 con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (cost, owner))
+                con.execute("INSERT OR REPLACE INTO elite_rebuy(key, user_id, until) VALUES(?,?,?)",
+                            (key, int(owner), int(now_ts) + ELITE_REBUY_381))   # 3.8.1
             con.execute("UPDATE elite_clubs SET owner_id=?, price=?, bought_ts=?, income_day=? WHERE key=?",
                         (int(user_id), cost, int(now_ts), kst_day(now_ts), key))
             return {"ok": True, "cost": cost, "prev_owner": owner, "balance": bal}

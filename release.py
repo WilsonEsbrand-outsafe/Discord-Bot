@@ -205,6 +205,7 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = out if preview_371(guild_id, now) else out | PREVIEW_371
     out = out if preview_372(guild_id, now) else out | PREVIEW_372
     out = out | LEGACY_374 if preview_374(guild_id, now) else out
+    out = out if preview_381(guild_id, now) else out | PREVIEW_381
     return out if preview_310(guild_id, now) else out | PREVIEW_310
 
 
@@ -272,3 +273,17 @@ def released_374(now: Optional[float] = None) -> bool:
 
 def preview_374(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_374(now)
+
+
+# 3.8.1 — 테스트 서버 먼저. 명문 구단: 인수 대금을 받은 전 주인은 7일 동안 그 구단을 다시 인수 못 함 ·
+# 2군 쿠폰 테스트는 잔액이 마이너스여도 · 낚시 확률 대폭 상향 · /농사. None = 아직
+RELEASE_381_TS: Optional[int] = None
+PREVIEW_381: set[str] = {"농사"}   # 3.8.1 새 명령어 — 공개 전엔 테스트 서버에만 보인다
+
+
+def released_381(now: Optional[float] = None) -> bool:
+    return RELEASE_381_TS is not None and _now(now) >= RELEASE_381_TS
+
+
+def preview_381(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_381(now)

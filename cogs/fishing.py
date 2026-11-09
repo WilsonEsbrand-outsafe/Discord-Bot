@@ -182,7 +182,7 @@ class Fishing(commands.Cog):
     async def _status(self, user) -> dict:
         """낚시터 상태 — 3.1.0 공개 서버면 밀린 🤖 자동 낚시를 먼저 처리해 s["auto"] 에 담는다."""
         now = int(time.time())
-        auto = await self.db.auto_run(user.id, now, new=True, v340=self._live(user), v350=self._v350(user)) if self._n(user) else None
+        auto = await self.db.auto_run(user.id, now, new=True, v340=self._live(user), v350=self._v350(user), v381=self._v381(user)) if self._n(user) else None
         s = await self.db.status(user.id, now)
         s["auto"] = auto
         return s
@@ -256,6 +256,11 @@ class Fishing(commands.Cog):
     def _v350(user) -> bool:
         """3.5.0 공개 서버 — 희귀 · 영웅 · 전설 확률 상향."""
         return release.preview_350(getattr(getattr(user, "guild", None), "id", None))
+
+    @staticmethod
+    def _v381(user) -> bool:
+        """3.8.1 공개 서버 — 낚시 확률 대폭 상향."""
+        return release.preview_381(getattr(getattr(user, "guild", None), "id", None))
 
     @staticmethod
     def _v370(user) -> bool:
@@ -357,7 +362,8 @@ class Fishing(commands.Cog):
                                new_311=release.preview_311(interaction.guild_id),   # 3.1.1: 좋은 낚싯대 = 희귀 확률 살짝 ↑
                                new_340=release.preview_340(interaction.guild_id),   # 3.4.0: 100종 · 확률 · 장비 · 내구도
                                new_350=release.preview_350(interaction.guild_id),   # 3.5.0: 희귀 확률 상향
-                               new_374=release.preview_374(interaction.guild_id))   # 3.7.4: 잡템으로 가끔 변호사 선임권
+                               new_374=release.preview_374(interaction.guild_id),   # 3.7.4: 잡템으로 가끔 변호사 선임권
+                               new_381=release.preview_381(interaction.guild_id))   # 3.8.1: 확률 대폭 상향
         task = self._tasks.pop(user.id, None)
         if task:
             task.cancel()
@@ -469,7 +475,7 @@ class Fishing(commands.Cog):
         user = view.user
         new = self._n(user)
         if new:
-            await self.db.auto_run(user.id, int(time.time()), new=True, v340=self._live(user), v350=self._v350(user))
+            await self.db.auto_run(user.id, int(time.time()), new=True, v340=self._live(user), v350=self._v350(user), v381=self._v381(user))
         b = await self.db.bag(user.id, int(time.time()), new, self._live(user))
         fish = sorted(b["fish"], key=lambda f: -f["price"])
         free = [f for f in fish if not f["displayed"]]

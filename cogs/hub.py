@@ -758,7 +758,7 @@ class Hubs(commands.Cog):
 
     async def _youth_tryout(self, view: HubView, interaction: discord.Interaction, idx: int):
         user = view.user
-        r = await self.youth.tryout(user.id, idx, int(time.time()))
+        r = await self.youth.tryout(user.id, idx, int(time.time()), v381=release.preview_381(interaction.guild_id))
         if not r["ok"]:
             msg = {"balance": f"테스트비 {Y.TRYOUT_FEE:,}원이 부족해요.", "full": "유스 슬롯이 꽉 찼어요.",
                    "done": "오늘은 이미 테스트했어요."}.get(r["reason"], "지원자를 다시 열어 주세요.")
