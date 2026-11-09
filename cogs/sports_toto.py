@@ -43,6 +43,7 @@ SAFE_CREDITS = 50            # 남은 크레딧이 이 아래면 배당 새로 �
 SETTLE_AFTER = 3 * 3600      # 시작 뒤 이만큼 지나야 결과를 본다
 SCORES_EVERY = 2 * 3600      # KBO 결과 조회(2크레딧) 간격
 VOID_AFTER = 3 * 86400       # 이만큼 지나도 결과가 없으면 (연기 · 취소) 환불
+ESPN_MAX_DAYS = 5            # ESPN 결과는 오늘부터 이만큼 전 날짜까지만 하루씩 조회
 
 _credits: dict = {"remaining": None}
 _last_scores: dict[str, float] = {}
@@ -257,13 +258,21 @@ class SportsToto(commands.Cog):
     async def _finals(self, sport: str, oldest_ts: int) -> list[dict] | None:
         odds_key, espn, *_ = SPORTS[sport]
         if espn:
-            start = datetime.fromtimestamp(oldest_ts, timezone.utc) - timedelta(days=1)
-            status, data = await _get(f"{ESPN_BASE}/{espn}/scoreboard",
-                                      {"dates": f"{start:%Y%m%d}-{datetime.now(timezone.utc):%Y%m%d}", "limit": 300})
-            if status != 200:
-                log.warning(f"[SPORTS] ESPN {sport} 점수판 응답 오류: {status}")
-                return None
-            return espn_finals(data.get("events", []))
+            # 3.7.5: 'YYYYMMDD-YYYYMMDD' 기간 조회가 11/09 부터 NBA 에서 400 을 돌려줘 정산이 멈췄다.
+            # 하루씩 따로 받는다 (한 날짜가 실패해도 나머지 날짜 경기는 정산).
+            day = (datetime.fromtimestamp(oldest_ts, timezone.utc) - timedelta(days=1)).date()
+            today = datetime.now(timezone.utc).date()
+            day = max(day, today - timedelta(days=ESPN_MAX_DAYS))
+            events, ok = [], False
+            while day <= today:
+                status, data = await _get(f"{ESPN_BASE}/{espn}/scoreboard", {"dates": f"{day:%Y%m%d}"})
+                if status == 200:
+                    ok = True
+                    events += data.get("events", [])
+                else:
+                    log.warning(f"[SPORTS] ESPN {sport} {day:%Y%m%d} 점수판 응답 오류: {status}")
+                day += timedelta(days=1)
+            return espn_finals(events) if ok else None
         if not ODDS_API_KEY or time.monotonic() - _last_scores.get(sport, -1e9) < SCORES_EVERY:
             return None
         _last_scores[sport] = time.monotonic()
