@@ -143,6 +143,9 @@ class FarmPanel(discord.ui.View):
             self.add_item(b)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not release.preview_381(interaction.guild_id):   # 공개 전엔 테스트 서버의 농장만
+            await interaction.response.send_message("🌾 /농사 는 아직 이 서버에서 쓸 수 없어요.", ephemeral=True)
+            return False
         if await self.cog.db.thread_owner(interaction.channel_id) != interaction.user.id:
             await interaction.response.send_message("🙅 농장 주인만 누를 수 있어요. `/농사`로 내 농장을 열어 보세요.", ephemeral=True)
             return False

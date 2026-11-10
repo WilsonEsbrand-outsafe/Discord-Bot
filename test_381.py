@@ -18,6 +18,7 @@ import services.youth as Y  # noqa: E402
 
 
 def test_switch():
+    assert release.TEST_GUILD == 757761125403066419 and not release.preview_381(1374213619793006704)   # 11/11 테스트 서버를 옮겼다
     assert release.preview_381(release.TEST_GUILD)
     assert not release.preview_381(1)
     assert "농사" in release.hidden_commands(1) and "농사" not in release.hidden_commands(release.TEST_GUILD)

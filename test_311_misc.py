@@ -13,7 +13,7 @@ edb.DB_PATH = TMP
 import release   # noqa: E402
 from services import spam   # noqa: E402
 
-T, OTHER = release.TEST_GUILD, 757761125403066419
+T, OTHER = release.TEST_GUILD, 1374213619793006704
 
 
 def test_spam():

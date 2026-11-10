@@ -145,7 +145,7 @@ def test_flow():
 
 
 def test_release():
-    T, other = release.TEST_GUILD, 757761125403066419
+    T, other = release.TEST_GUILD, 1374213619793006704
     if release.RELEASE_TS is None:   # 공개 시각 미정: 테스트 서버만 · 점검 없음
         assert release.preview(T) and not release.preview(other) and not release.maintenance()
         ts = 2_000_000_000
