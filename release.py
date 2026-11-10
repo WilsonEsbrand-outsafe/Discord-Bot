@@ -7,7 +7,7 @@ import contextvars
 import time
 from typing import Optional
 
-TEST_GUILD = 1374213619793006704
+TEST_GUILD = 757761125403066419   # 2026-11-11 부터 (그 전엔 1374213619793006704)
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
 MAINT_OPEN_END = calendar.timegm((2100, 1, 1, 0, 0, 0))   # 끝 시각을 정하지 않은 무기한 점검
 MAINTENANCE = (calendar.timegm((2026, 11, 4, 5, 10, 0)), calendar.timegm((2026, 11, 4, 5, 15, 0)))   # 11/04 14:10 ~ 14:15 KST — 3.7.4 점검

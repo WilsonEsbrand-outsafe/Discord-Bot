@@ -53,7 +53,7 @@ def test_stars():
 def test_release_311():
     assert release.LEGACY_311 <= release.hidden_commands(release.TEST_GUILD)
     if release.RELEASE_311_TS is None:
-        assert not release.LEGACY_311 & release.hidden_commands(757761125403066419)
+        assert not release.LEGACY_311 & release.hidden_commands(1374213619793006704)
         assert release.preview_311(release.TEST_GUILD) and not release.preview_311(1)
 
 

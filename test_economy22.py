@@ -337,7 +337,7 @@ async def _item_screens():
         sent.append(k)
         return SimpleNamespace(edit=rec)
     async def noop(*a, **k): pass
-    inter = SimpleNamespace(guild_id=1374213619793006704, user=user, response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
+    inter = SimpleNamespace(guild_id=757761125403066419, user=user, response=SimpleNamespace(defer=noop, send_message=rec, edit_message=rec),
                             followup=SimpleNamespace(send=rec))
     await Economy.watch.callback(eco, inter)                                   # 훈련 전: 잠김
     assert "잠겨" not in sent[-1]["embed"].title and "갈 수 없어요" in sent[-1]["embed"].title
@@ -362,7 +362,7 @@ async def _item_screens():
     await sent[-1]["view"].children[0].callback(inter)
     slip = sent[-1]["view"]
     assert sent[-1].get("ephemeral") is None and "어떻게" in sent[-1]["embed"].title   # 공개
-    other = SimpleNamespace(guild_id=1374213619793006704, user=SimpleNamespace(id=999), response=SimpleNamespace(send_message=rec))
+    other = SimpleNamespace(guild_id=757761125403066419, user=SimpleNamespace(id=999), response=SimpleNamespace(send_message=rec))
     assert not await slip.interaction_check(other) and sent[-1]["ephemeral"]          # 남은 못 고른다
     await slip.report.callback(inter)
     assert sent[-1]["view"] is None and "토토 용지" in sent[-1]["embed"].title         # 같은 메시지가 결과로

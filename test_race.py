@@ -91,7 +91,7 @@ def test_rowing():
     assert R.row_step([0.0] * 6, 0, 1, rng) == 1 / 3 and R.row_step([0.0] * 6, 0, 99, rng) == 1.0
     # 2.82 하향: 구간 5초 · 전속력 3번 · 최저 90% (모든 서버)
     assert (R.ROW_SEC, R.ROW_TARGET, R.ROW_LAZY) == (5.0, 3, 0.9)
-    assert R.row_rules(1374213619793006704) == R.row_rules(1) == (5.0, 3, 0.9)
+    assert R.row_rules(757761125403066419) == R.row_rules(1) == (5.0, 3, 0.9)
     assert all(0 <= c < R.TRACK for c in R.row_cells([0, 2.5, 5.6, 9.0, -1, 3]))
     assert "폭발" in R.row_call("나", 1.0, "상대", False) and "선두입니다" in R.row_call("나", 0.5, "나", True)
 

@@ -15,7 +15,7 @@ edb.DB_PATH = cdb.DB_PATH = pmdb.DB_PATH = TMP
 
 import release   # noqa: E402
 
-T, OTHER = release.TEST_GUILD, 757761125403066419
+T, OTHER = release.TEST_GUILD, 1374213619793006704
 DAY = 86400
 
 
