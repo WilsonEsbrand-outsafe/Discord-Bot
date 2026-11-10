@@ -276,7 +276,7 @@ def preview_374(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 
 
 # 3.8.1 — 테스트 서버 먼저. 명문 구단: 인수 제안 (적정 인수 금액 이상이면 바로 · 구단주가 금액을 정함) ·
-# 2군 쿠폰 테스트는 잔액이 마이너스여도 · 낚시 확률 대폭 상향 · /농사. None = 아직
+# 2군 쿠폰 테스트는 잔액이 마이너스여도 · 낚시 확률 대폭 상향 · /농사 · 토토 당첨금은 쌓아 두고 /내베팅에서 받기. None = 아직
 RELEASE_381_TS: Optional[int] = None
 PREVIEW_381: set[str] = {"농사"}   # 3.8.1 새 명령어 — 공개 전엔 테스트 서버에만 보인다
 
@@ -287,3 +287,15 @@ def released_381(now: Optional[float] = None) -> bool:
 
 def preview_381(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_381(now)
+
+
+def tester(bot, user_id: int) -> bool:
+    """서버를 모르는 백그라운드 일(정산 등)에서 — 테스트 서버에 있는 사람인가."""
+    get = getattr(bot, "get_guild", None)
+    g = get(TEST_GUILD) if get else None
+    return g is not None and g.get_member(int(user_id)) is not None
+
+
+def toto_hold_381(bot, user_id: int, now: Optional[float] = None) -> bool:
+    """3.8.1: 토토 당첨금을 지갑에 바로 넣지 않고 쌓아 두나 (공개 전엔 테스트 서버 사람만)."""
+    return released_381(now) or tester(bot, user_id)

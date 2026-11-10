@@ -1,4 +1,4 @@
-"""3.8.1: 명문 구단 인수 제안 · 적정 인수 금액 · 2군 쿠폰 테스트는 잔액 마이너스여도 · 낚시 확률 대폭 상향 (테스트 서버 먼저). /농사 는 test_farm.py."""
+"""3.8.1: 명문 구단 인수 제안 · 적정 인수 금액 · 2군 쿠폰 테스트는 잔액 마이너스여도 · 낚시 확률 대폭 상향 · 토토 당첨금 쌓아 두고 받기 (테스트 서버 먼저). /농사 는 test_farm.py."""
 import asyncio
 import random
 import tempfile
@@ -138,3 +138,118 @@ def test_elite_offer():
         late = now + 200 + cdb.ELITE_OFFER_HOURS * 3600 + 1
         assert (await clubs.answer_elite_offer(C, r["offer_id"], True, late))["reason"] == "gone"
     asyncio.run(flow())
+
+
+def test_toto_hold():
+    """토토 당첨금: 테스트 서버 사람은 지갑 대신 쌓아 두고 /내베팅 [당첨금 받기] 로 받는다 · 파산하면 빚부터 갚는다."""
+    from types import SimpleNamespace
+    import cogs.toto as ct
+    A, B = 38_100, 38_101
+    guild = SimpleNamespace(get_member=lambda uid: object() if uid == A else None)
+    bot = SimpleNamespace(get_guild=lambda gid: guild if gid == release.TEST_GUILD else None)
+    assert release.toto_hold_381(bot, A) and not release.toto_hold_381(bot, B)
+    assert not release.toto_hold_381(None, A) and not release.toto_hold_381(SimpleNamespace(), A)
+
+    async def flow():
+        db = edb.EconomyDB()
+        now = int(time.time())
+        await db.toto_upsert_match(match_id="h381", home="아스날", away="첼시", kickoff_ts=now + 3600,
+                                   base_home=2.0, base_draw=3.0, base_away=3.0)
+        for u in (A, B):
+            await db.add_balance(u, 10_000)
+            assert await db.toto_place_bet(user_id=u, match_id="h381", pick="1", amount=1_000, odds_locked=2.0, now_ts=now) is None
+        ok, _ = await db.toto_set_result_and_settle("h381", "1", now + 9000, hold=lambda uid: release.toto_hold_381(bot, uid))
+        assert ok
+        assert await db.get_balance(A) == 9_000 and await db.toto_held(A) == 2_000     # 쌓아 둠
+        assert await db.get_balance(B) == 11_000 and await db.toto_held(B) == 0        # 바로 지갑
+        await db.toto_hold(A, 500)
+        assert await db.toto_held(A) == 2_500
+
+        # /내베팅: 받지 않은 당첨금 줄 · [당첨금 받기]
+        cog = ct.Toto.__new__(ct.Toto)
+        cog.db, cog.ufc, cog.api, cog.odds, cog.bot = db, ct.UfcDB(), None, None, bot
+        cog.sports = ct.SportsDB()
+        user = SimpleNamespace(id=A, display_name="토토러", display_avatar=SimpleNamespace(url="https://x/a.png"))
+        sent = []
+        async def rec(*a, **k):
+            sent.append(k)
+        async def noop(*a, **k):
+            pass
+        inter = SimpleNamespace(user=user, guild_id=release.TEST_GUILD, response=SimpleNamespace(defer=noop, send_message=rec),
+                                followup=SimpleNamespace(send=rec))
+        await ct.Toto.my_bets.callback(cog, inter)
+        view = sent[-1]["view"]
+        assert "받지 않은 당첨금 **2,500원**" in sent[-1]["embed"].description and view.claim and "2,500" in view.claim.label
+        other = SimpleNamespace(user=SimpleNamespace(id=B), response=SimpleNamespace(send_message=rec))
+        assert not await view.interaction_check(other)
+        out = []
+        async def edit(**k):
+            out.append(k)
+        async def say(*a, **k):
+            out.append(a[0])
+        await view._claim(SimpleNamespace(user=user, response=SimpleNamespace(edit_message=edit), followup=SimpleNamespace(send=say)))
+        assert "2,500원" in out[-1] and view.claim.disabled
+        assert await db.get_balance(A) == 11_500 and await db.toto_held(A) == 0
+        assert (await db.toto_claim(A))["amount"] == 0                                  # 두 번 받지 않는다
+
+        # 파산: 쌓아 둔 당첨금으로 빚부터 갚는다
+        await db.add_balance(A, -21_500)                                                 # 잔액 -10,000
+        await db.toto_hold(A, 4_000)
+        r = await db.declare_bankruptcy(A, now, rng=random.Random(1))
+        assert r["ok"] and r["toto"] == 4_000 and await db.toto_held(A) == 0
+        assert r["balance"] == -6_000 + r["forgiven"]
+
+    asyncio.run(flow())
+
+
+def test_toto_hold_sports_ufc():
+    """야구 · 농구 · UFC 정산도 테스트 서버 사람은 쌓아 둔다."""
+    from types import SimpleNamespace
+    import cogs.sports_toto as st
+    import cogs.ufc_toto as ut
+    A = 38_110
+    guild = SimpleNamespace(get_member=lambda uid: object() if uid == A else None)
+    bot = SimpleNamespace(get_guild=lambda gid: guild if gid == release.TEST_GUILD else None)
+    sent = []
+
+    async def fake_notify(bot, eco, uid, key, embed):
+        sent.append(embed)
+    keep = (st.send_notify, ut.send_notify, ut._fetch_espn, ut.espn_results, ut.match_result)
+    st.send_notify = ut.send_notify = fake_notify
+
+    async def flow():
+        eco = edb.EconomyDB()
+        cog = st.SportsToto.__new__(st.SportsToto)
+        cog.bot, cog.eco = bot, eco
+        class FakeDB:
+            async def settle_bet(self, *a):
+                return True
+        cog.db = FakeDB()
+        b = {"id": 1, "user_id": A, "sport": "mlb", "home": "H", "away": "W", "pick": "H", "amount": 1_000, "odds": 1.5}
+        await cog._pay(b, "won")
+        assert await eco.toto_held(A) == 1_500 and "/내베팅" in sent[-1].fields[1].value
+        await cog._pay(dict(b, user_id=A + 1), "won")
+        assert await eco.toto_held(A + 1) == 0 and await eco.get_balance(A + 1) == 1_500
+        await cog._pay(b, "void")                                                        # 환불은 바로 지갑
+        assert await eco.toto_held(A) == 1_500 and await eco.get_balance(A) == 1_000
+
+        u = ut.UfcToto.__new__(ut.UfcToto)
+        u.bot, u.eco = bot, eco
+        class FakeUfc:
+            async def list_unsettled(self):
+                return [{"id": 7, "user_id": A, "match_id": "X|Y", "fighter": "X", "amount": 1_000, "odds": 2.0}]
+            async def settle_bet(self, *a):
+                return True
+        u.db = FakeUfc()
+        async def fake_espn(*a):
+            return ["e"]
+        ut._fetch_espn = fake_espn
+        ut.espn_results = lambda events: {}
+        ut.match_result = lambda mid, fighter, results: "won"
+        await u._settle_from_espn()
+        assert await eco.toto_held(A) == 3_500
+
+    try:
+        asyncio.run(flow())
+    finally:   # 다른 테스트 파일이 같은 모듈을 쓴다
+        st.send_notify, ut.send_notify, ut._fetch_espn, ut.espn_results, ut.match_result = keep

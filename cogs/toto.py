@@ -110,6 +110,10 @@ class Toto(commands.Cog):
         ok, msg = await self.db.toto_refund_and_delete_open_match(match_id, allow_closed=True)
         print(f"{'🚫' if ok else '⚠️'} [AUTO-SETTLE] match_id={match_id} 무효 ({why}) :: {msg}")
 
+    def _hold(self, user_id: int) -> bool:
+        """3.8.1: 당첨금을 쌓아 두고 /내베팅에서 받나."""
+        return release.toto_hold_381(self.bot, user_id)
+
     async def _notify_settle_dm(self, match_id: str):
         """
         해당 경기 정산 완료 시, 베팅한 유저들에게 DM 알림
@@ -145,9 +149,10 @@ class Toto(commands.Cog):
                 e.add_field(name="내 픽", value=f"{pick_name}", inline=True)
                 e.add_field(name="베팅", value=f"{int(amount):,}원", inline=True)
                 e.add_field(name="고정 배당", value=f"{float(odds_locked)}", inline=True)
+                held = win and self._hold(int(user_id))   # 3.8.1
                 e.add_field(
-                    name="지급",
-                    value=f"{int(payout):,}원" if win else "0원",
+                    name="당첨금" if held else "지급",
+                    value=f"{int(payout):,}원 · `/내베팅`에서 받기" if held else f"{int(payout):,}원" if win else "0원",
                     inline=True,
                 )
 
@@ -397,7 +402,7 @@ class Toto(commands.Cog):
                             else:
                                 result = "X"
 
-                        ok, msg = await self.db.toto_set_result_and_settle(str(mid), result, now_ts)
+                        ok, msg = await self.db.toto_set_result_and_settle(str(mid), result, now_ts, hold=self._hold)
                         if ok:
                             print(f"✅ [AUTO-SETTLE] match_id={mid} result={result} :: {msg}")
                             await self._notify_settle_dm(str(mid))
@@ -575,7 +580,8 @@ class Toto(commands.Cog):
         soccer = await self.db.toto_list_user_bets(user.id, limit=10)
         ufc = await self.ufc.list_recent_for_user(user.id, limit=10)
         sports = await self.sports.list_recent_for_user(user.id, limit=10)
-        if not soccer and not ufc and not sports:
+        held = await self.db.toto_held(user.id)   # 3.8.1 쌓아 둔 당첨금 (있으면 어느 서버에서든 받는다)
+        if not soccer and not ufc and not sports and not held:
             return await interaction.followup.send(
                 embed=ui.card("🧾 내 베팅", "베팅 내역이 없어요. `/토토`에서 시작해 보세요!", ui.EVEN, user, SECTION), ephemeral=eph)
 
@@ -626,10 +632,12 @@ class Toto(commands.Cog):
                              f"　 {r['pick']} 승 · `{r['amount']:,}원 × {r['odds']:.2f}` → {state}")
             parts.append("### ⚾ 야구 · 🏀 농구\n" + "\n".join(lines))
 
+        if held:
+            parts.insert(0, f"💰 받지 않은 당첨금 **{held:,}원** — 아래 **당첨금 받기**를 누르면 지갑에 들어가요")
         e = ui.card("🧾 내 베팅", "\n\n".join(parts), ui.INFO, user, SECTION)
         e.set_footer(text=f"총 베팅 {total_bet:,}원 · 총 수령 {total_pay:,}원"
                           + (" · 아래 메뉴로 축구 베팅 취소(전액 환불)" if cancellable else ""))
-        view = CancelMenu(self, user.id, cancellable) if cancellable else discord.utils.MISSING
+        view = CancelMenu(self, user.id, cancellable, held) if cancellable or held else discord.utils.MISSING
         await interaction.followup.send(embed=e, view=view, ephemeral=eph)
 
     # ───────────── 관리자 ─────────────
@@ -685,7 +693,7 @@ class Toto(commands.Cog):
             return await say(f"{'✅' if ok else '❌'} {msg}")
 
         if 작업 == "result":
-            ok, msg = await self.db.toto_set_result_and_settle(경기.strip(), 결과, int(time.time()))
+            ok, msg = await self.db.toto_set_result_and_settle(경기.strip(), 결과, int(time.time()), hold=self._hold)
             await say(f"{'✅' if ok else '❌'} {msg}")
             if ok:
                 await self._notify_settle_dm(경기.strip())
@@ -821,22 +829,36 @@ class BetModal(discord.ui.Modal):
 
 
 class CancelMenu(discord.ui.View):
-    """/내베팅 — 경기 시작 10분 전까지 축구 베팅 취소(전액 환불)."""
+    """/내베팅 — 경기 시작 10분 전까지 축구 베팅 취소(전액 환불) · 3.8.1 쌓아 둔 당첨금 받기."""
 
-    def __init__(self, cog: "Toto", user_id: int, bets: list[tuple[str, str, int]]):
+    def __init__(self, cog: "Toto", user_id: int, bets: list[tuple[str, str, int]], held: int = 0):
         super().__init__(timeout=300)
         self.cog, self.user_id = cog, user_id
-        self.select = discord.ui.Select(
-            placeholder="↩️ 취소할 축구 베팅 (전액 환불)",
-            options=[discord.SelectOption(label=f"{name} · {amt:,}원"[:100], value=mid) for mid, name, amt in bets[:25]])
-        self.select.callback = self._cancel
-        self.add_item(self.select)
+        if bets:
+            self.select = discord.ui.Select(
+                placeholder="↩️ 취소할 축구 베팅 (전액 환불)",
+                options=[discord.SelectOption(label=f"{name} · {amt:,}원"[:100], value=mid) for mid, name, amt in bets[:25]])
+            self.select.callback = self._cancel
+            self.add_item(self.select)
+        self.claim = None
+        if held:
+            self.claim = discord.ui.Button(label=f"당첨금 받기 ({held:,}원)"[:80], emoji="💰", style=discord.ButtonStyle.success)
+            self.claim.callback = self._claim
+            self.add_item(self.claim)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("🙅 본인 베팅만 취소할 수 있어요. `/내베팅`을 직접 열어 주세요.", ephemeral=True)
+            await interaction.response.send_message("🙅 본인만 누를 수 있어요. `/내베팅`을 직접 열어 주세요.", ephemeral=True)
             return False
         return True
+
+    async def _claim(self, interaction: discord.Interaction):
+        r = await self.cog.db.toto_claim(self.user_id)
+        self.claim.disabled, self.claim.label = True, "받았어요" if r["amount"] else "받을 당첨금이 없어요"
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(
+            f"💰 당첨금 **{r['amount']:,}원**을 받았어요 · 잔액 **{r['balance']:,}원**" if r["amount"]
+            else "🙅 받을 당첨금이 없어요.", ephemeral=True)
 
     async def _cancel(self, interaction: discord.Interaction):
         ok, msg = await self.cog.db.toto_cancel_bet(user_id=self.user_id, match_id=self.select.values[0],

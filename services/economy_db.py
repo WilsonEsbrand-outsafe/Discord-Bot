@@ -379,6 +379,8 @@ class EconomyDB:
             con.execute("CREATE TABLE IF NOT EXISTS transfer_daily (user_id INTEGER PRIMARY KEY, day_key INTEGER, sent INTEGER)")
             # 파산 기록: 마지막 파산 시각 · 횟수
             con.execute("CREATE TABLE IF NOT EXISTS bankruptcy (user_id INTEGER PRIMARY KEY, last_ts INTEGER, times INTEGER)")
+            # 3.8.1 토토 당첨금: 지갑에 바로 넣지 않고 쌓아 두었다가 /내베팅에서 받는다
+            con.execute("CREATE TABLE IF NOT EXISTS toto_held (user_id INTEGER PRIMARY KEY, amount INTEGER NOT NULL DEFAULT 0)")
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS penalty_kick (
@@ -779,7 +781,12 @@ class EconomyDB:
                                           "WHERE user_id=? AND status='active'", (user_id,)).fetchone()[0])
                 con.execute("UPDATE sponsor_contracts SET status='cancelled', payout=amount "
                             "WHERE user_id=? AND status='active'", (user_id,))
-            after = bal + sponsor
+            # 3.8.1: 쌓아 둔 토토 당첨금도 빚부터 갚는다 (받지 않고 파산해서 탕감받은 뒤 받는 일 막기)
+            row_t = con.execute("SELECT amount FROM toto_held WHERE user_id=?", (user_id,)).fetchone()
+            toto = int(row_t[0]) if row_t else 0
+            if toto:
+                con.execute("DELETE FROM toto_held WHERE user_id=?", (user_id,))
+            after = bal + sponsor + toto
             rate = rng.uniform(*BANKRUPT_FORGIVE)
             lawyer, before = False, 0.0
             if new:
@@ -800,7 +807,7 @@ class EconomyDB:
             last = int(row[0]) if (v374 and extra) else now_ts   # 3.7.4 변호사로 한 번 더 → 쿨타임 시계는 그대로
             con.execute("INSERT INTO bankruptcy(user_id, last_ts, times) VALUES(?, ?, 1) "
                         "ON CONFLICT(user_id) DO UPDATE SET last_ts=excluded.last_ts, times=times+1", (user_id, last))
-            return {"ok": True, "debt": -bal, "sponsor": sponsor, "rate": rate if after < 0 else 0.0, "lawyer": lawyer, "before": before,
+            return {"ok": True, "debt": -bal, "sponsor": sponsor, "toto": toto, "rate": rate if after < 0 else 0.0, "lawyer": lawyer, "before": before,
                     "extra": extra, "lawyers": self._lawyers(con, user_id),
                     "forgiven": forgiven, "balance": new_bal, "next": last + cd}
         return await self._tx(fn)
@@ -1108,7 +1115,39 @@ class EconomyDB:
 
             return await self._run(work)
 
-    async def toto_set_result_and_settle(self, match_id: str, result: str, now_ts: int) -> Tuple[bool, str]:
+    # ───────────── 3.8.1 토토 당첨금 쌓아 두기 ─────────────
+    @staticmethod
+    def _toto_hold(con, user_id: int, amount: int):
+        con.execute("INSERT INTO toto_held(user_id, amount) VALUES(?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET amount = amount + excluded.amount", (int(user_id), int(amount)))
+
+    async def toto_hold(self, user_id: int, amount: int):
+        """토토 당첨금을 쌓아 둔다 (지갑엔 /내베팅 [당첨금 받기] 때 들어간다)."""
+        if int(amount) > 0:
+            await self._tx(lambda con: self._toto_hold(con, user_id, amount))
+
+    async def toto_held(self, user_id: int) -> int:
+        """받지 않고 쌓여 있는 토토 당첨금."""
+        def fn(con):
+            row = con.execute("SELECT amount FROM toto_held WHERE user_id=?", (int(user_id),)).fetchone()
+            return int(row[0]) if row else 0
+        return await self._tx(fn)
+
+    async def toto_claim(self, user_id: int) -> dict:
+        """쌓인 토토 당첨금을 전부 지갑에 넣는다. {amount, balance} (amount 0 = 받을 게 없음)."""
+        def fn(con):
+            row = con.execute("SELECT amount FROM toto_held WHERE user_id=?", (int(user_id),)).fetchone()
+            amount = int(row[0]) if row else 0
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
+            if amount > 0:
+                con.execute("DELETE FROM toto_held WHERE user_id=?", (int(user_id),))
+                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, int(user_id)))
+            bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(user_id),)).fetchone()[0])
+            return {"amount": amount, "balance": bal}
+        return await self._tx(fn)
+
+    async def toto_set_result_and_settle(self, match_id: str, result: str, now_ts: int, hold=None) -> Tuple[bool, str]:
+        """hold(user_id) 가 참이면 당첨금을 지갑 대신 쌓아 둔다 (3.8.1)."""
         if result not in ("1", "X", "2"):
             return (False, "결과는 1 / X / 2 중 하나여야 합니다.")
 
@@ -1153,8 +1192,11 @@ class EconomyDB:
                         payout = 0
                         if pick == result:
                             payout = int(int(amount) * float(odds_locked))
-                            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
-                            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (payout, int(user_id)))
+                            if hold is not None and hold(int(user_id)):
+                                self._toto_hold(con, int(user_id), payout)
+                            else:
+                                con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(user_id),))
+                                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (payout, int(user_id)))
                             paid_count += 1
                             total_paid += payout
 

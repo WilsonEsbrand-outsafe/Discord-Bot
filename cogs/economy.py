@@ -444,12 +444,13 @@ class BankruptConfirm(discord.ui.View):
             e = ui.card("⚖️ 파산 처리 완료",
                         f"`빚` **{r['debt']:,}원**\n"
                         f"`스폰서 강제 해지` **+{r['sponsor']:,}원**\n"
+                        + (f"`쌓아 둔 토토 당첨금` **+{r['toto']:,}원**\n" if r.get("toto") else "")
                         + (f"⚖️ 변호사 덕분에 기다리지 않고 **한 번 더** 신청했어요! (남은 변호사 {r['lawyers']}명)\n"
                            if r.get("extra") else "")
                         + (f"⚖️ 변호사가 다시 변론했어요! 탕감 **{r.get('before', 0):.0%} → {r['rate']:.0%}**\n"
                            if r.get("lawyer") is True else "")
                         + f"`탕감` **{r['forgiven']:,}원** · 남은 빚의 **{r['rate']:.0%}**"
-                        + (" 🎉 전액 탕감!" if r["rate"] >= 1 else " 😱 한 푼도 탕감 못 받았어요…" if r["rate"] == 0 and r["debt"] > r["sponsor"] else "")
+                        + (" 🎉 전액 탕감!" if r["rate"] >= 1 else " 😱 한 푼도 탕감 못 받았어요…" if r["rate"] == 0 and r["debt"] > r["sponsor"] + r.get("toto", 0) else "")
                         + "\n"
                         f"`잔액` **{r['balance']:,}원**\n\n"
                         f"⏳ 다음 파산 신청 <t:{r['next']}:R> · `/스카우트` `/훈련` `/직관`으로 다시 일어서 보세요!"
