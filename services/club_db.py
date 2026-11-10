@@ -281,6 +281,7 @@ ELITE_CLUBS = {   # key → (엠블럼, 이름, 규모)
 }
 ELITE_TAKEOVER = 1.5
 ELITE_REBUY_381 = 7 * 86400   # 3.8.1: 인수 대금을 받은 전 주인은 7일 동안 그 구단을 다시 인수 못 한다
+ELITE_OFFER_HOURS = 24        # 3.8.1: 인수 제안은 24시간 뒤 만료
 ELITE_SELL_RATE = 0.7   # 2.10.1: 혼자 매각하면 낸 인수 금액의 70% (남이 인수하면 지금 가격 × 1.5 를 받는다)
 # 신규 보호 (2.6): 다른 유저가 상대로 지정할 수 없다 (신규끼리는 가능) · 자동 매칭은 전력이 NEWBIE_GAP 이하로 강할 때만
 NEWBIE_OFFICIAL = 10
@@ -767,6 +768,10 @@ class ClubDB:
             # 3.8.1 인수 대금을 받은 전 주인 → 그 구단을 다시 인수할 수 있는 시각
             con.execute("CREATE TABLE IF NOT EXISTS elite_rebuy (key TEXT NOT NULL, user_id INTEGER NOT NULL, "
                         "until INTEGER NOT NULL, PRIMARY KEY(key, user_id))")
+            # 3.8.1 인수 제안 (status: open / accepted / rejected / closed)
+            con.execute("CREATE TABLE IF NOT EXISTS elite_offers (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, "
+                        "buyer_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, amount INTEGER NOT NULL, ts INTEGER NOT NULL, "
+                        "status TEXT NOT NULL DEFAULT 'open')")
             con.executemany("INSERT OR IGNORE INTO elite_clubs(key, price) VALUES(?, ?)",
                             [(k, ELITE_SIZES[size][0]) for k, (_, _, size) in ELITE_CLUBS.items()])
             con.execute("INSERT OR IGNORE INTO club_bonus(user_id) SELECT user_id FROM clubs")
@@ -1047,20 +1052,106 @@ class ClubDB:
                 lock = con.execute("SELECT until FROM elite_rebuy WHERE key=? AND user_id=?", (key, int(user_id))).fetchone()
                 if lock and int(lock[0]) > int(now_ts):
                     return {"ok": False, "reason": "rebuy", "until": int(lock[0])}
+            if v381 and owner:   # 3.8.1: 주인이 있으면 인수 제안 (offer_elite) 으로만
+                return {"ok": False, "reason": "offer"}
             cost = elite_price(key, owner, int(price))
-            bal = self._pay(con, user_id, cost)
-            if bal is None:
-                return {"ok": False, "reason": "balance", "cost": cost}
-            if owner:   # 3.7.0 전 주인이 아직 안 받은 수입은 넘기기 전에 전 주인에게
-                day = con.execute("SELECT income_day FROM elite_clubs WHERE key=?", (key,)).fetchone()[0]
-                self._elite_payout(con, key, owner, int(day or 0), kst_day(now_ts))
-                con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (owner,))
-                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (cost, owner))
-                con.execute("INSERT OR REPLACE INTO elite_rebuy(key, user_id, until) VALUES(?,?,?)",
-                            (key, int(owner), int(now_ts) + ELITE_REBUY_381))   # 3.8.1
-            con.execute("UPDATE elite_clubs SET owner_id=?, price=?, bought_ts=?, income_day=? WHERE key=?",
-                        (int(user_id), cost, int(now_ts), kst_day(now_ts), key))
-            return {"ok": True, "cost": cost, "prev_owner": owner, "balance": bal}
+            return self._elite_transfer(con, key, int(user_id), owner, cost, now_ts)
+        return await self._tx(fn)
+
+    def _elite_transfer(self, con, key: str, buyer: int, owner: Optional[int], cost: int, now_ts: int) -> dict:
+        """buyer 가 cost 를 내고 명문 구단을 가져간다 (돈은 전 주인에게). 돈이 모자라면 reason: balance."""
+        bal = self._pay(con, buyer, cost)
+        if bal is None:
+            return {"ok": False, "reason": "balance", "cost": cost}
+        if owner:   # 3.7.0 전 주인이 아직 안 받은 수입은 넘기기 전에 전 주인에게
+            day = con.execute("SELECT income_day FROM elite_clubs WHERE key=?", (key,)).fetchone()[0]
+            self._elite_payout(con, key, owner, int(day or 0), kst_day(now_ts))
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (owner,))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (cost, owner))
+            con.execute("INSERT OR REPLACE INTO elite_rebuy(key, user_id, until) VALUES(?,?,?)",
+                        (key, int(owner), int(now_ts) + ELITE_REBUY_381))   # 3.8.1
+        con.execute("UPDATE elite_clubs SET owner_id=?, price=?, bought_ts=?, income_day=? WHERE key=?",
+                    (buyer, cost, int(now_ts), kst_day(now_ts), key))
+        con.execute("UPDATE elite_offers SET status='closed' WHERE key=? AND status='open'", (key,))   # 3.8.1 남은 제안 정리
+        return {"ok": True, "key": key, "cost": cost, "prev_owner": owner, "balance": bal}
+
+    def _elite_can_buy(self, con, buyer: int, key: str, now_ts: int) -> Optional[dict]:
+        """인수할 수 있으면 None, 아니면 실패 결과."""
+        if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (buyer,)).fetchone():
+            return {"ok": False, "reason": "no_club"}
+        owner = con.execute("SELECT owner_id FROM elite_clubs WHERE key=?", (key,)).fetchone()[0]
+        if owner == buyer:
+            return {"ok": False, "reason": "mine"}
+        if con.execute("SELECT 1 FROM elite_clubs WHERE owner_id=?", (buyer,)).fetchone():
+            return {"ok": False, "reason": "one"}
+        lock = con.execute("SELECT until FROM elite_rebuy WHERE key=? AND user_id=?", (key, buyer)).fetchone()
+        if lock and int(lock[0]) > int(now_ts):
+            return {"ok": False, "reason": "rebuy", "until": int(lock[0])}
+        return None
+
+    async def offer_elite(self, buyer: int, key: str, amount: int, now_ts: int) -> dict:
+        """3.8.1 인수 제안. 적정 인수 금액(지금 가격 × 1.5) 이상이면 바로 인수 (auto=True),
+        아니면 구단주에게 제안을 남긴다 (같은 사람이 같은 구단에 다시 내면 새 제안으로 바뀐다 · 24시간 뒤 만료).
+        실패 reason: no_club / mine / one / rebuy / free(주인 없음 — 그냥 인수) / amount / balance."""
+        def fn(con):
+            bad = self._elite_can_buy(con, int(buyer), key, now_ts)
+            if bad:
+                return bad
+            owner, price = con.execute("SELECT owner_id, price FROM elite_clubs WHERE key=?", (key,)).fetchone()
+            if not owner:
+                return {"ok": False, "reason": "free"}
+            if amount <= 0:
+                return {"ok": False, "reason": "amount"}
+            fair = elite_price(key, owner, int(price))
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(buyer),))
+            bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(buyer),)).fetchone()[0])
+            if bal < amount:
+                return {"ok": False, "reason": "balance", "cost": amount}
+            if amount >= fair:
+                return {**self._elite_transfer(con, key, int(buyer), int(owner), int(amount), now_ts), "auto": True, "fair": fair}
+            con.execute("UPDATE elite_offers SET status='closed' WHERE key=? AND buyer_id=? AND status='open'", (key, int(buyer)))
+            cur = con.execute("INSERT INTO elite_offers(key, buyer_id, owner_id, amount, ts) VALUES(?,?,?,?,?)",
+                              (key, int(buyer), int(owner), int(amount), int(now_ts)))
+            return {"ok": True, "auto": False, "offer_id": cur.lastrowid, "owner_id": int(owner), "amount": int(amount),
+                    "fair": fair, "expires": int(now_ts) + ELITE_OFFER_HOURS * 3600}
+        return await self._tx(fn)
+
+    async def elite_offers(self, owner: int, now_ts: int) -> list[dict]:
+        """3.8.1 내 명문 구단에 들어온 (만료 안 된) 인수 제안 — 금액 큰 순."""
+        def fn(con):
+            r = con.execute("SELECT key FROM elite_clubs WHERE owner_id=?", (int(owner),)).fetchone()
+            if not r:
+                return []
+            since = int(now_ts) - ELITE_OFFER_HOURS * 3600
+            return [{"id": i, "key": k, "buyer_id": b, "amount": a, "ts": t}
+                    for i, k, b, a, t in con.execute(
+                        "SELECT id, key, buyer_id, amount, ts FROM elite_offers WHERE key=? AND owner_id=? AND status='open' "
+                        "AND ts>? ORDER BY amount DESC, ts", (r[0], int(owner), since))]
+        return await self._tx(fn)
+
+    async def answer_elite_offer(self, owner: int, offer_id: int, accept: bool, now_ts: int) -> dict:
+        """3.8.1 인수 제안 수락 · 거절. 실패 reason: gone(없거나 만료 · 이미 처리 · 구단 주인이 바뀜) ·
+        수락할 때 제안자 쪽 문제: no_club / one / rebuy / balance (그 제안은 닫힌다)."""
+        def fn(con):
+            r = con.execute("SELECT key, buyer_id, owner_id, amount, ts, status FROM elite_offers WHERE id=?",
+                            (int(offer_id),)).fetchone()
+            if (not r or r[5] != "open" or r[2] != int(owner) or int(r[4]) <= int(now_ts) - ELITE_OFFER_HOURS * 3600
+                    or con.execute("SELECT owner_id FROM elite_clubs WHERE key=?", (r[0],)).fetchone()[0] != int(owner)):
+                return {"ok": False, "reason": "gone"}
+            key, buyer, amount = r[0], int(r[1]), int(r[3])
+            base = {"key": key, "buyer_id": buyer, "amount": amount}
+            if not accept:
+                con.execute("UPDATE elite_offers SET status='rejected' WHERE id=?", (int(offer_id),))
+                return {"ok": True, "accepted": False, **base}
+            bad = self._elite_can_buy(con, buyer, key, now_ts)
+            if not bad:
+                bad = self._elite_transfer(con, key, buyer, int(owner), amount, now_ts)
+                if bad["ok"]:
+                    con.execute("UPDATE elite_offers SET status='accepted' WHERE id=?", (int(offer_id),))
+                    owner_bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(owner),)).fetchone()[0])
+                    return {"ok": True, "accepted": True, **base, "balance": owner_bal}
+            con.execute("UPDATE elite_offers SET status='closed' WHERE id=?", (int(offer_id),))
+            return {**bad, **base, "ok": False}
         return await self._tx(fn)
 
     async def sell_elite(self, user_id: int) -> dict:
