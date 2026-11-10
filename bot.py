@@ -380,6 +380,7 @@ async def on_ready():
             print(f"🧩 {ext} 로드 완료")
         except Exception as e:
             print(f"⚠️ {ext} 로드 실패:", repr(e))
+        collect_owner_commands(bot.tree)   # 3.8.1: 관리자 명령어를 바로 빼야 전체 / 명령어 100개 제한에 안 걸린다
 
     # ✅ 길드 동기화 순서 고정 (1 → 4) : ID 리스트 그대로 순회
     ORDERED_GUILD_IDS = [
@@ -532,6 +533,7 @@ async def sync_and_reload(interaction: discord.Interaction):
                 print(f"⚠️ {ext} 로드 실패:", repr(e))
         except Exception as e:
             print(f"⚠️ {ext} 리로드 실패:", repr(e))
+        collect_owner_commands(bot.tree)   # 3.8.1: 100개 제한
 
     # ✅ 슬래시 동기화(이 서버)
     await sync_guild(discord.Object(id=interaction.guild_id))
