@@ -8,6 +8,7 @@ import sqlite3
 import time
 from typing import Optional
 
+import release
 from services.economy_db import EconomyDB, give_item, _kst_day
 
 # ───────────── 물고기 ─────────────
@@ -804,16 +805,17 @@ class FishingDB(EconomyDB):
                 "SELECT species, size, ts FROM fish_log WHERE user_id=? ORDER BY ts DESC, rowid DESC LIMIT ?", (uid, limit))
             if sp in FISH])
 
-    async def weekly_top(self, now_ts: int, limit: int = 5, per_user: bool = True) -> list[dict]:
+    async def weekly_top(self, now_ts: int, limit: int = 5, per_user: bool = True, hide: bool = False) -> list[dict]:
         """이번 주 최대어 — 평균 크기 대비 가장 큰 물고기 (종마다 크기가 달라서 비율로 겨룬다). 유저당 1마리.
-        per_user=False (3.6.0): 유저당 1마리가 아니라 이번 주 낚은 물고기 전체를 크기 순으로."""
+        per_user=False (3.6.0): 유저당 1마리가 아니라 이번 주 낚은 물고기 전체를 크기 순으로.
+        hide = 3.8.1 관리자 빼기."""
         wk = week_key(now_ts)
 
         def fn(con):
             best: dict[int, tuple] = {}
             every: list[tuple] = []
             for uid, sp, size, ts in con.execute("SELECT user_id, species, size, ts FROM fish_log WHERE week=?", (wk,)):
-                if sp not in FISH:
+                if sp not in FISH or (hide and uid in release.RANK_EXCLUDE):
                     continue
                 score = (FISH[sp][2], size_mult(sp, size))   # 등급 먼저, 그다음 크기 비율
                 every.append((uid, (score, sp, size, ts)))

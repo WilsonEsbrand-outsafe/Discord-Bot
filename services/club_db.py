@@ -1514,11 +1514,11 @@ class ClubDB:
         return await self._tx(lambda con: self._popularity(con, user_id))
 
     @staticmethod
-    def _weekly_rows(con, week: int, limit: int) -> list[dict]:
+    def _weekly_rows(con, week: int, limit: int, hide: bool = False) -> list[dict]:
         rows = con.execute(
             "SELECT o.user_id, COALESCE(c.club_name, '(삭제된 구단)'), o.points, o.w, o.d, o.l, o.gf, o.ga "
             "FROM club_official_week o LEFT JOIN clubs c ON c.user_id=o.user_id WHERE o.week=? AND (o.w+o.d+o.l)>0 "
-            "ORDER BY o.points DESC, (o.gf-o.ga) DESC, o.gf DESC, o.last_ts ASC LIMIT ?", (week, limit)).fetchall()
+            + release.rank_sql("o.user_id", hide) + " ORDER BY o.points DESC, (o.gf-o.ga) DESC, o.gf DESC, o.last_ts ASC LIMIT ?", (week, limit)).fetchall()
         return [dict(zip(("user_id", "name", "points", "w", "d", "l", "gf", "ga"), r)) for r in rows]
 
     @staticmethod
@@ -1528,12 +1528,12 @@ class ClubDB:
                         (week, int(user_id))).fetchone()
         return dict(zip(("user_id", "name", "points", "w", "d", "l", "gf", "ga"), r))
 
-    async def weekly_table(self, now_ts: int, limit: int = 10) -> list[dict]:
-        """3.6.0 이번 주 공식경기 순위."""
-        return await self._tx(lambda con: self._weekly_rows(con, week_key(now_ts), limit))
+    async def weekly_table(self, now_ts: int, limit: int = 10, hide: bool = False) -> list[dict]:
+        """3.6.0 이번 주 공식경기 순위. hide = 3.8.1 관리자 빼기."""
+        return await self._tx(lambda con: self._weekly_rows(con, week_key(now_ts), limit, hide))
 
-    async def weekly_me(self, user_id: int, now_ts: int) -> Optional[dict]:
-        """이번 주 내 기록 + 순위 (기록이 없으면 None)."""
+    async def weekly_me(self, user_id: int, now_ts: int, hide: bool = False) -> Optional[dict]:
+        """이번 주 내 기록 + 순위 (기록이 없으면 None). hide = 3.8.1 관리자 빼기 (관리자 본인은 rank None)."""
         def fn(con):
             wk = week_key(now_ts)
             row = con.execute("SELECT points, w, d, l, gf, ga, last_ts, purse FROM club_official_week WHERE user_id=? "
@@ -1541,9 +1541,9 @@ class ClubDB:
             if not row:
                 return None
             pts, w, d, l, gf, ga, last, purse = row
-            rank = 1 + con.execute(
-                "SELECT COUNT(*) FROM club_official_week WHERE week=? AND (w+d+l)>0 AND (points>? OR (points=? AND "
-                "((gf-ga)>? OR ((gf-ga)=? AND (gf>? OR (gf=? AND last_ts<?))))))",
+            rank = None if hide and int(user_id) in release.RANK_EXCLUDE else 1 + con.execute(
+                "SELECT COUNT(*) FROM club_official_week WHERE week=? AND (w+d+l)>0" + release.rank_sql("user_id", hide)
+                + " AND (points>? OR (points=? AND ((gf-ga)>? OR ((gf-ga)=? AND (gf>? OR (gf=? AND last_ts<?))))))",
                 (wk, pts, pts, gf - ga, gf - ga, gf, gf, last)).fetchone()[0]
             return {"rank": rank, "points": pts, "w": w, "d": d, "l": l, "gf": gf, "ga": ga, "purse": purse}
         return await self._tx(fn)
@@ -1559,7 +1559,8 @@ class ClubDB:
                                                "(SELECT week FROM club_week_paid) ORDER BY week", (cur,))]
             for wk in weeks:
                 con.execute("INSERT INTO club_week_paid(week, paid_ts) VALUES(?, ?)", (wk, int(now_ts)))
-                ranked = {r["user_id"]: (i, r) for i, r in enumerate(self._weekly_rows(con, wk, len(WEEKLY_REWARDS)))}
+                ranked = {r["user_id"]: (i, r) for i, r in enumerate(   # 3.8.1 관리자는 랭킹 보상에서 빠진다 (상금함은 받는다)
+                    self._weekly_rows(con, wk, len(WEEKLY_REWARDS), release.released_381(now_ts)))}
                 purses = dict(con.execute("SELECT user_id, purse FROM club_official_week WHERE week=? AND purse>0", (wk,)))
                 for uid in list(ranked) + [u for u in purses if u not in ranked]:
                     i, r = ranked.get(uid) or (None, self._weekly_row(con, wk, uid))
@@ -1579,11 +1580,12 @@ class ClubDB:
             return out
         return await self._tx(fn)
 
-    async def official_table(self, now_ts: int, limit: int = 10) -> list[dict]:
-        """이번 시즌 순위: 승점 → 득실차 → 다득점. 3.7.0 봇 구단은 순위에 안 나온다 (이적시장 전용)."""
+    async def official_table(self, now_ts: int, limit: int = 10, admin: bool = False) -> list[dict]:
+        """이번 시즌 순위: 승점 → 득실차 → 다득점. 3.7.0 봇 구단은 순위에 안 나온다 (이적시장 전용).
+        admin = 3.8.1 관리자 빼기."""
         season = season_key(now_ts)
         from services.bot_clubs import BOT_IDS
-        hide = f" AND o.user_id NOT IN ({','.join(map(str, BOT_IDS))})"
+        hide = f" AND o.user_id NOT IN ({','.join(map(str, BOT_IDS))})" + release.rank_sql("o.user_id", admin)
 
         def fn(con):
             rows = con.execute(

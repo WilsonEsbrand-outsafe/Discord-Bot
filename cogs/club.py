@@ -694,9 +694,10 @@ class Club(commands.Cog):
         await interaction.response.defer()
         now = int(time.time())
         medals = ("🥇", "🥈", "🥉")
+        hide = release.preview_381(interaction.guild_id)   # 3.8.1 관리자 빼기
         if 기간 == "week" and release.preview_360(interaction.guild_id):   # 3.6.0 주간 랭킹
-            return await interaction.followup.send(embed=await self._weekly_embed(interaction.user, now))
-        rows = await self.clubs.official_table(now, limit=10)
+            return await interaction.followup.send(embed=await self._weekly_embed(interaction.user, now, hide))
+        rows = await self.clubs.official_table(now, limit=10, admin=hide)
         season = season_key(now)
         lines = [f"{medals[i] if i < 3 else f'`{i + 1}`'} **{r['name']}** · **{r['points']}점** · "
                  f"{r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d}" for i, r in enumerate(rows)]
@@ -706,15 +707,16 @@ class Club(commands.Cog):
         e.set_footer(text="승 3점 · 무 1점 · 건 쪽과 상대 모두 기록 · 매달 1일 새 시즌")
         await interaction.followup.send(embed=e)
 
-    async def _weekly_embed(self, user, now: int) -> discord.Embed:
-        rows = await self.clubs.weekly_table(now, limit=WEEKLY_SHOW)
+    async def _weekly_embed(self, user, now: int, hide: bool = False) -> discord.Embed:
+        rows = await self.clubs.weekly_table(now, limit=WEEKLY_SHOW, hide=hide)
         medals = ("🥇", "🥈", "🥉")
         prize = lambda i: (f" · 🎁 {WEEKLY_REWARDS[i][0] // 10_000:,}만원" + (f" + 🔷{WEEKLY_REWARDS[i][1]}" if WEEKLY_REWARDS[i][1] else "")
                            if i < len(WEEKLY_REWARDS) else "")
         lines = [f"{medals[i] if i < 3 else f'`{i + 1}`'} **{r['name']}** · **{r['points']}점** · "
                  f"{r['w']}승 {r['d']}무 {r['l']}패 · 득실 {r['gf'] - r['ga']:+d}{prize(i)}" for i, r in enumerate(rows)]
-        me = await self.clubs.weekly_me(user.id, now)
-        mine = (f"\n\n`내 순위` **{me['rank']}위** · {me['points']}점 · {me['w']}승 {me['d']}무 {me['l']}패"
+        me = await self.clubs.weekly_me(user.id, now, hide=hide)
+        rank = (f"{me['rank']}위" if me["rank"] else "집계 제외") if me else ""   # 3.8.1 관리자는 집계 제외
+        mine = (f"\n\n`내 순위` **{rank}** · {me['points']}점 · {me['w']}승 {me['d']}무 {me['l']}패"
                 + (f"\n💰 `이번 주 상금함` **{me['purse']:,}원** (월요일 정산)" if me.get("purse") else "") if me else
                 "\n\n아직 이번 주 기록이 없어요. `/공식경기`로 순위에 올라 보세요!")
         reset = ((now + 9 * 3600) // 86400 + 3) // 7 * 7 - 3   # 다음 주 월요일 KST 날짜 번호

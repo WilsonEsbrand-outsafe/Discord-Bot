@@ -142,7 +142,8 @@ class EntryView(discord.ui.View):
         await self.cog.show_entry(interaction, edit=True, note="🎫 추가 입장권을 썼어요. 오늘 한 번 더 들어갈 수 있어요!")
 
     async def _rank(self, interaction: discord.Interaction):
-        await interaction.response.send_message(embed=await self.cog.rank_embed(interaction.user), ephemeral=True)
+        await interaction.response.send_message(embed=await self.cog.rank_embed(
+            interaction.user, release.preview_381(interaction.guild_id)), ephemeral=True)   # 3.8.1 관리자 빼기
 
 
 class RunView(discord.ui.View):
@@ -262,8 +263,8 @@ class Dungeon(commands.Cog):
         else:
             await interaction.response.send_message(embed=e, view=v)
 
-    async def rank_embed(self, user) -> discord.Embed:
-        top = await self.db.weekly_top(int(time.time()), 10)
+    async def rank_embed(self, user, hide: bool = False) -> discord.Embed:
+        top = await self.db.weekly_top(int(time.time()), 10, hide=hide)
         medals = ("🥇", "🥈", "🥉")
         rows = []
         for i, (uid, fl) in enumerate(top):
