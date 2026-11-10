@@ -275,7 +275,7 @@ def preview_374(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_374(now)
 
 
-# 3.8.1 — 테스트 서버 먼저. 명문 구단: 인수 대금을 받은 전 주인은 7일 동안 그 구단을 다시 인수 못 함 ·
+# 3.8.1 — 테스트 서버 먼저. 명문 구단: 인수 제안 (적정 인수 금액 이상이면 바로 · 구단주가 금액을 정함) ·
 # 2군 쿠폰 테스트는 잔액이 마이너스여도 · 낚시 확률 대폭 상향 · /농사. None = 아직
 RELEASE_381_TS: Optional[int] = None
 PREVIEW_381: set[str] = {"농사"}   # 3.8.1 새 명령어 — 공개 전엔 테스트 서버에만 보인다

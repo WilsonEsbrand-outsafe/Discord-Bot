@@ -10,7 +10,7 @@ import release
 from services import ui
 from services.management import MgmtDB
 from services.club_db import (
-    ELITE_OFFER_HOURS, ELITE_CLUBS, ELITE_SELL_RATE, ELITE_SIZES, ELITE_TAKEOVER, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS,
+    ELITE_OFFER_HOURS, ELITE_CLUBS, elite_ask_range, ELITE_SELL_RATE, ELITE_SIZES, ELITE_TAKEOVER, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS,
     FACILITY_MAX, SLOT_GROUP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, elite_team, facility_effect,
 )
 
@@ -47,7 +47,7 @@ class BuyConfirm(discord.ui.View):
             msg = {"no_club": _NO_CLUB, "mine": "이미 내 구단이에요.",
                    "one": "명문 구단은 한 사람에 하나만 가질 수 있어요.",
                    "balance": f"인수 금액 **{r.get('cost', 0):,}원**이 필요해요.",
-                   "rebuy": f"이 구단의 인수 대금을 받은 지 7일이 안 됐어요. <t:{r.get('until', 0)}:R>부터 다시 인수할 수 있어요."}[r["reason"]]
+                   "offer": "주인이 있는 구단이에요. `/명문구단`에서 다시 열어 인수 제안을 해 주세요."}[r["reason"]]
             return await interaction.response.edit_message(
                 embed=ui.card("❌ 인수 실패", msg, ui.LOSE, self.user, SECTION), view=None)
         prev = f"\n`전 구단주` <@{r['prev_owner']}> — 인수 금액을 받았어요" if r["prev_owner"] else ""
@@ -73,8 +73,6 @@ _OFFER_FAIL = {"no_club": _NO_CLUB, "mine": "이미 내 구단이에요.", "one"
 def _offer_fail(r: dict) -> str:
     if r["reason"] == "balance":
         return f"제안 금액 **{r.get('cost', r.get('amount', 0)):,}원**만큼 잔액이 있어야 해요."
-    if r["reason"] == "rebuy":
-        return f"이 구단의 인수 대금을 받은 지 7일이 안 됐어요. <t:{r.get('until', 0)}:R>부터 다시 인수할 수 있어요."
     return _OFFER_FAIL.get(r["reason"], "인수할 수 없어요.")
 
 
@@ -85,7 +83,7 @@ class OfferModal(discord.ui.Modal):
         super().__init__(title=f"🤝 {club['name']} 인수 제안"[:45])
         self.cog, self.user, self.club = cog, user, club
         self.amount = discord.ui.TextInput(label="제안 금액 (원)", max_length=15,
-                                           placeholder=f"적정 인수 금액 {club['cost']:,}원 이상이면 바로 인수")
+                                           placeholder=f"적정 인수 금액 {club['fair']:,}원 이상이면 바로 인수")
         self.add_item(self.amount)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -95,13 +93,40 @@ class OfferModal(discord.ui.Modal):
         await self.cog.make_offer(interaction, self.user, self.club, int(raw))
 
 
+class AskModal(discord.ui.Modal):
+    """3.8.1 구단주가 적정 인수 금액을 정한다 — 이 금액 이상 제안이 오면 바로 인수된다."""
+
+    def __init__(self, cog: "Elite", user, club: dict):
+        super().__init__(title="🏷️ 적정 인수 금액 정하기")
+        self.cog, self.user, self.club = cog, user, club
+        lo, hi = elite_ask_range(club["price"])
+        self.amount = discord.ui.TextInput(label=f"{_eok(lo)} ~ {_eok(hi)}원 (이 이상 제안이 오면 바로 인수)"[:45],
+                                           default=str(club["fair"]), max_length=15)
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = str(self.amount.value).replace(",", "").replace("원", "").strip()
+        if not raw.isdigit():
+            return await interaction.response.send_message("금액은 숫자로 적어 주세요.", ephemeral=True)
+        r = await self.cog.clubs.set_elite_ask(self.user.id, int(raw))
+        c = self.club
+        if r["ok"]:
+            e = ui.card(f"🏷️ {c['emblem']} {c['name']} 적정 인수 금액", f"**{r['ask']:,}원**으로 정했어요.\n"
+                        "이 금액 이상을 제안하면 바로 인수되고, 그보다 적은 제안은 수락 · 거절할 수 있어요.",
+                        ui.WIN, self.user, SECTION)
+        else:
+            e = ui.card("🙅 적정 인수 금액", "가진 명문 구단이 없어요." if r["reason"] == "none" else
+                        f"**{r['lo']:,}원 ~ {r['hi']:,}원** 사이로 정해 주세요.", ui.LOSE, self.user, SECTION)
+        await interaction.response.send_message(embed=e, ephemeral=not r["ok"])
+
+
 class OfferStart(discord.ui.View):
     """3.8.1 주인 있는 명문 구단: 적정 인수 금액으로 바로 인수하거나, 금액을 제안한다."""
 
     def __init__(self, cog: "Elite", user, club: dict):
         super().__init__(timeout=180)
         self.cog, self.user, self.club = cog, user, club
-        self.now.label = f"{_eok(club['cost'])}원에 바로 인수"
+        self.now.label = f"{_eok(club['fair'])}원에 바로 인수"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
@@ -112,7 +137,7 @@ class OfferStart(discord.ui.View):
     @discord.ui.button(label="바로 인수", emoji="🤝", style=discord.ButtonStyle.success)
     async def now(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
-        await self.cog.make_offer(interaction, self.user, self.club, self.club["cost"], edit=True)
+        await self.cog.make_offer(interaction, self.user, self.club, self.club["fair"], edit=True)
 
     @discord.ui.button(label="금액 제안", emoji="✍️", style=discord.ButtonStyle.primary)
     async def propose(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -137,11 +162,17 @@ class OwnerOffers(discord.ui.View):
                 b = discord.ui.Button(label=label, emoji=emoji, style=style, row=1)
                 b.callback = self._answer(ok)
                 self.add_item(b)
+        ask = discord.ui.Button(label="적정 인수 금액 정하기", emoji="🏷️", style=discord.ButtonStyle.primary, row=2)
+        ask.callback = self._ask
+        self.add_item(ask)
         if sell:
             b = discord.ui.Button(label=f"{_eok(int(club['price'] * ELITE_SELL_RATE))}원에 매각", emoji="💸",
                                   style=discord.ButtonStyle.secondary, row=2)
             b.callback = self._sell
             self.add_item(b)
+
+    async def _ask(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(AskModal(self.cog, self.user, self.club))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
@@ -332,15 +363,15 @@ class Elite(commands.Cog):
     async def elite(self, interaction: discord.Interaction, 구단: Optional[str] = None):
         user = interaction.user
         clubs = await self.clubs.elite_list()
+        v381 = release.preview_381(interaction.guild_id)
         if not 구단:
             lines = []
             for c in clubs:
                 owner = f"<@{c['owner_id']}>" if c["owner_id"] else "주인 없음"
                 lines.append(f"{c['emblem']} **{c['name']}** · {c['size']} · 전력 **{c['rating']}**\n"
-                             f"　{owner} · 인수 **{_eok(c['cost'])}원** · 하루 +{_eok(c['income'])}원")
+                             f"　{owner} · 인수 **{_eok(c['fair'] if v381 else c['cost'])}원** · 하루 +{_eok(c['income'])}원")
             e = ui.card("🏰 명문 구단", "\n".join(lines), ui.GOLD, user, SECTION)
-            v381 = release.preview_381(interaction.guild_id)
-            e.set_footer(text=(f"주인 있는 구단은 인수 제안 — 적정 인수 금액(지금 가격 ×{ELITE_TAKEOVER}) 이상이면 바로 인수, "
+            e.set_footer(text=("주인 있는 구단은 인수 제안 — 적정 인수 금액(구단주가 정함) 이상이면 바로 인수, "
                                "아니면 구단주가 수락 · 거절" if v381 else
                                f"주인 없음은 표시 가격 · 주인 있으면 지금 가격 ×{ELITE_TAKEOVER} (전 주인에게)")
                          + " · 한 사람 한 구단 · /명문구단 구단:<이름> · 내 구단은 거기서 매각(낸 돈의 70%)")
@@ -370,8 +401,9 @@ class Elite(commands.Cog):
         e = ui.card(f"{c['emblem']} {c['name']}",
                     f"`규모` {c['size']} · `전력` **{c['rating']}** · `포메이션` {team['formation']}\n"
                     f"`구단주` {owner} · `하루 수입` **{c['income']:,}원**\n"
-                    + (f"`적정 인수 금액` **{c['cost']:,}원**" if c["owner_id"] and release.preview_381(interaction.guild_id)
-                     else f"`인수 금액` **{c['cost']:,}원**") + (f" (지금 가격 {c['price']:,}원 ×{ELITE_TAKEOVER})" if c["owner_id"] else "")
+                    + (f"`적정 인수 금액` **{c['fair']:,}원**" + ("" if c["ask"] else " (구단주가 아직 안 정해서 기본값)")
+                       if c["owner_id"] and v381 else f"`인수 금액` **{c['cost']:,}원**"
+                       + (f" (지금 가격 {c['price']:,}원 ×{ELITE_TAKEOVER})" if c["owner_id"] else ""))
                     + "\n\n" + "\n".join(rows) + "\n\n-# 선수 능력치는 바뀌지 않아요 (성장 · 노화 · 부상 없음)",
                     ui.INFO, user, SECTION)
         mine = c["owner_id"] == user.id
@@ -387,7 +419,10 @@ class Elite(commands.Cog):
                 e.description += ("\n\n📨 **받은 인수 제안**\n" + "\n".join(
                     f"<@{o['buyer_id']}> **{o['amount']:,}원** · <t:{o['ts'] + ELITE_OFFER_HOURS * 3600}:R> 만료" for o in offers[:10])
                                   if offers else "\n\n📨 받은 인수 제안이 없어요.")
-                view = OwnerOffers(self, user, c, offers, sell) if offers or sell else None
+                lo, hi = elite_ask_range(c["price"])
+                e.description += (f"\n🏷️ 적정 인수 금액 **{c['fair']:,}원** — [적정 인수 금액 정하기]로 "
+                                  f"{_eok(lo)} ~ {_eok(hi)}원 사이에서 바꿀 수 있어요. 이 금액 이상 제안은 바로 인수돼요.")
+                view = OwnerOffers(self, user, c, offers, sell)
             else:
                 e.description += ("\n\n🤝 **적정 인수 금액** 이상을 내면 바로 인수돼요. 그보다 적게 제안하면 구단주가 수락할 때 인수돼요.")
                 view = OfferStart(self, user, c)
