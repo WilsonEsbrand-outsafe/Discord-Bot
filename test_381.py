@@ -1,4 +1,4 @@
-"""3.8.1: 명문 구단 인수 제안 · 적정 인수 금액 · 2군 쿠폰 테스트는 잔액 마이너스여도 · 낚시 확률 대폭 상향 · /농사 (테스트 서버 먼저)."""
+"""3.8.1: 명문 구단 인수 제안 · 적정 인수 금액 · 2군 쿠폰 테스트는 잔액 마이너스여도 · 낚시 확률 대폭 상향 (테스트 서버 먼저). /농사 는 test_farm.py."""
 import asyncio
 import random
 import tempfile
@@ -13,7 +13,6 @@ TMP = Path(tempfile.mkdtemp()) / "t.sqlite3"
 edb.DB_PATH = cdb.DB_PATH = pmdb.DB_PATH = TMP
 
 import release  # noqa: E402
-import services.farm as F  # noqa: E402
 import services.fishing as FI  # noqa: E402
 import services.youth as Y  # noqa: E402
 
@@ -92,26 +91,6 @@ def test_fishing_odds_up():
         new = FI.grade_odds(wait, 0, True, True, True, v381=True)
         assert sum(new[2:]) > sum(old[2:]) and sum(new[3:]) >= sum(old[3:]) * 1.9
         assert abs(sum(new) - 1) < 1e-9
-
-
-def test_farm():
-    db = F.FarmDB()
-
-    async def flow():
-        U, T = 3815, 1_800_000_000
-        assert (await db.plant(U, "carrot", T))["reason"] == "balance"
-        await db.add_balance(U, 25_000)
-        r = await db.plant(U, "carrot", T, all_empty=True)
-        assert r["ok"] and r["count"] == 2 and r["balance"] == 5_000
-        assert (await db.harvest(U, T + 60))["reason"] == "none"
-        f = await db.field(U, T + 60)
-        assert sum(p is not None for p in f["plots"]) == 2 and not f["plots"][0]["ready"]
-        r = await db.harvest(U, T + F.CROPS["carrot"][3])
-        assert r["ok"] and r["total"] == 2 * F.CROPS["carrot"][4] and r["balance"] == 5_000 + 30_000
-        await db.add_balance(U, 10**9)
-        assert (await db.plant(U, "corn", T, all_empty=True))["count"] == F.PLOTS
-        assert (await db.plant(U, "corn", T))["reason"] == "full"
-    asyncio.run(flow())
 
 
 def test_elite_offer():
