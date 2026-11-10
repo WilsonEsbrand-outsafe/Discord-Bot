@@ -141,7 +141,7 @@ def test_elite_offer():
 
 
 def test_toto_hold():
-    """토토 당첨금: 테스트 서버 사람은 지갑 대신 쌓아 두고 /내베팅 [당첨금 받기] 로 받는다 · 파산하면 빚부터 갚는다."""
+    """토토 당첨금: 테스트 서버 사람은 지갑 대신 쌓아 두고 /내베팅 [당첨금 받기] 로 받는다 · 파산해도 그대로 남는다."""
     from types import SimpleNamespace
     import cogs.toto as ct
     A, B = 38_100, 38_101
@@ -192,12 +192,12 @@ def test_toto_hold():
         assert await db.get_balance(A) == 11_500 and await db.toto_held(A) == 0
         assert (await db.toto_claim(A))["amount"] == 0                                  # 두 번 받지 않는다
 
-        # 파산: 쌓아 둔 당첨금으로 빚부터 갚는다
+        # 파산해도 쌓아 둔 당첨금은 건드리지 않는다
         await db.add_balance(A, -21_500)                                                 # 잔액 -10,000
         await db.toto_hold(A, 4_000)
         r = await db.declare_bankruptcy(A, now, rng=random.Random(1))
-        assert r["ok"] and r["toto"] == 4_000 and await db.toto_held(A) == 0
-        assert r["balance"] == -6_000 + r["forgiven"]
+        assert r["ok"] and "toto" not in r and await db.toto_held(A) == 4_000
+        assert r["balance"] == -10_000 + r["forgiven"]
 
     asyncio.run(flow())
 
