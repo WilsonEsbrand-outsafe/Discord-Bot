@@ -10,6 +10,7 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
+import release
 from services.ufc_db import UfcDB
 from services.economy_db import EconomyDB
 from services.notifier import send_notify
@@ -315,8 +316,9 @@ class UfcToto(commands.Cog):
             log.info(f"[UFC] 자동 정산: {home} vs {away} → 승자 {winner}")
 
             for r in results:
+                held = r["won"] and release.toto_hold_381(self.bot, r["user_id"])   # 3.8.1 쌓아 두고 /내베팅에서 받기
                 if r["won"]:
-                    await self.eco.add_balance(r["user_id"], r["payout"])
+                    await (self.eco.toto_hold if held else self.eco.add_balance)(r["user_id"], r["payout"])
 
                 embed = discord.Embed(
                     title="🥊 UFC 베팅 정산",
@@ -325,7 +327,8 @@ class UfcToto(commands.Cog):
                 )
                 if r["won"]:
                     embed.add_field(name="결과",   value="✅ 당첨!",              inline=True)
-                    embed.add_field(name="수령액", value=f"**+{r['payout']:,}원**", inline=True)
+                    embed.add_field(name="당첨금" if held else "수령액",
+                                    value=f"**{r['payout']:,}원** · `/내베팅`에서 받기" if held else f"**+{r['payout']:,}원**", inline=True)
                 else:
                     embed.add_field(name="결과", value="❌ 낙첨",           inline=True)
                     embed.add_field(name="손실", value=f"{r['amount']:,}원", inline=True)
@@ -349,14 +352,16 @@ class UfcToto(commands.Cog):
             payout = int(b["amount"] * b["odds"]) if res == "won" else 0
             if not await self.db.settle_bet(b["id"], res == "won"):
                 continue   # 그 사이 다른 정산이 먼저 했다
+            held = res == "won" and release.toto_hold_381(self.bot, b["user_id"])   # 3.8.1
             if payout:
-                await self.eco.add_balance(b["user_id"], payout)
+                await (self.eco.toto_hold if held else self.eco.add_balance)(b["user_id"], payout)
             home, _, away = b["match_id"].partition("|")
             log.info(f"[UFC] ESPN 정산: {home} vs {away} · {b['fighter']} → {res}")
             embed = discord.Embed(title="🥊 UFC 베팅 정산", description=f"**{home} vs {away}**", color=MMA_COLOR)
             if res == "won":
                 embed.add_field(name="결과",   value="✅ 당첨!",            inline=True)
-                embed.add_field(name="수령액", value=f"**+{payout:,}원**", inline=True)
+                embed.add_field(name="당첨금" if held else "수령액",
+                                value=f"**{payout:,}원** · `/내베팅`에서 받기" if held else f"**+{payout:,}원**", inline=True)
             else:
                 embed.add_field(name="결과", value="❌ 낙첨",             inline=True)
                 embed.add_field(name="손실", value=f"{b['amount']:,}원", inline=True)

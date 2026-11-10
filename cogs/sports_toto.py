@@ -16,6 +16,7 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
+import release
 from services.sports_db import SportsDB
 from services.economy_db import EconomyDB
 from services.notifier import send_notify
@@ -303,14 +304,16 @@ class SportsToto(commands.Cog):
         payout = int(b["amount"] * b["odds"]) if res == "won" else b["amount"] if res == "void" else 0
         if not await self.db.settle_bet(b["id"], None if res == "void" else res == "won", payout):
             return
+        held = res == "won" and release.toto_hold_381(self.bot, b["user_id"])   # 3.8.1 당첨금은 쌓아 두고 /내베팅에서 받기
         if payout:
-            await self.eco.add_balance(b["user_id"], payout)
+            await (self.eco.toto_hold if held else self.eco.add_balance)(b["user_id"], payout)
         _, _, label, color = SPORTS[b["sport"]]
         print(f"[SPORTS] 정산: {b['sport']} {b['home']} vs {b['away']} · {b['pick']} → {res}")
         e = discord.Embed(title=f"{label} 베팅 정산", description=f"**{b['home']} vs {b['away']}**", color=color)
         if res == "won":
             e.add_field(name="결과", value="✅ 당첨!", inline=True)
-            e.add_field(name="수령액", value=f"**+{payout:,}원**", inline=True)
+            e.add_field(name="당첨금" if held else "수령액",
+                        value=f"**{payout:,}원** · `/내베팅`에서 받기" if held else f"**+{payout:,}원**", inline=True)
         elif res == "void":
             e.add_field(name="결과", value="↩️ 무승부 · 경기 취소 — 환불", inline=True)
             e.add_field(name="환불", value=f"**+{payout:,}원**", inline=True)
