@@ -8,6 +8,7 @@ import random
 import time
 from typing import Optional
 
+import release
 from services.club_db import SLOT_GROUP, effective_ovr
 from services.economy_db import EconomyDB, give_item, grind_add_xp, _kst_day, _cook_buff
 
@@ -552,10 +553,12 @@ class DungeonDB(EconomyDB):
             return {"ok": True, "balance": bal - price, "state": st}
         return await self._tx(fn)
 
-    async def weekly_top(self, now_ts: int, limit: int = 5) -> list[tuple[int, int]]:
+    async def weekly_top(self, now_ts: int, limit: int = 5, hide: bool = False) -> list[tuple[int, int]]:
+        """hide = 3.8.1 관리자 빼기."""
         wk = week_key(now_ts)
         return await self._tx(lambda con: [(u, f) for u, f in con.execute(
-            "SELECT user_id, floor FROM dungeon_best WHERE week=? ORDER BY floor DESC, ts ASC LIMIT ?", (wk, limit))])
+            "SELECT user_id, floor FROM dungeon_best WHERE week=?" + release.rank_sql("user_id", hide)
+            + " ORDER BY floor DESC, ts ASC LIMIT ?", (wk, limit))])
 
     async def clears(self, uid: int) -> set[int]:
         return await self._tx(lambda con: {t for (t,) in con.execute("SELECT theme FROM dungeon_clears WHERE user_id=?", (uid,))})

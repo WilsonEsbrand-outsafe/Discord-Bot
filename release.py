@@ -289,6 +289,15 @@ def preview_381(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_381(now)
 
 
+# 2026-11-11 규완님: 관리자 계정 — 모든 순위 · 집계에서 뺀다 (3.8.1 — 공개 전엔 테스트 서버에서만)
+RANK_EXCLUDE: frozenset[int] = frozenset({673864024030445569})
+
+
+def rank_sql(col: str, on: bool) -> str:
+    """순위 쿼리에 붙이는 ' AND col NOT IN (관리자)' — on 이 아니면 빈 문자열."""
+    return f" AND {col} NOT IN ({','.join(map(str, sorted(RANK_EXCLUDE)))})" if on and RANK_EXCLUDE else ""
+
+
 def tester(bot, user_id: int) -> bool:
     """서버를 모르는 백그라운드 일(정산 등)에서 — 테스트 서버에 있는 사람인가."""
     get = getattr(bot, "get_guild", None)

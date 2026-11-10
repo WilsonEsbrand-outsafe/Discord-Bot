@@ -253,3 +253,53 @@ def test_toto_hold_sports_ufc():
         asyncio.run(flow())
     finally:   # 다른 테스트 파일이 같은 모듈을 쓴다
         st.send_notify, ut.send_notify, ut._fetch_espn, ut.espn_results, ut.match_result = keep
+
+
+def test_rank_exclude():
+    """관리자(release.RANK_EXCLUDE)는 자산 · 공식경기(주간 · 시즌 · 주간 보상) · 던전 · 낚시 순위에서 빠진다 (테스트 서버 먼저)."""
+    import sqlite3
+    import services.dungeon as DG
+    ADMIN, A = 673864024030445569, 38_200
+    assert ADMIN in release.RANK_EXCLUDE and release.rank_sql("x", False) == ""
+    assert release.rank_sql("x", True) == f" AND x NOT IN ({ADMIN})"
+
+    async def flow():
+        now = int(time.time())
+        edb.EconomyDB()
+        clubs, pm = cdb.ClubDB(), pmdb.PlayerMarketDB()
+        dg, fi = DG.DungeonDB(), FI.FishingDB()
+        con = sqlite3.connect(TMP)
+        for uid, bal in ((ADMIN, 10 ** 15), (A, 10 ** 14)):
+            con.execute("INSERT OR REPLACE INTO wallets(user_id, balance) VALUES(?, ?)", (uid, bal))
+            con.execute("INSERT OR REPLACE INTO club_official_week(user_id, week, points, w, gf, ga, last_ts) "
+                        "VALUES(?, ?, ?, 1, 9, 0, ?)", (uid, cdb.week_key(now), 300 if uid == ADMIN else 200, now))
+            con.execute("INSERT OR REPLACE INTO club_official(user_id, season, points, w, gf, ga) VALUES(?, ?, ?, 1, 9, 0)",
+                        (uid, cdb.season_key(now), 300 if uid == ADMIN else 200))
+            con.execute("INSERT OR REPLACE INTO clubs(user_id, club_name) VALUES(?, ?)", (uid, f"FC{uid % 1000}"))
+            con.execute("INSERT OR REPLACE INTO dungeon_best(user_id, week, floor, ts) VALUES(?, ?, ?, ?)",
+                        (uid, DG.week_key(now), 10 if uid == ADMIN else 5, now))
+            con.execute("INSERT INTO fish_log(user_id, species, size, ts, week) VALUES(?, ?, ?, ?, ?)",
+                        (uid, next(iter(FI.FISH)), 999.0, now, FI.week_key(now)))
+        con.commit()
+        con.close()
+
+        ids = lambda rows, k=0: [r[k] if isinstance(r, tuple) else r["user_id"] for r in rows]
+        assert ids(await pm.get_ranking(10))[:2] == [ADMIN, A] and ADMIN not in ids(await pm.get_ranking(10, hide=True))
+        assert ids(await clubs.weekly_table(now))[:2] == [ADMIN, A] and ADMIN not in ids(await clubs.weekly_table(now, hide=True))
+        assert ids(await clubs.official_table(now))[:2] == [ADMIN, A]
+        assert ADMIN not in ids(await clubs.official_table(now, admin=True))
+        assert (await clubs.weekly_me(A, now))["rank"] == 2 and (await clubs.weekly_me(A, now, hide=True))["rank"] == 1
+        assert (await clubs.weekly_me(ADMIN, now, hide=True))["rank"] is None
+        assert ids(await dg.weekly_top(now, 10))[:2] == [ADMIN, A] and ADMIN not in ids(await dg.weekly_top(now, 10, hide=True))
+        assert ADMIN in ids(await fi.weekly_top(now, 10)) and ADMIN not in ids(await fi.weekly_top(now, 10, hide=True))
+
+        # 주간 보상 (공개 뒤): 관리자는 랭킹 보상 없이, 다른 사람이 1위
+        keep = release.RELEASE_381_TS
+        release.RELEASE_381_TS = 0
+        try:
+            paid = {x["user_id"]: x for x in await clubs.settle_weekly(now + 8 * 86400)}
+        finally:
+            release.RELEASE_381_TS = keep
+        assert paid[A]["rank"] == 1 and (ADMIN not in paid or paid[ADMIN]["rank"] is None)
+
+    asyncio.run(flow())

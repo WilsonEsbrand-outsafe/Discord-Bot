@@ -1381,7 +1381,7 @@ class PlayersMarket(commands.Cog):
     async def ranking(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        rows = await self.pm.get_ranking(limit=10)
+        rows = await self.pm.get_ranking(limit=10, hide=release.preview_381(interaction.guild_id))   # 3.8.1 관리자 빼기
         if not rows:
             return await interaction.followup.send("❌ 랭킹 데이터가 없습니다.")
 

@@ -776,8 +776,10 @@ class Fishing(commands.Cog):
             text="최근 15마리 · 판 물고기 · 보낸 물고기도 남아요")
 
     async def _p_weekly(self, view: HubView) -> discord.Embed:
-        v360 = release.preview_360(getattr(getattr(view.user, "guild", None), "id", None))   # 3.6.0 한 사람 여러 마리 · 15위까지
-        top = await self.db.weekly_top(int(time.time()), 15 if v360 else 5, per_user=not v360)
+        gid = getattr(getattr(view.user, "guild", None), "id", None)
+        v360 = release.preview_360(gid)   # 3.6.0 한 사람 여러 마리 · 15위까지
+        top = await self.db.weekly_top(int(time.time()), 15 if v360 else 5, per_user=not v360,
+                                       hide=release.preview_381(gid))   # 3.8.1 관리자 빼기
         lines = []
         for i, t in enumerate(top):
             u = self.bot.get_user(t["user_id"])

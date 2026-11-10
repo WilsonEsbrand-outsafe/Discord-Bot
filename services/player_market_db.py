@@ -2993,8 +2993,8 @@ class PlayerMarketDB:
                     con.close()
             return await self._run(work)
 
-    async def get_ranking(self, limit: int = 10) -> list:
-        """잔액 + 보유 선수 현재가 합산 랭킹"""
+    async def get_ranking(self, limit: int = 10, hide: bool = False) -> list:
+        """잔액 + 보유 선수 현재가 합산 랭킹. hide = 3.8.1 관리자 빼기 (release.RANK_EXCLUDE)"""
         async with self._lock:
             def work():
                 con = self._connect()
@@ -3008,11 +3008,11 @@ class PlayerMarketDB:
                         FROM wallets w
                         LEFT JOIN pm_holdings h  ON w.user_id  = h.user_id  AND h.qty > 0
                         LEFT JOIN pm_market   mk ON h.player_id = mk.player_id
-                        WHERE w.user_id NOT IN (%s)
+                        WHERE w.user_id NOT IN (%s)%s
                         GROUP BY w.user_id
                         ORDER BY total DESC
                         LIMIT ?
-                        """ % ",".join(str(b) for b in _bc.BOT_IDS),
+                        """ % (",".join(str(b) for b in _bc.BOT_IDS), release.rank_sql("w.user_id", hide)),
                         (int(limit),),
                     ).fetchall()
                 finally:
