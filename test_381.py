@@ -37,12 +37,11 @@ def test_elite_rebuy_lock():
         await db.add_balance(A, price * 10)
         await db.add_balance(B, price * 10)
         assert (await clubs.buy_elite(A, "ideal", now, v381=True))["ok"]
-        assert (await clubs.buy_elite(B, "ideal", now, v381=True))["ok"]       # A 는 인수 대금을 받는다
-        r = await clubs.buy_elite(A, "ideal", now + 60, v381=True)
+        assert (await clubs.offer_elite(B, "ideal", round(price * cdb.ELITE_TAKEOVER), now))["auto"]   # A 는 인수 대금을 받는다
+        r = await clubs.offer_elite(A, "ideal", price * 3, now + 60)
         assert r["reason"] == "rebuy" and r["until"] == now + cdb.ELITE_REBUY_381
         # 7일 뒤엔 다시 인수할 수 있다
-        bal_ok = await clubs.buy_elite(A, "ideal", now + cdb.ELITE_REBUY_381, v381=True)
-        assert bal_ok["ok"] or bal_ok["reason"] != "rebuy"
+        assert (await clubs.offer_elite(A, "ideal", price * 3, now + cdb.ELITE_REBUY_381))["ok"]
     asyncio.run(flow())
 
 
@@ -102,4 +101,51 @@ def test_farm():
         await db.add_balance(U, 10**9)
         assert (await db.plant(U, "corn", T, all_empty=True))["count"] == F.PLOTS
         assert (await db.plant(U, "corn", T))["reason"] == "full"
+    asyncio.run(flow())
+
+
+def test_elite_offer():
+    """3.8.1 인수 제안: 적정 인수 금액 이상이면 바로 · 아니면 구단주가 수락 · 거절."""
+    db, clubs = edb.EconomyDB(), cdb.ClubDB()
+    pmdb.PlayerMarketDB()
+
+    async def flow():
+        now = int(time.time())
+        A, B, C = 3821, 3822, 3823
+        for u in (A, B, C):
+            await clubs.create_club(u, f"FC{u}", now)
+        price = cdb.ELITE_SIZES["미드"][0]
+        for u in (A, B, C):
+            await db.add_balance(u, price * 10)
+        assert (await clubs.buy_elite(A, "ruhr", now, v381=True))["ok"]               # 주인 없으면 그냥 인수
+        assert (await clubs.buy_elite(B, "ruhr", now, v381=True))["reason"] == "offer"  # 주인 있으면 제안으로만
+        fair = round(price * cdb.ELITE_TAKEOVER)
+        # 적게 제안 → 구단주에게 남는다
+        r = await clubs.offer_elite(B, "ruhr", fair // 2, now)
+        assert r["ok"] and not r["auto"] and r["owner_id"] == A
+        r2 = await clubs.offer_elite(C, "ruhr", fair // 3, now)
+        offers = await clubs.elite_offers(A, now)
+        assert [o["buyer_id"] for o in offers] == [B, C]                                 # 금액 큰 순
+        assert (await clubs.answer_elite_offer(B, r["offer_id"], True, now))["reason"] == "gone"   # 구단주만
+        x = await clubs.answer_elite_offer(A, r2["offer_id"], False, now)
+        assert x["ok"] and not x["accepted"]
+        a_bal = await db.get_balance(A)
+        x = await clubs.answer_elite_offer(A, r["offer_id"], True, now + 60)
+        assert x["ok"] and x["accepted"] and await db.get_balance(A) == a_bal + fair // 2
+        c = next(c for c in await clubs.elite_list() if c["key"] == "ruhr")
+        assert c["owner_id"] == B and c["price"] == fair // 2
+        assert await clubs.elite_offers(A, now) == []
+        # 적정 인수 금액 이상 → 바로 인수 (B 가 받은 돈 · A 는 7일 동안 못 되삼)
+        fair2 = round(fair // 2 * cdb.ELITE_TAKEOVER)
+        assert (await clubs.offer_elite(A, "ruhr", fair2, now + 120))["reason"] == "rebuy"
+        b_bal = await db.get_balance(B)
+        r = await clubs.offer_elite(C, "ruhr", fair2, now + 120)
+        assert r["ok"] and r["auto"] and r["prev_owner"] == B and await db.get_balance(B) == b_bal + fair2
+        # 잔액보다 큰 제안은 못 낸다 · 만료된 제안은 수락 못 한다
+        assert (await clubs.offer_elite(B, "ruhr", 10**15, now + 130))["reason"] in ("balance", "rebuy")
+        await db.add_balance(A, 0)
+        r = await clubs.offer_elite(A, "ruhr", 1, now + cdb.ELITE_REBUY_381 + 1000)
+        assert r["ok"] and not r["auto"], r
+        late = now + cdb.ELITE_REBUY_381 + 1000 + cdb.ELITE_OFFER_HOURS * 3600 + 1
+        assert (await clubs.answer_elite_offer(C, r["offer_id"], True, late))["reason"] == "gone"
     asyncio.run(flow())
