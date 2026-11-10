@@ -781,12 +781,7 @@ class EconomyDB:
                                           "WHERE user_id=? AND status='active'", (user_id,)).fetchone()[0])
                 con.execute("UPDATE sponsor_contracts SET status='cancelled', payout=amount "
                             "WHERE user_id=? AND status='active'", (user_id,))
-            # 3.8.1: 쌓아 둔 토토 당첨금도 빚부터 갚는다 (받지 않고 파산해서 탕감받은 뒤 받는 일 막기)
-            row_t = con.execute("SELECT amount FROM toto_held WHERE user_id=?", (user_id,)).fetchone()
-            toto = int(row_t[0]) if row_t else 0
-            if toto:
-                con.execute("DELETE FROM toto_held WHERE user_id=?", (user_id,))
-            after = bal + sponsor + toto
+            after = bal + sponsor
             rate = rng.uniform(*BANKRUPT_FORGIVE)
             lawyer, before = False, 0.0
             if new:
@@ -807,7 +802,7 @@ class EconomyDB:
             last = int(row[0]) if (v374 and extra) else now_ts   # 3.7.4 변호사로 한 번 더 → 쿨타임 시계는 그대로
             con.execute("INSERT INTO bankruptcy(user_id, last_ts, times) VALUES(?, ?, 1) "
                         "ON CONFLICT(user_id) DO UPDATE SET last_ts=excluded.last_ts, times=times+1", (user_id, last))
-            return {"ok": True, "debt": -bal, "sponsor": sponsor, "toto": toto, "rate": rate if after < 0 else 0.0, "lawyer": lawyer, "before": before,
+            return {"ok": True, "debt": -bal, "sponsor": sponsor, "rate": rate if after < 0 else 0.0, "lawyer": lawyer, "before": before,
                     "extra": extra, "lawyers": self._lawyers(con, user_id),
                     "forgiven": forgiven, "balance": new_bal, "next": last + cd}
         return await self._tx(fn)
