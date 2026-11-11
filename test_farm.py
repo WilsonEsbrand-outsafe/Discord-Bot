@@ -610,7 +610,11 @@ def test_ui_smoke():
         assert channel.create_thread.await_args.kwargs["type"] == discord.ChannelType.public_thread
         assert await cog.db.thread_owner(4242) == 9100
         sent = thread.send.await_args.kwargs
-        assert isinstance(sent["view"], C.FarmPanel) and "바위 산지" in sent["embed"].description
+        pe = sent["embed"]
+        ptext = pe.description + "".join(x.name + x.value for x in pe.fields) + pe.footer.text
+        assert isinstance(sent["view"], C.FarmPanel) and "바위 산지" in [x.name for x in pe.fields]
+        assert "·" not in ptext and "×" not in ptext                        # 11/11 가독성: 값을 · 로 이어 붙이지 않는다
+        assert [x.name for x in pe.fields[:3]] == ["에너지", "코인", "낫"] and len(pe.fields) % 3 == 0
         le = C.land_embed(user, "mountain")
         land = le.description + "".join(f.name + f.value for f in le.fields)
         assert "광맥 ⭐⭐⭐⭐⭐" in land and "★" not in land and "☆" not in land and "·" not in land   # 노란 별 · 한 줄에 하나
@@ -790,7 +794,57 @@ def test_ui_smoke():
         assert "<#4242>" in i.followup.send.await_args.args[0]
         i = inter(other, tch2, guild)                                              # 내 농장 스레드 안에서는 그 농장
         await C.Farm.farm.callback(cog, i)
-        assert isinstance(i.response.calls[0][1]["view"], C.FarmPanel) and "황금 평야" in i.response.calls[0][1]["embed"].description
+        assert isinstance(i.response.calls[0][1]["view"], C.FarmPanel) and "황금 평야" in [x.name for x in i.response.calls[0][1]["embed"].fields]
+    run(flow())
+
+
+def test_screens_readable():
+    """11/11 규완님 '모든 농사 화면에서 가독성을 다 높여' — 어느 화면에도 값을 · 나 × 로 이어 붙이지 않는다."""
+    from unittest.mock import MagicMock
+
+    import cogs.farm as C
+
+    def text(e):   # 봇 공통 꼬리말(키코 · …)은 빼고 본다
+        foot = e.footer.text or ""
+        return (e.title or "") + (e.description or "") + "".join(x.name + x.value for x in e.fields) + ("" if "키코" in foot else foot)
+
+    def vtext(v):
+        out = []
+        for c in v.children:
+            out.append(getattr(c, "label", None) or getattr(c, "placeholder", None) or "")
+            for o in getattr(c, "options", []):
+                out.append(o.label + (o.description or ""))
+        return "".join(out)
+
+    async def flow():
+        user = MagicMock(id=1, display_name="규완", guild=MagicMock(id=1))
+        f = dict(id=1, owner=1, land="plain", energy=98, energy_next=None, coins=1234, sickle=3, whet=2, plant_n=0,
+                 chests={"wood": 2, "silver": 1, "gold": 0}, plots=12, animals=2, animal_cap=4, balance=50_000, fair=3_000_000,
+                 worth=1_000, offers=1, items=[("carrot", 1, 5), ("carrot", 2, 3), ("egg", 1, 1)], seeds={"potato": 5, "chicken": 1},
+                 fields=[{"kind": "crop", "key": "carrot", "ready": True, "ready_ts": T}] * 3
+                 + [{"kind": "crop", "key": "potato", "ready": False, "ready_ts": T + 15}] * 4
+                 + [{"kind": "animal", "key": "chicken", "ready": False, "ready_ts": T + 30}] * 2 + [None] * 3)
+        cog = MagicMock()
+        cog.name_of = MagicMock(return_value="다른 사람")
+        embeds = [C.panel_embed(user, f, T, "당근 6개를 합쳐서 **당근 ★2 2개**가 됐어요."), C.help_embed(user),
+                  C.land_embed(user, "plain"), C.shop_embed()]
+        views = [C.FarmPanel(cog, f), C.ShopPanel(cog), C.LandPick(cog, user), C.FarmPick(cog, user, [f])]
+        for cls in (C.MergeView, C.StoreView, C.ChestView, C.SickleView):
+            v = cls(cog, user, None, f)
+            embeds.append(v.embed(f))
+            views.append(v)
+        o = C.OfferStart(cog, user, f, None)
+        ow = C.OwnerOffers(cog, user, f, [dict(id=1, buyer_id=2, amount=5_000, ts=T)], None)
+        b = C.BuyView(cog, user, [f, dict(f, id=2, land="river")], "potato")
+        embeds += [o.embed(f, 1_000), ow.embed(), b.embed()]
+        views += [o, ow, b]
+        for e in embeds:
+            t = text(e)
+            assert "·" not in t and "×" not in t, t
+            assert len(e.fields) <= 25 and all(len(x.value) <= 1024 for x in e.fields)
+        for v in views:
+            t = vtext(v)
+            assert "·" not in t and "×" not in t, t
     run(flow())
 
 
