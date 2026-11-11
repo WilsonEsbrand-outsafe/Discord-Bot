@@ -21,6 +21,8 @@ from services import ui
 SECTION = "농사"
 ROW = 6   # 땅 그림 한 줄 칸 수
 SHOP_NAME = "농사 상점"
+STICKY_WAIT = 3     # 농장 스레드에 글이 올라오면 이만큼(초) 조용해진 뒤 밭을 맨 밑으로 다시 올린다
+STICKY_SCAN = 50    # 지울 옛 밭 화면을 찾는 최근 글 수
 SHOPS: dict[int, int] = {}   # 서버 → 농사 상점 스레드 (farm_shops 표를 읽어 둔 것)
 SHOP_MSGS: dict[int, tuple[Optional[int], int]] = {}   # 서버 → (상점 글, 상점 화면 버전)
 
@@ -832,6 +834,8 @@ class Farm(commands.Cog):
         self.shop = ShopPanel(self)
         bot.add_view(self.shop)    # 농사 상점 버튼도
         self._shop_lock = asyncio.Lock()
+        self._sticky: dict[int, asyncio.Task] = {}   # 농장 스레드 → 밭을 다시 올릴 예약
+        self._sticky_lock = asyncio.Lock()
 
     async def cog_load(self):
         rows = await self.db.shop_threads()
@@ -845,6 +849,8 @@ class Farm(commands.Cog):
         self.panel.stop()
         self.shop.stop()
         self.shop_loop.cancel()
+        for t in self._sticky.values():
+            t.cancel()
 
     # ───────────── 농사 상점 스레드 ─────────────
     @tasks.loop(minutes=5)
@@ -954,6 +960,63 @@ class Farm(commands.Cog):
         now = int(time.time())
         f = await self.db.get(fid, now)
         await interaction.response.edit_message(embed=panel_embed(interaction.user, f, now, note), view=FarmPanel(self, f))
+
+    # ───────────── 밭을 맨 밑에 (11/11 규완님: 누가 채팅을 치면 밭이 위로 올라간다) ─────────────
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """농장 스레드에 다른 글이 올라오면, 잠깐 조용해진 뒤 밭 화면을 맨 밑으로 다시 올린다."""
+        th = message.channel
+        if not isinstance(th, discord.Thread) or message.author.id == self.bot.user.id:
+            return
+        if not release.preview_381(th.guild.id):
+            return
+        fid = await self.db.thread_farm(th.id)
+        if fid is None:
+            return
+        old = self._sticky.pop(th.id, None)
+        if old:
+            old.cancel()   # 글이 이어지면 마지막 글 뒤에 한 번만
+        self._sticky[th.id] = asyncio.create_task(self._sticky_later(th, fid))
+
+    async def _sticky_later(self, th: discord.Thread, fid: int):
+        try:
+            await asyncio.sleep(STICKY_WAIT)
+        except asyncio.CancelledError:
+            return
+        if self._sticky.get(th.id) is asyncio.current_task():
+            del self._sticky[th.id]   # 여기부터는 새 글이 와도 끊지 않는다 (새 예약이 따로 잡힌다)
+        try:
+            await self.repost(th, fid)
+        except Exception as ex:
+            print(f"[농사] {th.id} 밭 다시 올리기 오류: {type(ex).__name__}: {ex}")
+
+    @staticmethod
+    def _is_panel(m: discord.Message) -> bool:
+        return any(getattr(c, "custom_id", None) == "farm:harvest"
+                   for row in m.components for c in getattr(row, "children", []))
+
+    async def repost(self, th: discord.Thread, fid: int) -> bool:
+        """밭 화면을 스레드 맨 밑에 새로 올리고 위에 남은 옛 밭 화면은 지운다. 이미 맨 밑이면 그대로."""
+        async with self._sticky_lock:
+            old, first = [], True
+            async for m in th.history(limit=STICKY_SCAN):
+                if m.author.id == self.bot.user.id and self._is_panel(m):
+                    if first:
+                        return False   # 맨 밑 글이 이미 밭
+                    old.append(m)
+                first = False
+            now = int(time.time())
+            f = await self.db.get(fid, now)
+            if f is None:
+                return False
+            owner = th.guild.get_member(f["owner"]) or await self.bot.fetch_user(f["owner"])
+            await th.send(embed=panel_embed(owner, f, now), view=FarmPanel(self, f))
+            for m in old:
+                try:
+                    await m.delete()
+                except discord.HTTPException:
+                    pass
+            return True
 
     async def open(self, interaction: discord.Interaction, user, fid: int):
         """내 농장 fid 의 스레드를 안내한다 (없으면 이 채널에 만들고 농장 화면을 올린다).

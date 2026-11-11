@@ -785,6 +785,73 @@ def test_ui_smoke():
     run(flow())
 
 
+def test_sticky_panel():
+    """11/11 농장 스레드에 다른 글이 올라오면, 조용해진 뒤 밭 화면을 맨 밑에 새로 올리고 위의 옛 밭 화면은 지운다."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import discord
+
+    import release
+    import cogs.farm as C
+
+    def panel_msg(mid):
+        row = MagicMock(children=[MagicMock(custom_id="farm:qty"), MagicMock(custom_id="farm:harvest")])
+        return MagicMock(id=mid, author=MagicMock(id=999), components=[row], delete=AsyncMock())
+
+    def chat_msg(mid, ch, author=5):
+        return MagicMock(id=mid, author=MagicMock(id=author), components=[], channel=ch)
+
+    async def flow():
+        bot = MagicMock()
+        bot.user = MagicMock(id=999)
+        cog = C.Farm(bot)
+        G = (await cog.db.create(9300, "river", T))["id"]
+        guild = MagicMock(id=release.TEST_GUILD)
+        guild.get_member = MagicMock(return_value=MagicMock(id=9300, display_name="규완", guild=guild))
+        th = MagicMock(spec=discord.Thread, id=4545)
+        th.guild, th.send = guild, AsyncMock()
+        await cog.db.set_thread(G, guild.id, th.id)
+        msgs = []   # 최근 글이 앞
+
+        async def history(limit=100, **kw):
+            for m in msgs[:limit]:
+                yield m
+        th.history = history
+        wait, C.STICKY_WAIT = C.STICKY_WAIT, 0
+        try:
+            old, chat = panel_msg(1), chat_msg(2, th)
+            msgs[:] = [chat, chat_msg(3, th), old]
+            await cog.on_message(chat)
+            await cog._sticky[th.id]
+            kw = th.send.await_args.kwargs
+            assert th.send.await_count == 1 and isinstance(kw["view"], C.FarmPanel) and "content" not in kw   # 다시 부르지 않는다
+            assert "규완의 농장" in kw["embed"].title and old.delete.await_count == 1 and th.id not in cog._sticky
+
+            msgs[:] = [panel_msg(4), chat]                                    # 이미 맨 밑이 밭이면 그대로
+            assert not await cog.repost(th, G) and th.send.await_count == 1
+
+            other = MagicMock(spec=discord.Thread, id=4646)                   # 농장 스레드가 아닌 곳 · 봇 자신의 글은 그대로
+            other.guild = guild
+            tch = MagicMock(spec=discord.TextChannel, id=77, guild=guild)
+            for m in (chat_msg(5, other), chat_msg(6, th, author=999), chat_msg(7, tch)):
+                await cog.on_message(m)
+            off = MagicMock(spec=discord.Thread, id=th.id)                    # /농사 가 아직 안 열린 서버
+            off.guild = MagicMock(id=release.TEST_GUILD + 1)
+            await cog.on_message(chat_msg(8, off))
+            assert not cog._sticky
+
+            C.STICKY_WAIT = 0.05                                              # 글이 이어지면 마지막 글 뒤에 한 번만
+            msgs[:] = [chat, panel_msg(9)]
+            await cog.on_message(chat)
+            first = cog._sticky[th.id]
+            await cog.on_message(chat)
+            await cog._sticky[th.id]
+            assert first.done() and th.send.await_count == 2                 # 앞의 예약은 끊겨서 한 번만 올라갔다
+        finally:
+            C.STICKY_WAIT = wait
+    run(flow())
+
+
 def release_guild():
     import release
     return release.TEST_GUILD
