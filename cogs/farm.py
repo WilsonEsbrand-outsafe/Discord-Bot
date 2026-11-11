@@ -67,13 +67,21 @@ def land_embed(user, pick: Optional[str] = None) -> discord.Embed:
     return e
 
 
+def _qty(key: str, n: int) -> str:
+    return f"{n:,}마리" if key in F.ANIMALS else f"{n:,}개"
+
+
+def _grid_fields(e: discord.Embed, fields: list[tuple[str, str]]):
+    """칸(field)을 한 줄에 세 개씩 — 마지막 줄은 빈칸으로 채워서 다음 묶음이 새 줄에서 시작하게."""
+    for name, value in fields:
+        e.add_field(name=name, value=value)
+    for _ in range(-len(fields) % 3):
+        e.add_field(name="\u200b", value="\u200b")
+
+
 def panel_embed(user, f: dict, now: int, note: str = "") -> discord.Embed:
-    le, ln, _, res = F.LANDS[f["land"]]
-    head = f"**{ln}** · " + " · ".join(f"{F.RES[k][1]} {res[k]}" for k in F.RES)
-    energy = f"에너지 **{f['energy']}**/{F.ENERGY_MAX}" + (f" (+1 <t:{f['energy_next']}:R>)" if f["energy_next"] else "")
-    chests = sum(f["chests"].values())
-    stat = (f"{energy} · 코인 **{f['coins']:,}** · 낫 **+{f['sickle']}**" + (f" · 숫돌 {f['whet']}" if f["whet"] else "")
-            + (f" · 상자 **{chests}**" if chests else ""))
+    """11/11 규완님 '가독성이 너무 별로야' — 값은 칸마다 하나, 목록은 한 줄에 하나 (· 로 이어 붙이지 않는다)."""
+    _, ln, _, res = F.LANDS[f["land"]]
     cells, ready, growing, animals = [], Counter(), {}, {}
     for p in f["fields"]:
         if p is None:
@@ -93,46 +101,63 @@ def panel_embed(user, f: dict, now: int, note: str = "") -> discord.Embed:
             n, ts = animals.get(p["key"], (0, None))
             animals[p["key"]] = (n + 1, ts if p["ready"] else min(ts or p["ready_ts"], p["ready_ts"]))
     grid = "\n".join("".join(cells[i:i + ROW]) for i in range(0, len(cells), ROW))
-    lines = []
+    desc = (f"{note}\n\n" if note else "") + grid
+    if not (ready or growing or animals or f["items"]):
+        desc += "\n\n아래 메뉴에서 당근을 골라 심어 보세요. 당근은 씨앗이 필요 없어요."
+    desc += f"\n-# 씨앗과 동물은 {_shop_link(user)}에서 사요"
+    e = ui.card(f"{user.display_name}의 농장", desc, ui.WIN, user, SECTION)
+
+    chests = sum(f["chests"].values())
+    stats = [("에너지", f"**{f['energy']}** / {F.ENERGY_MAX}"), ("코인", f"**{f['coins']:,}**"), ("낫", f"**+{f['sickle']}**"),
+             (ln, _res_rows(res))]
+    if chests:
+        stats.append(("상자", f"**{chests}**개"))
+    if f["whet"]:
+        stats.append(("숫돌", f"**{f['whet']}**개"))
+    _grid_fields(e, stats)
+
+    lists = []
     if ready:
-        lines.append("**거둘 수 있어요:** " + " · ".join(f"{_item(k)} ×{n}" for k, n in ready.items()))
+        lists.append(("거둘 수 있어요", "\n".join(f"{_item(k)} {n}개" for k, n in ready.items())))
     if growing:
-        lines.append("**자라는 중:** " + " · ".join(f"{_item(k)} ×{n} <t:{ts}:R>" for k, (n, ts) in growing.items()))
+        lists.append(("자라는 중", "\n".join(f"{_item(k)} {n}개 (<t:{ts}:R>)" for k, (n, ts) in growing.items())))
     if animals:
-        lines.append("**동물** ({}/{}): ".format(f["animals"], f["animal_cap"]) + " · ".join(
-            f"{F.ANIMALS[k][1]} ×{n}" + (f" <t:{ts}:R>" if ts else "") for k, (n, ts) in animals.items()))
+        lists.append((f"동물 ({f['animals']}/{f['animal_cap']})", "\n".join(
+            f"{F.ANIMALS[k][1]} {n}마리" + (f" (<t:{ts}:R>)" if ts else "") for k, (n, ts) in animals.items())))
     if f["items"]:
         worth = sum(F.value(k, t) * q for k, t, q in f["items"])
-        shown = " · ".join(f"{_item(k, t)} ×{q}" for k, t, q in f["items"][:12])
-        more = f" 외 {len(f['items']) - 12}가지" if len(f["items"]) > 12 else ""
-        lines.append(f"**창고** (팔면 {worth:,} 코인): {shown}{more}")
+        shown = [f"{_item(k, t)} {q}개" for k, t, q in f["items"][:12]]
+        if len(f["items"]) > 12:
+            shown.append(f"그 밖에 {len(f['items']) - 12}가지")
+        lists.append(("창고", "\n".join(shown) + f"\n-# 모두 팔면 {worth:,} 코인"))
     if f["seeds"]:
-        lines.append("**사 둔 씨앗 · 동물:** " + " · ".join(f"{_name(k)} ×{q}" for k, q in f["seeds"].items()))
-    if not (ready or growing or animals or f["items"]):
-        lines.append("아래 메뉴에서 당근을 골라 심어 보세요. 당근은 씨앗이 필요 없어요.")
-    lines.append(f"-# 씨앗 · 동물은 {_shop_link(user)}에서 사요")
-    e = ui.card(f"{user.display_name}의 농장", (f"{note}\n\n" if note else "") + f"{head}\n{stat}\n\n{grid}\n\n" + "\n".join(lines),
-                ui.WIN, user, SECTION)
-    e.set_footer(text="농장 주인만 누를 수 있어요 (인수 제안은 누구나) · 심기 · 거두기 · 합치기는 한 번에 에너지 1")
+        lists.append(("사 둔 씨앗과 동물", "\n".join(f"{_name(k)} {_qty(k, q)}" for k, q in f["seeds"].items())))
+    if lists:
+        _grid_fields(e, lists)
+    e.set_footer(text="농장 주인만 누를 수 있어요. 인수 제안은 누구나 할 수 있어요.\n심기, 거두기, 합치기는 한 번에 에너지 1을 써요.")
     return e
 
 
 def help_embed(user) -> discord.Embed:
-    return ui.card("농사 도움말", (
-        "**심기** — 메뉴에서 작물을 고르면 빈 땅에 심어요. 시간이 지나면 다 자라요.\n"
-        f"**농사 상점** — 씨앗과 동물은 {_shop_link(user)}에서 농장 코인으로 사요. 당근은 씨앗 없이 바로 심을 수 있어요.\n"
-        "**동물** — 상점에서 산 동물을 입양하면 땅 한 칸에 살면서 달걀 · 양털 · 우유를 계속 만들어요 (땅 3칸당 1마리).\n"
-        "**거두기** — 다 자란 작물과 동물이 만든 것을 창고로 옮겨요.\n"
-        "**합치기** — 같은 물건 3개를 합치면 한 등급 위 1개가 돼요 (★5 까지). 등급이 높을수록 훨씬 비싸요.\n"
-        "**창고** — 물건을 농장 코인으로 팔아요. 코인으로 씨앗 · 동물을 사고, 땅을 넓히고, 낫을 강화해요.\n"
-        f"**에너지** — 심기 · 거두기 · 합치기 한 번에 1. 시간이 지나면 다시 차요 (최대 {F.ENERGY_MAX}).\n"
-        "**땅 넓히기** — 코인으로 한 칸씩 넓혀요. 넓힐 때마다 은 상자를 하나 발견해요.\n"
-        "**낫 강화** — 강화할수록 거둘 때 하나 더 나올 확률과 ★2 로 나올 확률이 올라요.\n"
-        "**상자** — 거두다 가끔 나오고, 하루 첫 거두기에 하나를 받아요. 코인 · 에너지 · 숫돌 · 높은 등급 물건이 들어 있어요.\n"
-        f"**환전** — 코인 1 = 축구 봇 돈 {F.RATE:,}원. 환전하지 않아도 농사는 코인만으로 다 할 수 있어요.\n"
-        "**행운** — 축구 봇 돈을 쓰면 상자 보상과 낫 강화 확률이 조금 좋아져요. 안 써도 괜찮아요.\n"
-        "**인수** — 다른 사람 농장 스레드에서 **인수 제안**을 눌러 금액을 제안해요. 적정 인수 금액 이상이면 바로 인수되고, "
-        "그보다 적으면 주인이 수락해야 해요. 농장은 여러 개 가질 수 있어요."), ui.INFO, user, SECTION)
+    """주제마다 칸 하나 (11/11 규완님: 모든 농사 화면 가독성)."""
+    e = ui.card("농사 도움말", "작물과 동물을 길러 농장 코인을 벌어요.", ui.INFO, user, SECTION)
+    for name, value in (
+            ("심기", "메뉴에서 작물을 고르면 빈 땅에 심어요.\n시간이 지나면 다 자라요."),
+            ("농사 상점", f"씨앗과 동물은 {_shop_link(user)}에서 농장 코인으로 사요.\n당근은 씨앗 없이 바로 심을 수 있어요."),
+            ("동물", f"입양하면 땅 한 칸에 살면서 달걀, 양털, 우유 같은 것을 계속 만들어요.\n땅 {F.ANIMAL_PER_PLOTS}칸마다 1마리까지 기를 수 있어요."),
+            ("거두기", "다 자란 작물과 동물이 만든 것을 창고로 옮겨요."),
+            ("합치기", f"같은 물건 {F.MERGE_NEED}개를 합치면 한 등급 위 1개가 돼요.\n★{F.TIER_MAX}까지 올릴 수 있고, 등급이 높을수록 훨씬 비싸요."),
+            ("창고", "물건을 농장 코인으로 팔아요."),
+            ("에너지", f"심기, 거두기, 합치기 한 번에 1을 써요.\n시간이 지나면 {F.ENERGY_MAX}까지 다시 차요."),
+            ("땅 넓히기", "코인으로 한 칸씩 넓혀요.\n넓힐 때마다 은 상자를 하나 발견해요."),
+            ("낫 강화", "강화할수록 거둘 때 하나 더 나오거나 ★2로 나올 확률이 올라요."),
+            ("상자", "거두다 가끔 나오고, 하루 첫 거두기에 하나를 받아요.\n코인, 에너지, 숫돌, 높은 등급 물건이 들어 있어요."),
+            ("환전", f"코인 1개는 축구 봇 돈 {F.RATE:,}원이에요.\n환전하지 않아도 농사는 코인만으로 다 할 수 있어요."),
+            ("행운", "축구 봇 돈을 쓰면 상자 보상과 낫 강화 확률이 조금 좋아져요.\n안 써도 괜찮아요."),
+            ("인수", "다른 사람 농장 스레드에서 **인수 제안**을 눌러 금액을 제안해요.\n"
+                    "적정 인수 금액 이상이면 바로 인수되고, 그보다 적으면 주인이 수락해야 해요.\n농장은 여러 개 가질 수 있어요.")):
+        e.add_field(name=name, value=value, inline=False)
+    return e
 
 
 # ───────────── 농장 화면 (봇이 재시작해도 눌리는 버튼) ─────────────
@@ -146,7 +171,7 @@ class FarmPanel(discord.ui.View):
                 for k, (e, n, price, sec, sell) in F.CROPS.items()]
         opts += [discord.SelectOption(label=f"{n} 입양", value=k, description=f"사 둔 {n} {have.get(k, 0)}마리")
                  for k, (e, n, price, prod, sec) in F.ANIMALS.items()]
-        plant = discord.ui.Select(custom_id="farm:plant", placeholder="심을 작물 · 입양할 동물 고르기", row=0, options=opts)
+        plant = discord.ui.Select(custom_id="farm:plant", placeholder="심을 작물이나 입양할 동물 고르기", row=0, options=opts)
         plant.callback = self._plant
         self.add_item(plant)
         n = f["plant_n"] if f else 0
@@ -161,7 +186,7 @@ class FarmPanel(discord.ui.View):
         for cid, label, style, row, cb in (
                 ("harvest", "거두기", discord.ButtonStyle.success, 2, self._harvest),
                 ("merge", "합치기", discord.ButtonStyle.primary, 2, self._merge),
-                ("store", "창고 · 판매", discord.ButtonStyle.primary, 2, self._store),
+                ("store", "창고", discord.ButtonStyle.primary, 2, self._store),
                 ("chest", f"상자 ({chests})" if chests else "상자", discord.ButtonStyle.primary, 2, self._chest),
                 ("refresh", "새로고침", discord.ButtonStyle.secondary, 2, self._reload),
                 ("expand", f"땅 넓히기 ({cost:,} 코인)" if cost else "땅 넓히기", discord.ButtonStyle.secondary, 3, self._expand),
@@ -209,10 +234,10 @@ class FarmPanel(discord.ui.View):
                     }.get(r["reason"], "심을 수 없어요.")
         elif r["animal"]:
             _, n, _, prod, _ = F.ANIMALS[key]
-            note = f"**{n}**을(를) 입양했어요 · 첫 {_item(prod)} <t:{r['ready_ts']}:R>"
+            note = f"**{n}**을(를) 입양했어요.\n첫 {_item(prod)}은(는) <t:{r['ready_ts']}:R> 나와요."
         else:
-            note = (f"{_item(key)} **{r['count']}칸**을 심었어요" + (f" (남은 씨앗 {r['left']}개)" if r["left"] is not None else "")
-                    + f" · <t:{r['ready_ts']}:R> 다 자라요")
+            note = (f"{_item(key)} **{r['count']}칸**을 심었어요.\n<t:{r['ready_ts']}:R> 다 자라요."
+                    + (f"\n남은 씨앗 {r['left']}개" if r["left"] is not None else ""))
         await self.cog.show(interaction, fid, note)
 
     async def _qty(self, interaction: discord.Interaction):
@@ -226,13 +251,13 @@ class FarmPanel(discord.ui.View):
         if not r["ok"]:
             note = "에너지가 없어요. 조금 기다리면 다시 차요." if r["reason"] == "energy" else "아직 거둘 것이 없어요."
         else:
-            note = f"**{r['count']}칸**을 거뒀어요: " + " · ".join(f"{_item(k, t)} ×{q}" for (k, t), q in r["got"].items())
-            if r["extra"] or r["high"]:
-                note += "\n낫 덕분에 " + " · ".join(x for x in (f"하나 더 ×{r['extra']}" if r["extra"] else "",
-                                                               f"★2 ×{r['high']}" if r["high"] else "") if x)
-            if r["chests"]:
-                note += "\n상자를 발견했어요: " + " · ".join(
-                    f"{F.CHESTS[c][1]} ×{n}" for c, n in Counter(r["chests"]).items())
+            note = f"**{r['count']}칸**을 거뒀어요.\n" + "\n".join(f"{_item(k, t)} {q}개" for (k, t), q in r["got"].items())
+            if r["extra"]:
+                note += f"\n낫 덕분에 하나 더: {r['extra']}개"
+            if r["high"]:
+                note += f"\n낫 덕분에 ★2: {r['high']}개"
+            for c, n in Counter(r["chests"]).items():
+                note += f"\n{F.CHESTS[c][1]} {n}개를 발견했어요"
             if r["daily"]:
                 c = F.CHESTS[F.DAILY_CHEST]
                 note += f"\n오늘 첫 수확 선물: {c[1]}"
@@ -248,7 +273,7 @@ class FarmPanel(discord.ui.View):
         r = await self.cog.db.expand(interaction.user.id, fid, int(time.time()))
         if r["ok"]:
             c = F.CHESTS[r["chest"]]
-            note = f"땅이 **{r['plots']}칸**으로 넓어졌어요 (코인 -{r['cost']:,}) · {c[1]}를 발견했어요"
+            note = f"땅이 **{r['plots']}칸**으로 넓어졌어요 (코인 -{r['cost']:,}).\n{c[1]}를 발견했어요."
         else:
             note = (f"땅은 {F.PLOTS_MAX}칸이 끝이에요." if r["reason"] == "max"
                     else f"코인이 모자라요 (땅 넓히기 {r.get('cost', 0):,} 코인).")
@@ -325,7 +350,7 @@ class MergeView(_Sub):
         able = [(k, t, q) for k, t, q in f["items"] if q >= F.MERGE_NEED and t < F.TIER_MAX][:25]
         if able:
             sel = discord.ui.Select(placeholder="합칠 물건 고르기", options=[
-                discord.SelectOption(label=f"{F.ITEMS[k][1]} ★{t} ×{q} → ★{t + 1} ×{q // F.MERGE_NEED}", value=f"{k}:{t}",
+                discord.SelectOption(label=f"{F.ITEMS[k][1]} ★{t} {q}개를 ★{t + 1} {q // F.MERGE_NEED}개로", value=f"{k}:{t}",
                                      description=f"★{t + 1} 하나에 {F.value(k, t + 1):,} 코인")
                 for k, t, q in able])
             sel.callback = self._pick
@@ -333,16 +358,19 @@ class MergeView(_Sub):
 
     def embed(self, f: dict) -> discord.Embed:
         able = [(k, t, q) for k, t, q in f["items"] if q >= F.MERGE_NEED and t < F.TIER_MAX]
-        body = ("\n".join(f"{_item(k, t)} ×{q}" for k, t, q in able) if able
-                else f"지금은 합칠 수 있는 것이 없어요. 같은 물건 · 같은 등급이 {F.MERGE_NEED}개 있어야 해요.")
-        return ui.card("합치기", (f"{self.note}\n\n" if self.note else "")
-                       + f"같은 물건 {F.MERGE_NEED}개 → 한 등급 위 1개 (한 번에 에너지 1 · ★{F.TIER_MAX} 까지)\n에너지 **{f['energy']}**\n\n{body}",
-                       ui.INFO, self.user, SECTION)
+        body = ("\n".join(f"{_item(k, t)} {q}개" for k, t, q in able) if able
+                else f"지금은 합칠 수 있는 것이 없어요. 같은 물건, 같은 등급이 {F.MERGE_NEED}개 있어야 해요.")
+        e = ui.card("합치기", (f"{self.note}\n\n" if self.note else "")
+                    + f"같은 물건 {F.MERGE_NEED}개를 합치면 한 등급 위 1개가 돼요.\n"
+                    f"한 번에 에너지 1을 쓰고, ★{F.TIER_MAX}까지 올릴 수 있어요.", ui.INFO, self.user, SECTION)
+        e.add_field(name="합칠 수 있는 것", value=body)
+        e.add_field(name="에너지", value=f"**{f['energy']}** / {F.ENERGY_MAX}")
+        return e
 
     async def _pick(self, interaction: discord.Interaction):
         k, t = interaction.data["values"][0].split(":")
         r = await self.cog.db.merge(self.user.id, self.fid, k, int(t), int(time.time()))
-        note = (f"{_item(k, int(t))} ×{r['used']} → **{_item(k, r['tier'])} ×{r['made']}**" if r["ok"] else
+        note = (f"{_item(k, int(t))} {r['used']}개를 합쳐서 **{_item(k, r['tier'])} {r['made']}개**가 됐어요." if r["ok"] else
                 {"energy": "에너지가 없어요.", "few": f"{F.MERGE_NEED}개가 있어야 합칠 수 있어요."}.get(r["reason"], "합칠 수 없어요."))
         await self.redraw(interaction, note, note if r["ok"] else "")
 
@@ -352,7 +380,7 @@ class StoreView(_Sub):
         items = f["items"][:25]
         if items:
             sel = discord.ui.Select(placeholder="팔 물건 고르기 (여러 개 가능)", min_values=1, max_values=len(items), row=0, options=[
-                discord.SelectOption(label=f"{F.ITEMS[k][1]} ★{t} ×{q}", value=f"{k}:{t}",
+                discord.SelectOption(label=f"{F.ITEMS[k][1]} ★{t} {q}개", value=f"{k}:{t}",
                                      description=f"모두 팔면 {F.value(k, t) * q:,} 코인") for k, t, q in items])
             sel.callback = self._sell
             self.add_item(sel)
@@ -368,14 +396,17 @@ class StoreView(_Sub):
             self.add_item(sel)
 
     def embed(self, f: dict) -> discord.Embed:
-        rows = [f"{_item(k, t)} ×{q} — 하나에 {F.value(k, t):,} 코인" for k, t, q in f["items"]]
+        rows = [f"{_item(k, t)} {q}개 (하나에 {F.value(k, t):,} 코인)" for k, t, q in f["items"]]
         worth = sum(F.value(k, t) * q for k, t, q in f["items"])
-        return ui.card("창고 · 판매", (f"{self.note}\n\n" if self.note else "")
-                       + ("\n".join(rows) + f"\n\n모두 팔면 **{worth:,} 코인**" if rows else "창고가 비어 있어요.")
-                       + f"\n가진 코인 **{f['coins']:,}**\n-# 3개를 모아 합치면 더 비싸게 팔 수 있어요.", ui.INFO, self.user, SECTION)
+        e = ui.card("창고와 판매", (f"{self.note}\n\n" if self.note else "") + ("\n".join(rows) if rows else "창고가 비어 있어요.")
+                    + f"\n-# {F.MERGE_NEED}개를 모아 합치면 더 비싸게 팔 수 있어요.", ui.INFO, self.user, SECTION)
+        if rows:
+            e.add_field(name="모두 팔면", value=f"**{worth:,}** 코인")
+        e.add_field(name="가진 코인", value=f"**{f['coins']:,}**")
+        return e
 
     async def _done(self, interaction: discord.Interaction, r: dict):
-        note = (f"**+{r['coins']:,} 코인** — " + " · ".join(f"{_item(k, t)} ×{q}" for k, t, q in r["sold"]) if r["ok"]
+        note = (f"**+{r['coins']:,} 코인**을 받았어요.\n" + "\n".join(f"{_item(k, t)} {q}개를 팔았어요" for k, t, q in r["sold"]) if r["ok"]
                 else "팔 물건이 없어요.")
         await self.redraw(interaction, note, note if r["ok"] else "")
 
@@ -399,7 +430,7 @@ class ChestView(_Sub):
     def build(self, f: dict):
         for tier, (_, n) in F.CHESTS.items():
             have = f["chests"][tier]
-            label = f"{n} 열기 ({have})" + (f" · {F.LUCKY_FEE[tier]:,}원" if self.lucky else "")
+            label = f"{n} 열기 ({have})" + (f", {F.LUCKY_FEE[tier]:,}원" if self.lucky else "")
             b = discord.ui.Button(label=label, style=discord.ButtonStyle.success, disabled=have <= 0, row=0)
             b.callback = self._open(tier)
             self.add_item(b)
@@ -409,12 +440,13 @@ class ChestView(_Sub):
         self.add_item(t)
 
     def embed(self, f: dict) -> discord.Embed:
-        have = " · ".join(f"{n} **{f['chests'][k]}**" for k, (_, n) in F.CHESTS.items())
-        fees = " · ".join(f"{n} {F.LUCKY_FEE[k]:,}원" for k, (_, n) in F.CHESTS.items())
-        return ui.card("상자", (f"{self.note}\n\n" if self.note else "") + f"{have}\n\n"
-                       "상자에는 코인 · 에너지 · 숫돌 · 높은 등급 물건이 들어 있어요. 좋은 상자일수록 보상이 많아요.\n"
-                       f"**행운 열기** — 축구 봇 돈을 내면 보상마다 두 번 뽑아 더 좋은 쪽을 받아요.\n-# {fees} · 내 잔액 {f['balance']:,}원",
-                       ui.GOLD if self.win else ui.INFO, self.user, SECTION)
+        e = ui.card("상자", (f"{self.note}\n\n" if self.note else "")
+                    + "상자에는 코인, 에너지, 숫돌, 높은 등급 물건이 들어 있어요. 좋은 상자일수록 보상이 많아요.\n"
+                    "**행운 열기**: 축구 봇 돈을 내면 보상마다 두 번 뽑아 더 좋은 쪽을 받아요.",
+                    ui.GOLD if self.win else ui.INFO, self.user, SECTION)
+        _grid_fields(e, [(n, f"**{f['chests'][k]}**개\n-# 행운 열기 {F.LUCKY_FEE[k]:,}원") for k, (_, n) in F.CHESTS.items()])
+        e.add_field(name="내 잔액", value=f"{f['balance']:,}원")
+        return e
 
     def _open(self, tier: str):
         async def cb(interaction: discord.Interaction):
@@ -426,9 +458,9 @@ class ChestView(_Sub):
             got = []
             for x in r["rewards"]:
                 got.append({"coins": f"코인 +{x['n']:,}", "energy": f"에너지 +{x['n']}", "whet": f"숫돌 +{x['n']}"}.get(x["kind"])
-                           or f"{_item(x['key'], x['tier'])} ×{x['n']}")
+                           or f"{_item(x['key'], x['tier'])} {x['n']}개")
             n = F.CHESTS[tier][1]
-            note = f"**{n}**를 열었어요" + (f" (행운 -{r['fee']:,}원)" if r["fee"] else "") + ": " + " · ".join(f"**{g}**" for g in got)
+            note = f"**{n}**를 열었어요" + (f" (행운 -{r['fee']:,}원)" if r["fee"] else "") + ".\n" + "\n".join(f"**{g}**" for g in got)
             await self.redraw(interaction, note, note, win=True)
         return cb
 
@@ -448,7 +480,7 @@ class SickleView(_Sub):
             b = discord.ui.Button(label=label, style=discord.ButtonStyle.success, disabled=done, row=0)
             b.callback = self._go(whet)
             self.add_item(b)
-        fee = "" if done else f" · {F.CHARM_FEE * (lv + 1):,}원"
+        fee = "" if done else f", {F.CHARM_FEE * (lv + 1):,}원"
         t = discord.ui.Button(label=("행운 부적: 켜짐" if self.charm else "행운 부적: 꺼짐") + (fee if self.charm else ""),
                               style=discord.ButtonStyle.primary if self.charm else discord.ButtonStyle.secondary, disabled=done, row=1)
         t.callback = self._toggle
@@ -456,18 +488,20 @@ class SickleView(_Sub):
 
     def embed(self, f: dict) -> discord.Embed:
         lv = f["sickle"]
-        now = f"거둘 때 하나 더 **{F.extra_p(lv):.0%}** · ★2 로 **{F.high_p(lv):.0%}**"
+        def luck(x):
+            return f"하나 더 **{F.extra_p(x):.0%}**\n★2 로 **{F.high_p(x):.0%}**"
         if lv >= F.SICKLE_MAX:
-            body = f"낫 **+{lv}** (최고 단계)\n{now}"
+            body, fields = f"낫 **+{lv}** (최고 단계)", [("지금 거둘 때", luck(lv))]
         else:
             p = min(1.0, F.SICKLE_CHANCE[lv] + (F.CHARM_BONUS if self.charm else 0))
-            body = (f"낫 **+{lv}** → **+{lv + 1}**\n{now}\n강화하면 하나 더 **{F.extra_p(lv + 1):.0%}** · ★2 로 **{F.high_p(lv + 1):.0%}**\n\n"
-                    f"`성공 확률` **{p:.0%}**" + (" (부적 포함)" if self.charm else "") + " · 실패해도 단계는 내려가지 않아요\n"
-                    f"`재료` {F.sickle_cost(lv):,} 코인 또는 숫돌 {F.sickle_whet(lv)}개\n"
-                    f"**행운 부적** — 축구 봇 돈 {F.CHARM_FEE * (lv + 1):,}원을 내면 성공 확률 +{F.CHARM_BONUS:.0%}p")
-        return ui.card("낫 강화", (f"{self.note}\n\n" if self.note else "") + body
-                       + f"\n\n코인 **{f['coins']:,}** · 숫돌 **{f['whet']}** · 내 잔액 {f['balance']:,}원",
-                       ui.GOLD if self.win else ui.INFO, self.user, SECTION)
+            body = (f"낫 **+{lv}**을 **+{lv + 1}**로 강화해요. 실패해도 단계는 내려가지 않아요.\n"
+                    f"**행운 부적**: 축구 봇 돈 {F.CHARM_FEE * (lv + 1):,}원을 내면 성공 확률 +{F.CHARM_BONUS:.0%}p")
+            fields = [("지금 거둘 때", luck(lv)), ("강화하면", luck(lv + 1)),
+                      ("성공 확률", f"**{p:.0%}**" + ("\n-# 부적 포함" if self.charm else "")),
+                      ("재료", f"{F.sickle_cost(lv):,} 코인\n또는 숫돌 {F.sickle_whet(lv)}개")]
+        e = ui.card("낫 강화", (f"{self.note}\n\n" if self.note else "") + body, ui.GOLD if self.win else ui.INFO, self.user, SECTION)
+        _grid_fields(e, fields + [("코인", f"**{f['coins']:,}**"), ("숫돌", f"**{f['whet']}**개"), ("내 잔액", f"{f['balance']:,}원")])
+        return e
 
     def _go(self, whet: bool):
         async def cb(interaction: discord.Interaction):
@@ -493,7 +527,7 @@ class ExchangeModal(discord.ui.Modal):
         super().__init__(title="농장 코인 환전")
         self.cog, self.fid = cog, fid
         self.amount = discord.ui.TextInput(label=f"바꿀 코인 (코인 1 = {F.RATE:,}원)"[:45], max_length=12,
-                                           placeholder=f"가진 코인 {coins:,} · '전부'라고 적으면 모두 바꿔요")
+                                           placeholder=f"가진 코인 {coins:,}, '전부'라고 적으면 모두 바꿔요")
         self.add_item(self.amount)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -506,7 +540,7 @@ class ExchangeModal(discord.ui.Modal):
         r = await self.cog.db.exchange(interaction.user.id, self.fid, int(raw), now)
         if not r["ok"] and r["reason"] == "none":   # 그 사이 농장 주인이 바뀌었다
             return await interaction.response.send_message("내 농장이 아니에요.", ephemeral=True)
-        note = (f"{r['coins']:,} 코인 → **{r['won']:,}원** · 잔액 {r['balance']:,}원" if r["ok"] else
+        note = (f"{r['coins']:,} 코인을 **{r['won']:,}원**으로 바꿨어요.\n잔액 {r['balance']:,}원" if r["ok"] else
                 f"코인이 모자라요 (가진 코인 {r.get('have', 0):,})." if r["reason"] == "coins" else "1 코인 이상 적어 주세요.")
         await self.cog.show(interaction, self.fid, note)
 
@@ -514,12 +548,6 @@ class ExchangeModal(discord.ui.Modal):
 # ───────────── 인수 (명문구단처럼: 제안 → 주인이 수락 · 적정 인수 금액 이상이면 바로) ─────────────
 def _farm_line(f: dict) -> str:
     return f"**{F.LANDS[f['land']][1]}** 농장"
-
-
-def _farm_rows(f: dict) -> str:
-    """농장 정보 — 한 줄에 하나."""
-    return "\n".join([f"땅 **{f['plots']}칸**", f"코인 **{f['coins']:,}**", f"낫 **+{f['sickle']}**"]
-                     + ([f"동물 **{f['animals']}마리**"] if f["animals"] else []))
 
 
 def _won(raw) -> Optional[int]:
@@ -568,11 +596,14 @@ class OfferStart(discord.ui.View):
         self.add_item(propose)
 
     def embed(self, f: dict, balance: int) -> discord.Embed:
-        return ui.card("농장 인수 제안", (
-            f"<@{f['owner']}>님의 {_farm_line(f)}\n{_farm_rows(f)}\n\n"
-            f"적정 인수 금액 **{f['fair']:,}원** — 이 금액 이상이면 바로 인수돼요.\n"
-            "그보다 적은 금액은 주인이 수락해야 인수돼요.\n"
-            f"인수하면 코인 · 창고 · 밭 · 동물 · 낫 · 상자가 모두 넘어와요.\n-# 내 잔액 {balance:,}원"), ui.INFO, self.user, SECTION)
+        e = ui.card("농장 인수 제안", (
+            f"<@{f['owner']}>님의 {_farm_line(f)}을 인수해요.\n"
+            "적정 인수 금액 이상이면 바로 인수돼요. 그보다 적은 금액은 주인이 수락해야 인수돼요.\n"
+            "-# 인수하면 코인, 창고, 밭, 동물, 낫, 상자가 모두 넘어와요."), ui.INFO, self.user, SECTION)
+        _grid_fields(e, [("땅", f"**{f['plots']}**칸"), ("코인", f"**{f['coins']:,}**"), ("낫", f"**+{f['sickle']}**")]
+                     + ([("동물", f"**{f['animals']}**마리")] if f["animals"] else [])
+                     + [("적정 인수 금액", f"**{f['fair']:,}원**"), ("내 잔액", f"{balance:,}원")])
+        return e
 
     async def _now(self, interaction: discord.Interaction):
         self.stop()
@@ -600,7 +631,7 @@ class AskModal(discord.ui.Modal):
         r = await self.cog.db.set_farm_ask(self.user.id, self.fid, amount, int(time.time()))
         if r["ok"]:
             e = ui.card("적정 인수 금액", f"**{r['ask']:,}원**으로 정했어요.\n"
-                        "이 금액 이상을 제안하면 바로 인수되고, 그보다 적은 제안은 수락 · 거절할 수 있어요.", ui.WIN, self.user, SECTION)
+                        "이 금액 이상을 제안하면 바로 인수되고, 그보다 적은 제안은 수락하거나 거절할 수 있어요.", ui.WIN, self.user, SECTION)
         else:
             e = ui.card("적정 인수 금액", "내 농장이 아니에요." if r["reason"] == "none" else
                         f"**{r['lo']:,}원 ~ {r['hi']:,}원** 사이로 정해 주세요.", ui.LOSE, self.user, SECTION)
@@ -631,12 +662,14 @@ class OwnerOffers(discord.ui.View):
     def embed(self) -> discord.Embed:
         f = self.f
         lo, hi = F.farm_ask_range(f["worth"])
-        rows = "\n".join(f"<@{o['buyer_id']}> **{o['amount']:,}원** · <t:{o['ts'] + F.FARM_OFFER_HOURS * 3600}:R> 만료"
+        rows = "\n".join(f"<@{o['buyer_id']}> **{o['amount']:,}원** (<t:{o['ts'] + F.FARM_OFFER_HOURS * 3600}:R> 만료)"
                          for o in self.offers[:25]) or "받은 인수 제안이 없어요."
-        return ui.card("받은 인수 제안", (
-            f"{rows}\n\n적정 인수 금액 **{f['fair']:,}원** — 이 금액 이상 제안이 오면 바로 인수돼요.\n"
-            f"-# 적정 인수 금액은 {lo:,}원 ~ {hi:,}원 사이로 정할 수 있어요 · 수락하면 농장이 통째로 넘어가요"),
+        e = ui.card("받은 인수 제안", (
+            f"{rows}\n\n적정 인수 금액 이상 제안이 오면 바로 인수돼요.\n-# 수락하면 농장이 통째로 넘어가요."),
             ui.INFO, self.user, SECTION)
+        e.add_field(name="적정 인수 금액", value=f"**{f['fair']:,}원**")
+        e.add_field(name="정할 수 있는 금액", value=f"{lo:,}원부터\n{hi:,}원까지")
+        return e
 
     async def _picked(self, interaction: discord.Interaction):
         self.pick = int(interaction.data["values"][0])
@@ -742,7 +775,7 @@ class BuyView(discord.ui.View):
             info = [f"값 **{price:,} 코인**", f"다 자라는 데 **{_dur(sec)}**", f"다 자라면 팔 때 **{sell:,} 코인**"]
         mine = [f"내 {F.LANDS[f['land']][1]} 농장 코인 **{f['coins']:,}**", f"사 둔 {n} **{f['seeds'].get(k, 0)}{self.unit}**"]
         return ui.card(f"{n} 사기", (f"{self.note}\n\n" if self.note else "") + "\n".join(info) + "\n\n" + "\n".join(mine)
-                       + "\n-# 산 것은 내 농장의 심기 · 입양 메뉴에서 써요", ui.INFO, self.user, SECTION)
+                       + "\n-# 산 것은 내 농장의 심기 메뉴에서 써요", ui.INFO, self.user, SECTION)
 
     async def _redraw(self, interaction: discord.Interaction, note: str = ""):
         self.farms = await self.cog.db.farms_of(self.user.id, int(time.time())) or self.farms
@@ -1137,7 +1170,8 @@ class Farm(commands.Cog):
             e = ui.card("인수 제안 실패", _offer_fail(r), ui.LOSE, user, SECTION)
         elif r["auto"]:
             e = ui.card("농장 인수 완료", (
-                f"**{r['cost']:,}원**에 인수했어요 (적정 인수 금액 {r['fair']:,}원 이상이라 바로 인수) · 잔액 **{r['balance']:,}원**\n"
+                "적정 인수 금액 이상을 제안해서 바로 인수했어요.\n"
+                f"인수 금액 **{r['cost']:,}원**\n잔액 **{r['balance']:,}원**\n\n"
                 f"전 주인 <@{r['prev_owner']}>님이 인수 금액을 받았어요.\n"
                 "이 스레드의 농장이 이제 내 농장이에요. `/농사`로도 열 수 있어요."), ui.GOLD, user, SECTION)
             await self._dm(r["prev_owner"], ui.card("농장이 인수됐어요", (
@@ -1145,12 +1179,13 @@ class Farm(commands.Cog):
                 f"인수 금액 **+{r['cost']:,}원**을 받았어요."), ui.INFO, None, SECTION))
         else:
             e = ui.card("인수 제안을 보냈어요", (
-                f"제안 금액 **{r['amount']:,}원** (적정 인수 금액 {r['fair']:,}원)\n"
-                f"주인 <@{r['owner_id']}>님이 수락하면 인수돼요. 제안은 <t:{r['expires']}:R> 만료돼요.\n"
-                "-# 돈은 수락될 때 빠져나가요 · 그때 잔액이 모자라면 인수되지 않아요"), ui.INFO, user, SECTION)
+                f"제안 금액 **{r['amount']:,}원**\n적정 인수 금액 {r['fair']:,}원\n\n"
+                f"주인 <@{r['owner_id']}>님이 수락하면 인수돼요.\n제안은 <t:{r['expires']}:R> 만료돼요.\n"
+                "-# 돈은 수락될 때 빠져나가요. 그때 잔액이 모자라면 인수되지 않아요."), ui.INFO, user, SECTION)
             await self._dm(r["owner_id"], ui.card("농장 인수 제안", (
                 f"{user.mention}님이 {place}의 농장을 **{r['amount']:,}원**에 인수하고 싶어 해요.\n"
-                f"농장 화면의 **받은 인수 제안**에서 수락하거나 거절할 수 있어요 (<t:{r['expires']}:R> 만료)."),
+                "농장 화면의 **받은 인수 제안**에서 수락하거나 거절할 수 있어요.\n"
+                f"제안은 <t:{r['expires']}:R> 만료돼요."),
                 ui.INFO, None, SECTION))
         if edit:
             await interaction.response.edit_message(embed=e, view=None)
@@ -1164,7 +1199,7 @@ class Farm(commands.Cog):
         place = getattr(interaction.channel, "mention", "농장 스레드")
         if r["ok"] and r["accepted"]:
             e = ui.card("농장을 넘겼어요", (
-                f"<@{r['buyer_id']}>님의 제안을 수락했어요. 받은 돈 **+{r['amount']:,}원** · 잔액 **{r['balance']:,}원**\n"
+                f"<@{r['buyer_id']}>님의 제안을 수락했어요.\n받은 돈 **+{r['amount']:,}원**\n잔액 **{r['balance']:,}원**\n\n"
                 "`/농사`로 새 농장을 열 수 있어요."), ui.WIN, user, SECTION)
             await self._dm(r["buyer_id"], ui.card("농장 인수 완료", (
                 f"주인이 **{r['amount']:,}원** 제안을 수락했어요. {place}의 농장이 이제 내 농장이에요.\n"
