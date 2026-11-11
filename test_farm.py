@@ -388,13 +388,12 @@ def test_shop():
                                                               send_messages_in_threads=True))
         return ch
 
-    def shop_thread(tid, archived=False, manage=True):
+    def shop_thread(tid, archived=False):
         th = MagicMock(spec=discord.Thread, id=tid, archived=archived, locked=False)
 
         async def edit(**kw):
             th.archived, th.locked = kw.get("archived", th.archived), kw.get("locked", th.locked)
         th.send, th.edit = AsyncMock(return_value=MagicMock(id=tid + 1000)), AsyncMock(side_effect=edit)
-        th.permissions_for = MagicMock(return_value=MagicMock(manage_threads=manage))
         return th
 
     async def flow():
@@ -424,7 +423,7 @@ def test_shop():
         kw = notes_ch.create_thread.await_args.kwargs
         assert kw["name"] == "농사 상점" and kw["type"] == discord.ChannelType.public_thread
         assert isinstance(th.send.await_args.kwargs["view"], C.ShopPanel)
-        assert th.edit.await_args.kwargs == {"locked": True} and th.locked                  # 상점 스레드는 잠근다 (버튼만)
+        assert not th.edit.await_count                                                      # 잠그지 않는다 (잠그면 버튼이 막힌다)
         assert C.SHOPS == {guild.id: 6001} and await cog.db.shop_threads() == {guild.id: (6001, 7001, C.SHOP_VER)}
         assert await cog.ensure_shop(guild) is th and notes_ch.create_thread.await_count == 1
         # 상점 화면이 바뀌면 (버전이 다르면) 이미 올라간 상점 글을 새 화면으로 고친다 — 글 번호를 모르는 옛 상점은 스레드 첫 봇 글
@@ -445,16 +444,12 @@ def test_shop():
         assert old.edit.await_count == 1                         # 한 번 고치면 끝
         th.archived = True                                       # 보관되면 다시 연다
         await cog.ensure_shop(guild)
-        assert th.edit.await_args.kwargs == {"archived": False} and th.edit.await_count == 2
-        th.locked = False                                        # 전에 만든 (안 잠근) 상점 스레드도 잠근다
+        assert th.edit.await_args.kwargs == {"archived": False} and th.edit.await_count == 1
+        th.locked = True                                         # #134 로 잠근 상점 스레드는 푼다 (권한 없는 사람은 버튼이 막혔다)
         await cog.ensure_shop(guild)
-        assert th.edit.await_args.kwargs == {"locked": True} and th.edit.await_count == 3
+        assert th.edit.await_args.kwargs == {"locked": False} and not th.locked and th.edit.await_count == 2
         await cog.ensure_shop(guild)
-        assert th.edit.await_count == 3                          # 이미 잠겼으면 그대로
-        th.locked, th.permissions_for = False, MagicMock(return_value=MagicMock(manage_threads=False))
-        await cog.ensure_shop(guild)
-        assert th.edit.await_count == 3 and guild.id in cog._no_lock   # 권한이 없으면 건너뛴다 (로그는 한 번)
-        th.permissions_for = MagicMock(return_value=MagicMock(manage_threads=True))
+        assert th.edit.await_count == 2                          # 풀렸으면 그대로
         guild.fetch_channel = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "x"))   # 잠깐 안 될 땐 새로 안 만든다
         assert await cog.ensure_shop(guild) is None and notes_ch.create_thread.await_count == 1
         th2 = shop_thread(6002)                                  # 지워졌으면 새로 만든다

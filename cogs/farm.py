@@ -834,7 +834,6 @@ class Farm(commands.Cog):
         self.shop = ShopPanel(self)
         bot.add_view(self.shop)    # 농사 상점 버튼도
         self._shop_lock = asyncio.Lock()
-        self._no_lock: set[int] = set()   # 상점 스레드를 잠글 권한이 없다고 이미 로그를 남긴 서버
         self._sticky: dict[int, asyncio.Task] = {}   # 농장 스레드 → 밭을 다시 올릴 예약
         self._sticky_lock = asyncio.Lock()
 
@@ -928,26 +927,22 @@ class Farm(commands.Cog):
             return None
 
     async def _open_shop(self, guild, th):
-        """보관된 상점 스레드는 다시 열고, 잠기지 않았으면 잠근다.
-        11/11 규완님: 상점 스레드는 잠가도 된다 — 글은 못 쓰고 버튼만 누른다 (잠그려면 봇에 '스레드 관리하기' 권한)."""
+        """보관된 상점 스레드는 다시 열고, 잠겨 있으면 푼다.
+        11/11: 잠그면 '스레드 관리하기' 권한이 없는 사람은 디스코드가 상점 버튼을 막아서 살 수 없다 (#134 를 되돌림)."""
         kw = {}
         if th.archived:
             kw["archived"] = False
-        if not th.locked:
-            if th.permissions_for(guild.me).manage_threads:
-                kw["locked"] = True
-            elif guild.id not in self._no_lock:
-                self._no_lock.add(guild.id)
-                print(f"[농사 상점] {guild.id} 스레드 {th.id} 잠그기 권한(스레드 관리하기) 없음")
+        if th.locked:
+            kw["locked"] = False
         if not kw:
             return
         try:
             await th.edit(**kw)
             if "locked" in kw:
-                print(f"[농사 상점] {guild.id} 스레드 {th.id} 잠금")
+                print(f"[농사 상점] {guild.id} 스레드 {th.id} 잠금 풂")
         except discord.HTTPException as ex:
             if "locked" in kw:
-                print(f"[농사 상점] {guild.id} 스레드 잠그기 오류: {type(ex).__name__}: {ex}")
+                print(f"[농사 상점] {guild.id} 스레드 잠금 풀기 오류: {type(ex).__name__}: {ex}")
 
     async def _refresh_shop(self, guild, th):
         """상점 화면이 바뀌었으면 이미 올라간 상점 글을 새 화면으로 고친다 (못 찾으면 새로 올린다)."""
