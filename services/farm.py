@@ -29,21 +29,31 @@ def time_mult(stars: int) -> float:
 
 # ───────────── 작물 · 동물 · 물건 ─────────────
 # 작물: key → (이모지, 이름, 씨앗 값(코인), 자라는 시간(초), ★1 판매가(코인)) — 당근은 무료(씨앗 없이 심는다)라서 코인이 0 이어도 막히지 않는다
+# 11/11 규완님 '낚시와 다르게 템포가 굉장히 빠른 게임' → 시간을 분 단위로 · 종류를 늘림
 CROPS = {
-    "carrot": ("🥕", "당근", 0, 5 * 60, 4),
-    "potato": ("🥔", "감자", 5, 20 * 60, 14),
-    "corn": ("🌽", "옥수수", 20, 60 * 60, 45),
-    "tomato": ("🍅", "토마토", 60, 3 * 3600, 120),
-    "strawberry": ("🍓", "딸기", 150, 8 * 3600, 280),
-    "watermelon": ("🍉", "수박", 400, 20 * 3600, 700),
+    "carrot": ("🥕", "당근", 0, 30, 4),
+    "potato": ("🥔", "감자", 5, 60, 14),
+    "wheat": ("🌾", "밀", 10, 2 * 60, 25),
+    "corn": ("🌽", "옥수수", 20, 4 * 60, 45),
+    "cabbage": ("🥬", "배추", 35, 7 * 60, 75),
+    "tomato": ("🍅", "토마토", 60, 12 * 60, 120),
+    "pumpkin": ("🎃", "호박", 100, 20 * 60, 190),
+    "strawberry": ("🍓", "딸기", 150, 30 * 60, 280),
+    "grape": ("🍇", "포도", 250, 50 * 60, 450),
+    "watermelon": ("🍉", "수박", 400, 80 * 60, 700),
 }
 # 동물: key → (이모지, 이름, 값(코인), 만드는 물건, 만드는 시간(초)) — 땅 한 칸을 차지하고 계속 만든다
 ANIMALS = {
-    "chicken": ("🐔", "닭", 300, "egg", 60 * 60),
-    "sheep": ("🐑", "양", 1_200, "wool", 4 * 3600),
-    "cow": ("🐄", "소", 4_000, "milk", 10 * 3600),
+    "chicken": ("🐔", "닭", 300, "egg", 3 * 60),
+    "duck": ("🦆", "오리", 600, "feather", 5 * 60),
+    "bee": ("🐝", "벌", 1_000, "honey", 8 * 60),
+    "sheep": ("🐑", "양", 1_600, "wool", 12 * 60),
+    "goat": ("🐐", "염소", 2_500, "cheese", 18 * 60),
+    "pig": ("🐖", "돼지", 4_000, "truffle", 30 * 60),
+    "cow": ("🐄", "소", 6_000, "milk", 45 * 60),
 }
-PRODUCTS = {"egg": ("🥚", "달걀", 30), "wool": ("🧶", "양털", 110), "milk": ("🥛", "우유", 260)}
+PRODUCTS = {"egg": ("🥚", "달걀", 30), "feather": ("🪶", "깃털", 50), "honey": ("🍯", "꿀", 80), "wool": ("🧶", "양털", 120),
+            "cheese": ("🧀", "치즈", 180), "truffle": ("🍄", "송로버섯", 280), "milk": ("🥛", "우유", 400)}
 ITEMS = {**{k: (e, n, v) for k, (e, n, _, _, v) in CROPS.items()}, **PRODUCTS}   # 창고에 들어가는 것: key → (이모지, 이름, ★1 판매가)
 ANIMAL_PER_PLOTS = 3          # 동물은 땅 3칸당 1마리
 
@@ -65,7 +75,7 @@ def value(key: str, tier: int) -> int:
 
 
 # ───────────── 에너지 · 땅 확장 ─────────────
-ENERGY_MAX, ENERGY_SEC = 100, 120     # 100 까지 · 2분에 1 (물 별에 따라 빨라진다)
+ENERGY_MAX, ENERGY_SEC = 100, 30      # 100 까지 · 30초에 1 (물 별에 따라 빨라진다)
 PLOTS_BASE, PLOTS_MAX = 6, 24
 START_CHESTS = {"wood": 1}            # 시작 선물
 RATE = 1_000                          # 환전: 농장 코인 1 = 축구 봇 돈 1,000원 (코인 → 돈 한쪽으로만)
@@ -204,7 +214,8 @@ _TABLES = {   # 농장마다 번호(id) · 주인(owner) — 밭 · 창고 · �
     "farm_seeds": ("CREATE TABLE IF NOT EXISTS farm_seeds (farm_id INTEGER NOT NULL, key TEXT NOT NULL, "
                    "qty INTEGER NOT NULL, PRIMARY KEY(farm_id, key))"),
     # 서버마다 하나 있는 농사 상점 스레드
-    "farm_shops": "CREATE TABLE IF NOT EXISTS farm_shops (guild_id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL)",
+    "farm_shops": ("CREATE TABLE IF NOT EXISTS farm_shops (guild_id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL, "
+                   "msg_id INTEGER, ver INTEGER NOT NULL DEFAULT 0)"),
 }
 
 
@@ -230,6 +241,11 @@ class FarmDB(EconomyDB):
                 con.execute("ALTER TABLE farms ADD COLUMN daily_day INTEGER NOT NULL DEFAULT 0")
             if "ask" not in cols:
                 con.execute("ALTER TABLE farms ADD COLUMN ask INTEGER")
+            shop_cols = {r[1] for r in con.execute("PRAGMA table_info(farm_shops)")}
+            if "msg_id" not in shop_cols:
+                con.execute("ALTER TABLE farm_shops ADD COLUMN msg_id INTEGER")
+            if "ver" not in shop_cols:
+                con.execute("ALTER TABLE farm_shops ADD COLUMN ver INTEGER NOT NULL DEFAULT 0")
             con.execute("CREATE INDEX IF NOT EXISTS farms_owner ON farms(owner)")
             con.execute("CREATE INDEX IF NOT EXISTS farm_threads_tid ON farm_threads(thread_id)")
             con.execute("CREATE TABLE IF NOT EXISTS farm_offers (id INTEGER PRIMARY KEY AUTOINCREMENT, farm_id INTEGER NOT NULL, "
@@ -389,13 +405,15 @@ class FarmDB(EconomyDB):
         return await self._tx(lambda con: [int(r[0]) for r in con.execute(
             "SELECT thread_id FROM farm_threads WHERE farm_id=?", (fid,))])
 
-    async def shop_threads(self) -> dict[int, int]:
-        """서버 → 농사 상점 스레드."""
-        return await self._tx(lambda con: {int(g): int(t) for g, t in con.execute("SELECT guild_id, thread_id FROM farm_shops")})
+    async def shop_threads(self) -> dict[int, tuple[int, Optional[int], int]]:
+        """서버 → (농사 상점 스레드, 상점 글, 상점 화면 버전)."""
+        return await self._tx(lambda con: {int(g): (int(t), int(m) if m else None, int(v)) for g, t, m, v in con.execute(
+            "SELECT guild_id, thread_id, msg_id, ver FROM farm_shops")})
 
-    async def set_shop_thread(self, guild_id: int, thread_id: int):
+    async def set_shop_thread(self, guild_id: int, thread_id: int, msg_id: Optional[int] = None, ver: int = 0):
         await self._tx(lambda con: con.execute(
-            "INSERT OR REPLACE INTO farm_shops(guild_id, thread_id) VALUES(?,?)", (guild_id, thread_id)))
+            "INSERT OR REPLACE INTO farm_shops(guild_id, thread_id, msg_id, ver) VALUES(?,?,?,?)",
+            (guild_id, thread_id, msg_id, ver)))
 
     # ───────────── 사기 · 심기 · 입양 ─────────────
     async def set_plant_n(self, uid: int, fid: int, n: int):
