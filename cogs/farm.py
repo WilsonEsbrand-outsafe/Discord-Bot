@@ -35,9 +35,14 @@ def _shop_link(user) -> str:
 
 
 def _dur(sec: float) -> str:
-    m = max(1, round(sec / 60))
+    s = max(1, round(sec))
+    if s < 60:
+        return f"{s}초"
+    m, s = divmod(s, 60)
     h, m = divmod(m, 60)
-    return (f"{h}시간" + (f" {m}분" if m else "")) if h else f"{m}분"
+    if h:
+        return f"{h}시간" + (f" {m}분" if m else "")
+    return f"{m}분" + (f" {s}초" if s else "")
 
 
 def _item(key: str, tier: int = 1) -> str:
