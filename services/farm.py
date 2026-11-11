@@ -31,27 +31,28 @@ def time_mult(stars: int) -> float:
 # 작물: key → (이모지, 이름, 씨앗 값(코인), 자라는 시간(초), ★1 판매가(코인)) — 당근은 무료(씨앗 없이 심는다)라서 코인이 0 이어도 막히지 않는다
 # 11/11 규완님 '낚시와 다르게 템포가 굉장히 빠른 게임' → 시간을 분 단위로 · 종류를 늘림
 # 11/11 규완님 '시간을 더더 대폭 줄여도 될 거 같아' → 10초 ~ 15분
+# 11/11 규완님 '게임 템포 더 빠르게' → 다시 절반 (5초 ~ 7분 30초)
 CROPS = {
-    "carrot": ("🥕", "당근", 0, 10, 4),
-    "potato": ("🥔", "감자", 5, 15, 14),
-    "wheat": ("🌾", "밀", 10, 30, 25),
-    "corn": ("🌽", "옥수수", 20, 60, 45),
-    "cabbage": ("🥬", "배추", 35, 90, 75),
-    "tomato": ("🍅", "토마토", 60, 150, 120),
-    "pumpkin": ("🎃", "호박", 100, 4 * 60, 190),
-    "strawberry": ("🍓", "딸기", 150, 6 * 60, 280),
-    "grape": ("🍇", "포도", 250, 9 * 60, 450),
-    "watermelon": ("🍉", "수박", 400, 15 * 60, 700),
+    "carrot": ("🥕", "당근", 0, 5, 4),
+    "potato": ("🥔", "감자", 5, 8, 14),
+    "wheat": ("🌾", "밀", 10, 15, 25),
+    "corn": ("🌽", "옥수수", 20, 30, 45),
+    "cabbage": ("🥬", "배추", 35, 45, 75),
+    "tomato": ("🍅", "토마토", 60, 75, 120),
+    "pumpkin": ("🎃", "호박", 100, 2 * 60, 190),
+    "strawberry": ("🍓", "딸기", 150, 3 * 60, 280),
+    "grape": ("🍇", "포도", 250, 270, 450),
+    "watermelon": ("🍉", "수박", 400, 450, 700),
 }
 # 동물: key → (이모지, 이름, 값(코인), 만드는 물건, 만드는 시간(초)) — 땅 한 칸을 차지하고 계속 만든다
 ANIMALS = {
-    "chicken": ("🐔", "닭", 300, "egg", 30),
-    "duck": ("🦆", "오리", 600, "feather", 45),
-    "bee": ("🐝", "벌", 1_000, "honey", 75),
-    "sheep": ("🐑", "양", 1_600, "wool", 2 * 60),
-    "goat": ("🐐", "염소", 2_500, "cheese", 3 * 60),
-    "pig": ("🐖", "돼지", 4_000, "truffle", 5 * 60),
-    "cow": ("🐄", "소", 6_000, "milk", 8 * 60),
+    "chicken": ("🐔", "닭", 300, "egg", 15),
+    "duck": ("🦆", "오리", 600, "feather", 23),
+    "bee": ("🐝", "벌", 1_000, "honey", 38),
+    "sheep": ("🐑", "양", 1_600, "wool", 60),
+    "goat": ("🐐", "염소", 2_500, "cheese", 90),
+    "pig": ("🐖", "돼지", 4_000, "truffle", 150),
+    "cow": ("🐄", "소", 6_000, "milk", 4 * 60),
 }
 PRODUCTS = {"egg": ("🥚", "달걀", 30), "feather": ("🪶", "깃털", 50), "honey": ("🍯", "꿀", 80), "wool": ("🧶", "양털", 120),
             "cheese": ("🧀", "치즈", 180), "truffle": ("🍄", "송로버섯", 280), "milk": ("🥛", "우유", 400)}
@@ -76,7 +77,7 @@ def value(key: str, tier: int) -> int:
 
 
 # ───────────── 에너지 · 땅 확장 ─────────────
-ENERGY_MAX, ENERGY_SEC = 100, 10      # 100 까지 · 10초에 1 (물 별에 따라 빨라진다)
+ENERGY_MAX, ENERGY_SEC = 100, 5       # 100 까지 · 5초에 1 (물 별에 따라 빨라진다)
 PLOTS_BASE, PLOTS_MAX = 6, 24
 START_CHESTS = {"wood": 1}            # 시작 선물
 RATE = 1_000                          # 환전: 농장 코인 1 = 축구 봇 돈 1,000원 (코인 → 돈 한쪽으로만)
@@ -120,10 +121,11 @@ CHESTS = {"wood": ("📦", "나무 상자"), "silver": ("🎁", "은 상자"), "
 CHEST_WEIGHTS = (80, 17, 3)           # 수확하다 상자가 나올 때 나무 · 은 · 금
 CHEST_REWARDS = {"wood": 1, "silver": 2, "gold": 3}   # 상자 하나에서 나오는 보상 수
 # 보상 표: (비중, 종류, 최소, 최대) — coins 코인 · energy 에너지 · whet 숫돌 · item 물건(CHEST_ITEMS 에서 하나)
+# 11/11 규완님 '상자 코인 획득량 소폭 감소' → 코인을 0.8배로 (나무 20~60 → 16~48 · 은 100~300 → 80~240 · 금 600~1,500 → 480~1,200)
 CHEST_TABLE = {
-    "wood": ((40, "coins", 20, 60), (30, "energy", 10, 15), (20, "whet", 1, 1), (10, "item", 1, 1)),
-    "silver": ((35, "coins", 100, 300), (25, "energy", 25, 40), (25, "whet", 1, 2), (15, "item", 1, 1)),
-    "gold": ((30, "coins", 600, 1_500), (20, "energy", 60, 100), (30, "whet", 3, 5), (20, "item", 1, 1)),
+    "wood": ((40, "coins", 16, 48), (30, "energy", 10, 15), (20, "whet", 1, 1), (10, "item", 1, 1)),
+    "silver": ((35, "coins", 80, 240), (25, "energy", 25, 40), (25, "whet", 1, 2), (15, "item", 1, 1)),
+    "gold": ((30, "coins", 480, 1_200), (20, "energy", 60, 100), (30, "whet", 3, 5), (20, "item", 1, 1)),
 }
 CHEST_ITEMS = {   # 상자에서 나오는 물건: (등급, 후보)
     "wood": (2, ("carrot", "potato", "corn", "egg")),
@@ -164,7 +166,9 @@ def roll_chest(tier: str, lucky: bool, rng=random) -> list[dict]:
 
 # ───────────── 인수 (3.8.1 — 명문구단처럼: 금액을 제안하면 주인이 수락 · 적정 인수 금액 이상이면 바로) ─────────────
 # 농장은 여러 개 가질 수 있다 (인수해도 원래 내 농장은 그대로). 인수하면 코인 · 창고 · 밭 · 동물 · 낫 · 상자가 통째로 넘어온다.
-FARM_FAIR = 3.0               # 적정 인수 금액 기본 = 농장 가치 × 3
+# 11/11 규완님 '농사 인수를 코인으로 하게 (많은 코인이 인수 시 필요하게)' → 금액은 농장 코인. 산 사람은 내 농장 하나의 코인으로 내고,
+# 판 사람도 무조건 코인으로 받는다 (11/11 규완님) — 남은 농장에, 없으면 다음에 여는 농장에.
+FARM_FAIR = 3.0               # 적정 인수 금액 기본 = 농장 가치 × 3 (코인)
 FARM_ASK = (1.5, 5.0)         # 주인이 정할 수 있는 적정 인수 금액 범위 (농장 가치 ×)
 FARM_OFFER_HOURS = 24         # 인수 제안은 24시간 뒤 만료
 FARM_WORTH_MIN = 1_000        # 농장 가치 최소 (코인) — 막 연 농장도 적정 인수 금액이 너무 낮지 않게
@@ -181,14 +185,14 @@ def farm_worth(f: dict) -> int:
 
 
 def farm_ask_range(worth: int) -> tuple[int, int]:
-    """주인이 정할 수 있는 적정 인수 금액 (원)."""
-    return round(worth * RATE * FARM_ASK[0]), round(worth * RATE * FARM_ASK[1])
+    """주인이 정할 수 있는 적정 인수 금액 (코인)."""
+    return round(worth * FARM_ASK[0]), round(worth * FARM_ASK[1])
 
 
 def farm_fair(worth: int, ask: Optional[int] = None) -> int:
-    """적정 인수 금액 (원) — 주인이 정한 값(지금 가치의 범위 안으로), 안 정했으면 농장 가치 × FARM_FAIR."""
+    """적정 인수 금액 (코인) — 주인이 정한 값(지금 가치의 범위 안으로), 안 정했으면 농장 가치 × FARM_FAIR."""
     if not ask:
-        return round(worth * RATE * FARM_FAIR)
+        return round(worth * FARM_FAIR)
     lo, hi = farm_ask_range(worth)
     return min(hi, max(lo, int(ask)))
 
@@ -251,8 +255,16 @@ class FarmDB(EconomyDB):
             con.execute("CREATE INDEX IF NOT EXISTS farm_threads_tid ON farm_threads(thread_id)")
             con.execute("CREATE TABLE IF NOT EXISTS farm_offers (id INTEGER PRIMARY KEY AUTOINCREMENT, farm_id INTEGER NOT NULL, "
                         "buyer_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, amount INTEGER NOT NULL, ts INTEGER NOT NULL, "
-                        "status TEXT NOT NULL DEFAULT 'open')")
+                        "status TEXT NOT NULL DEFAULT 'open', pay_fid INTEGER)")
+            if "pay_fid" not in {r[1] for r in con.execute("PRAGMA table_info(farm_offers)")}:
+                # 11/11 인수가 축구 봇 돈(원) → 농장 코인으로: 원으로 낸 옛 제안은 닫고, 원으로 정한 적정 인수 금액은 지운다
+                con.execute("ALTER TABLE farm_offers ADD COLUMN pay_fid INTEGER")
+                con.execute("UPDATE farm_offers SET status='closed' WHERE status='open'")
+                con.execute("UPDATE farms SET ask=NULL")
             con.execute("CREATE INDEX IF NOT EXISTS farm_offers_farm ON farm_offers(farm_id, status)")
+            # 농장을 판 사람이 남은 농장이 없을 때 받은 인수 대금 (코인) — 다음에 여는 농장에 들어간다
+            # (_TABLES 에 넣지 않는다: user_id 열이 있으면 _to_multi 가 옛 표로 본다 → 열 이름도 owner)
+            con.execute("CREATE TABLE IF NOT EXISTS farm_held (owner INTEGER PRIMARY KEY, coins INTEGER NOT NULL)")
             con.commit()
         finally:
             con.close()
@@ -370,9 +382,13 @@ class FarmDB(EconomyDB):
             have = con.execute("SELECT id FROM farms WHERE owner=? ORDER BY created_ts, id", (int(uid),)).fetchone()
             if have:
                 return {"ok": False, "reason": "exists", "id": int(have[0])}
-            cur = con.execute("INSERT INTO farms(owner, land, energy, energy_ts, plots, c_wood, created_ts) VALUES(?,?,?,?,?,?,?)",
-                              (int(uid), land, ENERGY_MAX, int(now_ts), PLOTS_BASE, START_CHESTS.get("wood", 0), int(now_ts)))
-            return {"ok": True, "id": int(cur.lastrowid)}
+            held = con.execute("SELECT coins FROM farm_held WHERE owner=?", (int(uid),)).fetchone()
+            held = int(held[0]) if held else 0
+            cur = con.execute("INSERT INTO farms(owner, land, coins, energy, energy_ts, plots, c_wood, created_ts) "
+                              "VALUES(?,?,?,?,?,?,?,?)", (int(uid), land, held, ENERGY_MAX, int(now_ts), PLOTS_BASE,
+                                                          START_CHESTS.get("wood", 0), int(now_ts)))
+            con.execute("DELETE FROM farm_held WHERE owner=?", (int(uid),))
+            return {"ok": True, "id": int(cur.lastrowid), "held": held}
         return await self._tx(fn)
 
     # ───────────── 스레드 (농장마다 서버에 하나) ─────────────
@@ -674,23 +690,45 @@ class FarmDB(EconomyDB):
             return {"ok": True, "coins": coins, "won": coins * RATE, "balance": self._wallet(con, uid), "left": f["coins"] - coins}
         return await self._tx(fn)
 
-    # ───────────── 인수 ─────────────
-    def _farm_transfer(self, con, fid: int, buyer: int, owner: int, amount: int) -> dict:
-        """buyer 가 amount 를 내고 농장 fid 를 가져간다 (돈은 주인에게). 잔액이 모자라면 reason: balance."""
-        bal = self._wallet(con, buyer)
-        if bal < amount:
-            return {"ok": False, "reason": "balance", "cost": amount}
-        self._wallet(con, owner)
-        con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (amount, buyer))
-        con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, owner))
+    # ───────────── 인수 (농장 코인) ─────────────
+    @staticmethod
+    def _pay_check(con, fid: int, buyer: int, amount: int, pay_fid: Optional[int]) -> Optional[dict]:
+        """산 사람이 낼 농장(pay_fid)이 그 사람 것이고 코인이 amount 이상인지. 아니면 실패 dict (pay / coins)."""
+        p = con.execute("SELECT owner, coins FROM farms WHERE id=?", (int(pay_fid or 0),)).fetchone()
+        if not p or int(p[0]) != int(buyer) or int(pay_fid) == int(fid):
+            return {"ok": False, "reason": "pay"}
+        if int(p[1]) < amount:
+            return {"ok": False, "reason": "coins", "cost": amount, "have": int(p[1])}
+        return None
+
+    def _farm_transfer(self, con, fid: int, buyer: int, owner: int, amount: int, pay_fid: int) -> dict:
+        """buyer 가 내 농장 pay_fid 의 코인 amount 를 내고 농장 fid 를 가져간다. 실패 reason: pay / coins.
+        11/11 규완님 '무조건 코인으로 받게': 판 사람은 같은 코인을 남은 농장(가장 먼저 연 것)에 받는다 (to_fid).
+        남은 농장이 없으면 맡아 뒀다가(farm_held) 다음에 여는 농장에 넣는다 (to_fid=None)."""
+        bad = self._pay_check(con, fid, buyer, amount, pay_fid)
+        if bad:
+            return bad
+        con.execute("UPDATE farms SET coins = coins - ? WHERE id=?", (amount, int(pay_fid)))
         con.execute("UPDATE farms SET owner=?, ask=NULL WHERE id=?", (buyer, fid))
         con.execute("UPDATE farm_offers SET status='closed' WHERE farm_id=? AND status='open'", (fid,))   # 남은 제안 정리
-        return {"ok": True, "id": fid, "cost": amount, "prev_owner": owner, "balance": bal - amount}
+        to = con.execute("SELECT id, land FROM farms WHERE owner=? ORDER BY created_ts, id", (int(owner),)).fetchone()
+        to_land = to[1] if to else None
+        if to:
+            to = int(to[0])
+            con.execute("UPDATE farms SET coins = coins + ? WHERE id=?", (amount, to))
+            got_now = int(con.execute("SELECT coins FROM farms WHERE id=?", (to,)).fetchone()[0])
+        else:
+            con.execute("INSERT INTO farm_held(owner, coins) VALUES(?, ?) "
+                        "ON CONFLICT(owner) DO UPDATE SET coins = coins + excluded.coins", (int(owner), amount))
+            got_now = int(con.execute("SELECT coins FROM farm_held WHERE owner=?", (int(owner),)).fetchone()[0])
+        left = int(con.execute("SELECT coins FROM farms WHERE id=?", (int(pay_fid),)).fetchone()[0])
+        return {"ok": True, "id": fid, "cost": amount, "prev_owner": owner, "pay_fid": int(pay_fid), "left": left,
+                "to_fid": to, "to_land": to_land, "to_coins": got_now}
 
-    async def offer_farm(self, buyer: int, fid: int, amount: int, now_ts: int) -> dict:
-        """인수 제안. 적정 인수 금액(farm_fair) 이상이면 바로 인수 (auto=True), 아니면 주인에게 제안을 남긴다
-        (같은 사람이 같은 농장에 다시 내면 새 제안으로 바뀐다 · 24시간 뒤 만료 · 돈은 수락될 때 빠진다).
-        실패 reason: gone(농장 없음) / mine / amount / balance."""
+    async def offer_farm(self, buyer: int, fid: int, amount: int, now_ts: int, pay_fid: Optional[int] = None) -> dict:
+        """인수 제안 (농장 코인). 적정 인수 금액(farm_fair) 이상이면 바로 인수 (auto=True), 아니면 주인에게 제안을 남긴다
+        (같은 사람이 같은 농장에 다시 내면 새 제안으로 바뀐다 · 24시간 뒤 만료 · 코인은 수락될 때 빠진다).
+        pay_fid = 코인을 낼 내 농장. 실패 reason: gone(농장 없음) / mine / amount / pay(낼 농장이 내 것이 아님) / coins."""
         def fn(con):
             f = self._farm(con, fid, now_ts)
             if not f:
@@ -699,13 +737,15 @@ class FarmDB(EconomyDB):
                 return {"ok": False, "reason": "mine"}
             if amount <= 0:
                 return {"ok": False, "reason": "amount"}
-            if self._wallet(con, int(buyer)) < amount:
-                return {"ok": False, "reason": "balance", "cost": amount}
+            bad = self._pay_check(con, fid, int(buyer), int(amount), pay_fid)
+            if bad:
+                return bad
             if amount >= f["fair"]:
-                return {**self._farm_transfer(con, fid, int(buyer), f["owner"], int(amount)), "auto": True, "fair": f["fair"]}
+                return {**self._farm_transfer(con, fid, int(buyer), f["owner"], int(amount), int(pay_fid)),
+                        "auto": True, "fair": f["fair"]}
             con.execute("UPDATE farm_offers SET status='closed' WHERE farm_id=? AND buyer_id=? AND status='open'", (fid, int(buyer)))
-            cur = con.execute("INSERT INTO farm_offers(farm_id, buyer_id, owner_id, amount, ts) VALUES(?,?,?,?,?)",
-                              (fid, int(buyer), f["owner"], int(amount), int(now_ts)))
+            cur = con.execute("INSERT INTO farm_offers(farm_id, buyer_id, owner_id, amount, ts, pay_fid) VALUES(?,?,?,?,?,?)",
+                              (fid, int(buyer), f["owner"], int(amount), int(now_ts), int(pay_fid)))
             return {"ok": True, "auto": False, "offer_id": int(cur.lastrowid), "owner_id": f["owner"], "amount": int(amount),
                     "fair": f["fair"], "expires": int(now_ts) + FARM_OFFER_HOURS * 3600}
         return await self._tx(fn)
@@ -736,9 +776,9 @@ class FarmDB(EconomyDB):
 
     async def answer_farm_offer(self, owner: int, offer_id: int, accept: bool, now_ts: int) -> dict:
         """인수 제안 수락 · 거절. 실패 reason: gone(없거나 만료 · 이미 처리 · 주인이 바뀜) ·
-        수락할 때 제안한 사람의 잔액이 모자라면 balance (그 제안은 닫힌다)."""
+        수락할 때 제안한 사람의 농장 코인이 모자라면 coins, 낼 농장이 더는 그 사람 것이 아니면 pay (그 제안은 닫힌다)."""
         def fn(con):
-            r = con.execute("SELECT farm_id, buyer_id, owner_id, amount, ts, status FROM farm_offers WHERE id=?",
+            r = con.execute("SELECT farm_id, buyer_id, owner_id, amount, ts, status, pay_fid FROM farm_offers WHERE id=?",
                             (int(offer_id),)).fetchone()
             cur = con.execute("SELECT owner FROM farms WHERE id=?", (r[0],)).fetchone() if r else None
             if (not r or r[5] != "open" or int(r[2]) != int(owner) or int(r[4]) <= int(now_ts) - FARM_OFFER_HOURS * 3600
@@ -749,10 +789,10 @@ class FarmDB(EconomyDB):
             if not accept:
                 con.execute("UPDATE farm_offers SET status='rejected' WHERE id=?", (int(offer_id),))
                 return {"ok": True, "accepted": False, **base}
-            t = self._farm_transfer(con, fid, buyer, int(owner), amount)
+            t = self._farm_transfer(con, fid, buyer, int(owner), amount, r[6])
             if not t["ok"]:
                 con.execute("UPDATE farm_offers SET status='closed' WHERE id=?", (int(offer_id),))
                 return {**t, **base, "ok": False}
             con.execute("UPDATE farm_offers SET status='accepted' WHERE id=?", (int(offer_id),))
-            return {"ok": True, "accepted": True, **base, "balance": self._wallet(con, int(owner))}
+            return {"ok": True, "accepted": True, **base, "to_fid": t["to_fid"], "to_land": t["to_land"], "to_coins": t["to_coins"]}
         return await self._tx(fn)

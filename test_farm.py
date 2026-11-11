@@ -104,9 +104,9 @@ def test_plant_n_energy_and_luck():
         con.commit(); con.close()
         assert (await db.plant(U, G, "carrot", T))["count"] == 3                 # 에너지가 되는 만큼만
         assert (await db.plant(U, G, "carrot", T))["reason"] == "energy"
-        late = T + 200                                                        # 200초 뒤: 에너지가 다시 찼다 (10초에 1)
+        late = T + 100                                                        # 100초 뒤: 에너지가 다시 찼다 (5초에 1)
         f = await db.get(G, late)
-        assert f["energy"] == int(200 / (F.ENERGY_SEC * F.time_mult(3))) == 20 and f["energy_next"] > late
+        assert f["energy"] == int(100 / (F.ENERGY_SEC * F.time_mult(3))) == 20 and f["energy_next"] > late
         h = await db.harvest(U, G, late, Fixed(0.0))                             # 운이 전부 터지면: ★2 · 2개씩 · 상자
         assert h["got"] == {("carrot", 2): 10} and h["extra"] == h["high"] == 5 and h["chests"] == ["wood"] * 5
         assert h["daily"] and (await db.get(G, late))["chests"]["wood"] == 1 + 5 + 1
@@ -280,15 +280,22 @@ def test_old_single_farm_tables():
 
 
 def test_takeover():
-    """인수: 적정 인수 금액 이상이면 바로 · 아니면 주인이 수락 · 농장은 여러 개 가질 수 있다."""
+    """인수 (농장 코인): 적정 인수 금액 이상이면 바로 · 아니면 주인이 수락 · 산 사람은 내 농장 코인으로 내고
+    판 사람도 코인으로 받는다 (남은 농장 → 없으면 다음에 여는 농장) · 농장은 여러 개 가질 수 있다."""
     db = F.FarmDB()
+
+    def coins(fid, c):
+        con = sqlite3.connect(edb.DB_PATH)
+        con.execute("UPDATE farms SET coins=? WHERE id=?", (c, fid))
+        con.commit(); con.close()
 
     async def flow():
         A, B, C = 9201, 9202, 9203
         G = (await db.create(A, "river", T))["id"]
         H = (await db.create(B, "plain", T))["id"]
+        K = (await db.create(C, "meadow", T))["id"]
         f = await db.get(G, T)
-        assert f["worth"] == F.FARM_WORTH_MIN and f["fair"] == F.FARM_WORTH_MIN * F.RATE * 3 and f["offers"] == 0
+        assert f["worth"] == F.FARM_WORTH_MIN and f["fair"] == F.FARM_WORTH_MIN * 3 and f["offers"] == 0
         con = sqlite3.connect(edb.DB_PATH)
         con.execute("UPDATE farms SET coins=1000, plots=8, sickle=2 WHERE id=?", (G,))
         con.execute("INSERT INTO farm_fields VALUES(?, 0, 'animal', 'chicken', ?)", (G, T + 99))
@@ -296,20 +303,24 @@ def test_takeover():
         con.commit(); con.close()
         worth = 1000 + 300 + 2 * F.value("corn", 2) + 150 + 400 + 150 + 600
         f = await db.get(G, T)
-        fair = worth * F.RATE * 3
+        fair = worth * 3
         assert f["worth"] == worth and f["fair"] == fair
-        assert (await db.offer_farm(A, G, fair, T))["reason"] == "mine"
-        assert (await db.offer_farm(B, G, 0, T))["reason"] == "amount"
-        assert (await db.offer_farm(B, G, 1000, T))["reason"] == "balance"
-        assert (await db.offer_farm(B, 999999, 1000, T))["reason"] == "gone"
-        await db.add_balance(B, fair * 10)
-        await db.add_balance(C, fair * 10)
-        # 적정 인수 금액보다 적으면 제안 — 돈은 아직 그대로, 다시 내면 새 제안으로 바뀐다
-        o = await db.offer_farm(B, G, fair - 1, T)
+        assert (await db.offer_farm(A, G, fair, T, H))["reason"] == "mine"
+        assert (await db.offer_farm(B, G, 0, T, H))["reason"] == "amount"
+        assert (await db.offer_farm(B, G, 1000, T, None))["reason"] == "pay"
+        assert (await db.offer_farm(B, G, 1000, T, K))["reason"] == "pay"            # 남의 농장 코인으로는 못 낸다
+        bad = await db.offer_farm(B, G, 1000, T, H)
+        assert bad["reason"] == "coins" and (bad["cost"], bad["have"]) == (1000, 0)
+        assert (await db.offer_farm(B, 999999, 1000, T, H))["reason"] == "gone"
+        coins(H, fair * 10)
+        coins(K, fair * 10)
+        bal_a = await db.get_balance(A)
+        # 적정 인수 금액보다 적으면 제안 — 코인은 아직 그대로, 다시 내면 새 제안으로 바뀐다
+        o = await db.offer_farm(B, G, fair - 1, T, H)
         assert o["ok"] and not o["auto"] and o["owner_id"] == A and o["expires"] == T + 24 * 3600
-        o2 = await db.offer_farm(B, G, fair // 2, T + 10)
-        o3 = await db.offer_farm(C, G, fair // 3, T + 20)
-        assert await db.get_balance(B) == fair * 10
+        o2 = await db.offer_farm(B, G, fair // 2, T + 10, H)
+        o3 = await db.offer_farm(C, G, fair // 3, T + 20, K)
+        assert (await db.get(H, T + 20))["coins"] == fair * 10
         offers = await db.farm_offers(A, G, T + 30)
         assert [x["id"] for x in offers] == [o2["offer_id"], o3["offer_id"]] and (await db.get(G, T + 30))["offers"] == 2
         assert await db.farm_offers(B, G, T + 30) == []                       # 주인만 본다
@@ -319,35 +330,38 @@ def test_takeover():
         assert r["ok"] and not r["accepted"] and r["buyer_id"] == C
         assert await db.farm_offers(A, G, T + 24 * 3600 + 11) == []           # 24시간 뒤 만료
         assert (await db.answer_farm_offer(A, o2["offer_id"], True, T + 24 * 3600 + 11))["reason"] == "gone"
-        # 수락 → 농장이 통째로 넘어가고 돈이 오간다. B 는 원래 농장도 그대로 (여러 개)
+        # 수락 → 농장이 통째로 넘어가고 코인이 오간다. A 는 남은 농장이 없어서 코인을 맡아 뒀다가 새 농장에 넣는다
         r = await db.answer_farm_offer(A, o2["offer_id"], True, T + 40)
-        assert r["ok"] and r["accepted"] and r["id"] == G and r["balance"] == fair // 2
-        assert await db.get_balance(B) == fair * 10 - fair // 2
+        assert r["ok"] and r["accepted"] and r["id"] == G and r["to_fid"] is None and r["to_coins"] == fair // 2
+        assert (await db.get(H, T + 40))["coins"] == fair * 10 - fair // 2 and await db.get_balance(A) == bal_a
         assert [x["id"] for x in await db.farms_of(B, T + 40)] == [G, H] and await db.farms_of(A, T + 40) == []
         f = await db.get(G, T + 40)
         assert f["owner"] == B and f["coins"] == 1000 and f["plots"] == 8 and f["items"] == [("corn", 2, 2)]
         assert (await db.plant(A, G, "carrot", T + 40))["reason"] == "none" and (await db.plant(B, G, "carrot", T + 40))["ok"]
-        assert (await db.create(A, "plain", T + 40))["ok"]                    # 판 사람은 새로 열 수 있다
+        n = await db.create(A, "plain", T + 40)                               # 판 사람은 새로 열 수 있다 → 맡아 둔 코인이 들어간다
+        assert n["ok"] and n["held"] == fair // 2 and (await db.get(n["id"], T + 40))["coins"] == fair // 2
+        assert (await db.create(9299, "plain", T + 40))["held"] == 0
         # 주인이 적정 인수 금액을 정한다 (가치 × 1.5 ~ × 5) → 그 이상이면 바로 인수
         lo, hi = F.farm_ask_range(worth)
-        assert (lo, hi) == (worth * F.RATE * 3 // 2, worth * F.RATE * 5)
+        assert (lo, hi) == (worth * 3 // 2, worth * 5)
         assert (await db.set_farm_ask(A, G, lo, T + 50))["reason"] == "none"
         bad = await db.set_farm_ask(B, G, lo - 1, T + 50)
         assert bad["reason"] == "range" and (bad["lo"], bad["hi"]) == (lo, hi)
         assert (await db.set_farm_ask(B, G, lo, T + 50))["ok"] and (await db.get(G, T + 50))["fair"] == lo
-        before = await db.get_balance(B)
-        r = await db.offer_farm(C, G, lo, T + 60)
-        assert r["ok"] and r["auto"] and r["prev_owner"] == B and r["cost"] == lo and r["balance"] == fair * 10 - lo
-        assert await db.get_balance(B) == before + lo
+        h_before = (await db.get(H, T + 60))["coins"]
+        r = await db.offer_farm(C, G, lo, T + 60, K)
+        assert r["ok"] and r["auto"] and r["prev_owner"] == B and r["cost"] == lo and r["left"] == fair * 10 - lo
+        assert r["to_fid"] == H and r["to_land"] == "plain" and r["to_coins"] == h_before + lo   # 판 사람 남은 농장에 코인으로
+        assert (await db.get(H, T + 60))["coins"] == h_before + lo
         f = await db.get(G, T + 60)
         assert f["owner"] == C and f["ask"] is None and f["fair"] == fair and f["offers"] == 0     # 주인이 바뀌면 처음 값으로
         assert [x["id"] for x in await db.farms_of(B, T + 60)] == [H]
-        # 수락할 때 제안한 사람 잔액이 모자라면 닫힌다
-        o = await db.offer_farm(B, G, lo, T + 70)
+        # 수락할 때 제안한 사람 농장 코인이 모자라면 닫힌다
+        o = await db.offer_farm(B, G, lo, T + 70, H)
         assert o["ok"] and not o["auto"]
-        await db.add_balance(B, -(await db.get_balance(B)))
+        coins(H, 0)
         r = await db.answer_farm_offer(C, o["offer_id"], True, T + 80)
-        assert not r["ok"] and r["reason"] == "balance" and (await db.get(G, T + 80))["owner"] == C
+        assert not r["ok"] and r["reason"] == "coins" and (await db.get(G, T + 80))["owner"] == C
         assert await db.farm_offers(C, G, T + 80) == []
     run(flow())
 
@@ -401,9 +415,10 @@ def test_shop():
         bot = MagicMock()
         cog = C.Farm(bot)
         kids = cog.shop.children
-        assert all(x.custom_id.startswith("farm:shop:") for x in kids) and len(kids) == (len(F.CROPS) - 1) + len(F.ANIMALS)
+        assert all(x.custom_id.startswith("farm:shop:") for x in kids) and len(kids) == (len(F.CROPS) - 1) + len(F.ANIMALS) + 1
         assert not any(x.emoji for x in kids) and "carrot" not in str([x.custom_id for x in kids])
-        assert all(" " not in x.label and "코인" not in x.label for x in kids)        # 버튼은 이름만
+        assert kids[-1].custom_id == "farm:shop:coins" and kids[-1].label == "내 코인"   # 11/11 상점에서 내 코인 보기
+        assert all(" " not in x.label and "코인" not in x.label for x in kids[:-1])   # 물건 버튼은 이름만
         assert max(Counter(x.row for x in kids).values()) <= 5 and max(x.row for x in kids) <= 4
         e = C.shop_embed()
         fields = {f.name: f.value for f in e.fields}
@@ -491,10 +506,21 @@ def test_shop():
         i = inter(user, MagicMock(id=1374213619793006704))
         await cog.shop._pick("potato")(i)
         assert "아직" in i.response.calls[0][1]["content"]
+        i = inter(user, guild)
+        await cog.shop._coins(i)
+        assert "/농사" in i.response.calls[0][1]["content"] and i.response.calls[0][1]["ephemeral"]
+        i = inter(user, MagicMock(id=1374213619793006704))
+        await cog.shop._coins(i)
+        assert "아직" in i.response.calls[0][1]["content"]
         G = (await cog.db.create(9301, "plain", T))["id"]
         con = sqlite3.connect(edb.DB_PATH)
         con.execute("UPDATE farms SET coins=32 WHERE id=?", (G,))
         con.commit(); con.close()
+        i = inter(user, guild)
+        await cog.shop._coins(i)                                  # 내 코인: 누른 사람에게만 · 농장마다 한 칸
+        e = i.response.calls[0][1]["embed"]
+        assert i.response.calls[0][1]["ephemeral"] and e.title.endswith("내 코인")
+        assert (e.fields[0].name, e.fields[0].value) == (f"{F.LANDS['plain'][1]} 농장", "32 코인") and len(e.fields) % 3 == 0
         i = inter(user, guild)
         await cog.shop._pick("potato")(i)
         buy = i.response.calls[0][1]["view"]
@@ -726,9 +752,13 @@ def test_ui_smoke():
         i.data["custom_id"] = "farm:offer"
         assert not await panel.interaction_check(i) and "내 농장" in i.response.calls[0][1]["content"]
         i = inter(other, tch, guild, message=msg)
+        await panel._offer(i)                                                    # 인수 금액은 내 농장 코인 → 농장이 있어야 한다
+        assert "/농사" in i.response.calls[0][1]["content"] and i.response.calls[0][1]["ephemeral"]
+        O = (await cog.db.create(1, "meadow", T))["id"]
+        i = inter(other, tch, guild, message=msg)
         await panel._offer(i)
         start = i.response.calls[0][1]["view"]
-        assert isinstance(start, C.OfferStart) and i.response.calls[0][1]["ephemeral"]
+        assert isinstance(start, C.OfferStart) and i.response.calls[0][1]["ephemeral"] and start.pay == O
         assert "적정 인수 금액" in i.response.calls[0][1]["embed"].description
         assert not any(getattr(x, "emoji", None) for x in start.children)
 
@@ -742,21 +772,24 @@ def test_ui_smoke():
             return i.response.calls[0][1]
 
         assert "숫자" in (await propose("많이"))["content"]
-        assert "잔액" in (await propose("1,000원"))["embed"].description          # 돈이 없으면 제안도 못 한다
-        await cog.db.add_balance(1, 10 ** 12)
-        sent = await propose("1,000원")
+        assert "코인이 모자라요" in (await propose("1,000 코인"))["embed"].description   # 코인이 없으면 제안도 못 한다
+        con = sqlite3.connect(edb.DB_PATH)
+        con.execute("UPDATE farms SET coins=? WHERE id=?", (10 ** 9, O))
+        con.commit(); con.close()
+        sent = await propose("1,000 코인")
         assert "보냈어요" in sent["embed"].title and sent["ephemeral"] and dm.send.await_count == 1     # 주인에게 DM
+        assert "1,000 코인" in dm.send.await_args.kwargs["embed"].description and "원" not in dm.send.await_args.kwargs["embed"].description
         i = inter(user, tch, guild, message=msg)
         await panel._offers(i)
         box = i.response.calls[0][1]["view"]
-        assert isinstance(box, C.OwnerOffers) and "1,000원" in i.response.calls[0][1]["embed"].description
+        assert isinstance(box, C.OwnerOffers) and "1,000 코인" in i.response.calls[0][1]["embed"].description
         i = inter(user, tch, guild, message=msg)
         await box._ask(i)                                                        # 적정 인수 금액 정하기
         ask = i.response.calls[0][1]["modal"]
         ask.amount._value = "1"
         i = inter(user, tch, guild)
         await ask.on_submit(i)
-        assert "사이로" in i.response.calls[0][1]["embed"].description
+        assert "까지 정할 수 있어요" in i.response.calls[0][1]["embed"].description
         i = inter(user, tch, guild, message=msg)
         await box._answer(False)(i)
         assert "거절" in i.response.calls[0][1]["embed"].title
@@ -767,8 +800,10 @@ def test_ui_smoke():
         edits = msg.edit.await_count
         i = inter(user, tch, guild, message=msg)
         await box._answer(True)(i)
-        assert "넘겼어요" in i.response.calls[0][1]["embed"].title
+        done = i.response.calls[0][1]["embed"]
+        assert "넘겼어요" in done.title and "+2,000" in done.description and "맡아 뒀어요" in done.description   # 판 사람도 코인으로
         assert await cog.db.thread_owner(4242) == 1 and await cog.db.farms_of(9100, T) == []
+        assert (await cog.db.get(O, T))["coins"] == 10 ** 9 - 2000
         assert msg.edit.await_count == edits + 1 and "남의 농장" in msg.edit.await_args.kwargs["embed"].title
         assert thread.edit.await_args.kwargs["name"] == "남의 농장"
         assert not await panel.interaction_check(inter(user, tch, guild))           # 이제 전 주인은 못 누른다
@@ -776,6 +811,7 @@ def test_ui_smoke():
 
         # 적정 인수 금액으로 바로 인수 → 농장이 둘 → /농사 는 고르는 화면
         G2 = (await cog.db.create(9100, "plain", T))["id"]
+        assert (await cog.db.get(G2, T))["coins"] == 2000                          # 맡아 둔 인수 대금이 새 농장에
         await cog.db.set_thread(G2, guild.id, 4343)
         tch2 = MagicMock(spec=discord.Thread, id=4343)
         i = inter(other, tch2, guild, message=msg)
@@ -784,11 +820,11 @@ def test_ui_smoke():
         i = inter(other, tch2, guild, message=msg)
         await start._now(i)
         assert "인수 완료" in i.response.calls[0][1]["embed"].title and i.response.calls[0][0] == "edit"
-        assert [x["id"] for x in await cog.db.farms_of(1, T)] == [G, G2]
+        assert sorted(x["id"] for x in await cog.db.farms_of(1, T)) == sorted([O, G, G2])
         i = inter(other, channel, guild)
         await C.Farm.farm.callback(cog, i)
         pick = i.response.calls[0][1]["view"]
-        assert isinstance(pick, C.FarmPick) and len(pick.children[0].options) == 2
+        assert isinstance(pick, C.FarmPick) and len(pick.children[0].options) == 3
         i = inter(other, channel, guild, [str(G)])
         await pick._picked(i)
         assert "<#4242>" in i.followup.send.await_args.args[0]
@@ -833,11 +869,12 @@ def test_screens_readable():
             v = cls(cog, user, None, f)
             embeds.append(v.embed(f))
             views.append(v)
-        o = C.OfferStart(cog, user, f, None)
+        o = C.OfferStart(cog, user, f, None, [dict(f, id=2, land="river"), dict(f, id=3, land="meadow", coins=99)])
         ow = C.OwnerOffers(cog, user, f, [dict(id=1, buyer_id=2, amount=5_000, ts=T)], None)
         b = C.BuyView(cog, user, [f, dict(f, id=2, land="river")], "potato")
-        embeds += [o.embed(f, 1_000), ow.embed(), b.embed()]
+        embeds += [o.embed(), ow.embed(), b.embed(), C.coins_embed(user, [f, dict(f, id=2, land="river")])]
         views += [o, ow, b]
+        assert ":R>" not in text(embeds[0]) and "<t:" in text(embeds[0])   # 11/11 모바일: 초마다 움직이는 남은 시간 대신 멈춘 시각
         for e in embeds:
             t = text(e)
             assert "·" not in t and "×" not in t, t
