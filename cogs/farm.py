@@ -22,6 +22,7 @@ SECTION = "농사"
 ROW = 6   # 땅 그림 한 줄 칸 수
 SHOP_NAME = "농사 상점"
 SHOPS: dict[int, int] = {}   # 서버 → 농사 상점 스레드 (farm_shops 표를 읽어 둔 것)
+SHOP_MSGS: dict[int, tuple[Optional[int], int]] = {}   # 서버 → (상점 글, 상점 화면 버전)
 
 
 def _name(key: str) -> str:
@@ -43,17 +44,19 @@ def _item(key: str, tier: int = 1) -> str:
     return F.ITEMS[key][1] + (f" ★{tier}" if tier > 1 else "")
 
 
-def _res_line(res: dict) -> str:
-    return " · ".join(f"{F.RES[k][1]} {'★' * res[k]}{'☆' * (5 - res[k])}" for k in F.RES)
+def _res_rows(res: dict) -> str:
+    """땅의 세부 자원 — 한 줄에 하나 · 11/11 규완님: 별을 색 있는 별로 (채운 별만 노란 별)."""
+    return "\n".join(f"{F.RES[k][1]} {'⭐' * res[k]}" for k in F.RES)
 
 
 def land_embed(user, pick: Optional[str] = None) -> discord.Embed:
-    lines = []
-    for k, (e, n, desc, res) in F.LANDS.items():
-        lines.append(f"**{n}**{' (선택)' if k == pick else ''} — {desc}\n　{_res_line(res)}")
-    guide = " · ".join(f"{n}: {d}" for _, n, d in F.RES.values())
-    e = ui.card("농사를 시작할 땅을 골라 주세요", "\n\n".join(lines) + f"\n\n-# {guide}\n-# 땅은 한 번 고르면 바꿀 수 없어요.",
+    guide = "\n".join(f"{n}: {d}" for _, n, d in F.RES.values())
+    e = ui.card("농사를 시작할 땅을 골라 주세요", f"별이 많을수록 좋아요.\n{guide}\n-# 땅은 한 번 고르면 바꿀 수 없어요.",
                 ui.INFO, user, SECTION)
+    for i, (k, (_, n, desc, res)) in enumerate(F.LANDS.items()):
+        e.add_field(name=n + (" (선택)" if k == pick else ""), value=f"{desc}\n{_res_rows(res)}")
+        if i % 2:   # 두 칸씩 (오른쪽 빈칸)
+            e.add_field(name="\u200b", value="\u200b")
     return e
 
 
@@ -130,16 +133,11 @@ class FarmPanel(discord.ui.View):
     def __init__(self, cog: "Farm", f: Optional[dict] = None):
         super().__init__(timeout=None)
         self.cog = cog
-        soil = F.time_mult(f["res"]["soil"]) if f else 1
-        grass = F.time_mult(f["res"]["grass"]) if f else 1
         have = f["seeds"] if f else {}
         opts = [discord.SelectOption(label=f"{n} 심기", value=k,
-                                     description=(f"씨앗 {have.get(k, 0)}개" if price else "씨앗 필요 없음")
-                                     + f" · {_dur(sec * soil)} · 팔면 {sell} 코인")
+                                     description=f"사 둔 씨앗 {have.get(k, 0)}개" if price else "씨앗 없이 바로 심어요")
                 for k, (e, n, price, sec, sell) in F.CROPS.items()]
-        opts += [discord.SelectOption(label=f"{n} 입양", value=k,
-                                      description=f"사 둔 {have.get(k, 0)}마리 · {_dur(sec * grass)}마다 {F.PRODUCTS[prod][1]} "
-                                                  f"({F.PRODUCTS[prod][2]} 코인)")
+        opts += [discord.SelectOption(label=f"{n} 입양", value=k, description=f"사 둔 {n} {have.get(k, 0)}마리")
                  for k, (e, n, price, prod, sec) in F.ANIMALS.items()]
         plant = discord.ui.Select(custom_id="farm:plant", placeholder="심을 작물 · 입양할 동물 고르기", row=0, options=opts)
         plant.callback = self._plant
@@ -321,7 +319,7 @@ class MergeView(_Sub):
         if able:
             sel = discord.ui.Select(placeholder="합칠 물건 고르기", options=[
                 discord.SelectOption(label=f"{F.ITEMS[k][1]} ★{t} ×{q} → ★{t + 1} ×{q // F.MERGE_NEED}", value=f"{k}:{t}",
-                                     description=f"에너지 {q // F.MERGE_NEED} · 하나에 {F.value(k, t + 1):,} 코인")
+                                     description=f"★{t + 1} 하나에 {F.value(k, t + 1):,} 코인")
                 for k, t, q in able])
             sel.callback = self._pick
             self.add_item(sel)
@@ -348,7 +346,7 @@ class StoreView(_Sub):
         if items:
             sel = discord.ui.Select(placeholder="팔 물건 고르기 (여러 개 가능)", min_values=1, max_values=len(items), row=0, options=[
                 discord.SelectOption(label=f"{F.ITEMS[k][1]} ★{t} ×{q}", value=f"{k}:{t}",
-                                     description=f"하나에 {F.value(k, t):,} · 모두 {F.value(k, t) * q:,} 코인") for k, t, q in items])
+                                     description=f"모두 팔면 {F.value(k, t) * q:,} 코인") for k, t, q in items])
             sel.callback = self._sell
             self.add_item(sel)
             b = discord.ui.Button(label="모두 팔기", style=discord.ButtonStyle.success, row=2)
@@ -358,7 +356,7 @@ class StoreView(_Sub):
         if pets:
             sel = discord.ui.Select(placeholder="내보낼 동물 고르기 (산 값의 절반을 돌려받아요)", row=1, options=[
                 discord.SelectOption(label=f"{i + 1}번 땅 {F.ANIMALS[p['key']][1]}", value=str(i),
-                                     description=f"{int(F.ANIMALS[p['key']][2] * F.ANIMAL_REFUND):,} 코인") for i, p in pets])
+                                     description=f"돌려받는 코인 {int(F.ANIMALS[p['key']][2] * F.ANIMAL_REFUND):,}") for i, p in pets])
             sel.callback = self._release
             self.add_item(sel)
 
@@ -508,8 +506,13 @@ class ExchangeModal(discord.ui.Modal):
 
 # ───────────── 인수 (명문구단처럼: 제안 → 주인이 수락 · 적정 인수 금액 이상이면 바로) ─────────────
 def _farm_line(f: dict) -> str:
-    return (f"**{F.LANDS[f['land']][1]}** · 땅 {f['plots']}칸 · 코인 {f['coins']:,} · 낫 +{f['sickle']}"
-            + (f" · 동물 {f['animals']}마리" if f["animals"] else ""))
+    return f"**{F.LANDS[f['land']][1]}** 농장"
+
+
+def _farm_rows(f: dict) -> str:
+    """농장 정보 — 한 줄에 하나."""
+    return "\n".join([f"땅 **{f['plots']}칸**", f"코인 **{f['coins']:,}**", f"낫 **+{f['sickle']}**"]
+                     + ([f"동물 **{f['animals']}마리**"] if f["animals"] else []))
 
 
 def _won(raw) -> Optional[int]:
@@ -559,7 +562,7 @@ class OfferStart(discord.ui.View):
 
     def embed(self, f: dict, balance: int) -> discord.Embed:
         return ui.card("농장 인수 제안", (
-            f"<@{f['owner']}>님의 농장 · {_farm_line(f)}\n\n"
+            f"<@{f['owner']}>님의 {_farm_line(f)}\n{_farm_rows(f)}\n\n"
             f"적정 인수 금액 **{f['fair']:,}원** — 이 금액 이상이면 바로 인수돼요.\n"
             "그보다 적은 금액은 주인이 수락해야 인수돼요.\n"
             f"인수하면 코인 · 창고 · 밭 · 동물 · 낫 · 상자가 모두 넘어와요.\n-# 내 잔액 {balance:,}원"), ui.INFO, self.user, SECTION)
@@ -643,28 +646,35 @@ class OwnerOffers(discord.ui.View):
 
 
 # ───────────── 농사 상점 (서버마다 스레드 하나 — 봇이 재시작해도 눌리는 버튼) ─────────────
+SHOP_VER = 2   # 상점 화면을 바꾸면 올린다 — 이미 올라간 상점 글도 새 화면으로 고친다
+
+
 def shop_embed() -> discord.Embed:
-    seeds = "\n".join(f"{n} — {price:,} 코인 · {_dur(sec)} · 팔면 {sell} 코인"
-                      for _, n, price, sec, sell in F.CROPS.values() if price)
-    pets = "\n".join(f"{n} — {price:,} 코인 · {_dur(sec)}마다 {F.PRODUCTS[prod][1]} ({F.PRODUCTS[prod][2]} 코인)"
-                     for _, n, price, prod, sec in F.ANIMALS.values())
-    return ui.card(SHOP_NAME, (
-        "씨앗과 동물을 농장 코인으로 사요. 아래에서 살 것을 누르면 돼요.\n"
-        "산 것은 내 농장의 **심기 · 입양** 메뉴에서 써요.\n\n"
-        f"**씨앗**\n{seeds}\n\n**동물** (땅 {F.ANIMAL_PER_PLOTS}칸당 1마리)\n{pets}\n\n"
-        "-# 당근은 씨앗 없이 바로 심을 수 있어요 · 걸리는 시간은 땅에 따라 조금 달라요 · 농장은 `/농사`로 열어요"), ui.INFO, None, SECTION)
+    """11/11 규완님: 한 줄에 값을 몰아 쓰지 말 것 → 물건마다 칸 하나 (이름 · 값)."""
+    e = ui.card(SHOP_NAME, "씨앗과 동물을 농장 코인으로 사요.\n아래에서 살 것을 누르면 자세히 보여요.", ui.INFO, None, SECTION)
+    e.add_field(name="씨앗", value="당근은 씨앗 없이 바로 심을 수 있어요.", inline=False)
+    for _, n, price, _, _ in F.CROPS.values():
+        if price:
+            e.add_field(name=n, value=f"{price:,} 코인")
+    e.add_field(name="동물", value=f"땅 {F.ANIMAL_PER_PLOTS}칸마다 한 마리 기를 수 있어요.", inline=False)
+    for _, n, price, _, _ in F.ANIMALS.values():
+        e.add_field(name=n, value=f"{price:,} 코인")
+    return e
 
 
 class ShopPanel(discord.ui.View):
     def __init__(self, cog: "Farm"):
         super().__init__(timeout=None)
         self.cog = cog
-        for row, keys in enumerate(([k for k, v in F.CROPS.items() if v[2]], list(F.ANIMALS))):
-            for k in keys:
-                b = discord.ui.Button(custom_id=f"farm:shop:{k}", label=f"{_name(k)} · {F.shop_price(k):,} 코인",
-                                      style=discord.ButtonStyle.success if row == 0 else discord.ButtonStyle.primary, row=row)
-                b.callback = self._pick(k)
-                self.add_item(b)
+        row = 0
+        for keys, style in (([k for k, v in F.CROPS.items() if v[2]], discord.ButtonStyle.success),
+                            (list(F.ANIMALS), discord.ButtonStyle.primary)):
+            for i in range(0, len(keys), 5):   # 한 줄에 다섯 개
+                for k in keys[i:i + 5]:
+                    b = discord.ui.Button(custom_id=f"farm:shop:{k}", label=_name(k), style=style, row=row)
+                    b.callback = self._pick(k)
+                    self.add_item(b)
+                row += 1
 
     def _pick(self, key: str):
         async def cb(interaction: discord.Interaction):
@@ -708,18 +718,24 @@ class BuyView(discord.ui.View):
             self.add_item(b)
         if len(self.farms) > 1:
             sel = discord.ui.Select(placeholder="어느 농장의 코인으로 살지 고르기", row=1, options=[
-                discord.SelectOption(label=f"{F.LANDS[x['land']][1]} · 땅 {x['plots']}칸 · 코인 {x['coins']:,}"[:100],
+                discord.SelectOption(label=f"{F.LANDS[x['land']][1]} 농장"[:100], description=f"코인 {x['coins']:,}",
                                      value=str(x["id"]), default=x["id"] == self.fid) for x in self.farms[:25]])
             sel.callback = self._farm
             self.add_item(sel)
 
     def embed(self) -> discord.Embed:
-        f, price = self.farm, F.shop_price(self.key)
-        return ui.card(f"{SHOP_NAME} · {_name(self.key)}", (f"{self.note}\n\n" if self.note else "") + (
-            f"하나에 **{price:,} 코인**\n"
-            f"{F.LANDS[f['land']][1]} 농장 · 코인 **{f['coins']:,}** · 사 둔 {_name(self.key)} "
-            f"**{f['seeds'].get(self.key, 0)}{self.unit}**\n"
-            "-# 산 것은 내 농장의 심기 · 입양 메뉴에서 써요 (농장 화면에서 새로고침을 누르면 보여요)"), ui.INFO, self.user, SECTION)
+        """한 줄에 하나씩 (11/11 규완님)."""
+        f, k = self.farm, self.key
+        if k in F.ANIMALS:
+            _, n, price, prod, sec = F.ANIMALS[k]
+            info = [f"값 **{price:,} 코인**", f"만드는 것 **{F.PRODUCTS[prod][1]}**",
+                    f"{F.PRODUCTS[prod][1]} 하나를 팔면 **{F.PRODUCTS[prod][2]:,} 코인**", f"{_dur(sec)}마다 하나씩 만들어요"]
+        else:
+            _, n, price, sec, sell = F.CROPS[k]
+            info = [f"값 **{price:,} 코인**", f"다 자라는 데 **{_dur(sec)}**", f"다 자라면 팔 때 **{sell:,} 코인**"]
+        mine = [f"내 {F.LANDS[f['land']][1]} 농장 코인 **{f['coins']:,}**", f"사 둔 {n} **{f['seeds'].get(k, 0)}{self.unit}**"]
+        return ui.card(f"{n} 사기", (f"{self.note}\n\n" if self.note else "") + "\n".join(info) + "\n\n" + "\n".join(mine)
+                       + "\n-# 산 것은 내 농장의 심기 · 입양 메뉴에서 써요", ui.INFO, self.user, SECTION)
 
     async def _redraw(self, interaction: discord.Interaction, note: str = ""):
         self.farms = await self.cog.db.farms_of(self.user.id, int(time.time())) or self.farms
@@ -793,7 +809,7 @@ class FarmPick(discord.ui.View):
         super().__init__(timeout=180)
         self.cog, self.user = cog, user
         sel = discord.ui.Select(placeholder="열 농장 고르기", options=[
-            discord.SelectOption(label=f"{F.LANDS[f['land']][1]} · 땅 {f['plots']}칸 · 코인 {f['coins']:,}"[:100], value=str(f["id"]))
+            discord.SelectOption(label=f"{F.LANDS[f['land']][1]} 농장"[:100], description=f"코인 {f['coins']:,}", value=str(f["id"]))
             for f in farms[:25]])
         sel.callback = self._picked
         self.add_item(sel)
@@ -813,8 +829,11 @@ class Farm(commands.Cog):
         self._shop_lock = asyncio.Lock()
 
     async def cog_load(self):
+        rows = await self.db.shop_threads()
         SHOPS.clear()
-        SHOPS.update(await self.db.shop_threads())
+        SHOPS.update({g: t for g, (t, _, _) in rows.items()})
+        SHOP_MSGS.clear()
+        SHOP_MSGS.update({g: (m, v) for g, (_, m, v) in rows.items()})
         self.shop_loop.start()
 
     def cog_unload(self):
@@ -875,6 +894,8 @@ class Farm(commands.Cog):
                             await th.edit(archived=False)
                         except discord.HTTPException:
                             pass
+                    if SHOP_MSGS.get(guild.id, (None, 0))[1] != SHOP_VER:
+                        await self._refresh_shop(guild, th)
                     return th
             for parent in await self._shop_parents(guild, near):
                 perms = parent.permissions_for(guild.me)
@@ -887,15 +908,41 @@ class Farm(commands.Cog):
                     else:
                         th = await parent.create_thread(name=SHOP_NAME, type=discord.ChannelType.public_thread,
                                                         auto_archive_duration=10080, reason=SHOP_NAME)
-                    await th.send(embed=shop_embed(), view=ShopPanel(self))
+                    msg = await th.send(embed=shop_embed(), view=ShopPanel(self))
                 except discord.HTTPException as ex:
                     print(f"[농사 상점] {guild.id} 스레드 만들기 오류: {type(ex).__name__}: {ex}")
                     continue
-                await self.db.set_shop_thread(guild.id, th.id)
-                SHOPS[guild.id] = th.id
+                await self.db.set_shop_thread(guild.id, th.id, msg.id, SHOP_VER)
+                SHOPS[guild.id], SHOP_MSGS[guild.id] = th.id, (msg.id, SHOP_VER)
                 print(f"[농사 상점] {guild.id} 스레드 {th.id} 만듦 (#{parent.name})")
                 return th
             return None
+
+    async def _refresh_shop(self, guild, th):
+        """상점 화면이 바뀌었으면 이미 올라간 상점 글을 새 화면으로 고친다 (못 찾으면 새로 올린다)."""
+        mid = SHOP_MSGS.get(guild.id, (None, 0))[0]
+        msg = None
+        try:
+            if mid:
+                msg = await th.fetch_message(mid)
+        except discord.HTTPException:
+            msg = None
+        try:
+            if msg is None:   # 예전 상점 글: 스레드 맨 처음의 봇 글
+                async for m in th.history(limit=10, oldest_first=True):
+                    if m.author.id == self.bot.user.id and m.embeds:
+                        msg = m
+                        break
+            if msg is not None:
+                await msg.edit(embed=shop_embed(), view=ShopPanel(self))
+            else:
+                msg = await th.send(embed=shop_embed(), view=ShopPanel(self))
+        except discord.HTTPException as ex:
+            print(f"[농사 상점] {guild.id} 상점 글 고치기 오류: {type(ex).__name__}: {ex}")
+            return
+        await self.db.set_shop_thread(guild.id, th.id, msg.id, SHOP_VER)
+        SHOP_MSGS[guild.id] = (msg.id, SHOP_VER)
+        print(f"[농사 상점] {guild.id} 상점 글 {msg.id} 새 화면으로 (v{SHOP_VER})")
 
     async def show(self, interaction: discord.Interaction, fid: int, note: str = ""):
         """누른 농장 화면을 지금 상태로 다시 그린다."""
@@ -904,7 +951,8 @@ class Farm(commands.Cog):
         await interaction.response.edit_message(embed=panel_embed(interaction.user, f, now, note), view=FarmPanel(self, f))
 
     async def open(self, interaction: discord.Interaction, user, fid: int):
-        """내 농장 fid 의 스레드를 연다 (없으면 이 채널에 만든다). 그 스레드 안에서 부르면 농장 화면을 새로 올린다."""
+        """내 농장 fid 의 스레드를 안내한다 (없으면 이 채널에 만들고 농장 화면을 올린다).
+        그 스레드 안에서 부를 때만 농장 화면을 새로 올린다."""
         try:
             await self._open(interaction, user, fid)
         finally:
@@ -944,10 +992,9 @@ class Farm(commands.Cog):
                                                     type=discord.ChannelType.public_thread, auto_archive_duration=10080,
                                                     reason=f"/농사 — {user}")
                 await self.db.set_thread(fid, guild.id, thread.id)
-            elif thread.archived:
+                await thread.send(content=user.mention, embed=panel_embed(user, f, now), view=FarmPanel(self, f))
+            elif thread.archived:   # 이미 있는 스레드엔 농장 화면을 다시 올리지 않는다 (스레드 안에서 /농사 를 쓰면 올린다)
                 await thread.edit(archived=False)
-            await thread.send(content=user.mention if created else None, embed=panel_embed(user, f, now),
-                              view=FarmPanel(self, f))
         except discord.Forbidden:
             return await interaction.followup.send(
                 "봇이 이 채널에 스레드를 만들거나 글을 쓸 수 없어요. 서버 관리자가 봇 역할에 **공개 스레드 만들기**와 "
@@ -1064,7 +1111,7 @@ class Farm(commands.Cog):
         here = await self.db.thread_farm(interaction.channel_id)     # 내 농장 스레드 안이면 그 농장
         if len(farms) == 1 or here in [f["id"] for f in farms]:
             return await self.open(interaction, user, here if here in [f["id"] for f in farms] else farms[0]["id"])
-        lines = "\n".join(f"{n}. {_farm_line(f)}" for n, f in enumerate(farms, 1))
+        lines = "\n".join(f"{n}. {_farm_line(f)} (땅 {f['plots']}칸)" for n, f in enumerate(farms, 1))
         await interaction.response.send_message(
             embed=ui.card("내 농장", f"{lines}\n\n열 농장을 골라 주세요.", ui.INFO, user, SECTION),
             view=FarmPick(self, user, farms), ephemeral=True)

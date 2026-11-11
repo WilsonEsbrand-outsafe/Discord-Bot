@@ -75,7 +75,7 @@ def test_start_and_free_play():
         assert (await db.buy(U, G, "corn", 1, T))["reason"] == "coins"
         r = await db.plant(U, G, "carrot", T)                                 # 당근은 씨앗 없이
         assert r["ok"] and r["count"] == 6 and r["left"] is None
-        assert r["ready_ts"] == T + int(300 * F.time_mult(5))                 # 평야: 비옥도 5 → 빨리 자란다
+        assert r["ready_ts"] == T + int(F.CROPS["carrot"][3] * F.time_mult(5))   # 평야: 비옥도 5 → 빨리 자란다
         assert (await db.plant(U, G, "carrot", T))["reason"] == "full"
         assert (await db.harvest(U, G, T + 10, Fixed(0.99)))["reason"] == "nothing"
         h = await db.harvest(U, G, r["ready_ts"], Fixed(0.99))
@@ -104,9 +104,9 @@ def test_plant_n_energy_and_luck():
         con.commit(); con.close()
         assert (await db.plant(U, G, "carrot", T))["count"] == 3                 # 에너지가 되는 만큼만
         assert (await db.plant(U, G, "carrot", T))["reason"] == "energy"
-        late = T + 3600                                                       # 한 시간 뒤: 에너지가 다시 찼다
+        late = T + 600                                                        # 10분 뒤: 에너지가 다시 찼다 (30초에 1)
         f = await db.get(G, late)
-        assert f["energy"] == int(3600 / (120 * F.time_mult(3))) and f["energy_next"] > late
+        assert f["energy"] == int(600 / (F.ENERGY_SEC * F.time_mult(3))) == 20 and f["energy_next"] > late
         h = await db.harvest(U, G, late, Fixed(0.0))                             # 운이 전부 터지면: ★2 · 2개씩 · 상자
         assert h["got"] == {("carrot", 2): 10} and h["extra"] == h["high"] == 5 and h["chests"] == ["wood"] * 5
         assert h["daily"] and (await db.get(G, late))["chests"]["wood"] == 1 + 5 + 1
@@ -129,7 +129,7 @@ def test_animals_merge_expand():
             await db.buy(U, G, k, 1, T)
         a = await db.plant(U, G, "chicken", T)
         assert a["ok"] and a["animal"] and a["count"] == 1 and a["left"] == 0
-        assert a["ready_ts"] == T + int(3600 * F.time_mult(5))                # 목초지: 동물이 빨리 만든다
+        assert a["ready_ts"] == T + int(F.ANIMALS["chicken"][4] * F.time_mult(5))   # 목초지: 동물이 빨리 만든다
         assert (await db.plant(U, G, "cow", T))["ok"]
         assert (await db.plant(U, G, "sheep", T))["reason"] == "cap"             # 땅 3칸당 1마리 (6칸 → 2마리)
         assert (await db.get(G, T))["seeds"] == {"sheep": 1}                  # 못 넣은 양은 그대로 남는다
@@ -358,6 +358,8 @@ def test_shop():
 
     import discord
 
+    from collections import Counter
+
     import cogs.farm as C
     import release
 
@@ -388,17 +390,23 @@ def test_shop():
 
     def shop_thread(tid, archived=False):
         th = MagicMock(spec=discord.Thread, id=tid, archived=archived)
-        th.send, th.edit = AsyncMock(), AsyncMock()
+        th.send, th.edit = AsyncMock(return_value=MagicMock(id=tid + 1000)), AsyncMock()
         return th
 
     async def flow():
         C.SHOPS.clear()
         bot = MagicMock()
         cog = C.Farm(bot)
-        assert all(x.custom_id.startswith("farm:shop:") for x in cog.shop.children) and len(cog.shop.children) == 5 + 3
-        assert not any(x.emoji for x in cog.shop.children) and "carrot" not in str([x.custom_id for x in cog.shop.children])
-        desc = C.shop_embed().description
-        assert "감자 — 5 코인" in desc and "닭 — 300 코인" in desc and "당근은 씨앗 없이" in desc
+        kids = cog.shop.children
+        assert all(x.custom_id.startswith("farm:shop:") for x in kids) and len(kids) == (len(F.CROPS) - 1) + len(F.ANIMALS)
+        assert not any(x.emoji for x in kids) and "carrot" not in str([x.custom_id for x in kids])
+        assert all(" " not in x.label and "코인" not in x.label for x in kids)        # 버튼은 이름만
+        assert max(Counter(x.row for x in kids).values()) <= 5 and max(x.row for x in kids) <= 4
+        e = C.shop_embed()
+        fields = {f.name: f.value for f in e.fields}
+        assert fields["감자"] == "5 코인" and fields["닭"] == "300 코인" and "당근은 씨앗 없이" in fields["씨앗"]
+        assert "·" not in "".join(f.value for f in e.fields) + e.description               # 값을 · 로 이어 붙이지 않는다
+        assert len(e.fields) <= 25
 
         # 패치노트가 가는 채널에 만든다 → 다시 부르면 있던 스레드
         notes_ch, th = text_channel(70), shop_thread(6001)
@@ -412,8 +420,24 @@ def test_shop():
         kw = notes_ch.create_thread.await_args.kwargs
         assert kw["name"] == "농사 상점" and kw["type"] == discord.ChannelType.public_thread
         assert isinstance(th.send.await_args.kwargs["view"], C.ShopPanel)
-        assert C.SHOPS == {guild.id: 6001} and await cog.db.shop_threads() == {guild.id: 6001}
+        assert C.SHOPS == {guild.id: 6001} and await cog.db.shop_threads() == {guild.id: (6001, 7001, C.SHOP_VER)}
         assert await cog.ensure_shop(guild) is th and notes_ch.create_thread.await_count == 1
+        # 상점 화면이 바뀌면 (버전이 다르면) 이미 올라간 상점 글을 새 화면으로 고친다 — 글 번호를 모르는 옛 상점은 스레드 첫 봇 글
+        bot.user = MagicMock(id=999)
+        old = MagicMock(author=MagicMock(id=999), embeds=[1], edit=AsyncMock(), id=7777)
+
+        async def history(**kw):
+            yield MagicMock(author=MagicMock(id=5), embeds=[1])
+            yield old
+        th.history = history
+        th.fetch_message = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "x"))
+        await cog.db.set_shop_thread(guild.id, 6001)
+        C.SHOP_MSGS[guild.id] = (None, 0)
+        assert await cog.ensure_shop(guild) is th and old.edit.await_count == 1
+        assert isinstance(old.edit.await_args.kwargs["view"], C.ShopPanel) and th.send.await_count == 1
+        assert (await cog.db.shop_threads())[guild.id] == (6001, 7777, C.SHOP_VER)
+        await cog.ensure_shop(guild)
+        assert old.edit.await_count == 1                         # 한 번 고치면 끝
         th.archived = True                                       # 보관되면 다시 연다
         await cog.ensure_shop(guild)
         th.edit.assert_awaited_once_with(archived=False)
@@ -484,7 +508,9 @@ def test_shop():
         assert r["ok"] and r["count"] == 6 and r["left"] == 0 and (await cog.db.get(G, T))["seeds"] == {}
         i = inter(user, guild)                                   # 동물은 한 마리씩
         await cog.shop._pick("cow")(i)
-        assert [b.label for b in i.response.calls[0][1]["view"].children] == ["1마리 (4,000 코인)"]
+        assert [b.label for b in i.response.calls[0][1]["view"].children] == [f"1마리 ({F.ANIMALS['cow'][2]:,} 코인)"]
+        desc = i.response.calls[0][1]["embed"].description
+        assert "값 **" in desc and "우유" in desc and "·" not in desc.split("-#")[0]          # 한 줄에 하나
         # 농장이 여러 개면 어느 농장 코인으로 살지 고른다
         H = (await cog.db.create(9302, "river", T))["id"]
         con = sqlite3.connect(edb.DB_PATH)
@@ -570,13 +596,19 @@ def test_ui_smoke():
         assert await cog.db.thread_owner(4242) == 9100
         sent = thread.send.await_args.kwargs
         assert isinstance(sent["view"], C.FarmPanel) and "바위 산지" in sent["embed"].description
+        le = C.land_embed(user, "mountain")
+        land = le.description + "".join(f.name + f.value for f in le.fields)
+        assert "광맥 ⭐⭐⭐⭐⭐" in land and "★" not in land and "☆" not in land and "·" not in land   # 노란 별 · 한 줄에 하나
+        assert le.fields[4].name == "바위 산지 (선택)"
         assert "<#5151>" in sent["embed"].description            # 씨앗 · 동물은 상점에서
         assert "<#4242>" in i.followup.send.await_args.args[0]
 
         # 다른 채널에서 다시 /농사 → 있던 스레드로 안내 · 스레드 안에서 /농사 → 화면을 새로 올린다
+        posts = thread.send.await_count
         i = inter(user, channel, guild)
         await C.Farm.farm.callback(cog, i)
         assert channel.create_thread.await_count == 1 and "<#4242>" in i.followup.send.await_args.args[0]
+        assert thread.send.await_count == posts                   # 있던 스레드에 농장 화면을 다시 올리지 않는다
         tch = MagicMock(spec=discord.Thread, id=4242)
         i = inter(user, tch, guild)
         await C.Farm.farm.callback(cog, i)
