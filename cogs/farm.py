@@ -156,7 +156,7 @@ class FarmPanel(discord.ui.View):
                 ("merge", "합치기", discord.ButtonStyle.primary, 2, self._merge),
                 ("store", "창고 · 판매", discord.ButtonStyle.primary, 2, self._store),
                 ("chest", f"상자 ({chests})" if chests else "상자", discord.ButtonStyle.primary, 2, self._chest),
-                ("refresh", "새로고침", discord.ButtonStyle.secondary, 2, self._refresh),
+                ("refresh", "새로고침", discord.ButtonStyle.secondary, 2, self._reload),
                 ("expand", f"땅 넓히기 ({cost:,} 코인)" if cost else "땅 넓히기", discord.ButtonStyle.secondary, 3, self._expand),
                 ("sickle", "낫 강화", discord.ButtonStyle.secondary, 3, self._sickle),
                 ("exchange", "환전", discord.ButtonStyle.secondary, 3, self._exchange),
@@ -233,7 +233,7 @@ class FarmPanel(discord.ui.View):
                 note += f"\n에너지가 모자라서 {r['left']}칸은 남았어요."
         await self.cog.show(interaction, fid, note)
 
-    async def _refresh(self, interaction: discord.Interaction):
+    async def _reload(self, interaction: discord.Interaction):  # View._refresh 는 discord.py 내부용이라 이름을 피한다
         await self.cog.show(interaction, await self._fid(interaction))
 
     async def _expand(self, interaction: discord.Interaction):

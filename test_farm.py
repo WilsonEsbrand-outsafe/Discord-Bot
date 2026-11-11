@@ -538,6 +538,10 @@ def test_ui_smoke():
 
     import cogs.farm as C
 
+    # discord.py 가 상호작용마다 부르는 View 내부 함수를 덮어쓰지 않는다 (덮으면 'never awaited' 경고)
+    for v in (C.FarmPanel, C.ShopPanel, C.BuyView):
+        assert v._refresh is discord.ui.View._refresh, v
+
     class Resp:
         def __init__(self):
             self.done, self.calls = False, []
@@ -637,7 +641,7 @@ def test_ui_smoke():
         i = inter(user, tch, guild, message=msg)
         await panel._harvest(i)
         assert "거뒀어요" in i.response.calls[0][1]["embed"].description
-        for cb, vals in ((panel._expand, None), (panel._qty, ["2"]), (panel._plant, ["chicken"]), (panel._refresh, None),
+        for cb, vals in ((panel._expand, None), (panel._qty, ["2"]), (panel._plant, ["chicken"]), (panel._reload, None),
                          (panel._help, None)):
             i = inter(user, tch, guild, vals, msg)
             await cb(i)
