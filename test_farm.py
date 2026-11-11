@@ -77,7 +77,7 @@ def test_start_and_free_play():
         assert r["ok"] and r["count"] == 6 and r["left"] is None
         assert r["ready_ts"] == T + int(F.CROPS["carrot"][3] * F.time_mult(5))   # 평야: 비옥도 5 → 빨리 자란다
         assert (await db.plant(U, G, "carrot", T))["reason"] == "full"
-        assert (await db.harvest(U, G, T + 10, Fixed(0.99)))["reason"] == "nothing"
+        assert (await db.harvest(U, G, T + 1, Fixed(0.99)))["reason"] == "nothing"
         h = await db.harvest(U, G, r["ready_ts"], Fixed(0.99))
         assert h["ok"] and h["got"] == {("carrot", 1): 6} and not h["chests"] and h["extra"] == h["high"] == 0
         assert h["daily"] and (await db.get(G, r["ready_ts"]))["chests"]["wood"] == 2      # 하루 첫 거두기 선물
@@ -104,9 +104,9 @@ def test_plant_n_energy_and_luck():
         con.commit(); con.close()
         assert (await db.plant(U, G, "carrot", T))["count"] == 3                 # 에너지가 되는 만큼만
         assert (await db.plant(U, G, "carrot", T))["reason"] == "energy"
-        late = T + 600                                                        # 10분 뒤: 에너지가 다시 찼다 (30초에 1)
+        late = T + 200                                                        # 200초 뒤: 에너지가 다시 찼다 (10초에 1)
         f = await db.get(G, late)
-        assert f["energy"] == int(600 / (F.ENERGY_SEC * F.time_mult(3))) == 20 and f["energy_next"] > late
+        assert f["energy"] == int(200 / (F.ENERGY_SEC * F.time_mult(3))) == 20 and f["energy_next"] > late
         h = await db.harvest(U, G, late, Fixed(0.0))                             # 운이 전부 터지면: ★2 · 2개씩 · 상자
         assert h["got"] == {("carrot", 2): 10} and h["extra"] == h["high"] == 5 and h["chests"] == ["wood"] * 5
         assert h["daily"] and (await db.get(G, late))["chests"]["wood"] == 1 + 5 + 1
@@ -541,6 +541,8 @@ def test_ui_smoke():
     # discord.py 가 상호작용마다 부르는 View 내부 함수를 덮어쓰지 않는다 (덮으면 'never awaited' 경고)
     for v in (C.FarmPanel, C.ShopPanel, C.BuyView):
         assert v._refresh is discord.ui.View._refresh, v
+
+    assert [C._dur(x) for x in (10, 60, 150, 4800)] == ["10초", "1분", "2분 30초", "1시간 20분"]   # 1분 안쪽은 초로
 
     class Resp:
         def __init__(self):
