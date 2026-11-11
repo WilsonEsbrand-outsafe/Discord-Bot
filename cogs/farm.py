@@ -71,9 +71,10 @@ def _qty(key: str, n: int) -> str:
     return f"{n:,}마리" if key in F.ANIMALS else f"{n:,}개"
 
 
-def _at(ts: int) -> str:
-    """다 되는 시각 — 11/11 규완님 '모바일에서 시간 움직이는 거': 초마다 바뀌는 <t:…:R>(n초 후) 대신 멈춰 있는 시각(오후 7:03:20)."""
-    return f"<t:{int(ts)}:T>"
+def _left(ts: int, now: int) -> str:
+    """남은 시간 글자 (2분 30초) — 화면을 그릴 때 정해진다.
+    11/11 '모바일에서 시간 움직이는 거' → 초마다 바뀌는 <t:…:R> 를 뺐고, 11/12 '바뀐 시간 표시 방식은 너무 구려' → 시각(<t:…:T>) 대신 남은 시간."""
+    return _dur(max(1, int(ts) - int(now)))
 
 
 def _grid_fields(e: discord.Embed, fields: list[tuple[str, str]]):
@@ -125,10 +126,10 @@ def panel_embed(user, f: dict, now: int, note: str = "") -> discord.Embed:
     if ready:
         lists.append(("거둘 수 있어요", "\n".join(f"{_item(k)} {n}개" for k, n in ready.items())))
     if growing:
-        lists.append(("자라는 중", "\n".join(f"{_item(k)} {n}개 ({_at(ts)}에 다 자라요)" for k, (n, ts) in growing.items())))
+        lists.append(("자라는 중", "\n".join(f"{_item(k)} {n}개 ({_left(ts, now)} 남음)" for k, (n, ts) in growing.items())))
     if animals:
         lists.append((f"동물 ({f['animals']}/{f['animal_cap']})", "\n".join(
-            f"{F.ANIMALS[k][1]} {n}마리" + (f" ({_at(ts)}에 나와요)" if ts else "") for k, (n, ts) in animals.items())))
+            f"{F.ANIMALS[k][1]} {n}마리" + (f" ({_left(ts, now)} 남음)" if ts else "") for k, (n, ts) in animals.items())))
     if f["items"]:
         worth = sum(F.value(k, t) * q for k, t, q in f["items"])
         shown = [f"{_item(k, t)} {q}개" for k, t, q in f["items"][:12]]
@@ -228,8 +229,8 @@ class FarmPanel(discord.ui.View):
         return await self.cog.db.thread_farm(interaction.channel_id) or 0
 
     async def _plant(self, interaction: discord.Interaction):
-        key, fid = interaction.data["values"][0], await self._fid(interaction)
-        r = await self.cog.db.plant(interaction.user.id, fid, key, int(time.time()))
+        key, fid, now = interaction.data["values"][0], await self._fid(interaction), int(time.time())
+        r = await self.cog.db.plant(interaction.user.id, fid, key, now)
         if not r["ok"]:
             what = f"사 둔 {_name(key)}이(가)" if key in F.ANIMALS else f"{_name(key)} 씨앗이"
             note = {"full": "빈 땅이 없어요. 다 자란 것을 거두거나 땅을 넓혀 보세요.",
@@ -239,9 +240,9 @@ class FarmPanel(discord.ui.View):
                     }.get(r["reason"], "심을 수 없어요.")
         elif r["animal"]:
             _, n, _, prod, _ = F.ANIMALS[key]
-            note = f"**{n}**을(를) 입양했어요.\n첫 {_item(prod)}은(는) {_at(r['ready_ts'])}에 나와요."
+            note = f"**{n}**을(를) 입양했어요.\n첫 {_item(prod)}은(는) {_left(r['ready_ts'], now)} 뒤에 나와요."
         else:
-            note = (f"{_item(key)} **{r['count']}칸**을 심었어요.\n{_at(r['ready_ts'])}에 다 자라요."
+            note = (f"{_item(key)} **{r['count']}칸**을 심었어요.\n{_left(r['ready_ts'], now)} 뒤에 다 자라요."
                     + (f"\n남은 씨앗 {r['left']}개" if r["left"] is not None else ""))
         await self.cog.show(interaction, fid, note)
 
@@ -384,21 +385,32 @@ class MergeView(_Sub):
         await self.redraw(interaction, note, note if r["ok"] else "")
 
 
+SELL_NS = (1, 5, 10, 50, 0)   # 창고에서 한 번에 팔 개수 (0 = 전부) — 11/12 규완님 '몇 개 팔지 고를 수 있으면'
+
+
 class StoreView(_Sub):
+    n = 0   # 고른 물건을 몇 개씩 팔지 (0 = 전부)
+
     def build(self, f: dict):
         items = f["items"][:25]
         if items:
-            sel = discord.ui.Select(placeholder="팔 물건 고르기 (여러 개 가능)", min_values=1, max_values=len(items), row=0, options=[
+            cnt = discord.ui.Select(placeholder="한 번에 팔 개수", row=0, options=[
+                discord.SelectOption(label="가진 것 전부 팔기" if v == 0 else f"{v}개씩 팔기", value=str(v), default=v == self.n)
+                for v in SELL_NS])
+            cnt.callback = self._count
+            self.add_item(cnt)
+            sel = discord.ui.Select(placeholder="팔 물건 고르기 (여러 개 가능)", min_values=1, max_values=len(items), row=1, options=[
                 discord.SelectOption(label=f"{F.ITEMS[k][1]} ★{t} {q}개", value=f"{k}:{t}",
-                                     description=f"모두 팔면 {F.value(k, t) * q:,} 코인") for k, t, q in items])
+                                     description=(f"모두 팔면 {F.value(k, t) * q:,} 코인" if not self.n or self.n >= q else
+                                                  f"{self.n}개 팔면 {F.value(k, t) * self.n:,} 코인")) for k, t, q in items])
             sel.callback = self._sell
             self.add_item(sel)
-            b = discord.ui.Button(label="모두 팔기", style=discord.ButtonStyle.success, row=2)
+            b = discord.ui.Button(label="창고 모두 팔기", style=discord.ButtonStyle.success, row=3)
             b.callback = self._sell_all
             self.add_item(b)
         pets = [(i, p) for i, p in enumerate(f["fields"]) if p and p["kind"] == "animal"][:25]
         if pets:
-            sel = discord.ui.Select(placeholder="내보낼 동물 고르기 (산 값의 절반을 돌려받아요)", row=1, options=[
+            sel = discord.ui.Select(placeholder="내보낼 동물 고르기 (산 값의 절반을 돌려받아요)", row=2, options=[
                 discord.SelectOption(label=f"{i + 1}번 땅 {F.ANIMALS[p['key']][1]}", value=str(i),
                                      description=f"돌려받는 코인 {int(F.ANIMALS[p['key']][2] * F.ANIMAL_REFUND):,}") for i, p in pets])
             sel.callback = self._release
@@ -419,9 +431,13 @@ class StoreView(_Sub):
                 else "팔 물건이 없어요.")
         await self.redraw(interaction, note, note if r["ok"] else "")
 
+    async def _count(self, interaction: discord.Interaction):
+        self.n = int(interaction.data["values"][0])
+        await self.redraw(interaction, "전부 팔아요." if not self.n else f"고른 물건을 {self.n}개씩 팔아요.")
+
     async def _sell(self, interaction: discord.Interaction):
         picks = [(v.split(":")[0], int(v.split(":")[1])) for v in interaction.data["values"]]
-        await self._done(interaction, await self.cog.db.sell(self.user.id, self.fid, int(time.time()), picks))
+        await self._done(interaction, await self.cog.db.sell(self.user.id, self.fid, int(time.time()), picks, self.n or None))
 
     async def _sell_all(self, interaction: discord.Interaction):
         await self._done(interaction, await self.cog.db.sell(self.user.id, self.fid, int(time.time())))

@@ -146,8 +146,12 @@ def test_animals_merge_expand():
         items = {(k, t): q for k, t, q in (await db.get(G, T))["items"]}
         assert items[("corn", 1)] == 1 and items[("corn", 2)] == 2
         assert (await db.merge(U, G, "corn", 2, T))["reason"] == "few" and (await db.merge(U, G, "corn", 5, T))["reason"] == "max"
-        s = await db.sell(U, G, T, [("corn", 2)])
-        assert s["coins"] == 2 * F.value("corn", 2)
+        s = await db.sell(U, G, T, [("corn", 1), ("corn", 2)], 1)               # 11/12 몇 개 팔지 고르기: 고른 것마다 1개씩
+        assert s["coins"] == F.value("corn", 1) + F.value("corn", 2) and sorted(s["sold"]) == [("corn", 1, 1), ("corn", 2, 1)]
+        items = {(k, t): q for k, t, q in (await db.get(G, T))["items"]}
+        assert ("corn", 1) not in items and items[("corn", 2)] == 1             # 1개뿐이던 건 다 팔렸다
+        s = await db.sell(U, G, T, [("corn", 2)], 10)                           # 가진 것보다 많이 고르면 가진 만큼
+        assert s["coins"] == F.value("corn", 2) and s["sold"] == [("corn", 2, 1)]
         # 확장: 코인 → 한 칸 + 은 상자 · 동물 한도도 같이
         before = (await db.get(G, T))["coins"]
         for _ in range(3):
@@ -703,6 +707,11 @@ def test_ui_smoke():
                 await view._pick(i)
                 assert "★2" in i.response.calls[0][1]["embed"].description
             elif cls is C.StoreView:
+                assert view.children[0].placeholder == "한 번에 팔 개수" and [o.value for o in view.children[0].options] == ["1", "5", "10", "50", "0"]
+                i = inter(user, tch, guild, ["1"])
+                await view._count(i)
+                assert view.n == 1 and "1개씩" in i.response.calls[0][1]["embed"].description
+                assert [o.default for o in view.children[0].options] == [True, False, False, False, False]
                 i = inter(user, tch, guild, ["egg:2"])
                 await view._sell(i)
                 assert "코인" in i.response.calls[0][1]["embed"].description
@@ -874,7 +883,7 @@ def test_screens_readable():
         b = C.BuyView(cog, user, [f, dict(f, id=2, land="river")], "potato")
         embeds += [o.embed(), ow.embed(), b.embed(), C.coins_embed(user, [f, dict(f, id=2, land="river")])]
         views += [o, ow, b]
-        assert ":R>" not in text(embeds[0]) and "<t:" in text(embeds[0])   # 11/11 모바일: 초마다 움직이는 남은 시간 대신 멈춘 시각
+        assert "<t:" not in text(embeds[0]) and "감자 4개 (15초 남음)" in text(embeds[0]) and "닭 2마리 (30초 남음)" in text(embeds[0])
         for e in embeds:
             t = text(e)
             assert "·" not in t and "×" not in t, t

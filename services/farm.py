@@ -562,18 +562,24 @@ class FarmDB(EconomyDB):
             return {"ok": True, "key": key, "tier": tier + 1, "made": n, "used": n * MERGE_NEED}
         return await self._tx(fn)
 
-    async def sell(self, uid: int, fid: int, now_ts: int, picks: Optional[list[tuple[str, int]]] = None) -> dict:
-        """창고의 물건을 코인으로 판다 (picks = [(key, tier)] · None 이면 전부). reason: none / empty."""
+    async def sell(self, uid: int, fid: int, now_ts: int, picks: Optional[list[tuple[str, int]]] = None,
+                   n: Optional[int] = None) -> dict:
+        """창고의 물건을 코인으로 판다 (picks = [(key, tier)] · None 이면 전부).
+        n = 고른 물건마다 팔 개수 (None 이면 가진 것 전부, 가진 것보다 많으면 가진 만큼). reason: none / empty."""
         def fn(con):
             f = self._mine(con, uid, fid, now_ts)
             if not f:
                 return {"ok": False, "reason": "none"}
-            sold = [(k, t, q) for k, t, q in f["items"] if picks is None or (k, t) in picks]
+            have = [(k, t, q) for k, t, q in f["items"] if picks is None or (k, t) in picks]
+            sold = [(k, t, min(q, int(n)) if n else q) for k, t, q in have]
             if not sold:
                 return {"ok": False, "reason": "empty"}
             total = sum(value(k, t) * q for k, t, q in sold)
-            for k, t, _ in sold:
-                con.execute("DELETE FROM farm_items WHERE farm_id=? AND key=? AND tier=?", (fid, k, t))
+            for (k, t, q), (_, _, left) in zip(sold, have):
+                if q < left:
+                    con.execute("UPDATE farm_items SET qty = qty - ? WHERE farm_id=? AND key=? AND tier=?", (q, fid, k, t))
+                else:
+                    con.execute("DELETE FROM farm_items WHERE farm_id=? AND key=? AND tier=?", (fid, k, t))
             con.execute("UPDATE farms SET coins = coins + ? WHERE id=?", (total, fid))
             return {"ok": True, "sold": sold, "coins": total, "total": f["coins"] + total}
         return await self._tx(fn)
