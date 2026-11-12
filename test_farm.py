@@ -419,18 +419,22 @@ def test_shop():
         bot = MagicMock()
         cog = C.Farm(bot)
         kids = cog.shop.children
-        assert all(x.custom_id.startswith("farm:shop:") for x in kids) and len(kids) == (len(F.CROPS) - 1) + len(F.ANIMALS) + len(F.TOOLS) + 1
-        assert not any(x.emoji for x in kids) and "carrot" not in str([x.custom_id for x in kids])
-        assert kids[-1].custom_id == "farm:shop:coins" and kids[-1].label == "내 코인"   # 11/11 상점에서 내 코인 보기
-        assert all(" " not in x.label and "코인" not in x.label for x in kids[:-1 - len(F.TOOLS)])   # 물건 버튼은 이름만
-        assert [x.label for x in kids[-1 - len(F.TOOLS):-1]] == [v[0] for v in F.TOOLS.values()]      # 11/12 아이템 (마지막 줄)
-        assert {x.row for x in kids[-1 - len(F.TOOLS):]} == {4}
-        assert max(Counter(x.row for x in kids).values()) <= 5 and max(x.row for x in kids) <= 4
-        e = C.shop_embed()
-        fields = {f.name: f.value for f in e.fields}
-        assert fields["감자"] == "5 코인" and fields["닭"] == "300 코인" and "당근은 씨앗 없이" in fields["씨앗"]
-        assert "·" not in "".join(f.value for f in e.fields) + e.description               # 값을 · 로 이어 붙이지 않는다
-        assert len(e.fields) <= 25
+        # 11/12 '확실하게 분류': 씨앗 · 동물 · 아이템 메뉴 하나씩 + 내 코인
+        assert [(x.custom_id, x.placeholder, x.row) for x in kids[:3]] == [
+            ("farm:shop:seed", "씨앗 사기", 0), ("farm:shop:animal", "동물 사기", 1), ("farm:shop:tool", "아이템 사기", 2)]
+        assert [o.value for o in kids[0].options] == [k for k, v in F.CROPS.items() if v[2]] and "carrot" not in [o.value for o in kids[0].options]
+        assert [o.value for o in kids[1].options] == list(F.ANIMALS) and [o.value for o in kids[2].options] == list(F.TOOLS)
+        assert kids[0].options[0].label == "감자" and kids[0].options[0].description == "5 코인"
+        assert kids[-1].custom_id == "farm:shop:coins" and kids[-1].label == "내 코인" and len(kids) == 4   # 11/11 상점에서 내 코인 보기
+        assert not any(getattr(x, "emoji", None) for x in kids)
+        es = C.shop_embeds()
+        assert [e.title for e in es[1:]] == ["씨앗", "동물", "아이템"]
+        seeds, animals, tools = ({f.name: f.value for f in e.fields} for e in es[1:])
+        assert seeds["감자"] == "5 코인" and animals["닭"] == "300 코인" and tools["비료"].startswith("**20 코인**")
+        assert "당근은 씨앗 없이" in es[1].description and "감자" not in animals and "닭" not in seeds
+        for e in es:
+            assert "·" not in "".join(f.value for f in e.fields) + e.description                # 값을 · 로 이어 붙이지 않는다
+            assert len(e.fields) <= 25
 
         # 패치노트가 가는 채널에 만든다 → 다시 부르면 있던 스레드
         notes_ch, th = text_channel(70), shop_thread(6001)
@@ -527,10 +531,12 @@ def test_shop():
         e = i.response.calls[0][1]["embed"]
         assert i.response.calls[0][1]["ephemeral"] and e.title.endswith("내 코인")
         assert (e.fields[0].name, e.fields[0].value) == (f"{F.LANDS['plain'][1]} 농장", "32 코인") and len(e.fields) % 3 == 0
-        i = inter(user, guild)
-        await cog.shop._pick("potato")(i)
+        i = inter(user, guild, ["potato"])                      # 씨앗 메뉴에서 고르면 → 사기 화면 · 상점 글의 메뉴는 비워 둔다
+        i.message = MagicMock(edit=AsyncMock())
+        await cog.shop._menu(i)
         buy = i.response.calls[0][1]["view"]
-        assert isinstance(buy, C.BuyView) and i.response.calls[0][1]["ephemeral"]
+        assert isinstance(buy, C.BuyView) and i.response.calls[0][1]["ephemeral"] and buy.key == "potato"
+        assert i.message.edit.await_args.kwargs == {"view": cog.shop}
         assert [(b.label, b.disabled) for b in buy.children] == [
             ("1개 (5 코인)", False), ("5개 (25 코인)", False), ("10개 (50 코인)", True), ("살 수 있는 만큼 (6개)", False)]
         i = inter(user, guild)
@@ -931,6 +937,84 @@ def test_tools():
     run(flow())
 
 
+def test_new_farm():
+    """11/12 규완님 '100만 코인 모으면 밭 하나 더' (카드: 100만 코인을 내고 만든다) — 농장 하나의 코인으로 새 농장을 연다."""
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+
+    import release
+    import cogs.farm as C
+    db = F.FarmDB()
+
+    async def flow():
+        U = 9501
+        G = (await db.create(U, "plain", T))["id"]
+        assert (await db.create(U, "river", T))["reason"] == "exists"         # /농사 로는 하나만
+        bad = await db.create_more(U, "river", G, T)
+        assert bad["reason"] == "coins" and (bad["cost"], bad["have"]) == (F.NEW_FARM_COST, 0)
+        con = sqlite3.connect(edb.DB_PATH)
+        con.execute("UPDATE farms SET coins=? WHERE id=?", (F.NEW_FARM_COST + 5, G))
+        con.commit(); con.close()
+        assert (await db.create_more(9502, "river", G, T))["reason"] == "pay"   # 남의 농장 코인으로는 못 연다
+        assert (await db.create_more(U, "nowhere", G, T))["reason"] == "land"
+        r = await db.create_more(U, "river", G, T)
+        assert r["ok"] and r["cost"] == F.NEW_FARM_COST and r["left"] == 5
+        assert [x["id"] for x in await db.farms_of(U, T)] == [G, r["id"]] and (await db.get(r["id"], T))["land"] == "river"
+        assert (await db.get(G, T))["coins"] == 5 and (await db.get(r["id"], T))["coins"] == 0
+        assert (await db.create_more(U, "river", G, T))["reason"] == "coins"   # 또 모아야 또 연다
+
+        # 농장 화면 [새 밭 만들기]: 코인이 모자라면 안내 · 넉넉하면 땅 고르기 → 만들고 새 스레드
+        class Resp:
+            def __init__(self):
+                self.calls, self._done = [], False
+
+            def is_done(self):
+                return self._done
+
+            async def send_message(self, *a, **kw):
+                self.calls.append(("send", {"content": a[0] if a else kw.get("content"), **kw})); self._done = True
+
+            async def edit_message(self, **kw):
+                self.calls.append(("edit", kw)); self._done = True
+
+            async def defer(self, **kw):
+                self._done = True
+
+        guild = MagicMock(id=release.TEST_GUILD)
+        user = MagicMock(id=U, display_name="규완", mention=f"<@{U}>", guild=guild)
+        cog = C.Farm(MagicMock())
+        cog.open = AsyncMock()
+        await db.set_thread(G, guild.id, 7171)
+        panel = C.FarmPanel(cog, await db.get(G, T))
+        assert any(getattr(x, "custom_id", "") == "farm:newfarm" and x.label == "새 밭 만들기" for x in panel.children)
+
+        def inter(values=None):
+            i = MagicMock()
+            i.user, i.guild, i.guild_id, i.channel_id, i.response = user, guild, guild.id, 7171, Resp()
+            i.data, i.message = {"values": values or []}, MagicMock(edit=AsyncMock())
+            return i
+        i = inter()
+        await panel._newfarm(i)
+        assert f"{F.NEW_FARM_COST:,}" in i.response.calls[0][1]["content"] and i.response.calls[0][1]["ephemeral"]
+        con = sqlite3.connect(edb.DB_PATH)
+        con.execute("UPDATE farms SET coins=? WHERE id=?", (F.NEW_FARM_COST * 2, G))
+        con.commit(); con.close()
+        i = inter()
+        await panel._newfarm(i)
+        pick = i.response.calls[0][1]["view"]
+        assert isinstance(pick, C.LandPick) and pick.pay_fid == G and "새 밭" in i.response.calls[0][1]["embed"].title
+        i2 = inter(["meadow"])
+        await pick._picked(i2)
+        assert pick.children[1].label == "푸른 목초지에 새 밭 만들기"
+        i3 = inter()
+        await pick._start(i3)
+        assert "새 밭을 열었어요" in i3.response.calls[0][1]["embed"].description
+        new = max(x["id"] for x in await db.farms_of(U, int(time.time())))     # 방금 연 농장 (테스트의 T 는 지금보다 뒤)
+        assert cog.open.await_args.args[2] == new and (await db.get(G, T))["coins"] == F.NEW_FARM_COST
+        assert i.message.edit.await_count == 1                                 # 코인을 낸 농장 화면도 고친다
+    run(flow())
+
+
 def test_screens_readable():
     """11/11 규완님 '모든 농사 화면에서 가독성을 다 높여' — 어느 화면에도 값을 · 나 × 로 이어 붙이지 않는다."""
     from unittest.mock import MagicMock
@@ -961,7 +1045,7 @@ def test_screens_readable():
         cog = MagicMock()
         cog.name_of = MagicMock(return_value="다른 사람")
         embeds = [C.panel_embed(user, f, T, "당근 6개를 합쳐서 **당근 ★2 2개**가 됐어요."), C.help_embed(user),
-                  C.land_embed(user, "plain"), C.shop_embed()]
+                  C.land_embed(user, "plain"), C.land_embed(user, "plain", True), *C.shop_embeds()]
         views = [C.FarmPanel(cog, f), C.ShopPanel(cog), C.LandPick(cog, user), C.FarmPick(cog, user, [f])]
         for cls in (C.MergeView, C.StoreView, C.ChestView, C.SickleView, C.ItemView):
             v = cls(cog, user, None, f)
