@@ -18,10 +18,47 @@ import services.youth as Y  # noqa: E402
 
 
 def test_switch():
-    assert release.TEST_GUILD == 757761125403066419 and not release.preview_381(1374213619793006704)   # 11/11 테스트 서버를 옮겼다
-    assert release.preview_381(release.TEST_GUILD)
-    assert not release.preview_381(1)
-    assert "농사" in release.hidden_commands(1) and "농사" not in release.hidden_commands(release.TEST_GUILD)
+    before = release.FARM_BETA_END_TS - 60
+    assert release.TEST_GUILD == 757761125403066419 and not release.preview_381(1374213619793006704, before)   # 11/11 테스트 서버를 옮겼다
+    assert release.preview_381(release.TEST_GUILD, before)
+    assert not release.preview_381(1, before)
+    assert "농사" in release.hidden_commands(1, before) and "농사" not in release.hidden_commands(release.TEST_GUILD, before)
+
+
+def test_release_381():
+    """11/12 규완님: 베타 테스트는 15:00 에 끝 · 점검 15:20 ~ 15:35 (공개는 점검 시작과 함께)."""
+    import calendar
+    start, end = release.MAINTENANCE
+    assert (start, end) == (calendar.timegm((2026, 11, 12, 6, 20, 0)), calendar.timegm((2026, 11, 12, 6, 35, 0)))
+    assert release.RELEASE_381_TS == start and release.FARM_BETA_END_TS == calendar.timegm((2026, 11, 12, 6, 0, 0))
+    T, beta_end = release.TEST_GUILD, release.FARM_BETA_END_TS
+    # 15:00 전: 테스트 서버만 /농사 · 15:00 ~ 15:20: 테스트 서버도 막힘 (안내 문구) · 15:20 부터 모든 서버
+    assert release.farm_381(T, beta_end - 1) and not release.farm_381(1, beta_end - 1)
+    assert not release.farm_381(T, beta_end) and release.farm_beta_over(T, beta_end) and not release.farm_beta_over(1, beta_end)
+    assert release.preview_381(T, beta_end) and not release.released_381(start - 1)   # 다른 3.8.1 기능은 테스트 서버에서 그대로
+    assert release.farm_381(T, start) and release.farm_381(1, start) and not release.farm_beta_over(T, start)
+    assert release.maintenance(start) and release.maintenance(end - 1) and not release.maintenance(end)
+    assert "농사" not in release.hidden_commands(1, start)
+
+
+def test_coupon_readyornat():
+    """11/12 규완님 '쿠폰 추가하자. /READYORNAT' — 변호사 선임권 한 장 · 숫돌 한 개 (숫돌은 농장에, 없으면 다음에 여는 농장에)."""
+    import services.farm as F
+    fdb = F.FarmDB()
+    T = release.TEST_GUILD
+    start = release.RELEASE_381_TS
+
+    async def flow():
+        U, V = 38191, 38192
+        assert (await fdb.redeem_coupon(U, "READYORNAT", start - 60, 1))["reason"] == "unknown"   # 공개 전 다른 서버
+        r = await fdb.redeem_coupon(U, "readyornat", start - 60, T)
+        assert r["ok"] and r["items"] == {"lawyer": 1, "farm_whet": 1}
+        assert (await fdb.redeem_coupon(U, "READYORNAT", start, 1))["reason"] == "used"
+        assert (await fdb.redeem_coupon(V, "READYORNAT", edb.COUPONS["READYORNAT"][1], 1))["reason"] == "expired"
+        assert (await fdb.inventory(U))[0].get("lawyer") == 1
+        c = await fdb.create(U, "meadow", start)
+        assert c["whet"] == 1 and (await fdb.get(c["id"], start))["whet"] == 1
+    asyncio.run(flow())
 
 
 def test_elite_ask():

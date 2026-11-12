@@ -33,6 +33,14 @@ def _name(key: str) -> str:
     return (F.CROPS.get(key) or F.ANIMALS[key])[1]
 
 
+BETA_OVER = "농사 베타 테스트가 끝났어요. 정식 출시 점검이 끝나면 모두 처음부터 다시 시작해요."
+
+
+def _closed(guild_id, what: str = "/농사 는") -> str:
+    """/농사 를 못 쓰는 서버에서 보여 줄 말 (테스트 서버는 베타가 끝나고 공개 전)."""
+    return BETA_OVER if release.farm_beta_over(guild_id) else f"{what} 아직 이 서버에서 쓸 수 없어요."
+
+
 def _shop_link(user) -> str:
     tid = SHOPS.get(getattr(getattr(user, "guild", None), "id", None))
     return f"<#{tid}>" if tid else f"**{SHOP_NAME}** 스레드"
@@ -227,10 +235,13 @@ class FarmPanel(discord.ui.View):
             self.add_item(b)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not release.preview_381(interaction.guild_id):   # 공개 전엔 테스트 서버의 농장만
-            await interaction.response.send_message("/농사 는 아직 이 서버에서 쓸 수 없어요.", ephemeral=True)
+        if not release.farm_381(interaction.guild_id):   # 공개 전엔 테스트 서버의 농장만 (베타가 끝나면 그것도)
+            await interaction.response.send_message(_closed(interaction.guild_id), ephemeral=True)
             return False
         owner = await self.cog.db.thread_owner(interaction.channel_id)
+        if owner is None and (interaction.data or {}).get("custom_id") != "farm:offer":   # 정식 출시 때 지운 베타 농장 등
+            await interaction.response.send_message("이 스레드의 농장은 이제 없어요. `/농사`로 새 농장을 열어 보세요.", ephemeral=True)
+            return False
         if (interaction.data or {}).get("custom_id") == "farm:offer":   # 인수 제안은 주인 말고 누구나
             if owner is None:
                 await interaction.response.send_message("이 스레드에는 농장이 없어요.", ephemeral=True)
@@ -898,8 +909,8 @@ class ShopPanel(discord.ui.View):
 
     async def _coins(self, interaction: discord.Interaction):
         """11/11 규완님: 농사 상점에서 내가 가진 코인이 보이게 (누른 사람에게만)."""
-        if not release.preview_381(interaction.guild_id):
-            return await interaction.response.send_message("농사 상점은 아직 이 서버에서 쓸 수 없어요.", ephemeral=True)
+        if not release.farm_381(interaction.guild_id):
+            return await interaction.response.send_message(_closed(interaction.guild_id, "농사 상점은"), ephemeral=True)
         farms = await self.cog.db.farms_of(interaction.user.id, int(time.time()))
         if not farms:
             return await interaction.response.send_message("먼저 `/농사`로 농장을 열어 주세요.", ephemeral=True)
@@ -907,8 +918,8 @@ class ShopPanel(discord.ui.View):
 
     def _pick(self, key: str):
         async def cb(interaction: discord.Interaction):
-            if not release.preview_381(interaction.guild_id):
-                return await interaction.response.send_message("농사 상점은 아직 이 서버에서 쓸 수 없어요.", ephemeral=True)
+            if not release.farm_381(interaction.guild_id):
+                return await interaction.response.send_message(_closed(interaction.guild_id, "농사 상점은"), ephemeral=True)
             farms = await self.cog.db.farms_of(interaction.user.id, int(time.time()))
             if not farms:
                 return await interaction.response.send_message("먼저 `/농사`로 농장을 열어 주세요.", ephemeral=True)
@@ -998,6 +1009,21 @@ class BuyView(discord.ui.View):
         await self._redraw(interaction)
 
 
+def _held_line(r: dict) -> str:
+    """새 농장에 들어온 맡아 둔 것: 베타 테스트 보상 · 인수 대금 · 쿠폰 숫돌."""
+    out = ""
+    if r.get("beta"):
+        got = [f"**{r['held']:,} 코인**"] if r.get("held") else []
+        got += [f"{F.CHESTS[k][1]} {n}개" for k, n in r.get("chests", {}).items()]
+        out += ("\n\n농사 베타 테스트에 참여해 주셔서 감사해요. 보상으로 " + ", ".join(got) + "가 이 농장에 들어왔어요.\n"
+                f"축구 봇 돈 {F.BETA_WON:,}원은 정식 출시 때 지갑에 넣어 드렸어요.")
+    elif r.get("held"):
+        out += f"\n맡아 둔 인수 대금 **{r['held']:,} 코인**이 이 농장에 들어왔어요."
+    if r.get("whet"):
+        out += f"\n쿠폰으로 받은 숫돌 {r['whet']}개도 들어왔어요."
+    return out
+
+
 class LandPick(discord.ui.View):
     """처음 한 번: 땅을 고르고 [시작]. pay_fid 가 있으면 그 농장 코인 NEW_FARM_COST 로 새 밭(농장)을 하나 더 연다."""
 
@@ -1034,8 +1060,7 @@ class LandPick(discord.ui.View):
         r = await self.cog.db.create(self.user.id, self.pick, int(time.time()))
         _, n, desc, _ = F.LANDS[self.pick]
         msg = f"**{n}**에 농장을 열었어요. {desc}." if r["ok"] else "이미 농장이 있어요."
-        if r.get("held"):
-            msg += f"\n맡아 둔 인수 대금 **{r['held']:,} 코인**이 이 농장에 들어왔어요."
+        msg += _held_line(r)
         await interaction.response.edit_message(embed=ui.card("농사 시작", msg, ui.GOLD, self.user, SECTION), view=None)
         if r.get("id"):
             await self.cog.open(interaction, self.user, r["id"])
@@ -1097,13 +1122,25 @@ class Farm(commands.Cog):
         SHOP_MSGS.clear()
         SHOP_MSGS.update({g: (m, v) for g, (_, m, v) in rows.items()})
         self.shop_loop.start()
+        self.beta_loop.start()
 
     def cog_unload(self):
         self.panel.stop()
         self.shop.stop()
         self.shop_loop.cancel()
+        self.beta_loop.cancel()
         for t in self._sticky.values():
             t.cancel()
+
+    # ───────────── 정식 출시 (11/12 규완님 '베타테스트 동안 쌓인 농사 db를 초기화 시켜줘. 모두가 처음부터') ─────────────
+    @tasks.loop(seconds=20)
+    async def beta_loop(self):
+        """3.8.1 공개 시각(점검 시작)이 되면 베타 농사 기록을 한 번 지우고 베타 참여자에게 보상한다 (재시작해도 한 번만)."""
+        if not release.released_381():
+            return
+        r = await self.db.beta_reset(int(time.time()))
+        print(f"[농사] 정식 출시 베타 초기화: {r}")
+        self.beta_loop.stop()
 
     # ───────────── 농사 상점 스레드 ─────────────
     @tasks.loop(minutes=5)
@@ -1236,7 +1273,7 @@ class Farm(commands.Cog):
         th = message.channel
         if not isinstance(th, discord.Thread) or message.author.id == self.bot.user.id:
             return
-        if not release.preview_381(th.guild.id):
+        if not release.farm_381(th.guild.id):
             return
         fid = await self.db.thread_farm(th.id)
         if fid is None:
@@ -1441,8 +1478,8 @@ class Farm(commands.Cog):
 
     @app_commands.command(name="농사", description="내 농장 — 땅을 골라 작물과 동물을 기르고, 합치고, 넓혀요")
     async def farm(self, interaction: discord.Interaction):
-        if not release.preview_381(interaction.guild_id):
-            return await interaction.response.send_message("/농사 는 아직 이 서버에서 쓸 수 없어요.", ephemeral=True)
+        if not release.farm_381(interaction.guild_id):
+            return await interaction.response.send_message(_closed(interaction.guild_id), ephemeral=True)
         if interaction.guild is None:
             return await interaction.response.send_message("/농사 는 서버 채널에서 써 주세요.", ephemeral=True)
         user = interaction.user
