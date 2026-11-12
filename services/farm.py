@@ -187,6 +187,7 @@ FARM_FAIR = 3.0               # 적정 인수 금액 기본 = 농장 가치 × 3
 FARM_ASK = (1.5, 5.0)         # 주인이 정할 수 있는 적정 인수 금액 범위 (농장 가치 ×)
 FARM_OFFER_HOURS = 24         # 인수 제안은 24시간 뒤 만료
 FARM_WORTH_MIN = 1_000        # 농장 가치 최소 (코인) — 막 연 농장도 적정 인수 금액이 너무 낮지 않게
+NEW_FARM_COST = 1_000_000     # 11/12 규완님 '100만 코인 모으면 밭 하나 더' — 농장 하나의 코인으로 새 농장(밭)을 하나 더 연다
 
 
 def farm_worth(f: dict) -> int:
@@ -412,6 +413,23 @@ class FarmDB(EconomyDB):
                                                           START_CHESTS.get("wood", 0), int(now_ts)))
             con.execute("DELETE FROM farm_held WHERE owner=?", (int(uid),))
             return {"ok": True, "id": int(cur.lastrowid), "held": held}
+        return await self._tx(fn)
+
+    async def create_more(self, uid: int, land: str, pay_fid: int, now_ts: int) -> dict:
+        """내 농장 pay_fid 의 코인 NEW_FARM_COST 를 내고 새 농장을 하나 더 연다 → id.
+        reason: land / pay(내 농장이 아님) / coins(cost, have)."""
+        def fn(con):
+            if land not in LANDS:
+                return {"ok": False, "reason": "land"}
+            p = con.execute("SELECT owner, coins FROM farms WHERE id=?", (int(pay_fid),)).fetchone()
+            if not p or int(p[0]) != int(uid):
+                return {"ok": False, "reason": "pay"}
+            if int(p[1]) < NEW_FARM_COST:
+                return {"ok": False, "reason": "coins", "cost": NEW_FARM_COST, "have": int(p[1])}
+            con.execute("UPDATE farms SET coins = coins - ? WHERE id=?", (NEW_FARM_COST, int(pay_fid)))
+            cur = con.execute("INSERT INTO farms(owner, land, energy, energy_ts, plots, c_wood, created_ts) VALUES(?,?,?,?,?,?,?)",
+                              (int(uid), land, ENERGY_MAX, int(now_ts), PLOTS_BASE, START_CHESTS.get("wood", 0), int(now_ts)))
+            return {"ok": True, "id": int(cur.lastrowid), "cost": NEW_FARM_COST, "left": int(p[1]) - NEW_FARM_COST}
         return await self._tx(fn)
 
     # ───────────── 스레드 (농장마다 서버에 하나) ─────────────
