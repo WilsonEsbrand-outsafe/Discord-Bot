@@ -1136,6 +1136,100 @@ def test_sticky_panel():
     run(flow())
 
 
+def test_beta_reset():
+    """11/12 규완님 정식 출시: '베타테스트 동안 쌓인 농사 db를 초기화 시켜줘. 모두가 처음부터' ·
+    보상 '베타 농장 가치의 50% + 금상자 은상자 나무상자 각각 한 개, 축구 봇 돈 3000만원'."""
+    from unittest.mock import MagicMock
+
+    import release
+    import cogs.farm as C
+    keep_path = edb.DB_PATH
+    edb.DB_PATH = Path(tempfile.mkdtemp()) / "beta.sqlite3"
+    try:
+        db = F.FarmDB()
+
+        async def flow():
+            A, B, D, N = 9601, 9602, 9603, 9604
+            a1 = (await db.create(A, "plain", T))["id"]
+            con = sqlite3.connect(edb.DB_PATH)
+            con.execute("UPDATE farms SET coins=? WHERE id=?", (F.NEW_FARM_COST + 4_000, a1))
+            con.commit(); con.close()
+            a2 = (await db.create_more(A, "river", a1, T))["id"]
+            await db.plant(A, a1, "carrot", T)
+            await db.set_thread(a1, release.TEST_GUILD, 8181)
+            await db.set_shop_thread(release.TEST_GUILD, 8282, 1, C.SHOP_VER)
+            con = sqlite3.connect(edb.DB_PATH)
+            con.execute("INSERT INTO farm_items(farm_id, key, tier, qty) VALUES(?, 'carrot', 1, 7)", (a2,))
+            con.execute("INSERT INTO farm_held(owner, coins) VALUES(?, 500)", (B,))      # 농장을 팔고 맡아 둔 코인만 남은 사람
+            con.commit(); con.close()
+            assert (await db.redeem_coupon(D, "READYORNAT", release.RELEASE_381_TS - 60, release.TEST_GUILD))["ok"]   # 베타 농장 없이 쿠폰 숫돌만
+            worth_a = sum(F.farm_worth(f) for f in await db.farms_of(A, T))
+            bal = {u: await db.get_balance(u) for u in (A, B, D)}
+
+            r = await db.beta_reset(T)
+            assert r["ok"] and r["people"] == 2 and r["coins"] == round(worth_a * F.BETA_RATE) + 250
+            assert (await db.beta_reset(T + 9))["reason"] == "done"                     # 한 번만
+            con = sqlite3.connect(edb.DB_PATH)
+            for t in ("farms", "farm_fields", "farm_items", "farm_seeds", "farm_threads", "farm_offers"):
+                assert con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] == 0, t
+            assert con.execute("SELECT COUNT(*) FROM farm_beta_farms").fetchone()[0] == 2      # 백업
+            assert con.execute("SELECT COUNT(*) FROM farm_beta_farm_items").fetchone()[0] >= 1
+            assert con.execute("SELECT thread_id FROM farm_shops").fetchone()[0] == 8282       # 상점은 그대로
+            con.close()
+            assert await db.farms_of(A, T) == [] and await db.thread_owner(8181) is None
+            assert await db.get_balance(A) == bal[A] + F.BETA_WON and await db.get_balance(B) == bal[B] + F.BETA_WON
+            assert await db.get_balance(D) == bal[D]
+
+            ra = await db.create(A, "meadow", T + 10)                                     # 새 농장을 열면 보상
+            assert ra["beta"] and ra["held"] == round(worth_a * F.BETA_RATE) and ra["chests"] == {"gold": 1, "silver": 1, "wood": 1}
+            f = await db.get(ra["id"], T + 10)
+            assert f["coins"] == ra["held"] and f["chests"] == {"wood": 2, "silver": 1, "gold": 1} and f["items"] == []
+            assert f["plots"] == F.PLOTS_BASE and f["sickle"] == 0
+            line = C._held_line(ra)
+            assert "베타 테스트" in line and f"{ra['held']:,} 코인" in line and "금 상자 1개" in line and "30,000,000원" in line
+            rb = await db.create(B, "meadow", T + 10)
+            assert rb["beta"] and rb["held"] == 250
+            rd = await db.create(D, "meadow", T + 10)
+            assert not rd["beta"] and rd["held"] == 0 and rd["whet"] == 1 and (await db.get(rd["id"], T + 10))["whet"] == 1
+            assert "숫돌 1개" in C._held_line(rd) and "베타" not in C._held_line(rd)
+            rn = await db.create(N, "meadow", T + 10)                                     # 베타에 없던 사람은 보상 없이
+            assert not rn["beta"] and rn["held"] == 0 and (await db.get(rn["id"], T + 10))["chests"] == {"wood": 1, "silver": 0, "gold": 0}
+            assert C._held_line(rn) == ""
+            # 초기화 뒤 쿠폰 숫돌은 바로 내 농장에
+            assert (await db.redeem_coupon(N, "READYORNAT", release.RELEASE_381_TS + 60, 1))["ok"]
+            assert (await db.get(rn["id"], T + 10))["whet"] == 1
+
+            # 지운 베타 농장 스레드의 옛 화면을 누르면 안내
+            class Resp:
+                def __init__(self):
+                    self.calls = []
+
+                async def send_message(self, *a, **kw):
+                    self.calls.append(a[0] if a else kw.get("content"))
+            cog = C.Farm(MagicMock())
+            i = MagicMock()
+            i.user, i.guild_id, i.channel_id, i.response = MagicMock(id=A), release.TEST_GUILD, 8181, Resp()
+            i.data = {"custom_id": "farm:harvest"}
+            assert not await C.FarmPanel(cog).interaction_check(i) and "이제 없어요" in i.response.calls[0]
+
+            # 15:00 ~ 15:20 테스트 서버: 베타 끝 안내 · 공개되면 초기화 한 번
+            keep = release.RELEASE_381_TS, release.FARM_BETA_END_TS
+            try:
+                release.RELEASE_381_TS, release.FARM_BETA_END_TS = 2 ** 40, 0
+                assert C._closed(release.TEST_GUILD) == C.BETA_OVER and "아직" in C._closed(1)
+                i = MagicMock()
+                i.user, i.guild_id, i.channel_id, i.response = MagicMock(id=A), release.TEST_GUILD, 8181, Resp()
+                assert not await C.FarmPanel(cog).interaction_check(i) and i.response.calls == [C.BETA_OVER]
+                cog.db.beta_reset = MagicMock()
+                await cog.beta_loop.coro(cog)                                              # 공개 전: 그대로
+                cog.db.beta_reset.assert_not_called()
+            finally:
+                release.RELEASE_381_TS, release.FARM_BETA_END_TS = keep
+        run(flow())
+    finally:
+        edb.DB_PATH = keep_path
+
+
 def release_guild():
     import release
     return release.TEST_GUILD

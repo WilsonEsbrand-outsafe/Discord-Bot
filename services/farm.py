@@ -188,6 +188,12 @@ FARM_ASK = (1.5, 5.0)         # 주인이 정할 수 있는 적정 인수 금액
 FARM_OFFER_HOURS = 24         # 인수 제안은 24시간 뒤 만료
 FARM_WORTH_MIN = 1_000        # 농장 가치 최소 (코인) — 막 연 농장도 적정 인수 금액이 너무 낮지 않게
 NEW_FARM_COST = 1_000_000     # 11/12 규완님 '100만 코인 모으면 밭 하나 더' — 농장 하나의 코인으로 새 농장(밭)을 하나 더 연다
+# 11/12 규완님: 정식 출시(3.8.1 공개) 때 베타 농사 기록은 지우고, 베타 참여자에게
+# '베타 농장 가치의 50% + 금상자 은상자 나무상자 각각 한 개, 축구 봇 돈 3000만원' (beta_reset)
+BETA_RATE = 0.5                                      # 사람마다 베타 농장 가치(가진 농장 전부 + 맡아 둔 코인) × → 새 농장 코인
+BETA_CHESTS = {"gold": 1, "silver": 1, "wood": 1}    # 새 농장을 열 때 같이 (시작 선물 나무 상자와 따로)
+BETA_WON = 30_000_000                                # 축구 봇 돈 — 초기화할 때 지갑에 바로
+_FARM_DATA = ("farms", "farm_fields", "farm_items", "farm_seeds", "farm_threads", "farm_offers", "farm_held")   # 초기화하는 표 (상점은 둔다)
 
 
 def farm_worth(f: dict) -> int:
@@ -286,6 +292,11 @@ class FarmDB(EconomyDB):
             # 농장을 판 사람이 남은 농장이 없을 때 받은 인수 대금 (코인) — 다음에 여는 농장에 들어간다
             # (_TABLES 에 넣지 않는다: user_id 열이 있으면 _to_multi 가 옛 표로 본다 → 열 이름도 owner)
             con.execute("CREATE TABLE IF NOT EXISTS farm_held (owner INTEGER PRIMARY KEY, coins INTEGER NOT NULL)")
+            # 11/12 베타 보상 상자 · 쿠폰 숫돌도 맡아 둔다 (beta = 베타 보상)
+            held_cols = {r[1] for r in con.execute("PRAGMA table_info(farm_held)")}
+            for c in ("c_wood", "c_silver", "c_gold", "whet", "beta"):
+                if c not in held_cols:
+                    con.execute(f"ALTER TABLE farm_held ADD COLUMN {c} INTEGER NOT NULL DEFAULT 0")
             con.commit()
         finally:
             con.close()
@@ -406,13 +417,16 @@ class FarmDB(EconomyDB):
             have = con.execute("SELECT id FROM farms WHERE owner=? ORDER BY created_ts, id", (int(uid),)).fetchone()
             if have:
                 return {"ok": False, "reason": "exists", "id": int(have[0])}
-            held = con.execute("SELECT coins FROM farm_held WHERE owner=?", (int(uid),)).fetchone()
-            held = int(held[0]) if held else 0
-            cur = con.execute("INSERT INTO farms(owner, land, coins, energy, energy_ts, plots, c_wood, created_ts) "
-                              "VALUES(?,?,?,?,?,?,?,?)", (int(uid), land, held, ENERGY_MAX, int(now_ts), PLOTS_BASE,
-                                                          START_CHESTS.get("wood", 0), int(now_ts)))
+            h = con.execute("SELECT coins, c_wood, c_silver, c_gold, whet, beta FROM farm_held WHERE owner=?",
+                            (int(uid),)).fetchone() or (0, 0, 0, 0, 0, 0)
+            held, wood, silver, gold, whet, beta = (int(x) for x in h)
+            cur = con.execute("INSERT INTO farms(owner, land, coins, energy, energy_ts, plots, c_wood, c_silver, c_gold, whet, "
+                              "created_ts) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                              (int(uid), land, held, ENERGY_MAX, int(now_ts), PLOTS_BASE, START_CHESTS.get("wood", 0) + wood,
+                               silver, gold, whet, int(now_ts)))
             con.execute("DELETE FROM farm_held WHERE owner=?", (int(uid),))
-            return {"ok": True, "id": int(cur.lastrowid), "held": held}
+            chests = {k: n for k, n in (("gold", gold), ("silver", silver), ("wood", wood)) if n}
+            return {"ok": True, "id": int(cur.lastrowid), "held": held, "chests": chests, "whet": whet, "beta": bool(beta)}
         return await self._tx(fn)
 
     async def create_more(self, uid: int, land: str, pay_fid: int, now_ts: int) -> dict:
@@ -430,6 +444,43 @@ class FarmDB(EconomyDB):
             cur = con.execute("INSERT INTO farms(owner, land, energy, energy_ts, plots, c_wood, created_ts) VALUES(?,?,?,?,?,?,?)",
                               (int(uid), land, ENERGY_MAX, int(now_ts), PLOTS_BASE, START_CHESTS.get("wood", 0), int(now_ts)))
             return {"ok": True, "id": int(cur.lastrowid), "cost": NEW_FARM_COST, "left": int(p[1]) - NEW_FARM_COST}
+        return await self._tx(fn)
+
+    # ───────────── 정식 출시: 베타 농사 기록 초기화 ─────────────
+    async def beta_reset(self, now_ts: int) -> dict:
+        """베타 농사 기록을 모두 지우고(farm_beta_* 표에 그대로 백업) 베타 참여자에게 보상한다. 한 번만 (두 번째부턴 reason: done).
+        보상: 축구 봇 돈 BETA_WON 은 지갑에 바로 · 코인(베타 농장 가치 × BETA_RATE) · BETA_CHESTS 는 맡아 뒀다가 새 농장에.
+        공개 전에 쿠폰으로 받아 맡아 둔 숫돌은 그대로 남긴다. 농사 상점(farm_shops)은 지우지 않는다."""
+        def fn(con):
+            if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='farm_beta_rewards'").fetchone():
+                return {"ok": False, "reason": "done"}
+            worth: dict[int, int] = {}
+            for fid, owner in con.execute("SELECT id, owner FROM farms").fetchall():
+                f = self._farm(con, fid, now_ts)
+                worth[int(owner)] = worth.get(int(owner), 0) + (farm_worth(f) if f else 0)
+            whet = {}
+            for owner, coins, w in con.execute("SELECT owner, coins, whet FROM farm_held").fetchall():
+                if coins:   # 농장을 팔고 맡아 둔 코인도 베타 기록 (숫돌만 맡아 둔 사람은 쿠폰이라 참여가 아니다)
+                    worth[int(owner)] = worth.get(int(owner), 0) + int(coins)
+                if w:
+                    whet[int(owner)] = int(w)
+            for t in _FARM_DATA:
+                con.execute(f"CREATE TABLE farm_beta_{t} AS SELECT * FROM {t}")
+                con.execute(f"DELETE FROM {t}")
+            con.execute("CREATE TABLE farm_beta_rewards (owner INTEGER PRIMARY KEY, worth INTEGER NOT NULL, "
+                        "coins INTEGER NOT NULL, won INTEGER NOT NULL, ts INTEGER NOT NULL)")
+            for owner, w in worth.items():
+                coins = round(w * BETA_RATE)
+                con.execute("INSERT INTO farm_held(owner, coins, c_wood, c_silver, c_gold, whet, beta) VALUES(?,?,?,?,?,?,1)",
+                            (owner, coins, BETA_CHESTS["wood"], BETA_CHESTS["silver"], BETA_CHESTS["gold"],
+                             whet.pop(owner, 0)))
+                self._wallet(con, owner)
+                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (BETA_WON, owner))
+                con.execute("INSERT INTO farm_beta_rewards(owner, worth, coins, won, ts) VALUES(?,?,?,?,?)",
+                            (owner, w, coins, BETA_WON, int(now_ts)))
+            for owner, w in whet.items():   # 베타엔 농장이 없었지만 쿠폰 숫돌을 맡아 둔 사람
+                con.execute("INSERT INTO farm_held(owner, coins, whet) VALUES(?, 0, ?)", (owner, w))
+            return {"ok": True, "people": len(worth), "coins": sum(round(w * BETA_RATE) for w in worth.values())}
         return await self._tx(fn)
 
     # ───────────── 스레드 (농장마다 서버에 하나) ─────────────

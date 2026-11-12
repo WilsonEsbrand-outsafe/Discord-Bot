@@ -211,11 +211,27 @@ COUPONS_370 = {"KIKO370"}   # 3.7.0 공개(점검 시작) 뒤에만 (테스트 �
 COUPONS["ROADTODIA"] = ({"scout_reset": 1, "scout_skip": 1}, calendar.timegm((2026, 11, 9, 15, 0, 0)))
 # 3.7.4 점검 보상: 변호사 선임권 3장 · 2026-11-12 00:00 KST 만료
 COUPONS["KIKOLAWYER"] = ({"lawyer": 3}, calendar.timegm((2026, 11, 11, 15, 0, 0)))
+# 3.8.1 점검 보상 (11/12 규완님 '쿠폰 추가하자. /READYORNAT' · '변호사선임권 한 장, 숫돌 한 개') · 2026-11-19 00:00 KST 만료
+# farm_whet = 농사 숫돌 (가방이 아니라 내 농장에 — _give_farm_whet)
+COUPONS["READYORNAT"] = ({"lawyer": 1, "farm_whet": 1}, calendar.timegm((2026, 11, 18, 15, 0, 0)))
+COUPONS_381 = {"READYORNAT"}   # 3.8.1 공개(점검 시작) 뒤에만 (테스트 서버 먼저)
 
 
 # 창단 멤버 영구 칭호 (2.8) — 마이그레이션으로 한 번만 지급 (eco_migrations 에 'founder-2.8' 표시)
 FOUNDER_TITLE = "🏅 창단 멤버"
 FOUNDER_IDS = (680586058680893461, 1264955405029736569, 867801225507897395, 673864024030445569)
+
+
+def _give_farm_whet(con, user_id: int, qty: int) -> None:
+    """쿠폰 숫돌 (농사 낫 강화 재료): 내 농장(가장 먼저 연 것)에. 농장이 없거나 베타 농사 기록을 지우기 전이면
+    맡아 뒀다가(farm_held) 다음에 여는 농장에 넣는다 (베타 농장에 넣으면 초기화 때 같이 지워진다)."""
+    reset = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='farm_beta_rewards'").fetchone()
+    fid = con.execute("SELECT id FROM farms WHERE owner=? ORDER BY created_ts, id", (int(user_id),)).fetchone() if reset else None
+    if fid:
+        con.execute("UPDATE farms SET whet = whet + ? WHERE id=?", (int(qty), int(fid[0])))
+    else:
+        con.execute("INSERT INTO farm_held(owner, coins, whet) VALUES(?, 0, ?) "
+                    "ON CONFLICT(owner) DO UPDATE SET whet = whet + excluded.whet", (int(user_id), int(qty)))
 
 
 def give_item(con, user_id: int, item: str, qty: int = 1) -> None:
@@ -1859,7 +1875,8 @@ class EconomyDB:
                 or (code in COUPONS_321 and not release.preview_321(guild_id, now_ts)) \
                 or (code in COUPONS_340 and not release.preview_340(guild_id, now_ts)) \
                 or (code in COUPONS_360 and not release.preview_360(guild_id, now_ts)) \
-                or (code in COUPONS_370 and not release.preview_370(guild_id, now_ts)):
+                or (code in COUPONS_370 and not release.preview_370(guild_id, now_ts)) \
+                or (code in COUPONS_381 and not release.preview_381(guild_id, now_ts)):
             return {"ok": False, "reason": "unknown"}
         items, expires = COUPONS[code]
         if now_ts >= expires:
@@ -1872,6 +1889,8 @@ class EconomyDB:
                 if item == "money":
                     con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
                     con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (qty, user_id))
+                elif item == "farm_whet":
+                    _give_farm_whet(con, user_id, qty)
                 else:
                     give_item(con, user_id, item, qty)
             return {"ok": True, "code": code, "items": items}

@@ -86,7 +86,8 @@ def test_lawyer_routes():
 
 def test_release_notice_coupon():
     from patch_notes_data import NOTICES, PATCH_NOTES
-    start, end = release.MAINTENANCE
+    import calendar
+    start, end = calendar.timegm((2026, 11, 4, 5, 10, 0)), calendar.timegm((2026, 11, 4, 5, 15, 0))   # 3.7.4 점검 (지난 점검)
     assert release.RELEASE_374_TS == start and end - start == 300
     keys = {k: ts for k, ts, *_ in NOTICES}
     assert keys["maint-3.7.4"] == keys["patch-3.7.4"] < start
