@@ -419,10 +419,12 @@ def test_shop():
         bot = MagicMock()
         cog = C.Farm(bot)
         kids = cog.shop.children
-        assert all(x.custom_id.startswith("farm:shop:") for x in kids) and len(kids) == (len(F.CROPS) - 1) + len(F.ANIMALS) + 1
+        assert all(x.custom_id.startswith("farm:shop:") for x in kids) and len(kids) == (len(F.CROPS) - 1) + len(F.ANIMALS) + len(F.TOOLS) + 1
         assert not any(x.emoji for x in kids) and "carrot" not in str([x.custom_id for x in kids])
         assert kids[-1].custom_id == "farm:shop:coins" and kids[-1].label == "내 코인"   # 11/11 상점에서 내 코인 보기
-        assert all(" " not in x.label and "코인" not in x.label for x in kids[:-1])   # 물건 버튼은 이름만
+        assert all(" " not in x.label and "코인" not in x.label for x in kids[:-1 - len(F.TOOLS)])   # 물건 버튼은 이름만
+        assert [x.label for x in kids[-1 - len(F.TOOLS):-1]] == [v[0] for v in F.TOOLS.values()]      # 11/12 아이템 (마지막 줄)
+        assert {x.row for x in kids[-1 - len(F.TOOLS):]} == {4}
         assert max(Counter(x.row for x in kids).values()) <= 5 and max(x.row for x in kids) <= 4
         e = C.shop_embed()
         fields = {f.name: f.value for f in e.fields}
@@ -697,7 +699,7 @@ def test_ui_smoke():
         assert "<#5151>" in i.response.calls[0][1]["embed"].description and "감자 씨앗" in i.response.calls[0][1]["embed"].description
         # 작은 화면들
         for opener, cls in ((panel._merge, C.MergeView), (panel._store, C.StoreView), (panel._chest, C.ChestView),
-                            (panel._sickle, C.SickleView)):
+                            (panel._sickle, C.SickleView), (panel._items, C.ItemView)):
             i = inter(user, tch, guild, message=msg)
             await opener(i)
             view = i.response.calls[0][1]["view"]
@@ -728,6 +730,19 @@ def test_ui_smoke():
                 await view._sell_all(i)
                 i = inter(user, tch, guild, ["0"])
                 await view._release(i)
+            elif cls is C.ItemView:                          # 11/12 아이템: 비료 켜고 끄기 · 없는 건 못 쓴다 · 사서 쓰기
+                assert view.children[0].label.endswith("켜짐") and all(b.disabled for b in view.children[1:])
+                i = inter(user, tch, guild)
+                await view._fert(i)
+                assert "쓰지 않아요" in i.response.calls[0][1]["embed"].description and view.children[0].label.endswith("꺼짐")
+                i = inter(user, tch, guild)
+                await view._use("drink")(i)
+                assert "없어요" in i.response.calls[0][1]["embed"].description
+                await cog.db.buy(9100, G, "scarecrow", 1, T)
+                i = inter(user, tch, guild)
+                await view._use("scarecrow")(i)
+                assert "허수아비를 세웠어요" in i.response.calls[0][1]["embed"].description
+                assert any("허수아비 세워 둠" in x.value for x in msg.edit.await_args.kwargs["embed"].fields)   # 농장 화면도
             elif cls is C.ChestView:
                 i = inter(user, tch, guild)
                 await view._toggle(i)                       # 행운 열기 켬 → 돈이 없어서 못 연다
@@ -852,6 +867,70 @@ def test_ui_smoke():
     run(flow())
 
 
+def test_tools():
+    """11/12 농사 상점 아이템: 비료(심을 때 · 절반 시간) · 에너지 음료(+30) · 동물 사료(남은 시간 절반) · 허수아비(10분 ★2 확률 +)."""
+    db = F.FarmDB()
+
+    async def flow():
+        U = 9401
+        G = (await db.create(U, "river", T))["id"]                            # 강변: 비옥도 · 목초 별 3 → 시간 그대로
+        con = sqlite3.connect(edb.DB_PATH)
+        con.execute("UPDATE farms SET coins=10000 WHERE id=?", (G,))
+        con.commit(); con.close()
+        assert F.shop_price("fert") == F.TOOLS["fert"][1] and F.shop_price("scarecrow") == F.TOOLS["scarecrow"][1]
+        for k, n in (("fert", 2), ("drink", 1), ("feed", 1), ("scarecrow", 2), ("chicken", 1)):
+            assert (await db.buy(U, G, k, n, T))["ok"]
+        f = await db.get(G, T)
+        assert f["tools"] == {"fert": 2, "drink": 1, "feed": 1, "scarecrow": 2} and f["seeds"] == {"chicken": 1}
+        assert f["fert_on"] and f["scare_until"] == 0
+        assert (await db.plant(U, G, "fert", T))["reason"] == "key"           # 아이템은 심는 것이 아니다
+        # 비료: 켜져 있으면 한 칸에 하나씩 (가진 만큼) → 그 칸은 절반 시간
+        await db.set_plant_n(U, G, 3)
+        p = await db.plant(U, G, "wheat", T)
+        assert not p["ok"] and p["reason"] == "seeds"
+        await db.buy(U, G, "wheat", 5, T)
+        p = await db.plant(U, G, "wheat", T)
+        sec = F.CROPS["wheat"][3]
+        assert p["ok"] and p["count"] == 3 and p["fert"] == 2 and p["fert_left"] == 0
+        assert p["fert_ready"] == T + int(sec * F.FERT_MULT) and p["ready_ts"] == T + sec
+        assert sorted(x["ready_ts"] for x in (await db.get(G, T))["fields"] if x) == [T + int(sec * F.FERT_MULT)] * 2 + [T + sec]
+        await db.buy(U, G, "fert", 1, T)
+        assert await db.set_fert(U, G, False, T) and not (await db.get(G, T))["fert_on"]
+        assert not await db.set_fert(9499, G, True, T)                         # 주인만
+        assert (await db.plant(U, G, "wheat", T))["fert"] == 0 and (await db.get(G, T))["tools"]["fert"] == 1   # 끄면 안 쓴다
+        # 에너지 음료: +30 (최대까지만) · 가득이면 못 마신다
+        assert (await db.use_tool(U, G, "fert", T))["reason"] == "key"
+        e0 = (await db.get(G, T))["energy"]
+        d = await db.use_tool(U, G, "drink", T)
+        assert d["ok"] and d["energy"] == min(F.ENERGY_MAX, e0 + F.DRINK_ENERGY) and d["left"] == 0
+        assert (await db.use_tool(U, G, "drink", T))["reason"] == "have"
+        await db.buy(U, G, "drink", 1, T)
+        con = sqlite3.connect(edb.DB_PATH)
+        con.execute("UPDATE farms SET energy=?, energy_ts=? WHERE id=?", (F.ENERGY_MAX, T, G))
+        con.commit(); con.close()
+        assert (await db.use_tool(U, G, "drink", T))["reason"] == "energy" and (await db.get(G, T))["tools"]["drink"] == 1
+        # 동물 사료: 기다리는 동물이 없으면 못 쓴다 → 남은 시간 절반
+        assert (await db.use_tool(U, G, "feed", T))["reason"] == "animals"
+        a = await db.plant(U, G, "chicken", T)
+        slot = next(i for i, x in enumerate((await db.get(G, T))["fields"]) if x and x["kind"] == "animal")
+        r = await db.use_tool(U, G, "feed", T + 4)
+        assert r["ok"] and r["count"] == 1
+        assert (await db.get(G, T + 4))["fields"][slot]["ready_ts"] == T + 4 + int((a["ready_ts"] - T - 4) * F.FEED_MULT)
+        # 허수아비: 10분 동안 ★2 확률 + · 또 세우면 10분 늘어난다 · 끝나면 그대로
+        s1 = await db.use_tool(U, G, "scarecrow", T)
+        s2 = await db.use_tool(U, G, "scarecrow", T + 60)
+        assert s1["until"] == T + F.SCARE_SEC and s2["until"] == T + 2 * F.SCARE_SEC and s2["left"] == 0
+        luck = Fixed(F.high_p(0) + F.SCARE_BONUS / 2)                          # 낫만으로는 ★1, 허수아비가 있으면 ★2
+        h = await db.harvest(U, G, T + 300, luck)
+        assert h["ok"] and h["scare"] and h["high"] == h["count"] and all(t == 2 for (_, t) in h["got"])
+        await db.plant(U, G, "carrot", T + 300)
+        h = await db.harvest(U, G, T + 2 * F.SCARE_SEC + 10, luck)
+        assert h["ok"] and not h["scare"] and h["high"] == 0
+        f = await db.get(G, T + 2 * F.SCARE_SEC + 10)
+        assert f["tools"].get("scarecrow", 0) == 0 and f["worth"] >= f["coins"]
+    run(flow())
+
+
 def test_screens_readable():
     """11/11 규완님 '모든 농사 화면에서 가독성을 다 높여' — 어느 화면에도 값을 · 나 × 로 이어 붙이지 않는다."""
     from unittest.mock import MagicMock
@@ -875,6 +954,7 @@ def test_screens_readable():
         f = dict(id=1, owner=1, land="plain", energy=98, energy_next=None, coins=1234, sickle=3, whet=2, plant_n=0,
                  chests={"wood": 2, "silver": 1, "gold": 0}, plots=12, animals=2, animal_cap=4, balance=50_000, fair=3_000_000,
                  worth=1_000, offers=1, items=[("carrot", 1, 5), ("carrot", 2, 3), ("egg", 1, 1)], seeds={"potato": 5, "chicken": 1},
+                 tools={"fert": 3, "drink": 1}, fert_on=False, scare_until=T + 90,
                  fields=[{"kind": "crop", "key": "carrot", "ready": True, "ready_ts": T}] * 3
                  + [{"kind": "crop", "key": "potato", "ready": False, "ready_ts": T + 15}] * 4
                  + [{"kind": "animal", "key": "chicken", "ready": False, "ready_ts": T + 30}] * 2 + [None] * 3)
@@ -883,7 +963,7 @@ def test_screens_readable():
         embeds = [C.panel_embed(user, f, T, "당근 6개를 합쳐서 **당근 ★2 2개**가 됐어요."), C.help_embed(user),
                   C.land_embed(user, "plain"), C.shop_embed()]
         views = [C.FarmPanel(cog, f), C.ShopPanel(cog), C.LandPick(cog, user), C.FarmPick(cog, user, [f])]
-        for cls in (C.MergeView, C.StoreView, C.ChestView, C.SickleView):
+        for cls in (C.MergeView, C.StoreView, C.ChestView, C.SickleView, C.ItemView):
             v = cls(cog, user, None, f)
             embeds.append(v.embed(f))
             views.append(v)
@@ -893,6 +973,8 @@ def test_screens_readable():
         embeds += [o.embed(), ow.embed(), b.embed(), C.coins_embed(user, [f, dict(f, id=2, land="river")])]
         views += [o, ow, b]
         assert "<t:" not in text(embeds[0]) and "감자 4개 (15초 남음)" in text(embeds[0]) and "닭 2마리 (30초 남음)" in text(embeds[0])
+        tools = next(x.value for x in embeds[0].fields if x.name == "아이템")             # 11/12 아이템
+        assert tools.split("\n") == ["비료 3개 (심을 때 안 써요)", "에너지 음료 1개", "허수아비 세워 둠 (1분 30초 남음)"]
         for e in embeds:
             t = text(e)
             assert "·" not in t and "×" not in t, t
