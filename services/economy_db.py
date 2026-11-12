@@ -103,7 +103,10 @@ ITEMS = {
     "auto_reserve": ("🤖", "자동 2군 경기권", "12시간 동안 10분마다 2군 경기를 자동으로 (경험치 절반 · 유스 성장은 2판에 1번)"),
     # 3.7.4 스카우트 되돌리기 — 가지고 있던 원석을 돈으로 바꾼 것 (수량 = 원 · 사용하면 전부 지갑으로)
     "gem_cash":    ("💵", "원석 환전금",     "가지고 있던 원석을 돈으로 바꾼 것 · 사용하면 전부 지갑으로"),
+    # 3.8.1 농사 베타 테스트 보상 (11/12 규완님 '3000만원 지갑에 바로 넣지 말고 가방에 넣어줘') — 수량 = 원
+    "beta_cash":   ("💵", "농사 베타 보상금", "농사 베타 테스트 보상이에요. 사용하면 전부 지갑으로 들어가요"),
 }
+CASH_ITEMS = {"gem_cash", "beta_cash"}   # 수량이 곧 금액(원)인 가방 아이템 — 사용하면 전부 지갑으로
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
                  "bow_pro", "windbreaker", "focus", "torch", "potion", "antidote", "dkey", "scroll", "feather",
@@ -1727,14 +1730,17 @@ class EconomyDB:
             return int(con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()[0])
         return await self._tx(fn)
 
-    async def use_gem_cash(self, user_id: int) -> dict:
-        """3.7.4 💵 원석 환전금 사용: 가방에 든 금액을 전부 지갑으로. → {ok, amount, balance} · 없으면 ok False."""
+    async def use_gem_cash(self, user_id: int, item: str = "gem_cash") -> dict:
+        """3.7.4 💵 원석 환전금(3.8.1 농사 베타 보상금도) 사용: 가방에 든 금액을 전부 지갑으로.
+        → {ok, amount, balance} · 없으면 ok False."""
+        assert item in CASH_ITEMS
+
         def fn(con):
-            row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='gem_cash'", (user_id,)).fetchone()
+            row = con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()
             amount = int(row[0]) if row else 0
             if amount <= 0:
                 return {"ok": False, "reason": "none"}
-            con.execute("UPDATE inventory SET qty=0 WHERE user_id=? AND item='gem_cash'", (user_id,))
+            con.execute("UPDATE inventory SET qty=0 WHERE user_id=? AND item=?", (user_id, item))
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (user_id,))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, user_id))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0])

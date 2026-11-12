@@ -10,7 +10,8 @@ from discord.ext import commands
 from auth import owner_only
 
 from services.economy_db import (
-    BANKRUPT_310, BANKRUPT_350, BANKRUPT_FORGIVE, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS, SKIP_ITEMS, shop_open,
+    BANKRUPT_310, BANKRUPT_350, BANKRUPT_FORGIVE, CASH_ITEMS, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS,
+    SKIP_ITEMS, shop_open,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, transfer_limit, WATCH_MAX_LEVEL, give_item,
@@ -95,7 +96,7 @@ def _gid(user):
 
 def _use_label(key: str, qty: int) -> str:
     """가방 [사용] 버튼 글자 — 💵 원석 환전금은 수량이 곧 금액이라 '원'으로 보여 준다 (3.7.4)."""
-    return f"{ITEMS[key][1]} 사용 ({qty:,}원)" if key == "gem_cash" else f"{ITEMS[key][1]} 사용 ({qty})"
+    return f"{ITEMS[key][1]} 사용 ({qty:,}원)" if key in CASH_ITEMS else f"{ITEMS[key][1]} 사용 ({qty})"
 
 
 class BagView(discord.ui.View):
@@ -138,13 +139,13 @@ class BagView(discord.ui.View):
                 return await self.cog._steroid_prompt(interaction, self.user)
             if key == "box":         # 카드 고르는 화면부터 모두에게
                 return await self.cog._box_prompt(interaction, self.user)
-            if key == "gem_cash":    # 3.7.4 💵 원석 환전금 → 전부 지갑으로
-                r = await self.cog.db.use_gem_cash(self.user.id)
+            if key in CASH_ITEMS:    # 3.7.4 💵 원석 환전금 · 3.8.1 농사 베타 보상금 → 전부 지갑으로
+                r = await self.cog.db.use_gem_cash(self.user.id, key)
                 await self._refresh(interaction)
                 if not r["ok"]:
                     return await interaction.followup.send(embed=self.cog._no_item_card(self.user, key), ephemeral=True)
                 return await interaction.followup.send(embed=ui.card(
-                    "💵 원석 환전금을 받았어요!", f"`+{r['amount']:,}원` → `잔액` **{r['balance']:,}원**",
+                    f"💵 {ITEMS[key][1]}을 받았어요!", f"`+{r['amount']:,}원` → `잔액` **{r['balance']:,}원**",
                     ui.WIN, self.user, "🎒 아이템"), ephemeral=True)
             if key == "lawyer":      # 3.1.0: 누구에게 선임할지 고른다 (나 · 다른 유저)
                 return await interaction.response.send_message(
@@ -1255,7 +1256,7 @@ class Economy(commands.Cog):
     async def _bag_embed(self, user) -> tuple[discord.Embed, dict]:
         await self._gem_convert(user)   # 3.7.4 원석 → 💵 원석 환전금
         inv, buffs = await self.db.inventory(user.id)
-        lines = [(f"{e} **{n}** · **{inv[k]:,}원**" if k == "gem_cash" else f"{e} **{n}** × {inv[k]}") + f"\n　 *{d}*"
+        lines = [(f"{e} **{n}** · **{inv[k]:,}원**" if k in CASH_ITEMS else f"{e} **{n}** × {inv[k]}") + f"\n　 *{d}*"
                  for k, (e, n, d) in ITEMS.items() if inv.get(k)]
         e = ui.card("🎒 내 가방", "\n".join(lines) or "가방이 비어 있어요.", ui.INFO, user, "🎒 아이템")
         if buffs.get("muffler"):

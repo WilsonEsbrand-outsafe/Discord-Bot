@@ -904,17 +904,24 @@ def test_tools():
         assert await db.set_fert(U, G, False, T) and not (await db.get(G, T))["fert_on"]
         assert not await db.set_fert(9499, G, True, T)                         # 주인만
         assert (await db.plant(U, G, "wheat", T))["fert"] == 0 and (await db.get(G, T))["tools"]["fert"] == 1   # 끄면 안 쓴다
-        # 에너지 음료: +30 (최대까지만) · 가득이면 못 마신다
+        # 에너지 음료: +30 · 11/12 규완님 '상한선을 뚫게 해줘. 상한선은 자연으로 찰 때만'
         assert (await db.use_tool(U, G, "fert", T))["reason"] == "key"
         e0 = (await db.get(G, T))["energy"]
         d = await db.use_tool(U, G, "drink", T)
-        assert d["ok"] and d["energy"] == min(F.ENERGY_MAX, e0 + F.DRINK_ENERGY) and d["left"] == 0
+        assert d["ok"] and d["energy"] == e0 + F.DRINK_ENERGY and d["left"] == 0
         assert (await db.use_tool(U, G, "drink", T))["reason"] == "have"
         await db.buy(U, G, "drink", 1, T)
         con = sqlite3.connect(edb.DB_PATH)
         con.execute("UPDATE farms SET energy=?, energy_ts=? WHERE id=?", (F.ENERGY_MAX, T, G))
         con.commit(); con.close()
-        assert (await db.use_tool(U, G, "drink", T))["reason"] == "energy" and (await db.get(G, T))["tools"]["drink"] == 1
+        d = await db.use_tool(U, G, "drink", T)
+        assert d["ok"] and d["energy"] == F.ENERGY_MAX + F.DRINK_ENERGY and d["gained"] == F.DRINK_ENERGY   # 가득이어도 넘겨서
+        f = await db.get(G, T + 3600)
+        assert f["energy"] == F.ENERGY_MAX + F.DRINK_ENERGY and f["energy_next"] is None and "drink" not in f["tools"]   # 저절로는 안 찬다
+        con = sqlite3.connect(edb.DB_PATH)
+        con.execute("UPDATE farms SET energy=?, energy_ts=? WHERE id=?", (F.ENERGY_MAX - 10, T, G))
+        con.commit(); con.close()
+        assert (await db.get(G, T + 3600))["energy"] == F.ENERGY_MAX                                   # 저절로는 100 까지
         # 동물 사료: 기다리는 동물이 없으면 못 쓴다 → 남은 시간 절반
         assert (await db.use_tool(U, G, "feed", T))["reason"] == "animals"
         a = await db.plant(U, G, "chicken", T)
@@ -1139,7 +1146,7 @@ def test_sticky_panel():
 def test_beta_reset():
     """11/12 규완님 정식 출시: '베타테스트 동안 쌓인 농사 db를 초기화 시켜줘. 모두가 처음부터' ·
     보상 '베타 농장 가치의 50% + 금상자 은상자 나무상자 각각 한 개, 축구 봇 돈 3000만원'."""
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     import release
     import cogs.farm as C
@@ -1157,6 +1164,7 @@ def test_beta_reset():
             a2 = (await db.create_more(A, "river", a1, T))["id"]
             await db.plant(A, a1, "carrot", T)
             await db.set_thread(a1, release.TEST_GUILD, 8181)
+            await db.set_thread(a2, release.TEST_GUILD, 8183)
             await db.set_shop_thread(release.TEST_GUILD, 8282, 1, C.SHOP_VER)
             con = sqlite3.connect(edb.DB_PATH)
             con.execute("INSERT INTO farm_items(farm_id, key, tier, qty) VALUES(?, 'carrot', 1, 7)", (a2,))
@@ -1166,9 +1174,21 @@ def test_beta_reset():
             worth_a = sum(F.farm_worth(f) for f in await db.farms_of(A, T))
             bal = {u: await db.get_balance(u) for u in (A, B, D)}
 
+            # 15:00 베타가 끝나면 베타 농장 스레드를 지운다 (상점 스레드는 그대로) · 이미 없는 스레드는 넘어간다
+            import discord
+            bot = MagicMock()
+            gone = MagicMock(delete=AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "x")))
+            alive = MagicMock(delete=AsyncMock())
+            bot.get_channel = lambda tid: {8181: alive, 8183: gone}.get(tid)
+            tcog = C.Farm(bot)
+            assert await tcog.drop_beta_threads() == 1 and alive.delete.await_count == 1
+            assert await db.thread_owner(8181) is None and await tcog.drop_beta_threads() == 0   # 한 번만
+            await db.set_thread(a1, release.TEST_GUILD, 8181)                                    # (아래 초기화 확인용)
+
             r = await db.beta_reset(T)
             assert r["ok"] and r["people"] == 2 and r["coins"] == round(worth_a * F.BETA_RATE) + 250
             assert (await db.beta_reset(T + 9))["reason"] == "done"                     # 한 번만
+            assert await db.take_beta_threads() == []                                   # 초기화 뒤 스레드는 정식 농장이라 안 건드린다
             con = sqlite3.connect(edb.DB_PATH)
             for t in ("farms", "farm_fields", "farm_items", "farm_seeds", "farm_threads", "farm_offers"):
                 assert con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] == 0, t
@@ -1177,8 +1197,12 @@ def test_beta_reset():
             assert con.execute("SELECT thread_id FROM farm_shops").fetchone()[0] == 8282       # 상점은 그대로
             con.close()
             assert await db.farms_of(A, T) == [] and await db.thread_owner(8181) is None
-            assert await db.get_balance(A) == bal[A] + F.BETA_WON and await db.get_balance(B) == bal[B] + F.BETA_WON
-            assert await db.get_balance(D) == bal[D]
+            # 3000만원은 지갑이 아니라 가방에 (11/12 규완님) — 쓰면 전부 지갑으로
+            assert [await db.get_balance(u) for u in (A, B, D)] == [bal[A], bal[B], bal[D]]
+            assert [(await db.inventory(u))[0].get("beta_cash") for u in (A, B, D)] == [F.BETA_WON, F.BETA_WON, None]
+            used = await db.use_gem_cash(A, "beta_cash")
+            assert used["ok"] and used["amount"] == F.BETA_WON and await db.get_balance(A) == bal[A] + F.BETA_WON
+            assert not (await db.use_gem_cash(A, "beta_cash"))["ok"]
 
             ra = await db.create(A, "meadow", T + 10)                                     # 새 농장을 열면 보상
             assert ra["beta"] and ra["held"] == round(worth_a * F.BETA_RATE) and ra["chests"] == {"gold": 1, "silver": 1, "wood": 1}
@@ -1186,7 +1210,7 @@ def test_beta_reset():
             assert f["coins"] == ra["held"] and f["chests"] == {"wood": 2, "silver": 1, "gold": 1} and f["items"] == []
             assert f["plots"] == F.PLOTS_BASE and f["sickle"] == 0
             line = C._held_line(ra)
-            assert "베타 테스트" in line and f"{ra['held']:,} 코인" in line and "금 상자 1개" in line and "30,000,000원" in line
+            assert "베타 테스트" in line and f"{ra['held']:,} 코인" in line and "금 상자 1개" in line and "30,000,000원은 `/가방`" in line
             rb = await db.create(B, "meadow", T + 10)
             assert rb["beta"] and rb["held"] == 250
             rd = await db.create(D, "meadow", T + 10)

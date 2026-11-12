@@ -1016,7 +1016,7 @@ def _held_line(r: dict) -> str:
         got = [f"**{r['held']:,} 코인**"] if r.get("held") else []
         got += [f"{F.CHESTS[k][1]} {n}개" for k, n in r.get("chests", {}).items()]
         out += ("\n\n농사 베타 테스트에 참여해 주셔서 감사해요. 보상으로 " + ", ".join(got) + "가 이 농장에 들어왔어요.\n"
-                f"축구 봇 돈 {F.BETA_WON:,}원은 정식 출시 때 지갑에 넣어 드렸어요.")
+                f"축구 봇 돈 {F.BETA_WON:,}원은 `/가방`에 넣어 드렸어요.")
     elif r.get("held"):
         out += f"\n맡아 둔 인수 대금 **{r['held']:,} 코인**이 이 농장에 들어왔어요."
     if r.get("whet"):
@@ -1135,12 +1135,36 @@ class Farm(commands.Cog):
     # ───────────── 정식 출시 (11/12 규완님 '베타테스트 동안 쌓인 농사 db를 초기화 시켜줘. 모두가 처음부터') ─────────────
     @tasks.loop(seconds=20)
     async def beta_loop(self):
-        """3.8.1 공개 시각(점검 시작)이 되면 베타 농사 기록을 한 번 지우고 베타 참여자에게 보상한다 (재시작해도 한 번만)."""
+        """15:00 베타가 끝나면 베타 농장 스레드를 지우고 (11/12 규완님 '15:00 되면 베타 농장 스레드는 지워줘'),
+        3.8.1 공개 시각(점검 시작)이 되면 베타 농사 기록을 한 번 지우고 베타 참여자에게 보상한다 (재시작해도 한 번만)."""
+        if time.time() >= release.FARM_BETA_END_TS:
+            await self.drop_beta_threads()
         if not release.released_381():
             return
         r = await self.db.beta_reset(int(time.time()))
         print(f"[농사] 정식 출시 베타 초기화: {r}")
         self.beta_loop.stop()
+
+    @beta_loop.before_loop
+    async def _before_beta(self):
+        await self.bot.wait_until_ready()
+
+    async def drop_beta_threads(self) -> int:
+        """베타 농장 스레드를 디스코드에서 지운다 (농사 상점 스레드는 둔다). → 지운 수. 이미 없는 스레드는 넘어간다."""
+        n = 0
+        rows = await self.db.take_beta_threads()
+        for _, tid in rows:
+            try:
+                th = self.bot.get_channel(tid) or await self.bot.fetch_channel(tid)
+                await th.delete()
+                n += 1
+            except discord.NotFound:
+                pass
+            except discord.HTTPException as ex:
+                print(f"[농사] 베타 농장 스레드 {tid} 지우기 실패: {type(ex).__name__}: {ex}")
+        if rows:
+            print(f"[농사] 베타 농장 스레드 {n}/{len(rows)}개 지움")
+        return n
 
     # ───────────── 농사 상점 스레드 ─────────────
     @tasks.loop(minutes=5)
