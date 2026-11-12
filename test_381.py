@@ -340,3 +340,18 @@ def test_rank_exclude():
         assert paid[A]["rank"] == 1 and (ADMIN not in paid or paid[ADMIN]["rank"] is None)
 
     asyncio.run(flow())
+
+
+def test_notices_381():
+    """점검 안내 · 패치노트는 배포되면 바로 (점검 전) · 짧게 · 장부/체크리스트/TTS 없이 · 쿠폰."""
+    from patch_notes_data import NOTICES, PATCH_NOTES
+    import cogs.patch_notes as P
+    note = PATCH_NOTES["3.8.1"]
+    start, _ = release.MAINTENANCE
+    keys = {k: ts for k, ts, *_ in NOTICES}
+    assert keys["maint-3.8.1"] == keys["patch-3.8.1"] < start
+    assert "READYORNAT" in note and "%" not in note and len(note) < 1200
+    assert not any(w in note for w in ("장부", "체크리스트", "TTS", "관리자"))
+    _, _, title, body = next(n for n in NOTICES if n[0] == "maint-3.8.1")
+    assert "15:20 ~ 15:35" in body and "READYORNAT" in body
+    assert P.notice_text("maint-3.8.1", title, body, keys["maint-3.8.1"]) == (title, body)
