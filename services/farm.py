@@ -7,7 +7,7 @@
 import random
 from typing import Optional
 
-from services.economy_db import EconomyDB, _kst_day
+from services.economy_db import EconomyDB, _kst_day, give_item
 
 # ───────────── 땅 ─────────────
 # 세부 자원(별 1~5, 땅마다 합 12): 비옥도 = 작물 성장 · 목초 = 동물 생산 · 물 = 에너지 회복 · 광맥 = 상자 발견
@@ -68,7 +68,7 @@ TOOLS = {
     "scarecrow": ("허수아비", 200, "세우면 10분 동안 거둘 때 ★2가 나올 확률이 15%p 올라가요"),
 }
 FERT_MULT = 0.5               # 비료: 자라는 시간 × 0.5
-DRINK_ENERGY = 30             # 에너지 음료: 에너지 +30 (최대까지만)
+DRINK_ENERGY = 30             # 에너지 음료: 에너지 +30 (11/12 규완님: 100 을 넘겨서도 찬다 — 100 한도는 저절로 찰 때만)
 FEED_MULT = 0.5               # 동물 사료: 남은 생산 시간 × 0.5
 SCARE_SEC, SCARE_BONUS = 600, 0.15   # 허수아비: 10분 · ★2 확률 +15%p (세워 둔 동안 또 세우면 10분 늘어난다)
 
@@ -192,7 +192,8 @@ NEW_FARM_COST = 1_000_000     # 11/12 규완님 '100만 코인 모으면 밭 하
 # '베타 농장 가치의 50% + 금상자 은상자 나무상자 각각 한 개, 축구 봇 돈 3000만원' (beta_reset)
 BETA_RATE = 0.5                                      # 사람마다 베타 농장 가치(가진 농장 전부 + 맡아 둔 코인) × → 새 농장 코인
 BETA_CHESTS = {"gold": 1, "silver": 1, "wood": 1}    # 새 농장을 열 때 같이 (시작 선물 나무 상자와 따로)
-BETA_WON = 30_000_000                                # 축구 봇 돈 — 초기화할 때 지갑에 바로
+BETA_WON = 30_000_000                                # 축구 봇 돈 — 초기화할 때 가방에 💵 농사 베타 보상금(beta_cash)으로
+                                                     # (11/12 규완님 '3000만원 지갑에 바로 넣지 말고 가방에 넣어줘')
 _FARM_DATA = ("farms", "farm_fields", "farm_items", "farm_seeds", "farm_threads", "farm_offers", "farm_held")   # 초기화하는 표 (상점은 둔다)
 
 
@@ -449,7 +450,7 @@ class FarmDB(EconomyDB):
     # ───────────── 정식 출시: 베타 농사 기록 초기화 ─────────────
     async def beta_reset(self, now_ts: int) -> dict:
         """베타 농사 기록을 모두 지우고(farm_beta_* 표에 그대로 백업) 베타 참여자에게 보상한다. 한 번만 (두 번째부턴 reason: done).
-        보상: 축구 봇 돈 BETA_WON 은 지갑에 바로 · 코인(베타 농장 가치 × BETA_RATE) · BETA_CHESTS 는 맡아 뒀다가 새 농장에.
+        보상: 축구 봇 돈 BETA_WON 은 가방에(beta_cash) 바로 · 코인(베타 농장 가치 × BETA_RATE) · BETA_CHESTS 는 맡아 뒀다가 새 농장에.
         공개 전에 쿠폰으로 받아 맡아 둔 숫돌은 그대로 남긴다. 농사 상점(farm_shops)은 지우지 않는다."""
         def fn(con):
             if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='farm_beta_rewards'").fetchone():
@@ -474,13 +475,25 @@ class FarmDB(EconomyDB):
                 con.execute("INSERT INTO farm_held(owner, coins, c_wood, c_silver, c_gold, whet, beta) VALUES(?,?,?,?,?,?,1)",
                             (owner, coins, BETA_CHESTS["wood"], BETA_CHESTS["silver"], BETA_CHESTS["gold"],
                              whet.pop(owner, 0)))
-                self._wallet(con, owner)
-                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (BETA_WON, owner))
+                give_item(con, owner, "beta_cash", BETA_WON)
                 con.execute("INSERT INTO farm_beta_rewards(owner, worth, coins, won, ts) VALUES(?,?,?,?,?)",
                             (owner, w, coins, BETA_WON, int(now_ts)))
             for owner, w in whet.items():   # 베타엔 농장이 없었지만 쿠폰 숫돌을 맡아 둔 사람
                 con.execute("INSERT INTO farm_held(owner, coins, whet) VALUES(?, 0, ?)", (owner, w))
             return {"ok": True, "people": len(worth), "coins": sum(round(w * BETA_RATE) for w in worth.values())}
+        return await self._tx(fn)
+
+    async def take_beta_threads(self) -> list[tuple[int, int]]:
+        """베타 농장 스레드 (guild_id, thread_id) 를 꺼내고 기록에서 뺀다 — 15:00 베타가 끝나면 디스코드에서 지운다.
+        베타 초기화가 이미 끝났으면 빈 목록 (그 뒤의 스레드는 정식 출시 농장이다)."""
+        def fn(con):
+            if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='farm_beta_rewards'").fetchone():
+                return []
+            rows = [(int(g), int(t)) for g, t in con.execute("SELECT guild_id, thread_id FROM farm_threads")]
+            con.execute("CREATE TABLE IF NOT EXISTS farm_beta_threads_gone AS SELECT * FROM farm_threads WHERE 0")
+            con.execute("INSERT INTO farm_beta_threads_gone SELECT * FROM farm_threads")   # 백업 (초기화 때 farm_threads 는 이미 비어 있다)
+            con.execute("DELETE FROM farm_threads")
+            return rows
         return await self._tx(fn)
 
     # ───────────── 스레드 (농장마다 서버에 하나) ─────────────
@@ -653,7 +666,7 @@ class FarmDB(EconomyDB):
 
     async def use_tool(self, uid: int, fid: int, key: str, now_ts: int) -> dict:
         """아이템 하나 쓰기 — drink(에너지 +30) · feed(동물 남은 시간 절반) · scarecrow(10분 ★2 확률 +). 비료는 심을 때 쓴다.
-        reason: none / key / have(없음) / energy(이미 가득) / animals(기다리는 동물이 없음)."""
+        reason: none / key / have(없음) / animals(기다리는 동물이 없음)."""
         def fn(con):
             f = self._mine(con, uid, fid, now_ts)
             if not f:
@@ -664,9 +677,7 @@ class FarmDB(EconomyDB):
                 return {"ok": False, "reason": "have"}
             out = {"ok": True, "key": key, "left": f["tools"][key] - 1}
             if key == "drink":
-                if f["energy"] >= ENERGY_MAX:
-                    return {"ok": False, "reason": "energy"}
-                e = min(float(ENERGY_MAX), f["energy_f"] + DRINK_ENERGY)
+                e = f["energy_f"] + DRINK_ENERGY   # 한도(ENERGY_MAX)를 넘겨서도 (저절로 찰 때만 한도까지)
                 con.execute("UPDATE farms SET energy=?, energy_ts=? WHERE id=?", (e, int(now_ts), fid))
                 out.update(energy=int(e), gained=int(e) - f["energy"])
             elif key == "feed":
