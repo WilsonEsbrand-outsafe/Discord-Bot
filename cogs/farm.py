@@ -385,32 +385,43 @@ class MergeView(_Sub):
         await self.redraw(interaction, note, note if r["ok"] else "")
 
 
-SELL_NS = (1, 5, 10, 50, 0)   # 창고에서 한 번에 팔 개수 (0 = 전부) — 11/12 규완님 '몇 개 팔지 고를 수 있으면'
+class SellModal(discord.ui.Modal):
+    """11/12 규완님 '팔 개수는 본인이 입력하게': 창고에서 물건을 고르면 팔 개수를 직접 적는다."""
+
+    def __init__(self, view: "StoreView", key: str, tier: int, have: int):
+        super().__init__(title=f"{F.ITEMS[key][1]} ★{tier} 팔기"[:45])
+        self.view, self.key, self.tier = view, key, tier
+        self.count = discord.ui.TextInput(label=f"팔 개수 (가진 것 {have:,}개)"[:45], max_length=9,
+                                          placeholder="'전부'라고 적으면 모두 팔아요")
+        self.add_item(self.count)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = str(self.count.value).replace(",", "").replace("개", "").strip()
+        if raw in ("전부", "모두", "all"):
+            n = None
+        elif raw.isdigit() and int(raw) > 0:
+            n = int(raw)
+        else:
+            return await interaction.response.send_message("팔 개수는 1 이상의 숫자로 적어 주세요.", ephemeral=True)
+        v = self.view
+        await v._done(interaction, await v.cog.db.sell(v.user.id, v.fid, int(time.time()), [(self.key, self.tier)], n))
 
 
 class StoreView(_Sub):
-    n = 0   # 고른 물건을 몇 개씩 팔지 (0 = 전부)
-
     def build(self, f: dict):
         items = f["items"][:25]
         if items:
-            cnt = discord.ui.Select(placeholder="한 번에 팔 개수", row=0, options=[
-                discord.SelectOption(label="가진 것 전부 팔기" if v == 0 else f"{v}개씩 팔기", value=str(v), default=v == self.n)
-                for v in SELL_NS])
-            cnt.callback = self._count
-            self.add_item(cnt)
-            sel = discord.ui.Select(placeholder="팔 물건 고르기 (여러 개 가능)", min_values=1, max_values=len(items), row=1, options=[
-                discord.SelectOption(label=f"{F.ITEMS[k][1]} ★{t} {q}개", value=f"{k}:{t}",
-                                     description=(f"모두 팔면 {F.value(k, t) * q:,} 코인" if not self.n or self.n >= q else
-                                                  f"{self.n}개 팔면 {F.value(k, t) * self.n:,} 코인")) for k, t, q in items])
+            sel = discord.ui.Select(placeholder="팔 물건 고르기 (고르면 팔 개수를 적어요)", row=0, options=[
+                discord.SelectOption(label=f"{F.ITEMS[k][1]} ★{t} {q}개", value=f"{k}:{t}:{q}",
+                                     description=f"하나에 {F.value(k, t):,} 코인") for k, t, q in items])
             sel.callback = self._sell
             self.add_item(sel)
-            b = discord.ui.Button(label="창고 모두 팔기", style=discord.ButtonStyle.success, row=3)
+            b = discord.ui.Button(label="창고 모두 팔기", style=discord.ButtonStyle.success, row=2)
             b.callback = self._sell_all
             self.add_item(b)
         pets = [(i, p) for i, p in enumerate(f["fields"]) if p and p["kind"] == "animal"][:25]
         if pets:
-            sel = discord.ui.Select(placeholder="내보낼 동물 고르기 (산 값의 절반을 돌려받아요)", row=2, options=[
+            sel = discord.ui.Select(placeholder="내보낼 동물 고르기 (산 값의 절반을 돌려받아요)", row=1, options=[
                 discord.SelectOption(label=f"{i + 1}번 땅 {F.ANIMALS[p['key']][1]}", value=str(i),
                                      description=f"돌려받는 코인 {int(F.ANIMALS[p['key']][2] * F.ANIMAL_REFUND):,}") for i, p in pets])
             sel.callback = self._release
@@ -431,13 +442,9 @@ class StoreView(_Sub):
                 else "팔 물건이 없어요.")
         await self.redraw(interaction, note, note if r["ok"] else "")
 
-    async def _count(self, interaction: discord.Interaction):
-        self.n = int(interaction.data["values"][0])
-        await self.redraw(interaction, "전부 팔아요." if not self.n else f"고른 물건을 {self.n}개씩 팔아요.")
-
     async def _sell(self, interaction: discord.Interaction):
-        picks = [(v.split(":")[0], int(v.split(":")[1])) for v in interaction.data["values"]]
-        await self._done(interaction, await self.cog.db.sell(self.user.id, self.fid, int(time.time()), picks, self.n or None))
+        k, t, q = interaction.data["values"][0].split(":")
+        await interaction.response.send_modal(SellModal(self, k, int(t), int(q)))
 
     async def _sell_all(self, interaction: discord.Interaction):
         await self._done(interaction, await self.cog.db.sell(self.user.id, self.fid, int(time.time())))

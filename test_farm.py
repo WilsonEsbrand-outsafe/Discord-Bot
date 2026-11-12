@@ -706,15 +706,24 @@ def test_ui_smoke():
                 i = inter(user, tch, guild, ["egg:1"])
                 await view._pick(i)
                 assert "★2" in i.response.calls[0][1]["embed"].description
-            elif cls is C.StoreView:
-                assert view.children[0].placeholder == "한 번에 팔 개수" and [o.value for o in view.children[0].options] == ["1", "5", "10", "50", "0"]
-                i = inter(user, tch, guild, ["1"])
-                await view._count(i)
-                assert view.n == 1 and "1개씩" in i.response.calls[0][1]["embed"].description
-                assert [o.default for o in view.children[0].options] == [True, False, False, False, False]
-                i = inter(user, tch, guild, ["egg:2"])
-                await view._sell(i)
-                assert "코인" in i.response.calls[0][1]["embed"].description
+            elif cls is C.StoreView:                        # 11/12 물건을 고르면 팔 개수를 직접 적는다
+                egg = next(o.value for o in view.children[0].options if o.value.startswith("egg:2:"))
+                have = int(egg.split(":")[2])
+
+                async def sell_n(raw):
+                    i = inter(user, tch, guild, [egg])
+                    await view._sell(i)
+                    modal = i.response.calls[0][1]["modal"]
+                    assert isinstance(modal, C.SellModal) and "전부" in modal.count.placeholder
+                    modal.count._value = raw
+                    i = inter(user, tch, guild)
+                    await modal.on_submit(i)
+                    return i.response.calls[0][1]
+                assert "숫자" in (await sell_n("많이"))["content"] and "숫자" in (await sell_n("0"))["content"]
+                done = await sell_n("1")
+                assert "1개를 팔았어요" in done["embed"].description
+                left = {(k, t): q for k, t, q in (await cog.db.get(G, T))["items"]}.get(("egg", 2), 0)
+                assert left == have - 1
                 i = inter(user, tch, guild)
                 await view._sell_all(i)
                 i = inter(user, tch, guild, ["0"])
