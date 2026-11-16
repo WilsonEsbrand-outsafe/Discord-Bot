@@ -187,3 +187,81 @@ def test_undot():
     U.install(chans.get)                                                     # 두 번 불러도 한 번만
     from discord import http as dhttp
     assert getattr(dhttp.HTTPClient.request, "_undot", False)
+
+
+def test_lobby_rules():
+    from services import lobby as L
+    import calendar
+    c = L.close_after(calendar.timegm((2026, 11, 16, 5, 0, 0)))
+    assert time.gmtime(c + 9 * 3600)[:5] == (2026, 11, 22, 21, 0) and time.gmtime(c + 9 * 3600).tm_wday == 6
+    cands = L.make_candidates(random.Random(1))
+    assert len(cands) == L.CANDIDATES_N and all(len({k for k, _ in x["pledges"]}) == L.PLEDGES_N for x in cands)
+    assert abs(sum(L.support(cands, [0, 0, 0, 0])) - 100) < 1e-6
+    sup = L.support(cands, [10 ** 9, 0, 0, 0])
+    assert sup[0] > L.support(cands, [0, 0, 0, 0])[0]                       # 로비가 몰리면 지지율이 오른다
+    bets = [(1, 0, 100), (2, 0, 300), (3, 1, 400)]
+    assert L.payouts(bets, 0, set()) == {1: 200, 2: 600}                    # 낙선 400원을 100:300 으로
+    assert L.payouts(bets, 0, {2}) == {1: 800}                              # 적발된 사람 몫도 나머지에게
+    assert L.payouts(bets, 2, set()) == {}
+    # 돈만으로 정해지지 않는다: 로비가 크게 몰려도 다른 후보가 당선될 때가 있다
+    wins = [L.pick_winner(cands, [10 ** 6, 0, 0, 0], random.Random(s)) for s in range(300)]
+    assert 0 < wins.count(0) < 300
+
+
+def test_lobby_db_and_effects():
+    from services import lobby as L
+    db = L.LobbyDB()
+    edb_db = edb.EconomyDB()
+
+    async def flow():
+        now = calendar_ts = 1_800_000_000
+        A, B = 38241, 38242
+        await edb_db.add_balance(A, 1_000_000)
+        await edb_db.add_balance(B, 1_000_000)
+        e = await db.state(A, now)
+        assert e["cands"] and e["news"]
+        assert (await db.lobby(A, 0, 100, now))["reason"] == "amount"
+        assert (await db.lobby(A, 0, 10 ** 9, now))["reason"] == "balance"
+        r = await db.lobby(A, 0, 200_000, now)
+        assert r["ok"] and r["balance"] == 800_000
+        await db.lobby(B, 1, 300_000, now)
+        assert await db.news_tick(now) is None                               # 아직 뉴스 시각 전
+        n = await db.news_tick(now + L.NEWS_GAP[1] + 1, random.Random(2))
+        assert n and n["text"] and n["delta"]
+        assert await db.settle(now) is None                                  # 마감 전
+        r = await db.settle(e["closes_ts"] + 1, random.Random(4))
+        assert r and r["pool"] == 500_000 and r["next"] == e["id"] + 1
+        w = r["winner"]
+        assert await db.settle(e["closes_ts"] + 2) is None                  # 두 번 정산되지 않는다
+        bal_a, bal_b = await edb_db.get_balance(A), await edb_db.get_balance(B)
+        if w == 0 and A not in r["caught"]:
+            assert bal_a == 800_000 + 500_000
+        if w == 1 and B not in r["caught"]:
+            assert bal_b == 700_000 + 500_000
+        assert (await db.last_winner())["name"] == r["cand"]["name"]
+        _ = calendar_ts
+        # 공약 효과: 공개 전엔 테스트 서버 사람만
+        L.ACTIVE.clear()
+        L.ACTIVE.update({"attend": 2.0})
+        L.TESTERS.clear()
+        L.TESTERS.add(A)
+        assert L.mult("attend", A) == 2.0 and L.mult("attend", B) == 1.0 and L.mult("fish_sell", A) == 1.0
+        ok, *_rest, bonus = await edb_db.claim_daily(A, 30_000, now)
+        assert ok and bonus >= 30_000
+        L.ACTIVE.clear()
+
+    run(flow())
+
+
+def test_lobby_screen():
+    import cogs.lobby as CL
+    from services import lobby as L
+    cands = L.make_candidates(random.Random(3))
+    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [0] * 4), "pots": [0] * 4,
+         "mine": [10_000, 0, 0, 0], "news": [{"ts": 1_800_000_000, "text": "뉴스", "delta": 3}],
+         "last": {"id": 0, "winner": 1, "cands": cands}}
+    em = CL.lobby_embed(MagicMock(display_name="가", display_avatar=MagicMock(url="")), e)
+    text = em.description + "".join(f.name + f.value for f in em.fields)
+    assert "·" not in text and "내 로비" in text and "지금 적용 중인 공약" in text
+    assert CL.kst(1_800_000_000) == "1월 15일 (금) 17:00"
+    assert "로비" in release.hidden_commands(1) and "로비" not in release.hidden_commands(release.TEST_GUILD)

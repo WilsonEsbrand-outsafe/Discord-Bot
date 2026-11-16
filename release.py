@@ -207,6 +207,7 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = out if preview_372(guild_id, now) else out | PREVIEW_372
     out = out | LEGACY_374 if preview_374(guild_id, now) else out
     out = out if preview_381(guild_id, now) else out | PREVIEW_381
+    out = out if preview_382(guild_id, now) else out | PREVIEW_382
     return out if preview_310(guild_id, now) else out | PREVIEW_310
 
 
@@ -306,6 +307,7 @@ def farm_beta_over(guild_id: Optional[int], now: Optional[float] = None) -> bool
 # 3.8.2 — 테스트 서버 먼저. 봇 화면의 '·' 표기 없애기, 농장 코인 하나로 합치기, 농사 에너지 2배, 작물 추가, 농장 스레드 지우면 다시 열기,
 # 명문 구단과 농장의 적정 인수(바로 인수) 없애기, 리그 중간 순위 크게 흔들기, 농사 상자 대폭 상향. None = 아직
 RELEASE_382_TS: Optional[int] = None
+PREVIEW_382: set[str] = {"로비"}   # 3.8.2 새 명령어 /로비 (주간 대선) — 공개 전엔 테스트 서버에만
 
 
 def released_382(now: Optional[float] = None) -> bool:
