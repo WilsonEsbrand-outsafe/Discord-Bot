@@ -273,6 +273,18 @@ def test_lobby_count_and_chart():
     assert C.support_chart(cands, [], o, L.close_after(o), o)[:4] == b"\x89PNG"   # 기록이 없어도 그려진다
 
 
+def test_lobby_party_and_hidden_pot():
+    from services import lobby as L
+    from cogs import lobby as C
+    r = (1, 0, 1, '[{"name": "가", "party": "골대당", "base": 20, "events": 0, "pledges": [["attend", 0.5]]}]', "open", None, 0)
+    assert L.LobbyDB._row(r)["cands"][0]["party"] == L.PARTIES[0]          # 예전 당 이름 → 새 이름
+    cands = L.make_candidates(random.Random(1))
+    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [123_456, 0, 0, 0]),
+         "pots": [123_456, 0, 0, 0], "mine": [0] * 4, "news": [], "last": None}
+    em = C.lobby_embed(None, e)
+    assert all("123,456" not in f.value for f in em.fields)                  # 로비 총액은 안 보인다
+
+
 def test_lobby_screen():
     import cogs.lobby as CL
     from services import lobby as L
