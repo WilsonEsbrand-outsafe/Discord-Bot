@@ -366,6 +366,8 @@ class FarmDB(EconomyDB):
         e = float(r[2])
         if e < ENERGY_MAX:
             e = min(float(ENERGY_MAX), e + max(0, now_ts - int(r[3])) / every)
+        if purse is not None:
+            FarmDB._auto_animals(con, int(fid), res, int(r[5]), now_ts)
         fields: list[Optional[dict]] = [None] * int(r[4])
         for slot, kind, key, ready in con.execute("SELECT slot, kind, key, ready_ts FROM farm_fields WHERE farm_id=?", (fid,)):
             if 0 <= slot < len(fields) and key in (CROPS if kind == "crop" else ANIMALS):
@@ -452,6 +454,25 @@ class FarmDB(EconomyDB):
         f["energy_f"] -= n
         f["energy"] = int(f["energy_f"])
         con.execute("UPDATE farms SET energy=?, energy_ts=? WHERE id=?", (f["energy_f"], int(now_ts), fid))
+
+    @staticmethod
+    def _auto_animals(con, fid: int, res: dict, sickle: int, now_ts: int, rng=random):
+        """3.8.2 (11/17 규완님 '거두기를 누르지 않아도 생성될 수 있으면'): 동물 생산품은 다 만들어지는 대로 창고에 들어간다.
+        농장을 볼 때마다 그동안 만든 개수를 계산해 넣는다 (에너지 · 상자 없음, ★2 확률은 거둘 때와 같음)."""
+        hp = high_p(sickle)
+        for slot, key, ready in con.execute("SELECT slot, key, ready_ts FROM farm_fields WHERE farm_id=? AND kind='animal' "
+                                            "AND ready_ts<=?", (fid, int(now_ts))).fetchall():
+            if key not in ANIMALS:
+                continue
+            every = max(1, int(ANIMALS[key][4] * time_mult(res["grass"])))
+            n = 1 + (int(now_ts) - int(ready)) // every
+            two = sum(1 for _ in range(n) if rng.random() < hp)
+            prod = ANIMALS[key][3]
+            if n - two:
+                FarmDB._give(con, fid, prod, 1, n - two)
+            if two:
+                FarmDB._give(con, fid, prod, 2, two)
+            con.execute("UPDATE farm_fields SET ready_ts=? WHERE farm_id=? AND slot=?", (int(ready) + n * every, fid, slot))
 
     @staticmethod
     def _give(con, fid: int, key: str, tier: int, n: int):

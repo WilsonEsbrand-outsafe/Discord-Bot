@@ -90,6 +90,29 @@ def test_energy_cost():
     run(flow())
 
 
+def test_animals_auto():
+    db = F.FarmDB()
+
+    async def flow():
+        A, B = 38271, 38272
+        G = (await db.create(A, "meadow", T))["id"]
+        H = (await db.create(B, "meadow", T))["id"]
+        await db.upgrade(A)                                                   # A 만 3.8.2 (지갑)
+        for u, fid in ((A, G), (B, H)):
+            await db._tx(lambda con, fid=fid: con.execute(
+                "INSERT INTO farm_fields(farm_id, slot, kind, key, ready_ts) VALUES(?, 0, 'animal', 'chicken', ?)", (fid, T + 10)))
+        every = int(F.ANIMALS["chicken"][4] * F.time_mult(5))
+        f = await db.get(G, T + 10 + every * 4 + 1)                           # 거두지 않아도 5개가 창고에
+        assert sum(q for k, _, q in f["items"] if k == "egg") == 5
+        assert f["fields"][0]["ready_ts"] == T + 10 + every * 5 and not f["fields"][0]["ready"]
+        f = await db.get(G, T + 10 + every * 4 + 2)                           # 두 번 넣지 않는다
+        assert sum(q for k, _, q in f["items"] if k == "egg") == 5
+        g = await db.get(H, T + 10 + every * 4 + 1)                           # 옛 규칙 농장은 거둘 때까지 그대로
+        assert not g["items"] and g["fields"][0]["ready"]
+
+    run(flow())
+
+
 def test_crops_and_chests():
     for k in F.NEW_CROPS_382:
         assert k in F.CROPS and k in F.ITEMS and F.shop_price(k)
