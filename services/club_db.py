@@ -1092,9 +1092,10 @@ class ClubDB:
             return {"ok": False, "reason": "one"}
         return None
 
-    async def offer_elite(self, buyer: int, key: str, amount: int, now_ts: int) -> dict:
+    async def offer_elite(self, buyer: int, key: str, amount: int, now_ts: int, auto: bool = True) -> dict:
         """3.8.1 인수 제안. 적정 인수 금액(elite_fair — 구단주가 정한 값, 안 정하면 지금 가격 × 3) 이상이면 바로 인수 (auto=True),
         아니면 구단주에게 제안을 남긴다 (같은 사람이 같은 구단에 다시 내면 새 제안으로 바뀐다 · 24시간 뒤 만료).
+        3.8.2 (auto=False): 바로 인수는 없다 — 금액과 상관없이 구단주가 수락해야 인수된다.
         실패 reason: no_club / mine / one / free(주인 없음 — 그냥 인수) / amount / balance."""
         def fn(con):
             bad = self._elite_can_buy(con, int(buyer), key, now_ts)
@@ -1110,7 +1111,7 @@ class ClubDB:
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(buyer),)).fetchone()[0])
             if bal < amount:
                 return {"ok": False, "reason": "balance", "cost": amount}
-            if amount >= fair:
+            if auto and amount >= fair:
                 return {**self._elite_transfer(con, key, int(buyer), int(owner), int(amount), now_ts), "auto": True, "fair": fair}
             con.execute("UPDATE elite_offers SET status='closed' WHERE key=? AND buyer_id=? AND status='open'", (key, int(buyer)))
             cur = con.execute("INSERT INTO elite_offers(key, buyer_id, owner_id, amount, ts) VALUES(?,?,?,?,?)",

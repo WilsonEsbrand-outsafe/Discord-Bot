@@ -54,6 +54,10 @@ intents = discord.Intents.default()
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
+# 3.8.2 규완님 'AI 티 나는 · 모양 전체적으로 없애기' — 디스코드로 보내기 직전에 '·' 을 지운다 (공개 전엔 테스트 서버만)
+from services import undot as _undot  # noqa: E402
+_undot.install(lambda cid: bot.get_channel(cid))
+
 # ───────────────── 공통 유틸 ─────────────────
 MENTION_RE = re.compile(r"<@&?\d+>|<@!\d+>|<@\d+>")
 FAN_ROLE_NAME = "축구 팬"

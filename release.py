@@ -303,6 +303,19 @@ def farm_beta_over(guild_id: Optional[int], now: Optional[float] = None) -> bool
     return guild_id == TEST_GUILD and not farm_381(guild_id, now)
 
 
+# 3.8.2 — 테스트 서버 먼저. 봇 화면의 '·' 표기 없애기, 농장 코인 하나로 합치기, 농사 에너지 2배, 작물 추가, 농장 스레드 지우면 다시 열기,
+# 명문 구단과 농장의 적정 인수(바로 인수) 없애기, 리그 중간 순위 크게 흔들기, 농사 상자 대폭 상향. None = 아직
+RELEASE_382_TS: Optional[int] = None
+
+
+def released_382(now: Optional[float] = None) -> bool:
+    return RELEASE_382_TS is not None and _now(now) >= RELEASE_382_TS
+
+
+def preview_382(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_382(now)
+
+
 # 2026-11-11 규완님: 관리자 계정 — 모든 순위 · 집계에서 뺀다 (3.8.1 — 공개 전엔 테스트 서버에서만)
 RANK_EXCLUDE: frozenset[int] = frozenset({673864024030445569})
 

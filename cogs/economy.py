@@ -1925,6 +1925,16 @@ class Economy(commands.Cog):
         return next((m, label) for last, m, label in (cls.LEAGUE_PAYOUT_310 if new else cls.LEAGUE_PAYOUT) if rank <= last)
 
     @staticmethod
+    def league_mid(rank: int, stage: int, wild: bool = False, rng=random) -> int:
+        """시즌 중 순위. 3.8.2 규완님 '리그 순위 변동 심하게 (초기 순위로 결과 예측 못하게)':
+        개막 5라운드와 전반기는 최종 순위와 상관없이 1~20위 아무 데나, 30라운드도 ±8 까지 흔들린다."""
+        if not wild:
+            return max(1, min(20, rank + rng.randint(-5, 5)))
+        if stage < 2:
+            return rng.randint(1, 20)
+        return max(1, min(20, rank + rng.randint(-8, 8)))
+
+    @staticmethod
     def _league_table(teams: list[str], rng=random) -> list[dict]:
         """teams(최종 순위 순)에 그럴듯한 38경기 성적을 붙인다: 승점·득실차는 순위대로 줄어든다."""
         rows, pts, gd = [], rng.randint(80, 94), rng.randint(35, 60)
@@ -1982,9 +1992,10 @@ class Economy(commands.Cog):
             msg = await interaction.followup.send(embed=opening, wait=True)
             slow = release.preview_311(getattr(getattr(interaction, "guild", None), "id", None))   # 3.1.1: 화면마다 읽을 시간을 더 준다
             first, gap, last = self.LEAGUE_GAPS_311 if slow else (1.3, 1.3, 1.5)
+            wild = release.preview_382(getattr(getattr(interaction, "guild", None), "id", None))
             for i, (stage, _rnd) in enumerate(self.LEAGUE_ROUNDS):
                 await asyncio.sleep(first if i == 0 else gap)
-                mid = max(1, min(20, rank + random.randint(-5, 5)))   # 시즌 중 순위는 오르내린다
+                mid = self.league_mid(rank, i, wild)
                 await msg.edit(embed=self._caster_card(
                     user, f"📊 {stage} — {mine} {mid}위", f"{league} {stage}! 현재 {mid}위를 달리고 있습니다.", ui.DARK, sec))
             await asyncio.sleep(last)
