@@ -233,6 +233,9 @@ def test_lobby_db_and_effects():
         assert r and r["pool"] == 500_000 and r["next"] == e["id"] + 1
         w = r["winner"]
         assert await db.settle(e["closes_ts"] + 2) is None                  # 두 번 정산되지 않는다
+        assert len(r["history"]) >= 3 and abs(sum(r["shares"]) - 100) < 1e-6      # 시작 · 로비 · 뉴스 · 마감 지지율 기록
+        assert max(range(4), key=lambda i: r["shares"][i]) == w
+        assert len((await db.state(A, e["closes_ts"] + 3))["history"]) == 1    # 새 선거는 첫 점 하나부터
         bal_a, bal_b = await edb_db.get_balance(A), await edb_db.get_balance(B)
         if w == 0 and A not in r["caught"]:
             assert bal_a == 800_000 + 500_000
@@ -251,6 +254,23 @@ def test_lobby_db_and_effects():
         L.ACTIVE.clear()
 
     run(flow())
+
+
+def test_lobby_count_and_chart():
+    from services import lobby as L
+    from cogs import lobby as C
+    rng = random.Random(5)
+    cands = L.make_candidates(rng)
+    final = L.final_shares(cands, [0, 10 ** 6, 0, 0], rng)
+    frames = L.count_frames(final, rng)
+    assert [p for p, _ in frames][-1] == 100 and frames[-1][1] == final
+    assert all(abs(sum(s) - 100) < 1e-6 for _, s in frames)
+    em = C.count_embed(1, cands, 55, frames[3][1], 1_000_000)
+    assert "개표율" in em.description and "·" not in em.description
+    o = 1_800_000_000
+    png = C.support_chart(cands, [(o, [25.0] * 4), (o + 7200, [30.0, 20.0, 25.0, 25.0])], o, L.close_after(o), o + 9000)
+    assert png[:4] == b"\x89PNG"
+    assert C.support_chart(cands, [], o, L.close_after(o), o)[:4] == b"\x89PNG"   # 기록이 없어도 그려진다
 
 
 def test_lobby_screen():
