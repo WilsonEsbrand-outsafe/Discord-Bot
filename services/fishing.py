@@ -9,6 +9,7 @@ import time
 from typing import Optional
 
 import release
+from services import lobby
 from services.economy_db import EconomyDB, give_item, _kst_day
 
 # ───────────── 물고기 ─────────────
@@ -575,6 +576,7 @@ class FishingDB(EconomyDB):
                     m["supply"] = max(SUPPLY_MIN, m["supply"] * (1 - SUPPLY_HIT))
                     con.execute("UPDATE fish_market SET supply=? WHERE species=?", (m["supply"], f["species"]))
                 con.execute("DELETE FROM fish_bag WHERE id=?", (f["id"],))
+            total = int(total * lobby.mult("fish_sell", uid))   # 3.8.2 /로비 당선 공약
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (uid,))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total, uid))
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (uid,)).fetchone()[0]

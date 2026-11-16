@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 import release
+from services import lobby
 from services.economy_db import rookie_until
 from services.enhance import ENH_DROP_FROM, ENH_DROP_P, ENH_MAX, ENH_MIN_OVR, ENH_PLAYERS, ENH_STONES, STAR_OVR, TRAITS, enh_ovr, parse_traits, trait_slots
 from services.enhance import chance as enh_chance
@@ -1195,7 +1196,7 @@ class ClubDB:
     def _elite_payout(con, key: str, owner: int, day: int, today: int) -> dict:
         """밀린 하루 수입을 주인 지갑에 넣고 income_day 를 오늘로. → {owner_id, key, days, amount}."""
         days = max(0, today - int(day))
-        amount = days * ELITE_SIZES[ELITE_CLUBS[key][2]][1]
+        amount = int(days * ELITE_SIZES[ELITE_CLUBS[key][2]][1] * lobby.mult("elite_income", owner))   # 3.8.2 /로비 공약
         if amount:
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (owner,))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, owner))
@@ -1209,7 +1210,8 @@ class ClubDB:
             if not r or r[0] not in ELITE_CLUBS:
                 return None
             days = max(0, kst_day(now_ts) - int(r[1] or 0))
-            return {"key": r[0], "days": days, "amount": days * ELITE_SIZES[ELITE_CLUBS[r[0]][2]][1]}
+            return {"key": r[0], "days": days,
+                    "amount": int(days * ELITE_SIZES[ELITE_CLUBS[r[0]][2]][1] * lobby.mult("elite_income", user_id))}
         return await self._tx(fn)
 
     async def claim_elite(self, user_id: int, now_ts: int) -> dict:

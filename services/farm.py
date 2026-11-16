@@ -7,6 +7,7 @@
 import random
 from typing import Optional
 
+from services import lobby
 from services.economy_db import EconomyDB, _kst_day, give_item
 
 # ───────────── 땅 ─────────────
@@ -361,7 +362,7 @@ class FarmDB(EconomyDB):
             return None
         res = LANDS[r[0]][3]
         purse = FarmDB._purse(con, int(r[12]))   # 3.8.2: 코인 지갑을 쓰는 주인이면 코인은 지갑 (농장 코인은 0)
-        every = ENERGY_SEC * time_mult(res["water"])
+        every = ENERGY_SEC * time_mult(res["water"]) / lobby.mult("farm_energy", int(r[12]))   # 3.8.2 /로비 공약
         e = float(r[2])
         if e < ENERGY_MAX:
             e = min(float(ENERGY_MAX), e + max(0, now_ts - int(r[3])) / every)
@@ -667,7 +668,7 @@ class FarmDB(EconomyDB):
                     return {"ok": False, "reason": "cap", "cap": f["animal_cap"]}
                 n = 1
             else:
-                sec = CROPS[key][3] * time_mult(f["res"]["soil"])
+                sec = CROPS[key][3] * time_mult(f["res"]["soil"]) / lobby.mult("farm_grow", uid)   # 3.8.2 /로비 공약
                 n = min(f["plant_n"] or len(empty), len(empty), f["energy"] // cost)
                 if bought:
                     n = min(n, have)
@@ -721,7 +722,7 @@ class FarmDB(EconomyDB):
                 high += tier == 2
                 extra += qty == 2
                 got[(key, tier)] = got.get((key, tier), 0) + qty
-                if rng.random() < chest_p(f["res"]["ore"], f["v382"]):
+                if rng.random() < chest_p(f["res"]["ore"], f["v382"]) * lobby.mult("farm_chest", uid):
                     chests.append(rng.choices(list(CHESTS), weights=CHEST_WEIGHTS_382 if f["v382"] else CHEST_WEIGHTS)[0])
             for (key, tier), qty in got.items():
                 self._give(con, fid, key, tier, qty)
@@ -810,7 +811,7 @@ class FarmDB(EconomyDB):
             sold = [(k, t, min(q, int(n)) if n else q) for k, t, q in have]
             if not sold:
                 return {"ok": False, "reason": "empty"}
-            total = sum(value(k, t) * q for k, t, q in sold)
+            total = int(sum(value(k, t) * q for k, t, q in sold) * lobby.mult("farm_sell", uid))   # 3.8.2 /로비 공약
             for (k, t, q), (_, _, left) in zip(sold, have):
                 if q < left:
                     con.execute("UPDATE farm_items SET qty = qty - ? WHERE farm_id=? AND key=? AND tier=?", (q, fid, k, t))
