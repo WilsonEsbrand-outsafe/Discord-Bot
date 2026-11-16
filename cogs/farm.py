@@ -141,7 +141,8 @@ def panel_embed(user, f: dict, now: int, note: str = "") -> discord.Embed:
         lists.append(("자라는 중", "\n".join(f"{_item(k)} {n}개 ({_left(ts, now)} 남음)" for k, (n, ts) in growing.items())))
     if animals:
         lists.append((f"동물 ({f['animals']}/{f['animal_cap']})", "\n".join(
-            f"{F.ANIMALS[k][1]} {n}마리" + (f" ({_left(ts, now)} 남음)" if ts else "") for k, (n, ts) in animals.items())))
+            f"{F.ANIMALS[k][1]} {n}마리" + (f" ({_left(ts, now)} 남음)" if ts else "") for k, (n, ts) in animals.items())
+            + ("\n-# 생산품은 거두지 않아도 창고에 들어가요" if f.get("v382") else "")))
     if f["items"]:
         worth = sum(F.value(k, t) * q for k, t, q in f["items"])
         shown = [f"{_item(k, t)} {q}개" for k, t, q in f["items"][:12]]
