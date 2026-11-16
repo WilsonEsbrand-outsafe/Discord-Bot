@@ -27,7 +27,9 @@ CLOSE_WDAY, CLOSE_HOUR = 6, 21    # 일요일 21:00 KST 마감 (월요일 = 0)
 # 가상 인물 이름 · 정당 (실제 정치인 · 정당 이름은 쓰지 않는다)
 NAMES = ("나대박", "고수익", "이득표", "최저가", "정직한", "조공약", "한방울", "배당금", "오버롤", "유망주",
          "강슈팅", "도움왕", "선방왕", "백패스", "전방압", "골결정")
-PARTIES = ("골대당", "잔디당", "그물당", "코너킥당", "오프사이드당", "하프라인당")
+# 11/17 규완님: '당 이름을 우리나라 당이랑 비슷하게' — 실제 당 이름을 비튼 것 (그대로 쓰지는 않는다)
+PARTIES = ("더불어골대당", "국민의골", "조국축구당", "개혁슈팅당", "진보킥당", "정의패스당")
+_OLD_PARTIES = dict(zip(("골대당", "잔디당", "그물당", "코너킥당", "오프사이드당", "하프라인당"), PARTIES))
 
 # 공약: key → (설명 틀, 세기 후보) — 세기는 배수에 더하는 값 (0.3 = 30% 더)
 PLEDGES = {
@@ -172,7 +174,10 @@ class LobbyDB(EconomyDB):
 
     @staticmethod
     def _row(r) -> dict:
-        return {"id": int(r[0]), "opens_ts": int(r[1]), "closes_ts": int(r[2]), "cands": json.loads(r[3]),
+        cands = json.loads(r[3])
+        for c in cands:                                   # 예전 당 이름으로 열린 선거도 새 이름으로 보이게
+            c["party"] = _OLD_PARTIES.get(c["party"], c["party"])
+        return {"id": int(r[0]), "opens_ts": int(r[1]), "closes_ts": int(r[2]), "cands": cands,
                 "status": r[4], "winner": r[5], "next_news_ts": int(r[6])}
 
     @classmethod

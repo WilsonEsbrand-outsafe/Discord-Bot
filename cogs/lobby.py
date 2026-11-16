@@ -36,6 +36,12 @@ def kst(ts: int) -> str:
     return f"{t.tm_mon}월 {t.tm_mday}일 ({_WDAY[t.tm_wday]}) {t.tm_hour:02d}:{t.tm_min:02d}"
 
 
+def short(ts: int) -> str:
+    """'월 21:00' (뉴스 목록용 짧은 시각)."""
+    t = time.gmtime(int(ts) + 9 * 3600)
+    return f"{_WDAY[t.tm_wday]} {t.tm_hour:02d}:{t.tm_min:02d}"
+
+
 def _pledges(c: dict) -> str:
     return "\n".join(f"- {L.pledge_text(k, p)}" for k, p in c["pledges"])
 
@@ -116,13 +122,16 @@ def lobby_embed(user, e: dict) -> discord.Embed:
     em = ui.card(f"제{e['id']}회 축구 봇 대선", (
         "마음에 드는 후보에게 로비하세요. 로비가 몰릴수록 지지율이 올라가요.\n"
         f"마감 **{kst(e['closes_ts'])}**"), ui.INFO, user, SECTION)
+    # PC 에선 inline 칸이 한 줄에 3개라 후보 4명이 3+1 로 갈렸다 → 2명씩 두 줄 (세 번째 칸은 빈 칸)
     for i, c in enumerate(e["cands"]):
-        em.add_field(name=f"{i + 1}. {c['name']} ({c['party']})", value=(
-            f"지지율 **{e['support'][i]:.0f}%**\n로비 {e['pots'][i]:,}원\n"
+        em.add_field(name=f"{i + 1}. {c['name']}", value=(
+            f"{c['party']}\n지지율 **{e['support'][i]:.0f}%**\n"
             + (f"내 로비 **{e['mine'][i]:,}원**\n" if e["mine"][i] else "")
-            + f"공약\n{_pledges(c)}"))
+            + f"\n{_pledges(c)}"))
+        if i % 2 == 1:
+            em.add_field(name="\u200b", value="\u200b")
     if e["news"]:
-        em.add_field(name="최근 뉴스", value="\n".join(f"{kst(n['ts'])} {n['text']}" for n in e["news"])[:1024], inline=False)
+        em.add_field(name="최근 뉴스", value="\n".join(f"`{short(n['ts'])}` {n['text']}" for n in e["news"])[:1024], inline=False)
     last = e.get("last")
     if last and last["winner"] is not None:
         w = last["cands"][last["winner"]]
@@ -257,7 +266,7 @@ class Lobby(commands.Cog):
         c = r["cand"]
         e = ui.card(f"제{r['eid']}회 축구 봇 대선 결과", (
             f"**{c['name']} ({c['party']})** 후보가 득표율 {r['shares'][r['winner']]:.1f}%로 당선됐어요.\n"
-            f"이번 선거에 들어간 로비 {r['pool']:,}원\n로비한 사람 {r['people']}명"
+            f"로비한 사람 {r['people']}명"
             + (f"\n로비가 적발된 사람 {len(r['caught'])}명" if r["caught"] else "")), ui.GOLD, None, SECTION)
         e.add_field(name="다음 선거까지 적용되는 공약", value=_pledges(c), inline=False)
         e.add_field(name="다음 선거", value=f"제{r['next']}회 대선이 열렸어요.\n마감 {kst(r['next_closes'])}", inline=False)
