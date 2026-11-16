@@ -577,7 +577,8 @@ def test_shop():
     run(flow())
 
 
-def test_ui_smoke():
+def test_ui_smoke(monkeypatch):
+    monkeypatch.setattr(__import__("release"), "preview_382", lambda *a, **k: False)   # 3.8.1 화면 (3.8.2 는 test_382.py)
     """농장 화면: 땅 고르기 → 스레드 → 심기 · 거두기 · 작은 화면들이 오류 없이 그려진다 (디스코드 없이 가짜 상호작용으로)."""
     from unittest.mock import AsyncMock, MagicMock
 
