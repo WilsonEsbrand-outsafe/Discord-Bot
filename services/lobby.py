@@ -20,6 +20,8 @@ CANDIDATES_N, PLEDGES_N = 4, 3
 LOBBY_WEIGHT = 25.0           # 지지율 = 기본 인기 + 사건 + 로비 몫(전체 로비 중 그 후보 몫) × 이것
 ELECTION_SWING = 15.0         # 선거일 변수: 후보마다 ± 이만큼 (지지율 점수)
 NEWS_GAP = (2 * 3600, 4 * 3600)   # 사건 뉴스 간격 (2~4시간)
+SNAP_GAP = 3600                   # 지지율 그래프 기록 간격 (뉴스 · 로비 때는 따로 남긴다)
+SNAP_MERGE = 600                  # 이 안에 또 기록하면 새 점 대신 마지막 점을 고친다 (로비가 몰려도 점이 너무 많지 않게)
 CLOSE_WDAY, CLOSE_HOUR = 6, 21    # 일요일 21:00 KST 마감 (월요일 = 0)
 
 # 가상 인물 이름 · 정당 (실제 정치인 · 정당 이름은 쓰지 않는다)
@@ -104,10 +106,30 @@ def support(cands: list[dict], pots: list[int]) -> list[float]:
     return [x * 100 / s for x in score]
 
 
-def pick_winner(cands: list[dict], pots: list[int], rng=random) -> int:
-    """선거일: 지지율에 후보마다 ±ELECTION_SWING 변수를 더해 가장 높은 후보."""
+def final_shares(cands: list[dict], pots: list[int], rng=random) -> list[float]:
+    """선거일 득표율 (%) — 지지율에 후보마다 ±ELECTION_SWING 변수를 더한 것. 합 100."""
     sup = support(cands, pots)
-    return max(range(len(cands)), key=lambda i: sup[i] + rng.uniform(-ELECTION_SWING, ELECTION_SWING))
+    raw = [max(0.5, s + rng.uniform(-ELECTION_SWING, ELECTION_SWING)) for s in sup]
+    t = sum(raw)
+    return [x * 100 / t for x in raw]
+
+
+def pick_winner(cands: list[dict], pots: list[int], rng=random) -> int:
+    """선거일: 득표율이 가장 높은 후보."""
+    sh = final_shares(cands, pots, rng)
+    return max(range(len(cands)), key=lambda i: sh[i])
+
+
+def count_frames(final: list[float], rng=random, steps=(8, 21, 37, 55, 72, 88, 100)) -> list[tuple[int, list[float]]]:
+    """개표 장면: [(개표율, 후보별 득표율)] — 초반엔 흔들리다가 100%에서 최종 득표율과 같아진다."""
+    noise = [rng.uniform(-12, 12) for _ in final]
+    out = []
+    for p in steps:
+        left = (1 - p / 100) ** 1.2
+        raw = [max(0.5, f + left * (n + rng.uniform(-3, 3))) for f, n in zip(final, noise)]
+        t = sum(raw)
+        out.append((p, [x * 100 / t for x in raw] if p < 100 else list(final)))
+    return out
 
 
 def payouts(bets: list[tuple[int, int, int]], winner: int, caught: set[int]) -> dict[int, int]:
@@ -131,6 +153,8 @@ _TABLES = (
     "cand INTEGER, delta INTEGER NOT NULL DEFAULT 0, text TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS lobby_results (eid INTEGER NOT NULL, uid INTEGER NOT NULL, staked INTEGER NOT NULL, "
     "paid INTEGER NOT NULL, caught INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(eid, uid))",
+    "CREATE TABLE IF NOT EXISTS lobby_support (eid INTEGER NOT NULL, ts INTEGER NOT NULL, sup TEXT NOT NULL)",   # 지지율 그래프
+    "CREATE INDEX IF NOT EXISTS lobby_support_eid ON lobby_support(eid, ts)",
     "CREATE TABLE IF NOT EXISTS lobby_threads (guild_id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL)",   # 서버마다 대선 뉴스 스레드
 )
 
@@ -165,6 +189,7 @@ class LobbyDB(EconomyDB):
         eid = int(cur.lastrowid)
         con.execute("INSERT INTO lobby_news(eid, ts, text) VALUES(?,?,?)",
                     (eid, int(now_ts), f"제{eid}회 축구 봇 대선 후보 등록 마감. 후보 {CANDIDATES_N}명이 선거전에 뛰어들었습니다"))
+        cls._snap(con, eid, cands, now_ts, force=True)
         return {"id": eid, "opens_ts": int(now_ts), "closes_ts": closes, "cands": cands, "status": "open", "winner": None,
                 "next_news_ts": int(now_ts) + NEWS_GAP[0]}
 
@@ -175,6 +200,23 @@ class LobbyDB(EconomyDB):
             if 0 <= int(c) < n:
                 pots[int(c)] = int(a)
         return pots
+
+    @classmethod
+    def _snap(cls, con, eid: int, cands: list[dict], now_ts: int, force: bool = False) -> list[float]:
+        """지금 지지율을 그래프 기록에 남긴다. SNAP_MERGE 안의 기록은 (force 가 아니면) 마지막 점을 고친다."""
+        sup = support(cands, cls._pots(con, eid, len(cands)))
+        last = con.execute("SELECT rowid, ts FROM lobby_support WHERE eid=? ORDER BY ts DESC, rowid DESC LIMIT 1", (eid,)).fetchone()
+        txt = json.dumps([round(x, 2) for x in sup])
+        if last and not force and now_ts - int(last[1]) < SNAP_MERGE:
+            con.execute("UPDATE lobby_support SET sup=? WHERE rowid=?", (txt, last[0]))
+        else:
+            con.execute("INSERT INTO lobby_support(eid, ts, sup) VALUES(?,?,?)", (eid, int(now_ts), txt))
+        return sup
+
+    @staticmethod
+    def _history(con, eid: int) -> list[tuple[int, list[float]]]:
+        return [(int(t), json.loads(s)) for t, s in con.execute(
+            "SELECT ts, sup FROM lobby_support WHERE eid=? ORDER BY ts, rowid", (eid,))]
 
     async def state(self, uid: int, now_ts: int) -> dict:
         """지금 선거 + 후보별 로비 총액 · 지지율 · 내 로비 · 최근 뉴스 · 지금 적용 중인 공약(지난 당선자)."""
@@ -190,6 +232,7 @@ class LobbyDB(EconomyDB):
             e["news"] = [{"ts": int(t), "text": x, "delta": int(d)} for t, x, d in con.execute(
                 "SELECT ts, text, delta FROM lobby_news WHERE eid=? ORDER BY id DESC LIMIT 6", (e["id"],))]
             e["last"] = self._last(con)
+            e["history"] = self._history(con, e["id"])
             return e
         return await self._tx(fn)
 
@@ -226,6 +269,7 @@ class LobbyDB(EconomyDB):
                         (e["id"], int(uid), int(cand), int(amount)))
             mine = int(con.execute("SELECT amount FROM lobby_bets WHERE eid=? AND uid=? AND cand=?",
                                    (e["id"], int(uid), int(cand))).fetchone()[0])
+            self._snap(con, e["id"], e["cands"], now_ts)
             return {"ok": True, "cand": e["cands"][cand], "amount": int(amount), "mine": mine, "balance": bal - int(amount)}
         return await self._tx(fn)
 
@@ -233,7 +277,12 @@ class LobbyDB(EconomyDB):
         """뉴스 시각이 지났으면 사건 하나를 터뜨린다 → {eid, text, delta, cand} (아니면 None)."""
         def fn(con):
             e = self._current(con, now_ts, rng)
-            if now_ts < e["next_news_ts"] or now_ts >= e["closes_ts"]:
+            if now_ts >= e["closes_ts"]:
+                return None
+            if now_ts < e["next_news_ts"]:
+                last = con.execute("SELECT MAX(ts) FROM lobby_support WHERE eid=?", (e["id"],)).fetchone()[0]
+                if last is None or now_ts - int(last) >= SNAP_GAP:
+                    self._snap(con, e["id"], e["cands"], now_ts, force=True)
                 return None
             i = rng.randrange(len(e["cands"]))
             good = rng.random() < 0.5
@@ -244,8 +293,8 @@ class LobbyDB(EconomyDB):
             con.execute("UPDATE lobby_elections SET cands=?, next_news_ts=? WHERE id=?",
                         (json.dumps(e["cands"], ensure_ascii=False), int(now_ts) + rng.randint(*NEWS_GAP), e["id"]))
             con.execute("INSERT INTO lobby_news(eid, ts, cand, delta, text) VALUES(?,?,?,?,?)", (e["id"], int(now_ts), i, delta, text))
-            pots = self._pots(con, e["id"], len(e["cands"]))
-            return {"eid": e["id"], "text": text, "delta": delta, "cand": i, "support": support(e["cands"], pots)[i]}
+            sup = self._snap(con, e["id"], e["cands"], now_ts, force=True)
+            return {"eid": e["id"], "text": text, "delta": delta, "cand": i, "support": sup[i]}
         return await self._tx(fn)
 
     async def settle(self, now_ts: int, rng=random) -> Optional[dict]:
@@ -261,7 +310,10 @@ class LobbyDB(EconomyDB):
                 return None
             n = len(e["cands"])
             pots = self._pots(con, e["id"], n)
-            w = pick_winner(e["cands"], pots, rng)
+            self._snap(con, e["id"], e["cands"], e["closes_ts"], force=True)   # 그래프 마지막 점 = 마감 순간
+            history = self._history(con, e["id"])
+            shares = final_shares(e["cands"], pots, rng)
+            w = max(range(n), key=lambda i: shares[i])
             bets = [(int(u), int(c), int(a)) for u, c, a in con.execute(
                 "SELECT uid, cand, amount FROM lobby_bets WHERE eid=?", (e["id"],))]
             caught = {u for u in {u for u, c, _ in bets if c == w} if rng.random() < LOBBY_CAUGHT}
@@ -278,9 +330,11 @@ class LobbyDB(EconomyDB):
             con.execute("UPDATE lobby_elections SET status='done', winner=? WHERE id=?", (w, e["id"]))
             sup = support(e["cands"], pots)
             con.execute("INSERT INTO lobby_news(eid, ts, cand, text) VALUES(?,?,?,?)",
-                        (e["id"], int(now_ts), w, f"{e['cands'][w]['name']} 후보 당선! 지지율 {sup[w]:.0f}%"))
+                        (e["id"], int(now_ts), w, f"{e['cands'][w]['name']} 후보 당선! 득표율 {shares[w]:.1f}%"))
             nxt = self._current(con, now_ts, rng)
             return {"eid": e["id"], "winner": w, "cand": e["cands"][w], "support": sup[w], "paid": paid,
+                    "cands": e["cands"], "shares": shares, "history": history, "opens_ts": e["opens_ts"],
+                    "closes_ts": e["closes_ts"],
                     "caught": sorted(caught), "pool": sum(pots), "people": len(staked), "next": nxt["id"],
                     "next_closes": nxt["closes_ts"]}
         return await self._tx(fn)
