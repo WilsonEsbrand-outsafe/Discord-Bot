@@ -1,3 +1,4 @@
+import calendar
 """3.8.2: 농장 코인 지갑 하나 · 에너지 2배 · 새 작물 · 상자 상향 · 바로 인수 없앰 (농장 · 명문 구단) · 리그 중간 순위 · 농장 스레드 다시 열기."""
 import asyncio
 import random
@@ -31,7 +32,11 @@ def _set_coins(fid, c):
 
 
 def test_switch():
-    assert release.preview_382(release.TEST_GUILD) and release.RELEASE_382_TS is None and not release.preview_382(1)
+    t = release.RELEASE_382_TS
+    assert t == calendar.timegm((2026, 11, 17, 7, 30, 0))                                     # 16:30 KST 점검 시작과 함께 공개
+    assert release.preview_382(release.TEST_GUILD, t - 60) and not release.preview_382(1, t - 60) and release.preview_382(1, t)
+    assert not release.preview_lobby(1, t + 86400) and release.preview_lobby(release.TEST_GUILD)  # /로비 는 다음 패치
+    assert "로비" in release.hidden_commands(1, t + 60)
 
 
 def test_purse_and_takeover():

@@ -10,7 +10,7 @@ from typing import Optional
 TEST_GUILD = 757761125403066419   # 2026-11-11 부터 (그 전엔 1374213619793006704)
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
 MAINT_OPEN_END = calendar.timegm((2100, 1, 1, 0, 0, 0))   # 끝 시각을 정하지 않은 무기한 점검
-MAINTENANCE = (calendar.timegm((2026, 11, 12, 6, 20, 0)), calendar.timegm((2026, 11, 12, 6, 35, 0)))   # 11/12 15:20 ~ 15:35 KST — 3.8.1 점검
+MAINTENANCE = (calendar.timegm((2026, 11, 17, 7, 30, 0)), calendar.timegm((2026, 11, 17, 7, 35, 0)))   # 11/17 16:30 ~ 16:35 KST — 3.8.2 점검
 # 3.7.4 점검은 11/04 14:10 ~ 14:15 KST 였다
 # 3.7.2 점검은 11/03 09:20 ~ 10:05 KST 였다 (연장 → 3.7.3 공개하고 끝)
 # 3.7.1 점검은 11/02 10:50 ~ 11:00 KST 였다
@@ -208,6 +208,7 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = out | LEGACY_374 if preview_374(guild_id, now) else out
     out = out if preview_381(guild_id, now) else out | PREVIEW_381
     out = out if preview_382(guild_id, now) else out | PREVIEW_382
+    out = out if preview_lobby(guild_id, now) else out | PREVIEW_LOBBY
     return out if preview_310(guild_id, now) else out | PREVIEW_310
 
 
@@ -306,8 +307,11 @@ def farm_beta_over(guild_id: Optional[int], now: Optional[float] = None) -> bool
 
 # 3.8.2 — 테스트 서버 먼저. 봇 화면의 '·' 표기 없애기, 농장 코인 하나로 합치기, 농사 에너지 2배, 작물 추가, 농장 스레드 지우면 다시 열기,
 # 명문 구단과 농장의 적정 인수(바로 인수) 없애기, 리그 중간 순위 크게 흔들기, 농사 상자 대폭 상향. None = 아직
-RELEASE_382_TS: Optional[int] = None
-PREVIEW_382: set[str] = {"로비"}   # 3.8.2 새 명령어 /로비 (주간 대선) — 공개 전엔 테스트 서버에만
+RELEASE_382_TS: Optional[int] = calendar.timegm((2026, 11, 17, 7, 30, 0))   # 2026-11-17 16:30 KST (점검 시작과 함께 공개)
+PREVIEW_382: set[str] = set()
+# 11/17 규완님 '/로비는 다음 패치 때 업데이트' — /로비 는 3.8.2 공개에서 빼고 테스트 서버에만. None = 아직
+RELEASE_LOBBY_TS: Optional[int] = None
+PREVIEW_LOBBY: set[str] = {"로비"}
 
 
 def released_382(now: Optional[float] = None) -> bool:
@@ -316,6 +320,10 @@ def released_382(now: Optional[float] = None) -> bool:
 
 def preview_382(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_382(now)
+
+
+def preview_lobby(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or (RELEASE_LOBBY_TS is not None and _now(now) >= RELEASE_LOBBY_TS)
 
 
 # 2026-11-11 규완님: 관리자 계정 — 모든 순위 · 집계에서 뺀다 (3.8.1 — 공개 전엔 테스트 서버에서만)
