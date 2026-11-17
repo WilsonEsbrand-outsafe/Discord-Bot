@@ -425,6 +425,76 @@ class FarmPanel(discord.ui.View):
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
+CELL_ROW = 5   # 칸 버튼 한 줄 (디스코드 버튼은 한 줄에 5개까지) — 큰 밭 그림도 같은 줄로
+
+
+def cell_emoji(p: Optional[dict]) -> str:
+    if p is None:
+        return "🟫"
+    if p["kind"] == "crop":
+        return F.CROPS[p["key"]][0] if p["ready"] else "🌱"
+    return F.PRODUCTS[F.ANIMALS[p["key"]][3]][0] if p["ready"] else F.ANIMALS[p["key"]][0]
+
+
+def field_text(f: dict) -> str:
+    """11/17 규완님 '임베드 이모지 크기를 늘리고 이모지를 클릭해서도 거둬지게' → '둘 다 따로 두기':
+    이모지만 있는 글은 디스코드가 크게 보여 준다 (27개까지). 그 아래 칸 버튼."""
+    cells = [cell_emoji(p) for p in f["fields"]]
+    return "\n".join("".join(cells[i:i + CELL_ROW]) for i in range(0, len(cells), CELL_ROW))
+
+
+def _is_field(m: discord.Message) -> bool:
+    return any(str(getattr(c, "custom_id", "") or "").startswith("farm:cell:")
+               for row in m.components for c in getattr(row, "children", []))
+
+
+class FieldView(discord.ui.View):
+    """큰 밭 그림 아래의 칸 버튼 — 다 자란 칸을 누르면 그 칸만 거둔다. custom_id 고정(farm:cell:번호)이라 재시작해도 눌린다."""
+
+    def __init__(self, cog: "Farm", f: Optional[dict] = None):
+        super().__init__(timeout=None)
+        self.cog = cog
+        cells = f["fields"] if f else [None] * F.PLOTS_MAX
+        for i, p in enumerate(cells[:25]):
+            ready = bool(p and p["ready"])
+            b = discord.ui.Button(custom_id=f"farm:cell:{i}", emoji=cell_emoji(p), row=i // CELL_ROW,
+                                  style=discord.ButtonStyle.success if ready else discord.ButtonStyle.secondary)
+            b.callback = self._press
+            self.add_item(b)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not release.farm_381(interaction.guild_id):
+            await interaction.response.send_message(_closed(interaction.guild_id), ephemeral=True)
+            return False
+        owner = await self.cog.db.thread_owner(interaction.channel_id)
+        if owner != interaction.user.id:
+            await interaction.response.send_message("농장 주인만 거둘 수 있어요. `/농사`로 내 농장을 열어 보세요.", ephemeral=True)
+            return False
+        return True
+
+    async def _press(self, interaction: discord.Interaction):
+        i = int(str(interaction.data["custom_id"]).rsplit(":", 1)[1])
+        fid, now = await self.cog.db.thread_farm(interaction.channel_id) or 0, int(time.time())
+        await self.cog.upgrade(interaction)
+        f = await self.cog.db.get(fid, now)
+        p = f["fields"][i] if f and i < len(f["fields"]) else None
+        if not p or not p["ready"]:
+            msg = "빈 땅이에요. 아래 메뉴에서 심어 보세요." if not p else f"아직 자라는 중이에요 ({_left(p['ready_ts'], now)} 남음)."
+            return await interaction.response.send_message(msg, ephemeral=True)
+        r = await self.cog.db.harvest(interaction.user.id, fid, now, slots={i})
+        if not r["ok"]:
+            msg = "에너지가 없어요. 조금 기다리면 다시 차요." if r["reason"] == "energy" else "아직 거둘 것이 없어요."
+            return await interaction.response.send_message(msg, ephemeral=True)
+        f = await self.cog.db.get(fid, now)
+        await interaction.response.edit_message(content=field_text(f), view=FieldView(self.cog, f))
+        note = "거뒀어요: " + ", ".join(f"{_item(k, t)} {q}개" for (k, t), q in r["got"].items())
+        if r["chests"]:
+            note += "\n" + ", ".join(f"{F.CHESTS[c][1]}" for c in r["chests"]) + "을(를) 발견했어요"
+        if r["daily"]:
+            note += f"\n오늘 첫 수확 선물: {F.CHESTS[F.DAILY_CHEST][1]}"
+        await self.cog.panel_note(interaction.channel, fid, note)
+
+
 class NameModal(discord.ui.Modal):
     """농장 이름 짓기 — 스레드 이름과 농장 화면 제목이 바뀐다. 비우면 원래대로."""
     def __init__(self, cog: "Farm", f: dict, panel):
@@ -482,6 +552,7 @@ class _Sub(discord.ui.View):
         await interaction.response.edit_message(embed=self.embed(f), view=self)
         try:
             await self.panel.edit(embed=panel_embed(self.user, f, now, panel_note), view=FarmPanel(self.cog, f))
+            await self.cog.sync_field(self.panel.channel, f)
         except discord.HTTPException:
             pass
 
@@ -1257,6 +1328,7 @@ class Farm(commands.Cog):
         self.db = F.FarmDB()
         self.panel = FarmPanel(self)
         bot.add_view(self.panel)   # 재시작 전에 올라간 농장 화면의 버튼도 받는다
+        bot.add_view(FieldView(self))   # 큰 밭 그림의 칸 버튼도 (3.8.2)
         self.shop = ShopPanel(self)
         bot.add_view(self.shop)    # 농사 상점 버튼도
         self._shop_lock = asyncio.Lock()
@@ -1491,6 +1563,47 @@ class Farm(commands.Cog):
         now = int(time.time())
         f = await self.db.get(fid, now)
         await interaction.response.edit_message(embed=panel_embed(interaction.user, f, now, note), view=FarmPanel(self, f))
+        await self.sync_field(interaction.channel, f)
+
+    @staticmethod
+    def big(channel) -> bool:
+        """큰 밭 그림 + 칸 버튼을 쓰는 서버인가 (11/17 규완님 '16:30때 같이 공개해' — 3.8.2 와 함께)."""
+        return release.preview_382(getattr(getattr(channel, "guild", None), "id", None))
+
+    async def _find(self, th, test, limit: int = 15):
+        try:
+            async for m in th.history(limit=limit):
+                if m.author.id == self.bot.user.id and test(m):
+                    return m
+        except discord.HTTPException:
+            pass
+        return None
+
+    async def sync_field(self, th, f: Optional[dict]):
+        """큰 밭 그림 글을 지금 밭으로 고친다 (없으면 밭 화면 위에 새로 올린다)."""
+        if f is None or not isinstance(th, discord.Thread) or not self.big(th):
+            return
+        try:
+            m = await self._find(th, _is_field)
+            if m is not None:
+                await m.edit(content=field_text(f), view=FieldView(self, f))
+            else:
+                await self.repost(th, f["id"], force=True)
+        except discord.HTTPException as ex:
+            print(f"[농사] {th.id} 큰 밭 그림 고치기 오류: {type(ex).__name__}: {ex}")
+
+    async def panel_note(self, th, fid: int, note: str):
+        """칸 버튼으로 거둔 뒤 밭 화면(아래 글)도 고친다."""
+        m = await self._find(th, self._is_panel)
+        if m is None:
+            return
+        now = int(time.time())
+        f = await self.db.get(fid, now)
+        owner = th.guild.get_member(f["owner"]) or await self.bot.fetch_user(f["owner"])
+        try:
+            await m.edit(embed=panel_embed(owner, f, now, note), view=FarmPanel(self, f))
+        except discord.HTTPException:
+            pass
 
     # ───────────── 밭을 맨 밑에 (11/11 규완님: 누가 채팅을 치면 밭이 위로 올라간다) ─────────────
     @commands.Cog.listener()
@@ -1526,21 +1639,31 @@ class Farm(commands.Cog):
         return any(getattr(c, "custom_id", None) == "farm:harvest"
                    for row in m.components for c in getattr(row, "children", []))
 
-    async def repost(self, th: discord.Thread, fid: int) -> bool:
-        """밭 화면을 스레드 맨 밑에 새로 올리고 위에 남은 옛 밭 화면은 지운다. 이미 맨 밑이면 그대로."""
+    async def repost(self, th: discord.Thread, fid: int, force: bool = False) -> bool:
+        """밭 화면을 스레드 맨 밑에 새로 올리고 위에 남은 옛 밭 화면은 지운다. 이미 맨 밑이면 그대로.
+        큰 밭 그림을 쓰는 서버는 [큰 밭 그림 + 칸 버튼] 글을 밭 화면 바로 위에 같이 올린다."""
+        big = self.big(th)
         async with self._sticky_lock:
-            old, first = [], True
+            old, kinds, k = [], {}, 0
             async for m in th.history(limit=STICKY_SCAN):
-                if m.author.id == self.bot.user.id and self._is_panel(m):
-                    if first:
-                        return False   # 맨 밑 글이 이미 밭
+                if m.author.id == self.bot.user.id and (self._is_panel(m) or _is_field(m)):
+                    kinds[k] = "panel" if self._is_panel(m) else "field"
                     old.append(m)
-                first = False
+                k += 1
+            if not force:
+                if not big and kinds.get(0) == "panel":
+                    return False   # 맨 밑 글이 이미 밭
+                if big and kinds.get(0) == "panel" and kinds.get(1) == "field":
+                    return False   # 맨 밑이 밭 화면, 바로 위가 큰 밭 그림
+            if not big:
+                old = [m for m in old if self._is_panel(m)]
             now = int(time.time())
             f = await self.db.get(fid, now)
             if f is None:
                 return False
             owner = th.guild.get_member(f["owner"]) or await self.bot.fetch_user(f["owner"])
+            if big:
+                await th.send(content=field_text(f), view=FieldView(self, f))
             await th.send(embed=panel_embed(owner, f, now), view=FarmPanel(self, f))
             for m in old:
                 try:
@@ -1567,6 +1690,10 @@ class Farm(commands.Cog):
         f = await self.db.get(fid, now)
         tid = await self.db.get_thread(fid, guild.id)
         if tid and ch.id == tid and not interaction.response.is_done():
+            if self.big(ch):   # 큰 밭 그림과 밭 화면을 맨 밑에 같이
+                await interaction.response.send_message("농장 화면을 맨 아래에 다시 올렸어요.", ephemeral=True)
+                await self.repost(ch, fid, force=True)
+                return
             return await interaction.response.send_message(embed=panel_embed(user, f, now), view=FarmPanel(self, f))
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
@@ -1591,6 +1718,8 @@ class Farm(commands.Cog):
                                                     type=discord.ChannelType.public_thread, auto_archive_duration=10080,
                                                     reason=f"/농사 — {user}")
                 await self.db.set_thread(fid, guild.id, thread.id)
+                if self.big(thread):
+                    await thread.send(content=field_text(f), view=FieldView(self, f))
                 await thread.send(content=user.mention, embed=panel_embed(user, f, now), view=FarmPanel(self, f))
             elif thread.archived:   # 이미 있는 스레드엔 농장 화면을 다시 올리지 않는다 (스레드 안에서 /농사 를 쓰면 올린다)
                 await thread.edit(archived=False)

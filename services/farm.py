@@ -733,7 +733,7 @@ class FarmDB(EconomyDB):
         return await self._tx(fn)
 
     # ───────────── 수확 · 모으기 ─────────────
-    async def harvest(self, uid: int, fid: int, now_ts: int, rng=random) -> dict:
+    async def harvest(self, uid: int, fid: int, now_ts: int, rng=random, slots: Optional[set] = None) -> dict:
         """다 자란 작물 수확 + 동물이 만든 것 모으기 (에너지가 되는 만큼 · 하나에 1).
         낫: 하나 더 나올 확률 · ★2 로 나올 확률. 광맥: 상자가 나올 확률. 하루(KST) 첫 거두기엔 나무 상자 하나 (daily).
         → {got: {(key, tier): 수}, extra, high, chests: [tier], daily, count, left(에너지가 모자라 남은 수)}.
@@ -742,7 +742,7 @@ class FarmDB(EconomyDB):
             f = self._mine(con, uid, fid, now_ts)
             if not f:
                 return {"ok": False, "reason": "none"}
-            ready = [(i, p) for i, p in enumerate(f["fields"]) if p and p["ready"]]
+            ready = [(i, p) for i, p in enumerate(f["fields"]) if p and p["ready"] and (slots is None or i in slots)]   # slots: 칸 버튼으로 그 칸만
             if not ready:
                 return {"ok": False, "reason": "nothing"}
             n = min(len(ready), f["energy"] // f["cost"])

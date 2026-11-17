@@ -464,3 +464,33 @@ def test_energy_max_and_drinks():
         f = await db.get(G, T + 10 ** 6)
         assert any(getattr(c, "custom_id", "") == "farm:drink" for c in CF.FarmPanel(None, f).children)
     run(flow())
+
+
+def test_big_field_and_cell_harvest():
+    """11/17 '둘 다 따로 두기': 큰 밭 그림(이모지만 있는 글) + 칸 버튼 — 누른 칸만 거둔다. 3.8.2 와 함께 공개."""
+    from cogs import farm as CF
+    db = F.FarmDB()
+
+    async def flow():
+        A = 38311
+        G = (await db.create(A, "plain", T))["id"]
+        await db.upgrade(A)
+        r = await db.plant(A, G, "carrot", T)
+        assert r["ok"] and r["count"] >= 2
+        later = T + 10 ** 6
+        f = await db.get(G, later)
+        text = CF.field_text(f)
+        assert "\n" in text and all(len(line) for line in text.split("\n")) and len(f["fields"]) <= 27
+        v = CF.FieldView(None, f)
+        assert len(v.children) == len(f["fields"]) and v.children[0].style == CF.discord.ButtonStyle.success
+        assert len(CF.FieldView(None).children) == F.PLOTS_MAX                       # 재시작용 틀은 모든 칸
+        ready = [i for i, p in enumerate(f["fields"]) if p and p["ready"]]
+        h = await db.harvest(A, G, later, slots={ready[0]})
+        assert h["ok"] and h["count"] == 1
+        g = await db.get(G, later)
+        assert g["fields"][ready[0]] is None and all(g["fields"][i] for i in ready[1:])   # 누른 칸만
+        t = release.RELEASE_382_TS
+        th = MagicMock(spec=CF.discord.Thread)
+        th.guild = MagicMock(id=1)
+        assert not CF.Farm.big(th) or time.time() >= t
+    run(flow())
