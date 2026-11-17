@@ -348,7 +348,7 @@ def toto_hold_381(bot, user_id: int, now: Optional[float] = None) -> bool:
 
 
 # 3.8.3 — 공개 전엔 테스트 서버에서만
-RELEASE_383_TS: Optional[int] = None
+RELEASE_383_TS: Optional[int] = calendar.timegm((2026, 11, 17, 8, 40, 0))   # 2026-11-17 17:40 KST (무점검, 바로 공개)
 
 
 def released_383(now: Optional[float] = None) -> bool:
