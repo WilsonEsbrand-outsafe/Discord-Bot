@@ -408,6 +408,38 @@ def test_lobby_drop_events():
     run(flow())
 
 
+def test_lobby_term_events():
+    from services import lobby as L
+    from cogs import lobby as CL
+    db = L.LobbyDB()
+
+    async def flow():
+        now = 1_820_000_000
+        e = await db.state(1, now)
+        r = await db.settle(e["closes_ts"] + 1, random.Random(1))
+        t0 = e["closes_ts"] + 1
+        assert await db.term_tick(t0) is None                                # 임기 시작 바로는 없음
+        seen, kinds = 0, set()
+        for k in range(1, 200):
+            t = await db.term_tick(t0 + k * L.TERM_GAP[1], random.Random(k))
+            if t:
+                seen += 1
+                kinds.add(t["kind"])
+                assert t["text"] and "·" not in t["text"]
+                act = L.active_from(t["winner"])
+                if t["kind"] == "impeach":
+                    assert act == {}
+                    break
+        w = await db.last_winner()
+        assert seen and (w.get("impeached") or w.get("suspended"))
+        assert len(L.active_from(w)) < len(L.active_from(r["cand"])) or not L.active_from(r["cand"])
+        st = await db.state(1, t0 + 300 * L.TERM_GAP[1])
+        ems = CL.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), st)
+        assert "임기 중" in "".join(f.name for f in ems[-1].fields)
+
+    run(flow())
+
+
 def test_shop_any_qty_and_no_hold_cap():
     from services import player_market_db as P
     from cogs import players_market as CP

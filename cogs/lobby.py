@@ -170,7 +170,12 @@ def lobby_embeds(user, e: dict) -> list[discord.Embed]:
     last = e.get("last")
     if last and last["winner"] is not None:
         w = last["cands"][last["winner"]]
-        tail.add_field(name=f"지금 적용 중인 공약 (제{last['id']}회 당선 {w['name']})", value=_pledges(w, True), inline=False)
+        name = f"{w['name']} 대통령 임기 중 (제{last['id']}회 당선)"
+        if w.get("impeached"):
+            tail.add_field(name=name, value="탄핵돼서 남은 임기 동안 모든 공약이 멈췄어요.", inline=False)
+        else:
+            stop = "".join(f"\n- {L.pledge_text(*w['pledges'][k])} (중단)" for k in w.get("suspended", []))
+            tail.add_field(name=name, value=("지금 적용 중인 공약\n" + _pledges(w, True) + stop)[:1024], inline=False)
     tail.set_footer(text="배당은 로비하는 순간 정해져요. 낙선한 후보에게 로비한 돈은 잃어요.\n"
                          "후보가 합당하거나 사퇴하면 그 후보에게 로비한 돈은 돌려받아요.\n"
                          "당선되면 공약마다 이행률만큼의 확률로 지켜요. 지킨 공약만 적용돼요.\n"
@@ -264,6 +269,11 @@ class Lobby(commands.Cog):
             self._shows.add(t)
             t.add_done_callback(self._shows.discard)
             return
+        t = await self.db.term_tick(now)
+        if t:   # 임기 중 사건 → 공약 효과를 바로 고친다
+            L.ACTIVE.clear()
+            L.ACTIVE.update(L.active_from(t["winner"]))
+            await self.post_all(ui.card("임기 중 사건", f"**{t['text']}**", ui.LOSE, None, SECTION))
         n = await self.db.news_tick(now)
         if n and n.get("kind"):   # 합당 · 사퇴 · 자격 박탈
             body = f"**{n['text']}**" + (f"\n합당한 후보 지지율 {n['support']:.0f}%" if n["support"] is not None else "")
@@ -319,6 +329,7 @@ class Lobby(commands.Cog):
             f"**{c['name']} ({c['party']})** 후보가 득표율 {r['shares'][r['winner']]:.1f}%로 당선됐어요.\n"
             f"로비한 사람 {r['people']}명"
             + (f"\n로비가 적발된 사람 {len(r['caught'])}명" if r["caught"] else "")), ui.GOLD, None, SECTION)
+        e.add_field(name="임기", value="다음 선거 개표까지예요. 임기 중 사건이 터지면 공약이 멈출 수 있어요.", inline=False)
         e.add_field(name=f"지킨 공약 (이행률 {c.get('rate', 100)}%), 다음 선거까지 적용", value=_pledges(c, True), inline=False)
         if _broken(c):
             e.add_field(name="지키지 못한 공약", value=_broken(c), inline=False)
