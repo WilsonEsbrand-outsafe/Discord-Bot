@@ -247,15 +247,15 @@ def test_lobby_rules():
     assert time.gmtime(c + 9 * 3600)[:5] == (2026, 11, 22, 21, 0) and time.gmtime(c + 9 * 3600).tm_wday == 6
     cands = L.make_candidates(random.Random(1))
     assert len(cands) == L.CANDIDATES_N and all(len({k for k, _ in x["pledges"]}) == L.PLEDGES_N for x in cands)
-    assert abs(sum(L.support(cands, [0, 0, 0, 0])) - 100) < 1e-6
-    sup = L.support(cands, [10 ** 9, 0, 0, 0])
-    assert sup[0] > L.support(cands, [0, 0, 0, 0])[0]                       # 로비가 몰리면 지지율이 오른다
+    assert abs(sum(L.support(cands, [0] * L.CANDIDATES_N)) - 100) < 1e-6
+    sup = L.support(cands, [10 ** 9] + [0] * (L.CANDIDATES_N - 1))
+    assert sup[0] > L.support(cands, [0] * L.CANDIDATES_N)[0]                       # 로비가 몰리면 지지율이 오른다
     bets = [(1, 0, 100), (2, 0, 300), (3, 1, 400)]
     assert L.payouts(bets, 0, set()) == {1: 200, 2: 600}                    # 낙선 400원을 100:300 으로
     assert L.payouts(bets, 0, {2}) == {1: 800}                              # 적발된 사람 몫도 나머지에게
     assert L.payouts(bets, 2, set()) == {}
     # 돈만으로 정해지지 않는다: 로비가 크게 몰려도 다른 후보가 당선될 때가 있다
-    wins = [L.pick_winner(cands, [10 ** 6, 0, 0, 0], random.Random(s)) for s in range(300)]
+    wins = [L.pick_winner(cands, [10 ** 6] + [0] * (L.CANDIDATES_N - 1), random.Random(s)) for s in range(300)]
     assert 0 < wins.count(0) < 300
 
 
@@ -285,7 +285,7 @@ def test_lobby_db_and_effects():
         w = r["winner"]
         assert await db.settle(e["closes_ts"] + 2) is None                  # 두 번 정산되지 않는다
         assert len(r["history"]) >= 3 and abs(sum(r["shares"]) - 100) < 1e-6      # 시작 · 로비 · 뉴스 · 마감 지지율 기록
-        assert max(range(4), key=lambda i: r["shares"][i]) == w
+        assert max(range(L.CANDIDATES_N), key=lambda i: r["shares"][i]) == w
         assert len((await db.state(A, e["closes_ts"] + 3))["history"]) == 1    # 새 선거는 첫 점 하나부터
         bal_a, bal_b = await edb_db.get_balance(A), await edb_db.get_balance(B)
         if w == 0 and A not in r["caught"]:
@@ -312,14 +312,14 @@ def test_lobby_count_and_chart():
     from cogs import lobby as C
     rng = random.Random(5)
     cands = L.make_candidates(rng)
-    final = L.final_shares(cands, [0, 10 ** 6, 0, 0], rng)
+    final = L.final_shares(cands, [0, 10 ** 6] + [0] * (L.CANDIDATES_N - 2), rng)
     frames = L.count_frames(final, rng)
     assert [p for p, _ in frames][-1] == 100 and frames[-1][1] == final
     assert all(abs(sum(s) - 100) < 1e-6 for _, s in frames)
     em = C.count_embed(1, cands, 55, frames[3][1], 1_000_000)
     assert "개표율" in em.description and "·" not in em.description
     o = 1_800_000_000
-    png = C.support_chart(cands, [(o, [25.0] * 4), (o + 7200, [30.0, 20.0, 25.0, 25.0])], o, L.close_after(o), o + 9000)
+    png = C.support_chart(cands, [(o, [100 / L.CANDIDATES_N] * L.CANDIDATES_N), (o + 7200, [30.0, 20.0] + [50 / (L.CANDIDATES_N - 2)] * (L.CANDIDATES_N - 2))], o, L.close_after(o), o + 9000)
     assert png[:4] == b"\x89PNG"
     assert C.support_chart(cands, [], o, L.close_after(o), o)[:4] == b"\x89PNG"   # 기록이 없어도 그려진다
 
@@ -330,22 +330,31 @@ def test_lobby_party_and_hidden_pot():
     r = (1, 0, 1, '[{"name": "가", "party": "골대당", "base": 20, "events": 0, "pledges": [["attend", 0.5]]}]', "open", None, 0)
     assert L.LobbyDB._row(r)["cands"][0]["party"] == L.PARTIES[0]          # 예전 당 이름 → 새 이름
     cands = L.make_candidates(random.Random(1))
-    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [123_456, 0, 0, 0]),
-         "pots": [123_456, 0, 0, 0], "mine": [0] * 4, "news": [], "last": None}
-    em = C.lobby_embed(None, e)
-    assert all("123,456" not in f.value for f in em.fields)                  # 로비 총액은 안 보인다
+    n = L.CANDIDATES_N
+    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [123_456] + [0] * (n - 1)),
+         "pots": [123_456] + [0] * (n - 1), "mine": [0] * n, "news": [], "last": None}
+    ems = C.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), e)
+    assert all("123,456" not in (x.description or "") + "".join(f.value for f in x.fields) for x in ems)   # 로비 총액은 안 보인다
 
 
 def test_lobby_screen():
     import cogs.lobby as CL
     from services import lobby as L
     cands = L.make_candidates(random.Random(3))
-    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [0] * 4), "pots": [0] * 4,
-         "mine": [10_000, 0, 0, 0], "news": [{"ts": 1_800_000_000, "text": "뉴스", "delta": 3}],
-         "last": {"id": 0, "winner": 1, "cands": cands}}
-    em = CL.lobby_embed(MagicMock(display_name="가", display_avatar=MagicMock(url="")), e)
-    text = em.description + "".join(f.name + f.value for f in em.fields)
-    assert "·" not in text and "내 로비" in text and "지금 적용 중인 공약" in text
+    n = L.CANDIDATES_N
+    assert n == len(L.PARTIES) == 6 and all(len(c["pledges"]) == L.PLEDGES_N == 5 for c in cands)
+    assert len({c["name"] for c in cands}) == n and all(L.RATE_RANGE[0] <= c["rate"] <= L.RATE_RANGE[1] for c in cands)
+    w = dict(cands[1], kept=[True, False, True, False, False])
+    cands2 = cands[:1] + [w] + cands[2:]
+    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [0] * n), "pots": [0] * n,
+         "mine": [10_000] + [0] * (n - 1), "news": [{"ts": 1_800_000_000, "text": "뉴스", "delta": 3}],
+         "last": {"id": 0, "winner": 1, "cands": cands2}}
+    ems = CL.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), e)
+    assert len(ems) == n + 2 and len({x.color.value for x in ems[1:-1]}) == n            # 후보마다 다른 색 카드
+    text = "".join((x.description or "") + "".join(f.name + f.value for f in x.fields) for x in ems)
+    assert "·" not in text and "내 로비" in text and "지금 적용 중인 공약" in text and "공약 이행률" in text
+    assert sum(len(x) for x in ems) < 6000                                              # 디스코드 한 메시지 글자 한도
+    assert L.active_from(w) == {w["pledges"][0][0]: 1 + w["pledges"][0][1], w["pledges"][2][0]: 1 + w["pledges"][2][1]}
     assert CL.kst(1_800_000_000) == "1월 15일 (금) 17:00"
     assert "로비" in release.hidden_commands(1) and "로비" not in release.hidden_commands(release.TEST_GUILD)
 
@@ -408,4 +417,28 @@ def test_farm_buy_custom_button():
         f = await db.get(G, T)
         v = CF.BuyView(None, None, [f], "potato" if "potato" in F.CROPS else next(k for k in F.CROPS if F.CROPS[k][2]))
         assert any(getattr(c, "label", "") == "개수 직접 적기" for c in v.children)
+    run(flow())
+
+
+def test_energy_max_and_drinks():
+    from cogs import farm as CF
+    db = F.FarmDB()
+
+    async def flow():
+        A = 38301
+        G = (await db.create(A, "plain", T))["id"]
+        await db.upgrade(A)
+        assert F.energy_max(F.PLOTS_BASE, True) == F.ENERGY_MAX and F.energy_max(F.PLOTS_MAX, True) == 280
+        assert F.energy_max(F.PLOTS_MAX, False) == F.ENERGY_MAX
+        await db._tx(lambda con: con.execute("UPDATE farms SET plots=?, energy=0 WHERE id=?", (12, G)))
+        f = await db.get(G, T + 10 ** 6)                                   # 오래 지나면 넓힌 땅만큼 더 찬다
+        assert f["energy"] == f["energy_max"] == 160
+        await db._tx(lambda con: con.execute("UPDATE farm_purse SET coins=10000 WHERE owner=?", (A,)))
+        assert (await db.buy(A, G, "drink", 5, T))["ok"]
+        r = await db.use_tool(A, G, "drink", T + 10 ** 6, 3)
+        assert r["ok"] and r["used"] == 3 and r["left"] == 2 and r["energy"] == 160 + 3 * F.DRINK_ENERGY
+        r = await db.use_tool(A, G, "drink", T + 10 ** 6, 99)              # 가진 만큼만
+        assert r["used"] == 2 and r["left"] == 0
+        f = await db.get(G, T + 10 ** 6)
+        assert any(getattr(c, "custom_id", "") == "farm:drink" for c in CF.FarmPanel(None, f).children)
     run(flow())

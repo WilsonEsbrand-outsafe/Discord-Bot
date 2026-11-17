@@ -104,6 +104,12 @@ def value(key: str, tier: int) -> int:
 ENERGY_MAX, ENERGY_SEC = 100, 5       # 100 까지 · 5초에 1 (물 별에 따라 빨라진다)
 ENERGY_COST_382 = 2                   # 3.8.2 규완님 '에너지 소비량 늘리기' — 심기 · 거두기 · 합치기 한 번(칸)에 1 → 2
 PLOTS_BASE, PLOTS_MAX = 6, 24
+ENERGY_PER_PLOT_382 = 10      # 3.8.2 (11/17 규완님 '기본 에너지를 특정 레벨에 맞춰서 올려줘'): 넓힌 땅 한 칸마다 최대 에너지 +10
+
+
+def energy_max(plots: int, v382: bool) -> int:
+    """최대 에너지 — 3.8.2 농장은 땅이 넓을수록 크다 (6칸 100 … 24칸 280)."""
+    return ENERGY_MAX + (max(0, int(plots) - PLOTS_BASE) * ENERGY_PER_PLOT_382 if v382 else 0)
 START_CHESTS = {"wood": 1}            # 시작 선물
 RATE = 1_000                          # 환전: 농장 코인 1 = 축구 봇 돈 1,000원 (코인 → 돈 한쪽으로만)
 
@@ -367,8 +373,9 @@ class FarmDB(EconomyDB):
         purse = FarmDB._purse(con, int(r[12]))   # 3.8.2: 코인 지갑을 쓰는 주인이면 코인은 지갑 (농장 코인은 0)
         every = ENERGY_SEC * time_mult(res["water"]) / lobby.mult("farm_energy", int(r[12]))   # 3.8.2 /로비 공약
         e = float(r[2])
-        if e < ENERGY_MAX:
-            e = min(float(ENERGY_MAX), e + max(0, now_ts - int(r[3])) / every)
+        emax = energy_max(int(r[4]), purse is not None)
+        if e < emax:
+            e = min(float(emax), e + max(0, now_ts - int(r[3])) / every)
         if purse is not None:
             FarmDB._auto_animals(con, int(fid), res, int(r[5]), now_ts)
         fields: list[Optional[dict]] = [None] * int(r[4])
@@ -387,7 +394,7 @@ class FarmDB(EconomyDB):
              "owner": int(r[12]), "land": r[0], "res": res, "coins": int(r[1]) if purse is None else purse,
              "farm_coins": int(r[1]), "v382": purse is not None, "cost": ENERGY_COST_382 if purse is not None else 1,
              "energy_f": e, "energy": int(e),
-             "energy_next": None if e >= ENERGY_MAX else int(now_ts + (1 - (e - int(e))) * every) + 1,
+             "energy_next": None if e >= emax else int(now_ts + (1 - (e - int(e))) * every) + 1, "energy_max": emax,
              "energy_every": every, "plots": int(r[4]), "sickle": int(r[5]), "whet": int(r[6]),
              "chests": {"wood": int(r[7]), "silver": int(r[8]), "gold": int(r[9])}, "plant_n": int(r[10]),
              "fields": fields, "items": items, "daily_day": int(r[11]), "ask": int(r[13]) if r[13] else None,
@@ -783,7 +790,7 @@ class FarmDB(EconomyDB):
             return True
         return await self._tx(fn)
 
-    async def use_tool(self, uid: int, fid: int, key: str, now_ts: int) -> dict:
+    async def use_tool(self, uid: int, fid: int, key: str, now_ts: int, n: int = 1) -> dict:
         """아이템 하나 쓰기 — drink(에너지 +30) · feed(동물 남은 시간 절반) · scarecrow(10분 ★2 확률 +). 비료는 심을 때 쓴다.
         reason: none / key / have(없음) / animals(기다리는 동물이 없음)."""
         def fn(con):
@@ -794,9 +801,10 @@ class FarmDB(EconomyDB):
                 return {"ok": False, "reason": "key"}
             if f["tools"].get(key, 0) <= 0:
                 return {"ok": False, "reason": "have"}
-            out = {"ok": True, "key": key, "left": f["tools"][key] - 1}
+            used = max(1, min(int(n), f["tools"][key])) if key == "drink" else 1   # 3.8.2 에너지 음료는 여러 개 한 번에
+            out = {"ok": True, "key": key, "left": f["tools"][key] - used, "used": used}
             if key == "drink":
-                e = f["energy_f"] + DRINK_ENERGY   # 한도(ENERGY_MAX)를 넘겨서도 (저절로 찰 때만 한도까지)
+                e = f["energy_f"] + DRINK_ENERGY * used   # 한도(ENERGY_MAX)를 넘겨서도 (저절로 찰 때만 한도까지)
                 con.execute("UPDATE farms SET energy=?, energy_ts=? WHERE id=?", (e, int(now_ts), fid))
                 out.update(energy=int(e), gained=int(e) - f["energy"])
             elif key == "feed":
@@ -811,7 +819,7 @@ class FarmDB(EconomyDB):
                 until = max(int(now_ts), f["scare_until"]) + SCARE_SEC
                 con.execute("UPDATE farms SET scare_until=? WHERE id=?", (until, fid))
                 out.update(until=until)
-            con.execute("UPDATE farm_seeds SET qty = qty - 1 WHERE farm_id=? AND key=?", (fid, key))
+            con.execute("UPDATE farm_seeds SET qty = qty - ? WHERE farm_id=? AND key=?", (used, fid, key))
             return out
         return await self._tx(fn)
 

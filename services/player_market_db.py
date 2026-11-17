@@ -292,7 +292,7 @@ def pool_size(now_ts: Optional[float] = None) -> int:
 
 # ── 3.7.0 선수 1명 1주인 · 봇 구단 (release.ctx_370: 테스트 서버 먼저, 백그라운드는 released_370) ──
 HOLD_CAP_370 = 40          # 한 사람이 가질 수 있는 선수 수 (아마추어 빼고) — 더 사려면 팔거나 방출
-PACK_MAX_382 = 1_000       # 3.8.2 선수팩 '원하는 개수로' — 한 번에 여는 장수 (너무 큰 숫자로 봇이 멈추지 않게)
+PACK_MAX_382 = 100         # 3.8.2 선수팩 한 번에 살 수 있는 장수 (11/17 규완님 '한 번에 100장 구매, 한 번에 최대 20장 개봉')
 
 
 def hold_capped() -> bool:
@@ -1740,7 +1740,8 @@ class PlayerMarketDB:
             return False, f"존재하지 않는 팩입니다. ({'/'.join(PACKS.keys())})", None
 
         pack = PACKS[pack_type]
-        pack_price = int(pack["price"])
+        from services import lobby as _lobby   # 3.8.2 /로비 당선 공약 '선수팩 값 할인'
+        pack_price = int(int(pack["price"]) * _lobby.discount("pack_cost", user_id))
         total_cost = pack_price * pulls
         uniq = unique_on()
         used_tickets: list = []

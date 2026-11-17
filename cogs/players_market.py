@@ -157,7 +157,7 @@ def _normalize_results(results: list) -> list:
 
 
 def _format_pack_results(
-    results: list, pack_price_per: int
+    results: list, pack_price_per: int, show: int = 10
 ) -> tuple[str, str, int]:
     """팩 뽑기 결과를 포맷팅 (/선수팩상점 개봉 결과).
 
@@ -173,7 +173,7 @@ def _format_pack_results(
         total_value += row[1]
         lines.append(line)
     grade_summary = " / ".join(f"{k} {v}" for k, v in label_cnt.items() if v > 0)
-    return grade_summary, "\n".join(lines[:10]), total_value
+    return grade_summary, "\n".join(lines[:show]), total_value
 
 class _SkipView(discord.ui.View):
     """팩 개봉 연출 중 '⏩ 스킵' — 누르면 남은 카드를 한 번에 공개한다."""
@@ -321,6 +321,7 @@ class QtyModal(discord.ui.Modal):
 
 
 ITEM_MAX_382 = 100_000      # 아이템 직접 적기 상한 (숫자를 잘못 적어 봇이 멈추지 않게)
+REVEAL_CHUNK = 20           # 3.8.2 선수팩은 20장씩 나눠 연다
 
 
 class PackQtyView(_ShopOwnerView):
@@ -1020,6 +1021,15 @@ class PlayersMarket(commands.Cog):
         await self._reveal_pack(interaction, 종류, results, pack_price_per)
 
     async def _reveal_pack(self, interaction, pack_type: str, results: list, unit_price: int):
+        """3.8.2 (11/17 규완님 '한 번에 최대 20장 개봉'): 20장씩 나눠 한 묶음마다 한 장씩 뒤집는다."""
+        n = len(results)
+        if n <= REVEAL_CHUNK:
+            return await self._reveal_one(interaction, pack_type, results, unit_price)
+        parts = [results[i:i + REVEAL_CHUNK] for i in range(0, n, REVEAL_CHUNK)]
+        for k, part in enumerate(parts, 1):
+            await self._reveal_one(interaction, pack_type, part, unit_price, f" ({k}/{len(parts)})")
+
+    async def _reveal_one(self, interaction, pack_type: str, results: list, unit_price: int, part: str = ""):
         """카드를 한 장씩 뒤집어 보여준다. 좋은 카드일수록 뒤에 나온다."""
         cards = _normalize_results(results)
         # 잭팟과 고가 카드를 뒤로 — 마지막에 터지도록
@@ -1031,15 +1041,12 @@ class PlayersMarket(commands.Cog):
         best  = "⚪ 폭망"
 
         def frame(desc: str, color: int) -> discord.Embed:
-            e = discord.Embed(title=f"{emoji} {pack_type}팩 개봉", description=desc, color=color)
+            e = discord.Embed(title=f"{emoji} {pack_type}팩 개봉{part}", description=desc, color=color)
             e.set_author(name=interaction.user.display_name,
                          icon_url=interaction.user.display_avatar.url)
             return e
 
-        if len(cards) > PACK_MAX_PULLS:   # 3.8.2 직접 적은 큰 장수는 한 장씩 뒤집지 않고 결과만
-            cards_shown = False
-        else:
-            cards_shown = True
+        cards_shown = len(cards) <= REVEAL_CHUNK
         # 2장 이상이면 '⏩ 스킵' 버튼으로 연출을 건너뛸 수 있다.
         skip = _SkipView(interaction.user.id) if 2 <= len(cards) and cards_shown else None
         send_kw = {"view": skip} if skip else {}
@@ -1069,7 +1076,7 @@ class PlayersMarket(commands.Cog):
 
         # 스킵했으면 아직 안 뒤집은 카드까지 포함해 최고 등급을 다시 계산한다.
         best = min((_card_line(row, unit_price, hit)[0] for row, hit in cards), key=_PRICE_LABELS.index)
-        grade_summary, lines_text, total_value = _format_pack_results(results, unit_price)
+        grade_summary, lines_text, total_value = _format_pack_results(results, unit_price, REVEAL_CHUNK)
         bal = await self.money.get_balance(interaction.user.id)
 
         summary = (

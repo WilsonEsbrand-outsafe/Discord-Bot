@@ -1845,7 +1845,8 @@ class EconomyDB:
         qty = max(1, int(qty))
         if item in SHOP_ONE_ONLY:
             qty = 1
-        each, day, cap = SHOP_PRICES[item], _kst_day(now_ts), SHOP_DAILY_LIMITS.get(item)
+        from services import lobby   # 3.8.2 /로비 당선 공약 '아이템상점 값 할인'
+        each, day, cap = int(SHOP_PRICES[item] * lobby.discount("item_cost", user_id)), _kst_day(now_ts), SHOP_DAILY_LIMITS.get(item)
         price = each * qty
 
         def fn(con):

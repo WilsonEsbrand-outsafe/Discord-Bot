@@ -16,7 +16,8 @@ from services.economy_db import EconomyDB
 
 LOBBY_MIN = 10_000            # 한 번에 넣는 최소 로비 금액
 LOBBY_CAUGHT = 0.05           # 당선자에게 로비한 사람이 적발될 확률
-CANDIDATES_N, PLEDGES_N = 4, 3
+PLEDGES_N = 5                 # 11/17 규완님 '후보별 공약 개수를 늘려주고' (3 → 5)
+RATE_RANGE = (40, 95)         # 11/17 규완님 '공약 이행률' — 당선되면 공약마다 이 확률로 지킨다 (지킨 공약만 적용)
 LOBBY_WEIGHT = 25.0           # 지지율 = 기본 인기 + 사건 + 로비 몫(전체 로비 중 그 후보 몫) × 이것
 ELECTION_SWING = 15.0         # 선거일 변수: 후보마다 ± 이만큼 (지지율 점수)
 NEWS_GAP = (2 * 3600, 4 * 3600)   # 사건 뉴스 간격 (2~4시간)
@@ -25,10 +26,12 @@ SNAP_MERGE = 600                  # 이 안에 또 기록하면 새 점 대신 �
 CLOSE_WDAY, CLOSE_HOUR = 6, 21    # 일요일 21:00 KST 마감 (월요일 = 0)
 
 # 가상 인물 이름 · 정당 (실제 정치인 · 정당 이름은 쓰지 않는다)
-NAMES = ("나대박", "고수익", "이득표", "최저가", "정직한", "조공약", "한방울", "배당금", "오버롤", "유망주",
-         "강슈팅", "도움왕", "선방왕", "백패스", "전방압", "골결정")
+# 11/17 규완님 '후보 이름을 좀 바꿔줘' — 사람 이름처럼
+NAMES = ("김민준", "이서연", "박지훈", "최유나", "정우성", "강하늘", "윤도현", "한지민", "오세훈", "임수정",
+         "서강준", "문채원", "장기용", "배수지", "신동엽", "조인성", "홍진경", "남궁민")
 # 11/17 규완님: '당 이름을 우리나라 당이랑 비슷하게' — 실제 당 이름을 비튼 것 (그대로 쓰지는 않는다)
 PARTIES = ("더불어골대당", "국민의골", "조국축구당", "개혁슈팅당", "진보킥당", "정의패스당")
+CANDIDATES_N = len(PARTIES)   # 11/17 규완님 '후보가 4개 말고 있는 당 다로' — 당마다 후보 한 명
 _OLD_PARTIES = dict(zip(("골대당", "잔디당", "그물당", "코너킥당", "오프사이드당", "하프라인당"), PARTIES))
 
 # 공약: key → (설명 틀, 세기 후보) — 세기는 배수에 더하는 값 (0.3 = 30% 더)
@@ -40,6 +43,8 @@ PLEDGES = {
     "farm_grow": ("농작물 {p}% 빨리 자람", (0.2, 0.3)),
     "farm_chest": ("농사 상자 {p}% 더 자주", (0.3, 0.5)),
     "elite_income": ("명문 구단 하루 수입 {p}% 더", (0.3, 0.5)),
+    "pack_cost": ("선수팩 값 {p}% 할인", (0.1, 0.2)),
+    "item_cost": ("아이템상점 값 {p}% 할인", (0.1, 0.2)),
 }
 
 # 사건 뉴스: (틀, 지지율 변화 최소, 최대) — {n} = 후보 이름
@@ -75,6 +80,11 @@ def mult(key: str, uid: Optional[int] = None) -> float:
     return 1.0
 
 
+def discount(key: str, uid: Optional[int] = None) -> float:
+    """할인 공약 (pack_cost · item_cost) → 값에 곱할 수 (할인 없으면 1)."""
+    return max(0.0, 2 - mult(key, uid))
+
+
 def pledge_text(key: str, power: float) -> str:
     return PLEDGES[key][0].format(p=round(power * 100))
 
@@ -91,13 +101,19 @@ def close_after(ts: float) -> int:
 
 
 def make_candidates(rng=random) -> list[dict]:
-    names, parties = rng.sample(NAMES, CANDIDATES_N), rng.sample(PARTIES, CANDIDATES_N)
+    names, parties = rng.sample(NAMES, CANDIDATES_N), list(PARTIES)   # 당마다 한 명 (당 순서 그대로)
     out = []
     for i in range(CANDIDATES_N):
         keys = rng.sample(list(PLEDGES), PLEDGES_N)
-        out.append({"name": names[i], "party": parties[i], "base": rng.randint(15, 35), "events": 0,
+        out.append({"name": names[i], "party": parties[i], "base": rng.randint(10, 30), "events": 0,
+                    "rate": rng.randint(*RATE_RANGE),
                     "pledges": [[k, rng.choice(PLEDGES[k][1])] for k in keys]})
     return out
+
+
+def keep_pledges(c: dict, rng=random) -> list[bool]:
+    """당선자가 공약마다 이행률(rate)만큼의 확률로 지킨다 → 공약마다 지켰는지."""
+    return [rng.random() * 100 < c.get("rate", 100) for _ in c["pledges"]]
 
 
 def support(cands: list[dict], pots: list[int]) -> list[float]:
@@ -186,7 +202,13 @@ class LobbyDB(EconomyDB):
         r = con.execute("SELECT id, opens_ts, closes_ts, cands, status, winner, next_news_ts FROM lobby_elections "
                         "WHERE status='open' ORDER BY id DESC LIMIT 1").fetchone()
         if r:
-            return cls._row(r)
+            e = cls._row(r)
+            if len(e["cands"]) == CANDIDATES_N and all("rate" in c for c in e["cands"]):
+                return e
+            # 11/17 후보 수 · 공약 · 이행률이 바뀌기 전에 열린 선거 (테스트 서버만) → 로비한 돈을 돌려주고 새로 연다
+            for u, a in con.execute("SELECT uid, SUM(amount) FROM lobby_bets WHERE eid=? GROUP BY uid", (e["id"],)).fetchall():
+                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (int(a), int(u)))
+            con.execute("UPDATE lobby_elections SET status='void' WHERE id=?", (e["id"],))
         cands = make_candidates(rng)
         closes = close_after(now_ts)
         cur = con.execute("INSERT INTO lobby_elections(opens_ts, closes_ts, cands, next_news_ts) VALUES(?,?,?,?)",
@@ -332,7 +354,9 @@ class LobbyDB(EconomyDB):
             for u, s in staked.items():
                 con.execute("INSERT OR REPLACE INTO lobby_results(eid, uid, staked, paid, caught) VALUES(?,?,?,?,?)",
                             (e["id"], u, s, paid.get(u, 0), 1 if u in caught else 0))
-            con.execute("UPDATE lobby_elections SET status='done', winner=? WHERE id=?", (w, e["id"]))
+            e["cands"][w]["kept"] = keep_pledges(e["cands"][w], rng)   # 공약 이행률 — 지킨 공약만 적용
+            con.execute("UPDATE lobby_elections SET status='done', winner=?, cands=? WHERE id=?",
+                        (w, json.dumps(e["cands"], ensure_ascii=False), e["id"]))
             sup = support(e["cands"], pots)
             con.execute("INSERT INTO lobby_news(eid, ts, cand, text) VALUES(?,?,?,?)",
                         (e["id"], int(now_ts), w, f"{e['cands'][w]['name']} 후보 당선! 득표율 {shares[w]:.1f}%"))
@@ -349,5 +373,6 @@ def active_from(winner: Optional[dict]) -> dict[str, float]:
     """당선자 공약 → {공약 key: 배수}."""
     if not winner:
         return {}
-    return {k: 1 + float(p) for k, p in winner["pledges"] if k in PLEDGES}
+    kept = winner.get("kept") or [True] * len(winner["pledges"])
+    return {k: 1 + float(p) for (k, p), ok in zip(winner["pledges"], kept) if ok and k in PLEDGES}
 
