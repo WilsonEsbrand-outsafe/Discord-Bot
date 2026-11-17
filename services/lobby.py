@@ -525,26 +525,25 @@ def _norm(xs: list[float]) -> list[float]:
     return [x * 100 / t if t else 0.0 for x in xs]
 
 
-def play(rng=random) -> dict:
-    """한 판을 처음부터 끝까지 정한다 (돈 정산 전에). 연출은 cog 가 이 결과대로 보여 준다.
-    → {cands, start, events: [{text, sup, out}], final, order, count, winner, term: [{text, kind}], trouble}"""
-    names = rng.sample(NAMES, CANDIDATES_N)
-    cands = [{"name": names[i], "party": PARTIES[i], "out": None} for i in range(CANDIDATES_N)]
-    score = [float(rng.randint(10, 30)) for _ in cands]
-    start = _norm(score)
+GAME_SIMS = 1500           # 배당 정할 때 이 판을 몇 번 돌려 보는지
+# 11/17 규완님 '고정 배당 없애 · 당선 확률로 배당을 정해 · 본전이 경마에 어디있어' → 순위 상금표 없음.
+#   후보마다 배당 = ODDS_MARGIN / 당선 확률 (ODDS_RANGE 안). 고른 후보가 당선되면 로비 × 배당을 받고, 아니면 로비한 돈을 잃는다.
+
+
+def _rest(cands: list[dict], score: list[float], rng, full: bool = True) -> dict:
+    """후보 등록 뒤부터 끝까지: 선거운동 사건 → 득표 → (full 이면) 임기."""
     events, drops = [], []
     for _ in range(GAME_EVENTS):
         live = [i for i, c in enumerate(cands) if not c["out"]]
         if len(drops) < GAME_DROP_MAX and rng.random() < GAME_DROP:
             i = rng.choice(live)
             kind = rng.choice(("merge", "quit", "ban"))
-            if kind == "merge":
-                j = rng.choice([k for k in live if k != i])
+            j = rng.choice([k for k in live if k != i]) if kind == "merge" else None
+            if j is not None:
                 score[j] += score[i] * MERGE_GIVE
-                text = rng.choice(DROP_MERGE).format(n=cands[i]["name"], m=cands[j]["name"])
-            else:
-                text = rng.choice(DROP_QUIT if kind == "quit" else DROP_BAN).format(n=cands[i]["name"])
-            cands[i]["out"] = {"kind": kind, "into": j if kind == "merge" else None}
+            text = "" if not full else (rng.choice(DROP_MERGE).format(n=cands[i]["name"], m=cands[j]["name"]) if j is not None
+                                         else rng.choice(DROP_QUIT if kind == "quit" else DROP_BAN).format(n=cands[i]["name"]))
+            cands[i]["out"] = {"kind": kind, "into": j}
             score[i] = 0.0
             drops.append(i)
             events.append({"text": text, "sup": _norm(score), "out": i})
@@ -553,17 +552,19 @@ def play(rng=random) -> dict:
         good = rng.random() < 0.5
         tpl, lo, hi = rng.choice(NEWS_GOOD if good else NEWS_BAD)
         score[i] = max(1.0, score[i] + rng.randint(lo, hi) * (1 if good else -1))
-        events.append({"text": tpl.format(n=cands[i]["name"]), "sup": _norm(score), "out": None})
+        events.append({"text": tpl.format(n=cands[i]["name"]) if full else "", "sup": _norm(score), "out": None})
     sup = _norm(score)
-    final = _norm([max(0.5, s + rng.uniform(-ELECTION_SWING, ELECTION_SWING)) if s > 0 else 0.0 for s in sup])
-    live = sorted((i for i, s in enumerate(final) if s > 0), key=lambda i: -final[i])
+    final = _norm([max(0.5, x + rng.uniform(-ELECTION_SWING, ELECTION_SWING)) if x > 0 else 0.0 for x in sup])
+    live = sorted((i for i, x in enumerate(final) if x > 0), key=lambda i: -final[i])
     order = live + drops[::-1]                       # 빠진 후보는 꼴찌 쪽 (먼저 빠진 쪽이 꼴찌)
-    winner = order[0]
+    out = {"events": events, "final": final, "order": order, "winner": order[0]}
+    if not full:
+        return out
     term, trouble = [], None
     goods = rng.sample(TERM_GOOD, len(TERM_GOOD))
+    n = cands[order[0]]["name"]
     for _ in range(GAME_TERM):
         r = rng.random()
-        n = cands[winner]["name"]
         if r < GAME_IMPEACH:
             term.append({"text": rng.choice(TERM_IMPEACH_TEXT).format(n=n), "kind": "impeach"})
             trouble = "impeach"
@@ -575,24 +576,42 @@ def play(rng=random) -> dict:
             trouble = trouble or "suspend"
         else:
             term.append({"text": goods.pop().format(n=n), "kind": "ok"})
-    return {"cands": cands, "start": start, "events": events, "final": final, "order": order,
-            "count": count_frames(final, rng, steps=(20, 55, 85, 100)), "winner": winner, "term": term, "trouble": trouble}
+    out.update(term=term, trouble=trouble, count=count_frames(final, rng, steps=(20, 55, 85, 100)))
+    return out
 
 
-def settle_game(g: dict, pick: int, amount: int, table: list[int]) -> dict:
-    """→ {delta (전체 돈 변동), rank, mult, why}. why: out(빠져서 환불) / impeach / suspend / None."""
-    # 11/17 규완님 '왜 돈을 잃지는 않는 거야' → 사퇴 · 합당한 후보는 환불 없이 꼴찌 쪽 순위대로 잃고, 탄핵은 꼴찌만큼 잃는다
-    rank = g["order"].index(pick)
-    mult = table[rank]
-    delta = amount * mult
-    why = None
-    if rank == 0 and g["trouble"] == "impeach":
-        delta, why = amount * min(table), "impeach"
-    elif rank == 0 and g["trouble"] == "suspend":
-        delta, why = delta // 2, "suspend"
-    if why is None and g["cands"][pick]["out"]:
-        why = "out"
-    return {"delta": int(delta), "rank": rank, "mult": mult, "why": why}
+def game_odds(cands: list[dict], score: list[float], rng=random) -> list[float]:
+    """후보 등록 순간의 당선 확률로 배당을 정한다 (이 판을 GAME_SIMS 번 돌려 본다)."""
+    wins = [0] * len(cands)
+    for _ in range(GAME_SIMS):
+        wins[_rest([dict(c) for c in cands], list(score), rng, full=False)["winner"]] += 1
+    lo, hi = ODDS_RANGE
+    return [round(min(hi, max(lo, ODDS_MARGIN * GAME_SIMS / w)) if w else hi, 1) for w in wins]
+
+
+def play(rng=random) -> dict:
+    """한 판을 처음부터 끝까지 정한다 (돈 정산 전에). 연출은 cog 가 이 결과대로 보여 준다.
+    → {cands, start, odds, events: [{text, sup, out}], final, order, count, winner, term: [{text, kind}], trouble}"""
+    names = rng.sample(NAMES, CANDIDATES_N)
+    cands = [{"name": names[i], "party": PARTIES[i], "out": None} for i in range(CANDIDATES_N)]
+    score = [float(rng.randint(10, 30)) for _ in cands]
+    g = {"cands": cands, "start": _norm(score), "odds": game_odds(cands, score, rng)}
+    g.update(_rest(cands, score, rng))
+    return g
+
+
+def settle_game(g: dict, pick: int, amount: int) -> dict:
+    """→ {delta (전체 돈 변동), odds, why}. 당선 = 로비 × 배당을 받는다 (순이익 = 로비 × (배당 - 1)), 아니면 로비한 돈을 잃는다.
+    why: lose(낙선) / out(사퇴 · 합당) / impeach(당선 후 탄핵 → 잃음) / suspend(공약 중단 → 순이익 절반) / None(당선)."""
+    o = g["odds"][pick]
+    if pick != g["winner"]:
+        return {"delta": -amount, "odds": o, "why": "out" if g["cands"][pick]["out"] else "lose"}
+    if g["trouble"] == "impeach":
+        return {"delta": -amount, "odds": o, "why": "impeach"}
+    gain = int(amount * (o - 1))
+    if g["trouble"] == "suspend":
+        return {"delta": gain // 2, "odds": o, "why": "suspend"}
+    return {"delta": gain, "odds": o, "why": None}
 
 
 async def void_weekly(db: "LobbyDB") -> int:

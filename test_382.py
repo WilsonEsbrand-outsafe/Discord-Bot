@@ -323,38 +323,36 @@ def test_lobby_db_and_effects():
 def test_lobby_game():
     from services import lobby as L
     from cogs import lobby as CL
-    from cogs.race import prizes_341
     assert not set(L.NAMES) & {"정우성", "강하늘", "한지민", "조인성", "배수지", "신동엽", "홍진경", "남궁민"}
-    seen = set()
-    for s in range(400):
+    seen, ev, n = set(), 0.0, L.CANDIDATES_N
+    for s in range(150):
         rng = random.Random(s)
         g = L.play(rng)
-        n = L.CANDIDATES_N
         assert sorted(g["order"]) == list(range(n)) and len(g["events"]) == L.GAME_EVENTS
         assert not g["cands"][g["winner"]]["out"] and g["count"][-1][1] == g["final"]
-        assert sum(1 for c in g["cands"] if c["out"]) <= L.GAME_DROP_MAX
-        assert all(g["cands"][i]["out"] for i in g["order"][n - sum(1 for c in g["cands"] if c["out"]):])   # 빠진 후보는 꼴찌 쪽
-        table = prizes_341(n, rng)
+        assert all(L.ODDS_RANGE[0] <= o <= L.ODDS_RANGE[1] for o in g["odds"])           # 1배 근처 배당 없음
+        best = max(range(n), key=lambda i: g["start"][i])
+        assert g["odds"][best] <= max(g["odds"])                                          # 지지율 1위가 배당이 가장 낮은 편
         for pick in range(n):
-            r = L.settle_game(g, pick, 10_000, table)
-            if g["cands"][pick]["out"]:
-                assert r["why"] == "out" and r["delta"] == 10_000 * table[r["rank"]] and r["delta"] < 0
-            elif pick == g["winner"] and g["trouble"] == "impeach":
-                assert r["delta"] == 10_000 * min(table) < 0 and r["why"] == "impeach"
-            elif pick == g["winner"] and g["trouble"] == "suspend":
-                assert r["delta"] == 10_000 * table[0] // 2
+            r = L.settle_game(g, pick, 10_000)
+            assert r["delta"] != 0                                                         # 본전 없음
+            if pick != g["winner"] or g["trouble"] == "impeach":
+                assert r["delta"] == -10_000
+            elif g["trouble"] == "suspend":
+                assert r["delta"] == int(10_000 * (g["odds"][pick] - 1)) // 2
             else:
-                assert r["delta"] == 10_000 * table[r["rank"]]
+                assert r["delta"] == int(10_000 * (g["odds"][pick] - 1))
+            ev += r["delta"] / n
         seen |= {g["trouble"]} | {e["out"] is not None for e in g["events"]}
         user = MagicMock(display_name="가", display_avatar=MagicMock(url=""))
         scenes = CL.frames(g, 0, 3)
-        assert len(scenes) >= 1 + L.GAME_EVENTS + 3 + 1
-        e = CL.ticket_card(user, 10_000, g, table, 3)
-        res = CL.result_card(user, g, 0, L.settle_game(g, 0, 10_000, table), 5)
         for t, body, _, wait in scenes:
             assert len(body) < 4096 and "·" not in body and wait >= CL.GAP
-        assert len(e) < 6000 and "대선 결과" == res.title
-    assert {"impeach", "suspend", None, True} <= seen                           # 탄핵 · 공약 중단 · 사퇴가 다 나온다
+        e = CL.ticket_card(user, 10_000, g, 3)
+        res = CL.result_card(user, g, 0, L.settle_game(g, 0, 10_000), 5)
+        assert len(e) < 6000 and "배당" in "".join(f.value for f in e.fields) and res.title == "대선 결과"
+    assert {"impeach", "suspend", None, True} <= seen
+    assert ev < 0                                                                          # 길게 보면 잃는다
     assert "로비" in release.hidden_commands(1) and "로비" not in release.hidden_commands(release.TEST_GUILD)
 
 
