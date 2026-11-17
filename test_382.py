@@ -320,122 +320,60 @@ def test_lobby_db_and_effects():
     run(flow())
 
 
-def test_lobby_count_and_chart():
+def test_lobby_game():
     from services import lobby as L
-    from cogs import lobby as C
-    rng = random.Random(5)
-    cands = L.make_candidates(rng)
-    final = L.final_shares(cands, [0, 10 ** 6] + [0] * (L.CANDIDATES_N - 2), rng)
-    frames = L.count_frames(final, rng)
-    assert [p for p, _ in frames][-1] == 100 and frames[-1][1] == final
-    assert all(abs(sum(s) - 100) < 1e-6 for _, s in frames)
-    em = C.count_embed(1, cands, 55, frames[3][1], 1_000_000)
-    assert "개표율" in em.description and "·" not in em.description
-    o = 1_800_000_000
-    png = C.support_chart(cands, [(o, [100 / L.CANDIDATES_N] * L.CANDIDATES_N), (o + 7200, [30.0, 20.0] + [50 / (L.CANDIDATES_N - 2)] * (L.CANDIDATES_N - 2))], o, L.close_after(o), o + 9000)
-    assert png[:4] == b"\x89PNG"
-    assert C.support_chart(cands, [], o, L.close_after(o), o)[:4] == b"\x89PNG"   # 기록이 없어도 그려진다
-
-
-def test_lobby_party_and_hidden_pot():
-    from services import lobby as L
-    from cogs import lobby as C
-    r = (1, 0, 1, '[{"name": "가", "party": "골대당", "base": 20, "events": 0, "pledges": [["attend", 0.5]]}]', "open", None, 0)
-    assert L.LobbyDB._row(r)["cands"][0]["party"] == L.PARTIES[0]          # 예전 당 이름 → 새 이름
-    cands = L.make_candidates(random.Random(1))
-    n = L.CANDIDATES_N
-    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [123_456] + [0] * (n - 1)), "odds": L.odds(cands, [0] * n),
-         "pots": [123_456] + [0] * (n - 1), "mine": [0] * n, "news": [], "last": None}
-    ems = C.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), e)
-    assert all("123,456" not in (x.description or "") + "".join(f.value for f in x.fields) for x in ems)   # 로비 총액은 안 보인다
-
-
-def test_lobby_screen():
-    import cogs.lobby as CL
-    from services import lobby as L
-    cands = L.make_candidates(random.Random(3))
-    n = L.CANDIDATES_N
-    assert n == len(L.PARTIES) == 6 and all(len(c["pledges"]) == L.PLEDGES_N == 5 for c in cands)
-    assert len({c["name"] for c in cands}) == n and all(L.RATE_RANGE[0] <= c["rate"] <= L.RATE_RANGE[1] for c in cands)
-    w = dict(cands[1], kept=[True, False, True, False, False])
-    cands2 = cands[:1] + [w] + cands[2:]
-    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [0] * n), "odds": L.odds(cands, [0] * n), "pots": [0] * n,
-         "mine": [10_000] + [0] * (n - 1), "news": [{"ts": 1_800_000_000, "text": "뉴스", "delta": 3}],
-         "last": {"id": 0, "winner": 1, "cands": cands2}}
-    ems = CL.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), e)
-    assert len(ems) == n + 2 and len({x.color.value for x in ems[1:-1]}) == n            # 후보마다 다른 색 카드
-    text = "".join((x.description or "") + "".join(f.name + f.value for f in x.fields) for x in ems)
-    assert "·" not in text and "내 로비" in text and "지금 적용 중인 공약" in text and "공약 이행률" in text
-    assert sum(len(x) for x in ems) < 6000                                              # 디스코드 한 메시지 글자 한도
-    assert L.active_from(w) == {w["pledges"][0][0]: 1 + w["pledges"][0][1], w["pledges"][2][0]: 1 + w["pledges"][2][1]}
-    assert CL.kst(1_800_000_000) == "1월 15일 (금) 17:00"
+    from cogs import lobby as CL
+    from cogs.race import prizes_341
+    assert not set(L.NAMES) & {"정우성", "강하늘", "한지민", "조인성", "배수지", "신동엽", "홍진경", "남궁민"}
+    seen = set()
+    for s in range(400):
+        rng = random.Random(s)
+        g = L.play(rng)
+        n = L.CANDIDATES_N
+        assert sorted(g["order"]) == list(range(n)) and len(g["events"]) == L.GAME_EVENTS
+        assert not g["cands"][g["winner"]]["out"] and g["count"][-1][1] == g["final"]
+        assert sum(1 for c in g["cands"] if c["out"]) <= L.GAME_DROP_MAX
+        assert all(g["cands"][i]["out"] for i in g["order"][n - sum(1 for c in g["cands"] if c["out"]):])   # 빠진 후보는 꼴찌 쪽
+        table = prizes_341(n, rng)
+        for pick in range(n):
+            r = L.settle_game(g, pick, 10_000, table)
+            if g["cands"][pick]["out"]:
+                assert r == {"delta": 0, "rank": r["rank"], "mult": 0, "why": "out"}
+            elif pick == g["winner"] and g["trouble"] == "impeach":
+                assert r["delta"] == 0 and r["why"] == "impeach"
+            elif pick == g["winner"] and g["trouble"] == "suspend":
+                assert r["delta"] == 10_000 * table[0] // 2
+            else:
+                assert r["delta"] == 10_000 * table[r["rank"]]
+        seen |= {g["trouble"]} | {e["out"] is not None for e in g["events"]}
+        user = MagicMock(display_name="가", display_avatar=MagicMock(url=""))
+        scenes = CL.frames(g, 0, 3)
+        assert len(scenes) >= 1 + L.GAME_EVENTS + 3 + 1
+        e = CL.ticket_card(user, 10_000, g, table, 3)
+        res = CL.result_card(user, g, 0, L.settle_game(g, 0, 10_000, table), 5)
+        for t, body, _ in scenes:
+            assert len(body) < 4096
+        assert len(e.description) < 4096 and "대선 결과" == res.title
+    assert {"impeach", "suspend", None, True} <= seen                           # 탄핵 · 공약 중단 · 사퇴가 다 나온다
     assert "로비" in release.hidden_commands(1) and "로비" not in release.hidden_commands(release.TEST_GUILD)
 
 
-def test_lobby_drop_events():
+def test_lobby_void_weekly():
     from services import lobby as L
-    from cogs import lobby as CL
     db = L.LobbyDB()
     edb_db = edb.EconomyDB()
 
     async def flow():
-        now = 1_810_000_000
-        A = 38251
-        await edb_db.add_balance(A, 1_000_000)
-        e = await db.state(A, now)
-        await db.lobby(A, 0, 100_000, now)
-        await db.lobby(A, 1, 100_000, now)
-        con = db._connect()
-        try:
-            e = db._current(con, now)
-            d = L.LobbyDB._drop(con, e, list(range(L.CANDIDATES_N)), now, random.Random(7))
-            con.commit()
-        finally:
-            con.close()
-        i = d["cand"]
-        st = await db.state(A, now)
-        assert st["cands"][i]["out"] and st["support"][i] == 0 and st["odds"][i] == 0
-        if i in (0, 1):
-            assert d["refund"] == {A: 100_000} and await edb_db.get_balance(A) == 900_000
-        assert (await db.lobby(A, i, 50_000, now))["reason"] == "out"
-        ems = CL.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), st)
-        assert ("사퇴" in ems[i + 1].title or "박탈" in ems[i + 1].title)
-        v = CL.LobbyView(MagicMock(), MagicMock(), st)
-        assert len(v.children[0].options) == L.CANDIDATES_N - 1
-        r = await db.settle(st["closes_ts"] + 1, random.Random(3))
-        assert r["winner"] != i
-
-    run(flow())
-
-
-def test_lobby_term_events():
-    from services import lobby as L
-    from cogs import lobby as CL
-    db = L.LobbyDB()
-
-    async def flow():
-        now = 1_820_000_000
-        e = await db.state(1, now)
-        r = await db.settle(e["closes_ts"] + 1, random.Random(1))
-        t0 = e["closes_ts"] + 1
-        assert await db.term_tick(t0) is None                                # 임기 시작 바로는 없음
-        seen, kinds = 0, set()
-        for k in range(1, 200):
-            t = await db.term_tick(t0 + k * L.TERM_GAP[1], random.Random(k))
-            if t:
-                seen += 1
-                kinds.add(t["kind"])
-                assert t["text"] and "·" not in t["text"]
-                act = L.active_from(t["winner"])
-                if t["kind"] == "impeach":
-                    assert act == {}
-                    break
-        w = await db.last_winner()
-        assert seen and (w.get("impeached") or w.get("suspended"))
-        assert len(L.active_from(w)) < len(L.active_from(r["cand"])) or not L.active_from(r["cand"])
-        st = await db.state(1, t0 + 300 * L.TERM_GAP[1])
-        ems = CL.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), st)
-        assert "임기 중" in "".join(f.name for f in ems[-1].fields)
+        now = 1_830_000_000
+        A = 38261
+        await edb_db.add_balance(A, 100_000)
+        while await db.settle(now):                                          # 다른 테스트가 열어 둔 선거 정리
+            pass
+        await db.state(A, now)
+        assert (await db.lobby(A, 0, 30_000, now))["ok"]
+        L.ACTIVE.update({"attend": 2.0})
+        assert await L.void_weekly(db) >= 1
+        assert await edb_db.get_balance(A) == 100_000 and not L.ACTIVE
 
     run(flow())
 
