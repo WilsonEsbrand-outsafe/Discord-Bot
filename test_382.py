@@ -338,9 +338,9 @@ def test_lobby_game():
         for pick in range(n):
             r = L.settle_game(g, pick, 10_000, table)
             if g["cands"][pick]["out"]:
-                assert r == {"delta": 0, "rank": r["rank"], "mult": 0, "why": "out"}
+                assert r["why"] == "out" and r["delta"] == 10_000 * table[r["rank"]] and r["delta"] < 0
             elif pick == g["winner"] and g["trouble"] == "impeach":
-                assert r["delta"] == 0 and r["why"] == "impeach"
+                assert r["delta"] == 10_000 * min(table) < 0 and r["why"] == "impeach"
             elif pick == g["winner"] and g["trouble"] == "suspend":
                 assert r["delta"] == 10_000 * table[0] // 2
             else:
