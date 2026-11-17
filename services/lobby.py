@@ -515,7 +515,7 @@ GAME_DROP = 0.18           # 사건 장면마다 합당 · 사퇴가 날 확률
 GAME_DROP_MAX = 2          # 한 판에 빠지는 후보 최대
 GAME_TERM = 3              # 임기 사건 장면 수
 GAME_SUSPEND = 0.2         # 임기 장면마다 공약 중단 (상금 절반)
-GAME_IMPEACH = 0.07        # 임기 장면마다 탄핵 (상금 없음, 원금만)
+GAME_IMPEACH = 0.07        # 임기 장면마다 탄핵 (꼴찌만큼 잃는다)
 TERM_GOOD = ("{n} 대통령, 취임 첫날부터 공약 이행 시작", "{n} 대통령 지지율 고공 행진",
              "{n} 대통령, 축구장 무료 개방 약속 지켜", "{n} 대통령, 국정 운영 무난하다는 평가")
 
@@ -581,16 +581,17 @@ def play(rng=random) -> dict:
 
 def settle_game(g: dict, pick: int, amount: int, table: list[int]) -> dict:
     """→ {delta (전체 돈 변동), rank, mult, why}. why: out(빠져서 환불) / impeach / suspend / None."""
-    if g["cands"][pick]["out"]:
-        return {"delta": 0, "rank": g["order"].index(pick), "mult": 0, "why": "out"}
+    # 11/17 규완님 '왜 돈을 잃지는 않는 거야' → 사퇴 · 합당한 후보는 환불 없이 꼴찌 쪽 순위대로 잃고, 탄핵은 꼴찌만큼 잃는다
     rank = g["order"].index(pick)
     mult = table[rank]
     delta = amount * mult
     why = None
     if rank == 0 and g["trouble"] == "impeach":
-        delta, why = 0, "impeach"
+        delta, why = amount * min(table), "impeach"
     elif rank == 0 and g["trouble"] == "suspend":
         delta, why = delta // 2, "suspend"
+    if why is None and g["cands"][pick]["out"]:
+        why = "out"
     return {"delta": int(delta), "rank": rank, "mult": mult, "why": why}
 
 

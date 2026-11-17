@@ -61,8 +61,8 @@ def ticket_card(user, amount: int, g: dict, table: list[int], no: int) -> discor
     e.add_field(name="상금 (최종 순위)", inline=False,
                 value="\n".join(f"{k + 1}위  {_prize(amount, m)}" for k, m in enumerate(table)))
     e.add_field(name="알아 둘 것", inline=False, value=(
-        "고른 후보가 사퇴하거나 합당하면 로비한 돈을 돌려받아요.\n"
-        "당선돼도 임기 중 공약이 멈추면 상금이 절반, 탄핵되면 상금이 없어요.\n"
+        "고른 후보가 사퇴하거나 합당하면 꼴찌 쪽 순위가 돼서 돈을 잃어요.\n"
+        "당선돼도 임기 중 공약이 멈추면 상금이 절반, 탄핵되면 꼴찌만큼 돈을 잃어요.\n"
         "60초 안에 고르지 않으면 로비한 돈은 사라져요."))
     return e
 
@@ -124,7 +124,7 @@ def frames(g: dict, pick: int, no: int) -> list[tuple[str, str, int, float]]:
                 + standings(cands, g["final"], pick), ui.GOLD, GAP_BIG))
     for k, t in enumerate(g["term"]):
         color = {"impeach": ui.DOOM, "suspend": ui.LOSE}.get(t["kind"], ui.DARK)
-        note = {"impeach": "\n\n탄핵됐어요. 이 대통령에게 로비한 사람은 상금을 받지 못해요.",
+        note = {"impeach": "\n\n탄핵됐어요. 이 대통령에게 로비한 사람은 꼴찌만큼 돈을 잃어요.",
                 "suspend": "\n\n공약이 멈췄어요. 이 대통령에게 로비한 사람은 상금이 절반이 돼요."}.get(t["kind"], "")
         out.append((f"{w['name']} 대통령 임기 {k + 1}년차", f"{_steps(2)}\n\n**{t['text']}**{note}", color,
                     GAP_BIG if t["kind"] != "ok" else GAP))
@@ -134,9 +134,9 @@ def frames(g: dict, pick: int, no: int) -> list[tuple[str, str, int, float]]:
 def result_card(user, g: dict, pick: int, r: dict, bal: int) -> discord.Embed:
     cands, c = g["cands"], g["cands"][pick]
     if r["why"] == "out":
-        head, color = f"{c['name']} 후보가 선거에서 빠져서 로비한 돈을 돌려받았어요.", ui.EVEN
+        head, color = f"{c['name']} 후보가 선거에서 빠져서 {r['rank'] + 1}위가 됐어요.", ui.tone(r["delta"])
     elif r["why"] == "impeach":
-        head, color = f"{c['name']} 후보가 당선됐지만 탄핵돼서 상금이 사라졌어요.", ui.DOOM
+        head, color = f"{c['name']} 후보가 당선됐지만 탄핵돼서 꼴찌만큼 돈을 잃었어요.", ui.DOOM
     elif r["why"] == "suspend":
         head, color = f"{c['name']} 후보가 당선됐지만 공약이 멈춰서 상금이 절반이 됐어요.", ui.WIN
     elif r["rank"] == 0:
