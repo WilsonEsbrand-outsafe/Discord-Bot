@@ -1,5 +1,5 @@
 # cogs/lobby.py — /로비 (3.8.2, 테스트 서버 먼저): 일주일에 한 번 열리는 축구 봇 대선. 규칙 · 수치는 services/lobby.py
-# /로비 → 후보 4명과 지지율 · 공약 · 최근 뉴스 → 메뉴에서 후보를 골라 금액을 적으면 로비.
+# /로비 → 후보들과 지지율 · 배당 · 공약 · 최근 뉴스 → 메뉴에서 후보를 골라 금액을 적으면 로비.
 # 몇 시간마다 터지는 사건 뉴스와 선거 결과는 서버마다 하나 있는 '대선 뉴스' 스레드에 올린다.
 import asyncio
 import io
@@ -51,6 +51,16 @@ def _pledges(c: dict, kept_only: bool = False) -> str:
     return "\n".join(f"- {L.pledge_text(k, p)}" for (k, p), ok in zip(c["pledges"], kept) if ok or not kept_only) or "지킨 공약이 없어요."
 
 
+def out_text(c: dict, cands: list[dict]) -> str:
+    """빠진 후보 상태 글자 ('' = 아직 뛰는 중)."""
+    o = c.get("out")
+    if not o:
+        return ""
+    if o["kind"] == "merge":
+        return f"{cands[o['into']]['name']} 후보와 합당하고 사퇴"
+    return "후보 자격 박탈" if o["kind"] == "ban" else "사퇴"
+
+
 def _broken(c: dict) -> str:
     kept = c.get("kept") or [True] * len(c["pledges"])
     return "\n".join(f"- {L.pledge_text(k, p)}" for (k, p), ok in zip(c["pledges"], kept) if not ok)
@@ -94,7 +104,7 @@ def support_chart(cands: list[dict], history: list, opens_ts: int, closes_ts: in
     for k, i in enumerate(order):        # 오른쪽 범례: 지지율 높은 순
         y = 0.82 - k * step
         fig.text(0.82, y, cands[i]["name"], color=color(i), fontsize=13, fontweight="bold", va="center", fontfamily=FONT)
-        fig.text(0.97, y, f"{last[i]:.1f}%", color=FG, fontsize=11, ha="right", va="center", fontfamily=FONT)
+        fig.text(0.97, y, f"{last[i]:.1f}%" if L.alive(cands[i]) else "사퇴", color=FG, fontsize=11, ha="right", va="center", fontfamily=FONT)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor=BG)
     return buf.getvalue()
@@ -120,6 +130,8 @@ def count_embed(eid: int, cands: list[dict], pct: int, shares: list[float], tota
     lines = []
     for i in sorted(range(len(cands)), key=lambda i: -shares[i]):
         c = cands[i]
+        if not L.alive(c):
+            continue
         lines.append(f"**{c['name']}** ({c['party']})\n`{_bar(shares[i])}` {shares[i]:.1f}%  {int(counted * shares[i] / 100):,}표")
     head = "투표가 끝났어요. 지금부터 개표를 시작합니다." if pct == 0 else (
         "개표가 끝났어요." if pct >= 100 else f"개표율 **{pct}%**")
@@ -132,16 +144,23 @@ def lobby_embeds(user, e: dict) -> list[discord.Embed]:
     """11/17 규완님 '후보들을 더 확실하게 구별' · '지지율을 따로 분리':
     맨 위 카드에 지지율(높은 순)과 그래프, 그 아래 후보마다 당 색깔 카드 하나 (이행률 · 공약), 맨 아래 뉴스."""
     head = ui.card(f"제{e['id']}회 축구 봇 대선", (
-        "마음에 드는 후보에게 로비하세요. 로비가 몰릴수록 지지율이 올라가요.\n"
+        "당선될 것 같은 후보에게 로비하세요. 당선되면 로비한 돈에 배당을 곱해 받아요.\n"
+        "로비가 몰릴수록 지지율이 올라가요.\n"
         f"마감 **{kst(e['closes_ts'])}**"), ui.INFO, user, SECTION)
-    order = sorted(range(len(e["cands"])), key=lambda i: -e["support"][i])
+    order = sorted((i for i, c in enumerate(e["cands"]) if L.alive(c)), key=lambda i: -e["support"][i])
     head.add_field(name="지지율", inline=False, value="\n".join(
-        f"`{_bar(e['support'][i], 10)}` **{e['support'][i]:.1f}%** {i + 1}. {e['cands'][i]['name']}" for i in order))
+        f"`{_bar(e['support'][i], 10)}` **{e['support'][i]:.1f}%** {i + 1}. {e['cands'][i]['name']}  배당 **{e['odds'][i]}배**"
+        for i in order))
     head.set_image(url=f"attachment://{CHART_FILE}")
     out = [head]
     for i, c in enumerate(e["cands"]):
+        gone = out_text(c, e["cands"])
+        if gone:   # 빠진 후보는 회색 한 줄
+            out.append(discord.Embed(title=f"{i + 1}. {c['name']} ({gone})", color=0x4E5058,
+                                     description=f"**{c['party']}**\n이 후보에게 로비한 돈은 돌려받았어요."))
+            continue
         card = discord.Embed(title=f"{i + 1}. {c['name']}", color=int(color(i)[1:], 16), description=(
-            f"**{c['party']}**\n공약 이행률 **{c.get('rate', 100)}%**"
+            f"**{c['party']}**\n배당 **{e['odds'][i]}배**\n공약 이행률 **{c.get('rate', 100)}%**"
             + (f"\n내 로비 **{e['mine'][i]:,}원**" if e["mine"][i] else "")
             + f"\n\n{_pledges(c)}"))
         out.append(card)
@@ -152,8 +171,9 @@ def lobby_embeds(user, e: dict) -> list[discord.Embed]:
     if last and last["winner"] is not None:
         w = last["cands"][last["winner"]]
         tail.add_field(name=f"지금 적용 중인 공약 (제{last['id']}회 당선 {w['name']})", value=_pledges(w, True), inline=False)
-    tail.set_footer(text="당선되면 공약마다 이행률만큼의 확률로 지켜요. 지킨 공약만 적용돼요.\n"
-                         "당선자에게 로비한 사람은 낙선 후보들에게 들어간 돈을 넣은 금액만큼 나눠 받아요.\n"
+    tail.set_footer(text="배당은 로비하는 순간 정해져요. 낙선한 후보에게 로비한 돈은 잃어요.\n"
+                         "후보가 합당하거나 사퇴하면 그 후보에게 로비한 돈은 돌려받아요.\n"
+                         "당선되면 공약마다 이행률만큼의 확률로 지켜요. 지킨 공약만 적용돼요.\n"
                          "가끔 로비가 적발되면 넣은 돈을 잃어요.")
     out.append(tail)
     return out
@@ -173,15 +193,20 @@ class LobbyModal(discord.ui.Modal):
         r = await self.view.cog.db.lobby(interaction.user.id, self.cand, int(raw), int(time.time()))
         if r["ok"]:
             msg = (f"**{r['cand']['name']}** 후보에게 **{r['amount']:,}원**을 로비했어요.\n"
+                   f"배당 **{r['odds']}배** (당선되면 {int(r['amount'] * r['odds']):,}원)\n"
                    f"이 후보에게 넣은 돈 {r['mine']:,}원\n잔액 {r['balance']:,}원")
+            if r["odds"] < self.view.e["odds"][self.cand]:
+                msg += "\n로비로 지지율이 올라서 배당이 낮아졌어요."
         else:
             msg = {"amount": f"로비는 {L.LOBBY_MIN:,}원부터 할 수 있어요.", "closed": "이번 선거는 마감됐어요.",
-                   "balance": f"잔액이 모자라요 (잔액 {r.get('have', 0):,}원)."}.get(r["reason"], "로비할 수 없어요.")
+                   "balance": f"잔액이 모자라요 (잔액 {r.get('have', 0):,}원).",
+                   "out": "이 후보는 선거에서 빠졌어요."}.get(r["reason"], "로비할 수 없어요.")
         await interaction.response.send_message(msg, ephemeral=True)
         if r["ok"] and self.view.message is not None:
             try:
                 now = int(time.time())
                 e = await self.view.cog.db.state(self.view.user.id, now)
+                self.view.e = e
                 f = await chart_file(e["cands"], e["history"], e["opens_ts"], e["closes_ts"], now)
                 ems = lobby_embeds(self.view.user, e)
                 if f is None:
@@ -197,8 +222,8 @@ class LobbyView(discord.ui.View):
         self.cog, self.user, self.e, self.message = cog, user, e, None
         sel = discord.ui.Select(placeholder="로비할 후보 고르기", options=[
             discord.SelectOption(label=f"{i + 1}. {c['name']} ({c['party']})"[:100], value=str(i),
-                                 description=f"지지율 {e['support'][i]:.1f}%  공약 이행률 {c.get('rate', 100)}%"[:100])
-            for i, c in enumerate(e["cands"])])
+                                 description=f"배당 {e['odds'][i]}배  지지율 {e['support'][i]:.1f}%  공약 이행률 {c.get('rate', 100)}%"[:100])
+            for i, c in enumerate(e["cands"]) if L.alive(c)])
         sel.callback = self._pick
         self.add_item(sel)
 
@@ -240,7 +265,12 @@ class Lobby(commands.Cog):
             t.add_done_callback(self._shows.discard)
             return
         n = await self.db.news_tick(now)
-        if n:
+        if n and n.get("kind"):   # 합당 · 사퇴 · 자격 박탈
+            body = f"**{n['text']}**" + (f"\n합당한 후보 지지율 {n['support']:.0f}%" if n["support"] is not None else "")
+            await self.post_all(ui.card("대선 속보", body + "\n이 후보에게 로비한 돈은 모두 돌려드렸어요.", ui.LOSE, None, SECTION))
+            for uid, a in n["refund"].items():
+                await self._dm(uid, ui.card("대선 속보", f"**{n['text']}**\n로비한 돈 **{a:,}원**을 돌려드렸어요.", ui.INFO, None, SECTION))
+        elif n:
             await self.post_all(ui.card("대선 뉴스", f"**{n['text']}**\n지지율 {n['support']:.0f}%", ui.INFO, None, SECTION))
 
     async def count_show(self, r: dict):
@@ -273,7 +303,7 @@ class Lobby(commands.Cog):
     async def _notify(self, r: dict):
         for uid, m in r["paid"].items():
             await self._dm(uid, ui.card(f"제{r['eid']}회 대선 결과", (
-                f"로비한 **{r['cand']['name']}** 후보가 당선됐어요.\n받은 돈 **{m:,}원**"), ui.GOLD, None, SECTION))
+                f"로비한 **{r['cand']['name']}** 후보가 당선됐어요.\n배당으로 받은 돈 **{m:,}원**"), ui.GOLD, None, SECTION))
         for uid in r["caught"]:
             await self._dm(uid, ui.card(f"제{r['eid']}회 대선 결과", (
                 f"**{r['cand']['name']}** 후보가 당선됐지만 로비가 적발됐어요.\n넣은 돈은 돌려받지 못해요."), ui.LOSE, None, SECTION))
@@ -370,7 +400,7 @@ class Lobby(commands.Cog):
             return th
         return None
 
-    @app_commands.command(name="로비", description="일주일마다 열리는 축구 봇 대선 — 후보에게 로비하고, 당선되면 배당과 공약을 받아요")
+    @app_commands.command(name="로비", description="일주일마다 열리는 축구 봇 대선 — 당선될 후보에게 로비하고 배당을 받아요")
     async def lobby(self, interaction: discord.Interaction):
         if not release.preview_382(interaction.guild_id):
             return await interaction.response.send_message("/로비 는 아직 이 서버에서 쓸 수 없어요.", ephemeral=True)

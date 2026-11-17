@@ -250,10 +250,19 @@ def test_lobby_rules():
     assert abs(sum(L.support(cands, [0] * L.CANDIDATES_N)) - 100) < 1e-6
     sup = L.support(cands, [10 ** 9] + [0] * (L.CANDIDATES_N - 1))
     assert sup[0] > L.support(cands, [0] * L.CANDIDATES_N)[0]                       # 로비가 몰리면 지지율이 오른다
-    bets = [(1, 0, 100), (2, 0, 300), (3, 1, 400)]
-    assert L.payouts(bets, 0, set()) == {1: 200, 2: 600}                    # 낙선 400원을 100:300 으로
-    assert L.payouts(bets, 0, {2}) == {1: 800}                              # 적발된 사람 몫도 나머지에게
-    assert L.payouts(bets, 2, set()) == {}
+    tk = [(1, 0, 100, 2.5), (2, 0, 300, 1.5), (1, 0, 100, 3.0), (3, 1, 400, 4.0)]
+    assert L.payouts(tk, 0, set()) == {1: 550, 2: 450}                      # 로비 × 로비할 때 배당
+    assert L.payouts(tk, 0, {2}) == {1: 550}                                # 적발되면 0
+    assert L.payouts(tk, 2, set()) == {}
+    o = L.odds(cands, [0] * L.CANDIDATES_N)
+    assert all(L.ODDS_RANGE[0] <= x <= L.ODDS_RANGE[1] for x in o) and o == L.odds(cands, [0] * L.CANDIDATES_N)
+    big = L.odds(cands, [10 ** 9] + [0] * (L.CANDIDATES_N - 1))
+    assert big[0] < o[0]                                                    # 로비가 몰리면 배당이 내려간다
+    gone = [dict(c) for c in cands]
+    gone[0]["out"] = {"kind": "quit"}
+    assert L.support(gone, [10 ** 9] + [0] * (L.CANDIDATES_N - 1))[0] == 0 and L.odds(gone, [0] * L.CANDIDATES_N)[0] == 0
+    assert all(L.pick_winner(gone, [0] * L.CANDIDATES_N, random.Random(s)) != 0 for s in range(50))
+    assert not set(L.NAMES) & {"정우성", "강하늘", "한지민", "조인성", "배수지", "신동엽", "홍진경", "남궁민"}
     # 돈만으로 정해지지 않는다: 로비가 크게 몰려도 다른 후보가 당선될 때가 있다
     wins = [L.pick_winner(cands, [10 ** 6] + [0] * (L.CANDIDATES_N - 1), random.Random(s)) for s in range(300)]
     assert 0 < wins.count(0) < 300
@@ -273,12 +282,14 @@ def test_lobby_db_and_effects():
         assert e["cands"] and e["news"]
         assert (await db.lobby(A, 0, 100, now))["reason"] == "amount"
         assert (await db.lobby(A, 0, 10 ** 9, now))["reason"] == "balance"
-        r = await db.lobby(A, 0, 200_000, now)
-        assert r["ok"] and r["balance"] == 800_000
-        await db.lobby(B, 1, 300_000, now)
+        r = ra = await db.lobby(A, 0, 200_000, now)
+        assert r["ok"] and r["balance"] == 800_000 and L.ODDS_RANGE[0] <= r["odds"] <= L.ODDS_RANGE[1]
+        rb = await db.lobby(B, 1, 300_000, now)
         assert await db.news_tick(now) is None                               # 아직 뉴스 시각 전
         n = await db.news_tick(now + L.NEWS_GAP[1] + 1, random.Random(2))
-        assert n and n["text"] and n["delta"]
+        assert n and n["text"] and (n["delta"] or n.get("kind"))
+        if n.get("kind") and n["cand"] in (0, 1):                            # 첫 뉴스가 사퇴면 이 테스트는 다시 짠다
+            return
         assert await db.settle(now) is None                                  # 마감 전
         r = await db.settle(e["closes_ts"] + 1, random.Random(4))
         assert r and r["pool"] == 500_000 and r["next"] == e["id"] + 1
@@ -289,9 +300,11 @@ def test_lobby_db_and_effects():
         assert len((await db.state(A, e["closes_ts"] + 3))["history"]) == 1    # 새 선거는 첫 점 하나부터
         bal_a, bal_b = await edb_db.get_balance(A), await edb_db.get_balance(B)
         if w == 0 and A not in r["caught"]:
-            assert bal_a == 800_000 + 500_000
+            assert bal_a == 800_000 + int(200_000 * ra["odds"])
         if w == 1 and B not in r["caught"]:
-            assert bal_b == 700_000 + 500_000
+            assert bal_b == 700_000 + int(300_000 * rb["odds"])
+        if w not in (0, 1):
+            assert (bal_a, bal_b) == (800_000, 700_000)
         assert (await db.last_winner())["name"] == r["cand"]["name"]
         _ = calendar_ts
         # 공약 효과: 공개 전엔 테스트 서버 사람만
@@ -331,7 +344,7 @@ def test_lobby_party_and_hidden_pot():
     assert L.LobbyDB._row(r)["cands"][0]["party"] == L.PARTIES[0]          # 예전 당 이름 → 새 이름
     cands = L.make_candidates(random.Random(1))
     n = L.CANDIDATES_N
-    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [123_456] + [0] * (n - 1)),
+    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [123_456] + [0] * (n - 1)), "odds": L.odds(cands, [0] * n),
          "pots": [123_456] + [0] * (n - 1), "mine": [0] * n, "news": [], "last": None}
     ems = C.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), e)
     assert all("123,456" not in (x.description or "") + "".join(f.value for f in x.fields) for x in ems)   # 로비 총액은 안 보인다
@@ -346,7 +359,7 @@ def test_lobby_screen():
     assert len({c["name"] for c in cands}) == n and all(L.RATE_RANGE[0] <= c["rate"] <= L.RATE_RANGE[1] for c in cands)
     w = dict(cands[1], kept=[True, False, True, False, False])
     cands2 = cands[:1] + [w] + cands[2:]
-    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [0] * n), "pots": [0] * n,
+    e = {"id": 1, "closes_ts": 1_800_000_000, "cands": cands, "support": L.support(cands, [0] * n), "odds": L.odds(cands, [0] * n), "pots": [0] * n,
          "mine": [10_000] + [0] * (n - 1), "news": [{"ts": 1_800_000_000, "text": "뉴스", "delta": 3}],
          "last": {"id": 0, "winner": 1, "cands": cands2}}
     ems = CL.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), e)
@@ -357,6 +370,42 @@ def test_lobby_screen():
     assert L.active_from(w) == {w["pledges"][0][0]: 1 + w["pledges"][0][1], w["pledges"][2][0]: 1 + w["pledges"][2][1]}
     assert CL.kst(1_800_000_000) == "1월 15일 (금) 17:00"
     assert "로비" in release.hidden_commands(1) and "로비" not in release.hidden_commands(release.TEST_GUILD)
+
+
+def test_lobby_drop_events():
+    from services import lobby as L
+    from cogs import lobby as CL
+    db = L.LobbyDB()
+    edb_db = edb.EconomyDB()
+
+    async def flow():
+        now = 1_810_000_000
+        A = 38251
+        await edb_db.add_balance(A, 1_000_000)
+        e = await db.state(A, now)
+        await db.lobby(A, 0, 100_000, now)
+        await db.lobby(A, 1, 100_000, now)
+        con = db._connect()
+        try:
+            e = db._current(con, now)
+            d = L.LobbyDB._drop(con, e, list(range(L.CANDIDATES_N)), now, random.Random(7))
+            con.commit()
+        finally:
+            con.close()
+        i = d["cand"]
+        st = await db.state(A, now)
+        assert st["cands"][i]["out"] and st["support"][i] == 0 and st["odds"][i] == 0
+        if i in (0, 1):
+            assert d["refund"] == {A: 100_000} and await edb_db.get_balance(A) == 900_000
+        assert (await db.lobby(A, i, 50_000, now))["reason"] == "out"
+        ems = CL.lobby_embeds(MagicMock(display_name="가", display_avatar=MagicMock(url="")), st)
+        assert ("사퇴" in ems[i + 1].title or "박탈" in ems[i + 1].title)
+        v = CL.LobbyView(MagicMock(), MagicMock(), st)
+        assert len(v.children[0].options) == L.CANDIDATES_N - 1
+        r = await db.settle(st["closes_ts"] + 1, random.Random(3))
+        assert r["winner"] != i
+
+    run(flow())
 
 
 def test_shop_any_qty_and_no_hold_cap():
