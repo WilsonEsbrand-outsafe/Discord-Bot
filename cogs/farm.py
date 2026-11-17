@@ -1117,7 +1117,7 @@ class ShopPanel(discord.ui.View):
             farms = await self.cog.db.farms_of(interaction.user.id, int(time.time()))
             if not farms:
                 return await interaction.response.send_message("먼저 `/농사`로 농장을 열어 주세요.", ephemeral=True)
-            view = BuyView(self.cog, interaction.user, farms, key)
+            view = BuyView(self.cog, interaction.user, farms, key, interaction.guild_id)
             await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
         return cb
 
@@ -1141,9 +1141,10 @@ class CountModal(discord.ui.Modal):
 class BuyView(discord.ui.View):
     """농사 상점에서 고른 씨앗 · 동물 · 아이템을 내 농장 코인으로 산다 (누른 사람에게만 보인다)."""
 
-    def __init__(self, cog: "Farm", user, farms: list[dict], key: str):
+    def __init__(self, cog: "Farm", user, farms: list[dict], key: str, guild_id: Optional[int] = None):
         super().__init__(timeout=180)
         self.cog, self.user, self.farms, self.key, self.note = cog, user, farms, key, ""
+        self.pick = release.preview_383(guild_id)   # 3.8.3: 코인 지갑이 하나여도 넣을 농장을 고른다
         self.fid = farms[0]["id"]
         self.unit = "마리" if key in F.ANIMALS else "개"
         self._draw()
@@ -1170,9 +1171,10 @@ class BuyView(discord.ui.View):
             b = discord.ui.Button(label="개수 직접 적기", style=discord.ButtonStyle.secondary, row=0)
             b.callback = self._ask
             self.add_item(b)
-        if len(self.farms) > 1 and not f.get("v382"):   # 3.8.2 코인 지갑은 하나라 고를 것이 없다
-            sel = discord.ui.Select(placeholder="어느 농장의 코인으로 살지 고르기", row=1, options=[
-                discord.SelectOption(label=farm_label(x), description=f"코인 {x['coins']:,}",
+        if len(self.farms) > 1 and (self.pick or not f.get("v382")):   # 3.8.3: 산 것은 농장마다 따로라, 넣을 농장을 고른다
+            v = f.get("v382")
+            sel = discord.ui.Select(placeholder="어느 농장에 넣을지 고르기" if v else "어느 농장의 코인으로 살지 고르기", row=1, options=[
+                discord.SelectOption(label=farm_label(x), description=None if v else f"코인 {x['coins']:,}",
                                      value=str(x["id"]), default=x["id"] == self.fid) for x in self.farms[:25]])
             sel.callback = self._farm
             self.add_item(sel)
@@ -1191,7 +1193,8 @@ class BuyView(discord.ui.View):
             _, n, price, sec, sell = F.CROPS[k]
             info = [f"값 **{price:,} 코인**", f"다 자라는 데 **{_dur(sec)}**", f"다 자라면 팔 때 **{sell:,} 코인**"]
         have = (f["tools"] if k in F.TOOLS else f["seeds"]).get(k, 0)
-        mine = [f"내 코인 **{f['coins']:,}**" if f.get("v382") else f"내 {F.LANDS[f['land']][1]} 농장 코인 **{f['coins']:,}**",
+        mine = ([f"넣을 농장 **{farm_label(f)}**"] if f.get("v382") and self.pick and len(self.farms) > 1 else []) + [
+                f"내 코인 **{f['coins']:,}**" if f.get("v382") else f"내 {F.LANDS[f['land']][1]} 농장 코인 **{f['coins']:,}**",
                 f"사 둔 {n} **{have}{self.unit}**"]
         where = "농장 화면의 아이템에서" if k in F.TOOLS else "내 농장의 심기 메뉴에서"
         return ui.card(f"{n} 사기", (f"{self.note}\n\n" if self.note else "") + "\n".join(info) + "\n\n" + "\n".join(mine)
