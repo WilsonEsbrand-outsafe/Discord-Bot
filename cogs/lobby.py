@@ -23,7 +23,11 @@ SECTION = "대선"
 NEWS_NAME = "대선 뉴스"
 _WDAY = "월화수목금토일"
 CHART_FILE = "lobby.png"
-COLORS = ("#4C9AFF", "#FF6B6B", "#2ECC71", "#F5B041")   # 후보 1~4
+COLORS = ("#3B82F6", "#EF4444", "#22C55E", "#F59E0B", "#A855F7", "#14B8A6")   # 당마다 색 (후보 순서 = 당 순서)
+
+
+def color(i: int) -> str:
+    return COLORS[i % len(COLORS)]
 BG, FG, SUB, GRID = "#1E1F22", "#F2F3F5", "#9A9CA3", "#2E3035"
 _HAVE = {f.name for f in _fm.fontManager.ttflist}
 FONT = [f for f in ("NanumGothic", "Malgun Gothic", "DejaVu Sans") if f in _HAVE] or ["DejaVu Sans"]
@@ -42,8 +46,14 @@ def short(ts: int) -> str:
     return f"{_WDAY[t.tm_wday]} {t.tm_hour:02d}:{t.tm_min:02d}"
 
 
-def _pledges(c: dict) -> str:
-    return "\n".join(f"- {L.pledge_text(k, p)}" for k, p in c["pledges"])
+def _pledges(c: dict, kept_only: bool = False) -> str:
+    kept = c.get("kept") or [True] * len(c["pledges"])
+    return "\n".join(f"- {L.pledge_text(k, p)}" for (k, p), ok in zip(c["pledges"], kept) if ok or not kept_only) or "지킨 공약이 없어요."
+
+
+def _broken(c: dict) -> str:
+    kept = c.get("kept") or [True] * len(c["pledges"])
+    return "\n".join(f"- {L.pledge_text(k, p)}" for (k, p), ok in zip(c["pledges"], kept) if not ok)
 
 
 def support_chart(cands: list[dict], history: list, opens_ts: int, closes_ts: int, now_ts: int) -> bytes:
@@ -61,8 +71,8 @@ def support_chart(cands: list[dict], history: list, opens_ts: int, closes_ts: in
     for i, c in enumerate(cands):
         ys = [s[i] for _, s in pts]
         top = max(top, max(ys))
-        ax.plot(xs, ys, color=COLORS[i % 4], linewidth=2.4, solid_joinstyle="round", zorder=3)
-        ax.scatter([xs[-1]], [ys[-1]], s=40, color=COLORS[i % 4], edgecolors=BG, linewidths=2, zorder=4, clip_on=False)
+        ax.plot(xs, ys, color=color(i), linewidth=2.4, solid_joinstyle="round", zorder=3)
+        ax.scatter([xs[-1]], [ys[-1]], s=40, color=color(i), edgecolors=BG, linewidths=2, zorder=4, clip_on=False)
     span = (closes_ts - opens_ts) / 3600
     ax.set_xlim(0, span)
     ax.set_ylim(0, max(50, top + 8))
@@ -80,10 +90,11 @@ def support_chart(cands: list[dict], history: list, opens_ts: int, closes_ts: in
     fig.text(0.79, 0.93, f"마감 {kst(closes_ts)}", color=SUB, fontsize=9, ha="right", va="center", fontfamily=FONT)
     last = pts[-1][1]
     order = sorted(range(len(cands)), key=lambda i: -last[i])
+    step = min(0.16, 0.74 / max(1, len(cands)))
     for k, i in enumerate(order):        # 오른쪽 범례: 지지율 높은 순
-        y = 0.80 - k * 0.16
-        fig.text(0.82, y, cands[i]["name"], color=COLORS[i % 4], fontsize=13, fontweight="bold", va="center", fontfamily=FONT)
-        fig.text(0.82, y - 0.06, f"{last[i]:.1f}%", color=FG, fontsize=11, va="center", fontfamily=FONT)
+        y = 0.82 - k * step
+        fig.text(0.82, y, cands[i]["name"], color=color(i), fontsize=13, fontweight="bold", va="center", fontfamily=FONT)
+        fig.text(0.97, y, f"{last[i]:.1f}%", color=FG, fontsize=11, ha="right", va="center", fontfamily=FONT)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor=BG)
     return buf.getvalue()
@@ -117,29 +128,35 @@ def count_embed(eid: int, cands: list[dict], pct: int, shares: list[float], tota
     return e
 
 
-def lobby_embed(user, e: dict) -> discord.Embed:
-    """한 칸에 후보 하나, 값은 한 줄에 하나 (가운뎃점으로 이어 붙이지 않는다)."""
-    em = ui.card(f"제{e['id']}회 축구 봇 대선", (
+def lobby_embeds(user, e: dict) -> list[discord.Embed]:
+    """11/17 규완님 '후보들을 더 확실하게 구별' · '지지율을 따로 분리':
+    맨 위 카드에 지지율(높은 순)과 그래프, 그 아래 후보마다 당 색깔 카드 하나 (이행률 · 공약), 맨 아래 뉴스."""
+    head = ui.card(f"제{e['id']}회 축구 봇 대선", (
         "마음에 드는 후보에게 로비하세요. 로비가 몰릴수록 지지율이 올라가요.\n"
         f"마감 **{kst(e['closes_ts'])}**"), ui.INFO, user, SECTION)
-    # PC 에선 inline 칸이 한 줄에 3개라 후보 4명이 3+1 로 갈렸다 → 2명씩 두 줄 (세 번째 칸은 빈 칸)
+    order = sorted(range(len(e["cands"])), key=lambda i: -e["support"][i])
+    head.add_field(name="지지율", inline=False, value="\n".join(
+        f"`{_bar(e['support'][i], 10)}` **{e['support'][i]:.1f}%** {i + 1}. {e['cands'][i]['name']}" for i in order))
+    head.set_image(url=f"attachment://{CHART_FILE}")
+    out = [head]
     for i, c in enumerate(e["cands"]):
-        em.add_field(name=f"{i + 1}. {c['name']}", value=(
-            f"{c['party']}\n지지율 **{e['support'][i]:.0f}%**\n"
-            + (f"내 로비 **{e['mine'][i]:,}원**\n" if e["mine"][i] else "")
-            + f"\n{_pledges(c)}"))
-        if i % 2 == 1:
-            em.add_field(name="\u200b", value="\u200b")
+        card = discord.Embed(title=f"{i + 1}. {c['name']}", color=int(color(i)[1:], 16), description=(
+            f"**{c['party']}**\n공약 이행률 **{c.get('rate', 100)}%**"
+            + (f"\n내 로비 **{e['mine'][i]:,}원**" if e["mine"][i] else "")
+            + f"\n\n{_pledges(c)}"))
+        out.append(card)
+    tail = discord.Embed(color=ui.INFO)
     if e["news"]:
-        em.add_field(name="최근 뉴스", value="\n".join(f"`{short(n['ts'])}` {n['text']}" for n in e["news"])[:1024], inline=False)
+        tail.add_field(name="최근 뉴스", value="\n".join(f"`{short(n['ts'])}` {n['text']}" for n in e["news"])[:1024], inline=False)
     last = e.get("last")
     if last and last["winner"] is not None:
         w = last["cands"][last["winner"]]
-        em.add_field(name=f"지금 적용 중인 공약 (제{last['id']}회 당선 {w['name']})", value=_pledges(w), inline=False)
-    em.set_image(url=f"attachment://{CHART_FILE}")
-    em.set_footer(text="당선자에게 로비한 사람은 낙선 후보들에게 들어간 돈을 넣은 금액만큼 나눠 받아요.\n"
-                       "가끔 로비가 적발되면 넣은 돈을 잃어요.")
-    return em
+        tail.add_field(name=f"지금 적용 중인 공약 (제{last['id']}회 당선 {w['name']})", value=_pledges(w, True), inline=False)
+    tail.set_footer(text="당선되면 공약마다 이행률만큼의 확률로 지켜요. 지킨 공약만 적용돼요.\n"
+                         "당선자에게 로비한 사람은 낙선 후보들에게 들어간 돈을 넣은 금액만큼 나눠 받아요.\n"
+                         "가끔 로비가 적발되면 넣은 돈을 잃어요.")
+    out.append(tail)
+    return out
 
 
 class LobbyModal(discord.ui.Modal):
@@ -166,7 +183,10 @@ class LobbyModal(discord.ui.Modal):
                 now = int(time.time())
                 e = await self.view.cog.db.state(self.view.user.id, now)
                 f = await chart_file(e["cands"], e["history"], e["opens_ts"], e["closes_ts"], now)
-                await self.view.message.edit(embed=lobby_embed(self.view.user, e), attachments=[f] if f else [])
+                ems = lobby_embeds(self.view.user, e)
+                if f is None:
+                    ems[0].set_image(url=None)
+                await self.view.message.edit(embeds=ems, attachments=[f] if f else [])
             except discord.HTTPException:
                 pass
 
@@ -177,7 +197,8 @@ class LobbyView(discord.ui.View):
         self.cog, self.user, self.e, self.message = cog, user, e, None
         sel = discord.ui.Select(placeholder="로비할 후보 고르기", options=[
             discord.SelectOption(label=f"{i + 1}. {c['name']} ({c['party']})"[:100], value=str(i),
-                                 description=L.pledge_text(*c["pledges"][0])[:100]) for i, c in enumerate(e["cands"])])
+                                 description=f"지지율 {e['support'][i]:.1f}%  공약 이행률 {c.get('rate', 100)}%"[:100])
+            for i, c in enumerate(e["cands"])])
         sel.callback = self._pick
         self.add_item(sel)
 
@@ -268,7 +289,9 @@ class Lobby(commands.Cog):
             f"**{c['name']} ({c['party']})** 후보가 득표율 {r['shares'][r['winner']]:.1f}%로 당선됐어요.\n"
             f"로비한 사람 {r['people']}명"
             + (f"\n로비가 적발된 사람 {len(r['caught'])}명" if r["caught"] else "")), ui.GOLD, None, SECTION)
-        e.add_field(name="다음 선거까지 적용되는 공약", value=_pledges(c), inline=False)
+        e.add_field(name=f"지킨 공약 (이행률 {c.get('rate', 100)}%), 다음 선거까지 적용", value=_pledges(c, True), inline=False)
+        if _broken(c):
+            e.add_field(name="지키지 못한 공약", value=_broken(c), inline=False)
         e.add_field(name="다음 선거", value=f"제{r['next']}회 대선이 열렸어요.\n마감 {kst(r['next_closes'])}", inline=False)
         return e
 
@@ -356,10 +379,10 @@ class Lobby(commands.Cog):
         e = await self.db.state(interaction.user.id, now)
         view = LobbyView(self, interaction.user, e)
         f = await chart_file(e["cands"], e["history"], e["opens_ts"], e["closes_ts"], now)
-        em = lobby_embed(interaction.user, e)
+        ems = lobby_embeds(interaction.user, e)
         if f is None:
-            em.set_image(url=None)
-        view.message = await interaction.followup.send(embed=em, view=view, wait=True, **({"file": f} if f else {}))
+            ems[0].set_image(url=None)
+        view.message = await interaction.followup.send(embeds=ems, view=view, wait=True, **({"file": f} if f else {}))
 
 
 async def setup(bot: commands.Bot):

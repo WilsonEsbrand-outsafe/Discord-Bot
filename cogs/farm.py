@@ -137,7 +137,7 @@ def panel_embed(user, f: dict, now: int, note: str = "") -> discord.Embed:
     e = ui.card(farm_title(user, f), desc, ui.WIN, user, SECTION)
 
     chests = sum(f["chests"].values())
-    stats = [("에너지", f"**{f['energy']}** / {F.ENERGY_MAX}"), ("코인", f"**{f['coins']:,}**"), ("낫", f"**+{f['sickle']}**"),
+    stats = [("에너지", f"**{f['energy']}** / {f.get('energy_max', F.ENERGY_MAX)}"), ("코인", f"**{f['coins']:,}**"), ("낫", f"**+{f['sickle']}**"),
              (ln, _res_rows(res))]
     if chests:
         stats.append(("상자", f"**{chests}**개"))
@@ -193,7 +193,8 @@ def help_embed(user, v382: bool = False) -> discord.Embed:
             ("창고", "물건을 농장 코인으로 팔아요."),
             ("아이템", "\n".join(f"**{n}**: {d}." for n, _, d in F.TOOLS.values()) + f"\n{_shop_link(user)}에서 사고 **아이템**에서 써요."),
             ("에너지", f"심기, 거두기, 합치기 한 번에 {F.ENERGY_COST_382 if v382 else 1}을(를) 써요.\n"
-                    f"시간이 지나면 {F.ENERGY_MAX}까지 다시 차요."),
+                    + (f"시간이 지나면 최대 에너지까지 다시 차요.\n최대 에너지는 {F.ENERGY_MAX}이고, 땅을 한 칸 넓힐 때마다 {F.ENERGY_PER_PLOT_382}씩 커져요."
+                       if v382 else f"시간이 지나면 {F.ENERGY_MAX}까지 다시 차요.")),
             ("땅 넓히기", "코인으로 한 칸씩 넓혀요.\n넓힐 때마다 은 상자를 하나 발견해요."),
             ("낫 강화", "강화할수록 거둘 때 하나 더 나오거나 ★2로 나올 확률이 올라요."),
             ("상자", "거두다 가끔 나오고, 하루 첫 거두기에 하나를 받아요.\n코인, 에너지, 숫돌, 높은 등급 물건이 들어 있어요."),
@@ -232,6 +233,7 @@ class FarmPanel(discord.ui.View):
         chests = sum(f["chests"].values()) if f else 0
         cost = F.expand_cost(f["plots"]) if f and f["plots"] < F.PLOTS_MAX else None
         offers = f.get("offers", 0) if f else 0
+        drinks = f["tools"].get("drink", 0) if f else 0
         for cid, label, style, row, cb in (
                 ("harvest", "거두기", discord.ButtonStyle.success, 2, self._harvest),
                 ("merge", "합치기", discord.ButtonStyle.primary, 2, self._merge),
@@ -247,8 +249,9 @@ class FarmPanel(discord.ui.View):
                 ("offers", f"받은 인수 제안 ({offers})" if offers else "받은 인수 제안", discord.ButtonStyle.secondary, 4,
                  self._offers),
                 ("newfarm", "새 밭 만들기", discord.ButtonStyle.secondary, 4, self._newfarm),
-                ("name", "이름 짓기", discord.ButtonStyle.secondary, 4, self._name)):
-            if cid == "name" and f is not None and not f.get("v382"):   # 3.8.2 공개 전엔 테스트 서버 농장만
+                ("name", "이름 짓기", discord.ButtonStyle.secondary, 4, self._name),
+                ("drink", f"에너지 음료 ({drinks})" if drinks else "에너지 음료", discord.ButtonStyle.secondary, 4, self._drink)):
+            if cid in ("name", "drink") and f is not None and not f.get("v382"):   # 3.8.2 공개 전엔 테스트 서버 농장만
                 continue
             b = discord.ui.Button(custom_id=f"farm:{cid}", label=label, style=style, row=row)
             b.callback = cb
@@ -374,6 +377,24 @@ class FarmPanel(discord.ui.View):
         view = LandPick(self.cog, interaction.user, f["id"], interaction.message)
         await interaction.response.send_message(embed=land_embed(interaction.user, None, True), view=view, ephemeral=True)
 
+    async def _drink(self, interaction: discord.Interaction):
+        """3.8.2 (11/17 규완님 '에너지 드링크 사용 버튼을 바깥으로 빼고, 원하는 개수 만큼') — 몇 개 마실지 적는 창."""
+        f = await self.cog.db.get(await self._fid(interaction), int(time.time()))
+        have = f["tools"].get("drink", 0)
+        if not have:
+            return await interaction.response.send_message(
+                f"에너지 음료가 없어요. {_shop_link(interaction.user)}에서 사 주세요.", ephemeral=True)
+        fid = f["id"]
+
+        async def done(i: discord.Interaction, n: int):
+            now = int(time.time())
+            r = await self.cog.db.use_tool(i.user.id, fid, "drink", now, n)
+            g = await self.cog.db.get(fid, now)
+            note = (f"에너지 음료 {r['used']}개를 마셨어요.\n에너지 +{r['gained']} (지금 {r['energy']})" if r["ok"]
+                    else "에너지 음료가 없어요.")
+            await i.response.edit_message(embed=panel_embed(i.user, g, now, note), view=FarmPanel(self.cog, g))
+        await interaction.response.send_modal(CountModal(f"에너지 음료 몇 개 마실까요? ({have}개 있음)", "개", done))
+
     async def _name(self, interaction: discord.Interaction):
         f = await self.cog.db.get(await self._fid(interaction), int(time.time()))
         await interaction.response.send_modal(NameModal(self.cog, f, interaction.message))
@@ -484,7 +505,7 @@ class MergeView(_Sub):
                     + f"같은 물건 {F.MERGE_NEED}개를 합치면 한 등급 위 1개가 돼요.\n"
                     f"한 번에 에너지 {f.get('cost', 1)}을(를) 쓰고, ★{F.TIER_MAX}까지 올릴 수 있어요.", ui.INFO, self.user, SECTION)
         e.add_field(name="합칠 수 있는 것", value=body)
-        e.add_field(name="에너지", value=f"**{f['energy']}** / {F.ENERGY_MAX}")
+        e.add_field(name="에너지", value=f"**{f['energy']}** / {f.get('energy_max', F.ENERGY_MAX)}")
         return e
 
     async def _pick(self, interaction: discord.Interaction):
@@ -587,7 +608,7 @@ class ItemView(_Sub):
         e = ui.card("아이템", (f"{self.note}\n\n" if self.note else "") + desc
                     + f"\n-# 아이템은 {_shop_link(self.user)}에서 사요.", ui.INFO, self.user, SECTION)
         _grid_fields(e, [(n, f"**{f['tools'].get(k, 0):,}**개") for k, (n, _, _) in F.TOOLS.items()]
-                     + [("에너지", f"**{f['energy']}** / {F.ENERGY_MAX}"),
+                     + [("에너지", f"**{f['energy']}** / {f.get('energy_max', F.ENERGY_MAX)}"),
                         ("허수아비", f"{_left(f['scare_until'], now)} 남음" if f["scare_until"] > now else "세워 둔 것 없음")])
         return e
 
