@@ -15,7 +15,7 @@ from services import bot_clubs as bc
 from services.club_db import ClubDB
 from services.economy_db import EconomyDB
 from services.notifier import send_notify
-from services.player_market_db import HOLD_CAP_370, PlayerMarketDB, held_count
+from services.player_market_db import HOLD_CAP_370, PlayerMarketDB, held_count, hold_capped
 
 class BotClubs(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -229,7 +229,7 @@ class BotClubs(commands.Cog):
         if price is None:
             return False, f"{bc.bot_name(bid)}: {why}"
         if buy:
-            if await self._db(lambda con: held_count(con, user_id)) >= HOLD_CAP_370:
+            if hold_capped() and await self._db(lambda con: held_count(con, user_id)) >= HOLD_CAP_370:
                 return False, f"선수는 최대 **{HOLD_CAP_370}명**까지 가질 수 있어요. 먼저 팔거나 방출해 주세요."
             if await self.money.get_balance(user_id) < price:
                 return False, f"잔액이 부족해요. 필요 {_won(price)}"

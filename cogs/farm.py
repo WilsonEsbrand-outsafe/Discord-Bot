@@ -1030,6 +1030,22 @@ class ShopPanel(discord.ui.View):
         return cb
 
 
+class CountModal(discord.ui.Modal):
+    """개수를 직접 적는 창 — 숫자면 done(interaction, n)."""
+
+    def __init__(self, title: str, unit: str, done):
+        super().__init__(title=title[:45])
+        self.unit, self.done = unit, done
+        self.n = discord.ui.TextInput(label=f"몇 {unit}", max_length=9, placeholder="예: 25")
+        self.add_item(self.n)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = str(self.n.value).replace(",", "").replace(self.unit, "").strip()
+        if not raw.isdigit() or int(raw) < 1:
+            return await interaction.response.send_message("개수는 1 이상의 숫자로 적어 주세요.", ephemeral=True)
+        await self.done(interaction, int(raw))
+
+
 class BuyView(discord.ui.View):
     """농사 상점에서 고른 씨앗 · 동물 · 아이템을 내 농장 코인으로 산다 (누른 사람에게만 보인다)."""
 
@@ -1057,6 +1073,10 @@ class BuyView(discord.ui.View):
             b = discord.ui.Button(label=f"살 수 있는 만큼 ({most:,}개)" if most else "살 수 있는 만큼",
                                   style=discord.ButtonStyle.primary, disabled=most < 1, row=0)
             b.callback = self._buy(0)
+            self.add_item(b)
+        if f.get("v382"):   # 3.8.2 (11/17 규완님 '원하는 개수로')
+            b = discord.ui.Button(label="개수 직접 적기", style=discord.ButtonStyle.secondary, row=0)
+            b.callback = self._ask
             self.add_item(b)
         if len(self.farms) > 1 and not f.get("v382"):   # 3.8.2 코인 지갑은 하나라 고를 것이 없다
             sel = discord.ui.Select(placeholder="어느 농장의 코인으로 살지 고르기", row=1, options=[
@@ -1110,6 +1130,10 @@ class BuyView(discord.ui.View):
     async def _farm(self, interaction: discord.Interaction):
         self.fid = int(interaction.data["values"][0])
         await self._redraw(interaction)
+
+    async def _ask(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(CountModal(f"{_name(self.key)} 몇 {self.unit} 살까요?", self.unit,
+                                                         lambda i, n: self._buy(n)(i)))
 
 
 def _held_line(r: dict) -> str:
