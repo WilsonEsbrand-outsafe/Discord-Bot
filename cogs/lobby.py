@@ -1,6 +1,6 @@
 # cogs/lobby.py — /로비 (3.8.2, 테스트 서버 먼저). 규칙 · 수치는 services/lobby.py
 # 11/17 규완님 '/경마 방식인데 저렇게 띄우라는 거지' · '/로비 -> 여러 사건 -> 개표 -> 임기 이렇게. 임기 도중 사건이 일어나서 문제가 생길 수도 있게'
-# /로비 금액 → 후보 6명과 상금표 → 후보 버튼 → 선거운동 사건 → 개표 → 당선자 임기 → 정산. 경마처럼 한 판에 끝난다.
+# /로비 금액 → 후보 6명과 배당(당선 확률로 정함) → 후보 버튼 → 선거운동 사건 → 개표 → 당선자 임기 → 정산. 경마처럼 한 판에 끝난다.
 # 베팅금은 후보표를 띄울 때 먼저 빠져나간다 (60초 안에 안 고르면 잃는다, 경마와 같다).
 import asyncio
 import random
@@ -10,7 +10,6 @@ from discord import app_commands
 from discord.ext import commands
 
 import release
-from cogs.race import race_prizes
 from services import lobby as L
 from services import ui
 from services.economy_db import EconomyDB
@@ -47,30 +46,24 @@ def standings(cands: list[dict], sup: list[float], pick: int, prev: list[float] 
     return "\n".join(out)
 
 
-def _prize(amount: int, m: int) -> str:
-    if m > 0:
-        return f"{amount * m:+,}원 ({m}배 수익)"
-    return "본전" if m == 0 else f"{amount * m:+,}원 ({-m}배 손실)"
-
-
-def ticket_card(user, amount: int, g: dict, table: list[int], no: int) -> discord.Embed:
+def ticket_card(user, amount: int, g: dict, no: int) -> discord.Embed:
     e = ui.card(f"제{no}회 축구 봇 대선", f"후보 여섯 명이 출마했어요. 로비할 후보를 버튼으로 골라 주세요.\n로비 금액 **{amount:,}원**",
                 ui.INFO, user, SECTION)
     for i, c in enumerate(g["cands"]):
-        e.add_field(name=f"{i + 1}번 {c['name']}", value=f"{c['party']}\n지지율 {round(g['start'][i])}%", inline=True)
-    e.add_field(name="상금 (최종 순위)", inline=False,
-                value="\n".join(f"{k + 1}위  {_prize(amount, m)}" for k, m in enumerate(table)))
+        o = g["odds"][i]
+        e.add_field(name=f"{i + 1}번 {c['name']}", inline=True,
+                    value=f"{c['party']}\n지지율 {round(g['start'][i])}%\n배당 **{o}배**\n당선되면 {int(amount * o):,}원")
     e.add_field(name="알아 둘 것", inline=False, value=(
-        "고른 후보가 사퇴하거나 합당하면 꼴찌 쪽 순위가 돼서 돈을 잃어요.\n"
-        "당선돼도 임기 중 공약이 멈추면 상금이 절반, 탄핵되면 꼴찌만큼 돈을 잃어요.\n"
+        "배당은 당선 확률로 정해져요. 고른 후보가 당선되지 못하면 로비한 돈을 잃어요.\n"
+        "당선돼도 임기 중 공약이 멈추면 번 돈이 절반, 탄핵되면 로비한 돈을 잃어요.\n"
         "60초 안에 고르지 않으면 로비한 돈은 사라져요."))
     return e
 
 
 class PickView(discord.ui.View):
-    def __init__(self, cog: "Lobby", user, amount: int, g: dict, table: list[int], no: int):
+    def __init__(self, cog: "Lobby", user, amount: int, g: dict, no: int):
         super().__init__(timeout=60)
-        self.cog, self.user, self.amount, self.g, self.table, self.no = cog, user, amount, g, table, no
+        self.cog, self.user, self.amount, self.g, self.no = cog, user, amount, g, no
         self.message, self.done = None, False
         for i, c in enumerate(g["cands"]):
             b = discord.ui.Button(label=f"{i + 1}번 {c['name']}", style=discord.ButtonStyle.primary, row=i // 3)
@@ -124,8 +117,8 @@ def frames(g: dict, pick: int, no: int) -> list[tuple[str, str, int, float]]:
                 + standings(cands, g["final"], pick), ui.GOLD, GAP_BIG))
     for k, t in enumerate(g["term"]):
         color = {"impeach": ui.DOOM, "suspend": ui.LOSE}.get(t["kind"], ui.DARK)
-        note = {"impeach": "\n\n탄핵됐어요. 이 대통령에게 로비한 사람은 꼴찌만큼 돈을 잃어요.",
-                "suspend": "\n\n공약이 멈췄어요. 이 대통령에게 로비한 사람은 상금이 절반이 돼요."}.get(t["kind"], "")
+        note = {"impeach": "\n\n탄핵됐어요. 이 대통령에게 로비한 사람은 로비한 돈을 잃어요.",
+                "suspend": "\n\n공약이 멈췄어요. 이 대통령에게 로비한 사람은 번 돈이 절반이 돼요."}.get(t["kind"], "")
         out.append((f"{w['name']} 대통령 임기 {k + 1}년차", f"{_steps(2)}\n\n**{t['text']}**{note}", color,
                     GAP_BIG if t["kind"] != "ok" else GAP))
     return out
@@ -134,15 +127,15 @@ def frames(g: dict, pick: int, no: int) -> list[tuple[str, str, int, float]]:
 def result_card(user, g: dict, pick: int, r: dict, bal: int) -> discord.Embed:
     cands, c = g["cands"], g["cands"][pick]
     if r["why"] == "out":
-        head, color = f"{c['name']} 후보가 선거에서 빠져서 {r['rank'] + 1}위가 됐어요.", ui.tone(r["delta"])
+        head, color = f"{c['name']} 후보가 선거에서 빠져서 로비한 돈을 잃었어요.", ui.LOSE
     elif r["why"] == "impeach":
-        head, color = f"{c['name']} 후보가 당선됐지만 탄핵돼서 꼴찌만큼 돈을 잃었어요.", ui.DOOM
+        head, color = f"{c['name']} 후보가 당선됐지만 탄핵돼서 로비한 돈을 잃었어요.", ui.DOOM
     elif r["why"] == "suspend":
-        head, color = f"{c['name']} 후보가 당선됐지만 공약이 멈춰서 상금이 절반이 됐어요.", ui.WIN
-    elif r["rank"] == 0:
-        head, color = f"{c['name']} 후보 당선! 탁월한 안목이에요.", ui.GOLD
+        head, color = f"{c['name']} 후보가 당선됐지만 공약이 멈춰서 번 돈이 절반이 됐어요. (배당 {r['odds']}배)", ui.WIN
+    elif r["why"] is None:
+        head, color = f"{c['name']} 후보 당선! 배당 {r['odds']}배를 받았어요.", ui.GOLD
     else:
-        head, color = f"{c['name']} 후보는 {r['rank'] + 1}위로 낙선했어요.", ui.tone(r["delta"])
+        head, color = f"{c['name']} 후보가 낙선해서 로비한 돈을 잃었어요.", ui.LOSE
     e = ui.card("대선 결과", head, color, user, SECTION)
     e.add_field(name="최종 순위", inline=False, value="\n".join(
         f"{n + 1}위  " + (f"**{cands[i]['name']}** (내 후보)" if i == pick else cands[i]["name"])
@@ -178,18 +171,18 @@ class Lobby(commands.Cog):
         if bal < amount:
             return await interaction.followup.send(embed=ui.card(
                 "로비할 돈이 모자라요", f"`베팅` **{amount:,}원**\n`잔액` **{bal:,}원**", ui.LOSE, user, SECTION))
-        g, table, no = L.play(), race_prizes(L.CANDIDATES_N, interaction.guild_id), random.randint(1, 30)
+        g, no = await asyncio.to_thread(L.play), random.randint(1, 30)
         await self.db.add_balance(user.id, -amount)   # 베팅금 먼저 차감 (경마와 같다)
-        view = PickView(self, user, amount, g, table, no)
+        view = PickView(self, user, amount, g, no)
         try:
-            view.message = await interaction.followup.send(embed=ticket_card(user, amount, g, table, no), view=view, wait=True)
+            view.message = await interaction.followup.send(embed=ticket_card(user, amount, g, no), view=view, wait=True)
         except discord.HTTPException:
             await self.db.add_balance(user.id, amount)
             raise
 
     async def run(self, interaction: discord.Interaction, view: PickView, pick: int):
         g, user, amount = view.g, view.user, view.amount
-        r = L.settle_game(g, pick, amount, view.table)
+        r = L.settle_game(g, pick, amount)
         await interaction.response.edit_message(embed=ui.card(
             f"제{view.no}회 축구 봇 대선", f'> *"{g["cands"][pick]["name"]} 후보에게 {amount:,}원 로비! 선거운동이 시작됩니다…"*',
             ui.DARK, user, SECTION), view=None)
