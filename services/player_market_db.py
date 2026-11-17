@@ -292,6 +292,17 @@ def pool_size(now_ts: Optional[float] = None) -> int:
 
 # ── 3.7.0 선수 1명 1주인 · 봇 구단 (release.ctx_370: 테스트 서버 먼저, 백그라운드는 released_370) ──
 HOLD_CAP_370 = 40          # 한 사람이 가질 수 있는 선수 수 (아마추어 빼고) — 더 사려면 팔거나 방출
+PACK_MAX_382 = 1_000       # 3.8.2 선수팩 '원하는 개수로' — 한 번에 여는 장수 (너무 큰 숫자로 봇이 멈추지 않게)
+
+
+def hold_capped() -> bool:
+    """선수 보유 수 제한(HOLD_CAP_370)이 있는가. 3.8.2 (11/17 규완님 '1군 선수 보유 개수 제한 없애줘') 서버에선 없다."""
+    return not release.preview_382(release.GUILD.get())
+
+
+def pack_max() -> int:
+    """한 번에 열 수 있는 선수팩 장수."""
+    return PACK_MAX_382 if release.preview_382(release.GUILD.get()) else PACK_MAX_PULLS
 PACK_TICKET_PACK = "얼티밋"   # 🎫 교환권으로 여는 팩 (규완님: 얼티밋팩 10장)
 PACK_TICKETS_370 = 10       # 전환 보상: 얼티밋팩 교환권 (카드가 한 장이라도 있었으면)
 FREE_MIN_370 = 600         # 아무도 안 가진 선수를 시장에 이만큼은 둔다 (1명 1주인이라 팩이 마르지 않게)
@@ -1600,6 +1611,7 @@ class PlayerMarketDB:
             return False, "은퇴 선수는 구매할 수 없습니다."
 
         uniq = unique_on()
+        capped = hold_capped()
         if uniq and qty != 1:
             return False, "선수는 한 명당 한 장만 가질 수 있습니다. (수량 1)"
         cost = int(price) * qty
@@ -1614,7 +1626,7 @@ class PlayerMarketDB:
                     if uniq and _is_owned(con, pid):
                         con.execute("ROLLBACK;")
                         return "OWNED"
-                    if uniq and held_count(con, user_id) >= HOLD_CAP_370:
+                    if uniq and capped and held_count(con, user_id) >= HOLD_CAP_370:
                         con.execute("ROLLBACK;")
                         return "CAP"
                     if not _take_cash(con, user_id, cost):
@@ -1721,7 +1733,8 @@ class PlayerMarketDB:
 
     async def buy_pack(self, *, user_id: int, pack_type: str, pulls: int, now_ts: int, get_balance, add_balance):
         pack_type = (pack_type or "").strip()
-        pulls = max(1, min(PACK_MAX_PULLS, int(pulls)))
+        pulls = max(1, min(pack_max(), int(pulls)))
+        capped = hold_capped()
 
         if pack_type not in PACKS:
             return False, f"존재하지 않는 팩입니다. ({'/'.join(PACKS.keys())})", None
@@ -1739,7 +1752,7 @@ class PlayerMarketDB:
                 con = self._connect()
                 try:
                     con.execute("BEGIN IMMEDIATE;")
-                    if uniq and held_count(con, user_id) + pulls > HOLD_CAP_370:
+                    if uniq and capped and held_count(con, user_id) + pulls > HOLD_CAP_370:
                         con.execute("ROLLBACK;")
                         return ("CAP", [])
                     tickets = 0
@@ -2327,6 +2340,7 @@ class PlayerMarketDB:
         """이적시장 매물 구매 (수수료 5%). 성공 시 3번째 원소에 알림용 dict 반환."""
         qty = int(qty)
         uniq = unique_on()
+        capped = hold_capped()
         if qty <= 0:
             return False, "수량은 1 이상이어야 합니다.", None
 
@@ -2351,7 +2365,7 @@ class PlayerMarketDB:
 
                     if _bc.is_bot(seller_id) and not uniq and not _bc.is_bot(buyer_id):
                         return None, "매물을 찾을 수 없습니다. (이미 판매됐거나 취소된 매물)"
-                    if uniq and not _bc.is_bot(buyer_id) and held_count(con, buyer_id) >= HOLD_CAP_370 \
+                    if uniq and capped and not _bc.is_bot(buyer_id) and held_count(con, buyer_id) >= HOLD_CAP_370 \
                             and not con.execute("SELECT 1 FROM pm_holdings WHERE user_id=? AND player_id=? AND qty>0",
                                                 (int(buyer_id), str(pid))).fetchone():
                         return None, f"선수는 최대 **{HOLD_CAP_370}명**까지 가질 수 있습니다. 먼저 팔거나 방출해 주세요."

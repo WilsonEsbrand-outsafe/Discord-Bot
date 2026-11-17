@@ -22,7 +22,7 @@ from services import ui
 from services.economy_db import (
     ITEMS, SELL_PRICES, SHOP_DAILY_LIMITS, SHOP_GROUPS, SHOP_ONE_ONLY, SHOP_PRICES, EconomyDB, shop_open,
 )
-from services.player_market_db import PlayerMarketDB, PACKS, PACK_MAX_PULLS, JACKPOT_PROB, JACKPOT_RANGE, player_profile
+from services.player_market_db import PlayerMarketDB, PACKS, PACK_MAX_PULLS, PACK_MAX_382, JACKPOT_PROB, JACKPOT_RANGE, player_profile
 
 PACK_EMOJI = {
     "브론즈": "🥉", "실버": "🥈", "골드": "🥇",
@@ -302,24 +302,52 @@ class ShopView(_ShopOwnerView):
         await self._redraw(interaction, e, r["ok"])
 
 
+class QtyModal(discord.ui.Modal):
+    """3.8.2 (11/17 규완님 '아이템 원하는 개수로 살 수 있게') — 개수를 직접 적는 창. 숫자면 done(interaction, n)."""
+
+    def __init__(self, title: str, unit: str, most: int, done):
+        super().__init__(title=title[:45])
+        self.unit, self.most, self.done = unit, most, done
+        self.n = discord.ui.TextInput(label=f"몇 {unit} ({most:,}{unit}까지)", max_length=9, placeholder="예: 25")
+        self.add_item(self.n)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = str(self.n.value).replace(",", "").replace(self.unit, "").strip()
+        if not raw.isdigit() or int(raw) < 1:
+            return await interaction.response.send_message("개수는 1 이상의 숫자로 적어 주세요.", ephemeral=True)
+        if int(raw) > self.most:
+            return await interaction.response.send_message(f"한 번에 {self.most:,}{self.unit}까지 살 수 있어요.", ephemeral=True)
+        await self.done(interaction, int(raw))
+
+
+ITEM_MAX_382 = 100_000      # 아이템 직접 적기 상한 (숫자를 잘못 적어 봇이 멈추지 않게)
+
+
 class PackQtyView(_ShopOwnerView):
     """선수팩 상점에서 팩을 고른 뒤: 몇 장 살지 (1~10장, 총액 표시) · 돌아가기."""
 
     def __init__(self, cog: "PlayersMarket", user, pack: str):
         super().__init__(cog, user, "pack")
         self.pack, price = pack, PACKS[pack]["price"]
+        opts = [discord.SelectOption(label=f"{n}장 · {price * n:,}원", value=str(n)) for n in range(1, PACK_MAX_PULLS + 1)]
+        if release.preview_382(_gid(user)):   # 3.8.2 (11/17 규완님 '원하는 개수로')
+            opts.append(discord.SelectOption(label="원하는 장수 직접 적기", value="custom"))
         self.qty = discord.ui.Select(
-            placeholder=f"{PACK_EMOJI.get(pack, '🎁')} {pack}팩 — 몇 장 살까요?",
-            options=[discord.SelectOption(label=f"{n}장 · {price * n:,}원", value=str(n))
-                     for n in range(1, PACK_MAX_PULLS + 1)])
+            placeholder=f"{PACK_EMOJI.get(pack, '🎁')} {pack}팩 — 몇 장 살까요?", options=opts)
         self.qty.callback = self._open
         self.add_item(self.qty)
 
     async def _open(self, interaction: discord.Interaction):
+        if self.qty.values[0] == "custom":
+            return await interaction.response.send_modal(QtyModal(
+                f"{self.pack}팩 몇 장 살까요?", "장", PACK_MAX_382, lambda i, n: self.open_n(i, n)))
+        await self.open_n(interaction, int(self.qty.values[0]))
+
+    async def open_n(self, interaction: discord.Interaction, n: int):
         # 상점 메뉴를 처음 상태로 돌려놓고, 개봉 연출은 새 메시지로
         e, view = await self.cog._shop_screen(self.user, "pack")
         await interaction.response.edit_message(embed=e, view=view)
-        await self.cog._buy_pack(interaction, self.pack, int(self.qty.values[0]))
+        await self.cog._buy_pack(interaction, self.pack, n)
 
     @discord.ui.button(label="돌아가기", emoji="↩️", style=discord.ButtonStyle.secondary, row=1)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -368,9 +396,11 @@ class ItemQtyView(ShopView):
         self.item, each = item, SHOP_PRICES[item]
         cap = SHOP_DAILY_LIMITS.get(item)
         qtys = [n for n in ITEM_QTYS if not cap or n <= cap]
+        opts = [discord.SelectOption(label=f"{n}개 · {each * n:,}원", value=str(n)) for n in qtys]
+        if release.preview_382(_gid(user)):   # 3.8.2 (11/17 규완님 '원하는 개수로')
+            opts.append(discord.SelectOption(label="원하는 개수 직접 적기", value="custom"))
         self.qty = discord.ui.Select(
-            placeholder=f"{ITEMS[item][0]} {ITEMS[item][1]} — 몇 개 살까요?",
-            options=[discord.SelectOption(label=f"{n}개 · {each * n:,}원", value=str(n)) for n in qtys])
+            placeholder=f"{ITEMS[item][0]} {ITEMS[item][1]} — 몇 개 살까요?", options=opts)
         self.qty.callback = self._chosen
         self.add_item(self.qty)
         back = discord.ui.Button(label="돌아가기", emoji="↩️", style=discord.ButtonStyle.secondary, row=1)
@@ -378,6 +408,11 @@ class ItemQtyView(ShopView):
         self.add_item(back)
 
     async def _chosen(self, interaction: discord.Interaction):
+        if self.qty.values[0] == "custom":
+            cap = SHOP_DAILY_LIMITS.get(self.item)
+            return await interaction.response.send_modal(QtyModal(
+                f"{ITEMS[self.item][1]} 몇 개 살까요?", "개", cap or ITEM_MAX_382,
+                lambda i, n: self.buy_item(i, self.item, n)))
         await self.buy_item(interaction, self.item, int(self.qty.values[0]))
 
     async def _back(self, interaction: discord.Interaction):
@@ -931,7 +966,9 @@ class PlayersMarket(commands.Cog):
             if inv.get("pack_ticket"):   # 3.7.0 🎫 얼티밋팩 교환권
                 e.add_field(name="🎫 얼티밋팩 교환권", value=f"**{inv['pack_ticket']}장** — 얼티밋팩을 고르면 돈 대신 먼저 써요",
                             inline=False)
-            e.set_footer(text=f"아래 메뉴에서 팩을 고르면 1~{PACK_MAX_PULLS}장 선택 · 팩별 가격대 · 잭팟은 /팩정보 · 아이템은 /아이템상점")
+            e.set_footer(text=(f"아래 메뉴에서 팩을 고르면 몇 장 살지 고르거나 직접 적어요 · 팩별 가격대 · 잭팟은 /팩정보 · 아이템은 /아이템상점"
+                           if release.preview_382(_gid(user)) else
+                           f"아래 메뉴에서 팩을 고르면 1~{PACK_MAX_PULLS}장 선택 · 팩별 가격대 · 잭팟은 /팩정보 · 아이템은 /아이템상점"))
             return e, ShopView(self, user, inv, kind)
         bought = await self.money.shop_bought_today(user.id, int(time.time()))
         if release.preview_311(_gid(user)):   # 3.1.1 보기 편하게: 묶음마다 한 줄씩 (설명은 아래 메뉴에)
@@ -999,14 +1036,19 @@ class PlayersMarket(commands.Cog):
                          icon_url=interaction.user.display_avatar.url)
             return e
 
+        if len(cards) > PACK_MAX_PULLS:   # 3.8.2 직접 적은 큰 장수는 한 장씩 뒤집지 않고 결과만
+            cards_shown = False
+        else:
+            cards_shown = True
         # 2장 이상이면 '⏩ 스킵' 버튼으로 연출을 건너뛸 수 있다.
-        skip = _SkipView(interaction.user.id) if len(cards) >= 2 else None
+        skip = _SkipView(interaction.user.id) if 2 <= len(cards) and cards_shown else None
         send_kw = {"view": skip} if skip else {}
         msg = await interaction.followup.send(
-            embed=frame("\n".join(slots), 0x2b2d31), wait=True, **send_kw
+            embed=frame("\n".join(slots)[:4000] if cards_shown else f"{len(cards):,}장을 여는 중이에요.", 0x2b2d31),
+            wait=True, **send_kw
         )
 
-        for idx, (row, is_jackpot) in enumerate(cards):
+        for idx, (row, is_jackpot) in enumerate(cards if cards_shown else []):
             if skip:
                 try:
                     await asyncio.wait_for(skip.pressed.wait(), timeout=0.9)

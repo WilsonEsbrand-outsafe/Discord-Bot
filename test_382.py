@@ -348,3 +348,64 @@ def test_lobby_screen():
     assert "·" not in text and "내 로비" in text and "지금 적용 중인 공약" in text
     assert CL.kst(1_800_000_000) == "1월 15일 (금) 17:00"
     assert "로비" in release.hidden_commands(1) and "로비" not in release.hidden_commands(release.TEST_GUILD)
+
+
+def test_shop_any_qty_and_no_hold_cap():
+    from services import player_market_db as P
+    from cogs import players_market as CP
+    tok = release.GUILD.set(release.TEST_GUILD)
+    try:
+        assert not P.hold_capped() and P.pack_max() == P.PACK_MAX_382
+    finally:
+        release.GUILD.reset(tok)
+    tok = release.GUILD.set(1)
+    try:
+        assert P.hold_capped() and P.pack_max() == P.PACK_MAX_PULLS
+    finally:
+        release.GUILD.reset(tok)
+
+    class U:
+        id = 1
+        guild = type("G", (), {"id": release.TEST_GUILD})()
+    v = CP.PackQtyView(None, U(), next(iter(CP.PACKS)))
+    assert any(o.value == "custom" for o in v.qty.options)
+    key = next(k for k in CP.SHOP_PRICES if k not in CP.SHOP_ONE_ONLY)
+    assert any(o.value == "custom" for o in CP.ItemQtyView(None, U(), key).qty.options)
+
+    class O:
+        id = 1
+        guild = type("G", (), {"id": 1})()
+    assert not any(o.value == "custom" for o in CP.PackQtyView(None, O(), next(iter(CP.PACKS))).qty.options)
+
+    async def modal():
+        got = []
+
+        async def done(i, n):
+            got.append(n)
+        m = CP.QtyModal("t", "개", 50, done)
+        m.n._value = "1,234"
+        sent = []
+
+        class R:
+            async def send_message(self, *a, **k):
+                sent.append(a)
+        i = type("I", (), {"response": R()})()
+        await m.on_submit(i)                     # 상한 넘음
+        m.n._value = "25개"
+        await m.on_submit(i)
+        assert got == [25] and sent
+    run(modal())
+
+
+def test_farm_buy_custom_button():
+    from cogs import farm as CF
+    db = F.FarmDB()
+
+    async def flow():
+        A = 38291
+        G = (await db.create(A, "plain", T))["id"]
+        await db.upgrade(A)
+        f = await db.get(G, T)
+        v = CF.BuyView(None, None, [f], "potato" if "potato" in F.CROPS else next(k for k in F.CROPS if F.CROPS[k][2]))
+        assert any(getattr(c, "label", "") == "개수 직접 적기" for c in v.children)
+    run(flow())
