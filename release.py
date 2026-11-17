@@ -345,3 +345,15 @@ def tester(bot, user_id: int) -> bool:
 def toto_hold_381(bot, user_id: int, now: Optional[float] = None) -> bool:
     """3.8.1: 토토 당첨금을 지갑에 바로 넣지 않고 쌓아 두나 (공개 전엔 테스트 서버 사람만)."""
     return released_381(now) or tester(bot, user_id)
+
+
+# 3.8.3 — 공개 전엔 테스트 서버에서만
+RELEASE_383_TS: Optional[int] = None
+
+
+def released_383(now: Optional[float] = None) -> bool:
+    return RELEASE_383_TS is not None and _now(now) >= RELEASE_383_TS
+
+
+def preview_383(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_383(now)
