@@ -10,41 +10,60 @@ from discord import app_commands
 from discord.ext import commands
 
 import release
-from cogs.race import prize_lines, race_prizes
+from cogs.race import race_prizes
 from services import lobby as L
 from services import ui
 from services.economy_db import EconomyDB
 
 SECTION = "대선 중계"
-GAP, GAP_LAST = 1.6, 2.2     # 장면 사이 (초)
+GAP, GAP_BIG = 3.5, 5.0      # 장면 사이 (초) — 11/17 규완님 '너무 빨라서 못알아먹겠어' (1.6 → 3.5, 큰 사건은 5초)
+STAGES = ("선거운동", "개표", "임기")
 
 
-def _bar(p: float, width: int = 12) -> str:
+def _bar(p: float, width: int = 10) -> str:
     n = max(0, min(width, round(p / 100 * width)))
     return "█" * n + "░" * (width - n)
 
 
-def board(cands: list[dict], sup: list[float], pick: int) -> str:
-    """후보 번호순 막대 (빠진 후보는 한 줄 글자)."""
+def _steps(now: int) -> str:
+    """'**선거운동** > 개표 > 임기' — 지금 어느 단계인지."""
+    return "  >  ".join(f"**{x}**" if k == now else x for k, x in enumerate(STAGES))
+
+
+def standings(cands: list[dict], sup: list[float], pick: int, prev: list[float] | None = None) -> str:
+    """지지율 높은 순, 한 줄에 한 명. 바뀐 만큼 (+3) 표시. 빠진 후보는 맨 아래 한 줄."""
+    live = sorted((i for i in range(len(cands)) if sup[i] > 0), key=lambda i: -sup[i])
+    top = max(sup) or 1   # 막대는 1위를 꽉 차게 (차이가 눈에 보이게)
     out = []
-    for i, c in enumerate(cands):
-        name = f"**{c['name']}** (내 후보)" if i == pick else c["name"]
-        if sup[i] <= 0:
-            out.append(f"`{i + 1}` {name} {c['party']}  사퇴")
-        else:
-            out.append(f"`{i + 1}` `{_bar(sup[i])}` {sup[i]:4.1f}%  {name} {c['party']}")
+    for i in live:
+        name = f"**{cands[i]['name']}** (내 후보)" if i == pick else cands[i]["name"]
+        diff = ""
+        if prev is not None and prev[i] > 0 and abs(round(sup[i]) - round(prev[i])) >= 2:   # 사건으로 크게 바뀐 후보만
+            diff = f"  ({round(sup[i]) - round(prev[i]):+d})"
+        out.append(f"`{_bar(sup[i] * 100 / top, 12)}` {round(sup[i]):>2}%  {name}{diff}")
+    gone = [cands[i]["name"] + (" (내 후보)" if i == pick else "") for i in range(len(cands)) if sup[i] <= 0]
+    if gone:
+        out.append("\n사퇴: " + ", ".join(gone))
     return "\n".join(out)
 
 
+def _prize(amount: int, m: int) -> str:
+    if m > 0:
+        return f"{amount * m:+,}원 ({m}배 수익)"
+    return "본전" if m == 0 else f"{amount * m:+,}원 ({-m}배 손실)"
+
+
 def ticket_card(user, amount: int, g: dict, table: list[int], no: int) -> discord.Embed:
-    lines = [f"`{i + 1}` **{c['name']}** {c['party']}\n　 지지율 {g['start'][i]:.1f}%" for i, c in enumerate(g["cands"])]
-    e = ui.card(f"제{no}회 축구 봇 대선 후보 등록",
-                '> *"후보 여섯 명이 출마했습니다! 어느 후보에게 로비하시겠어요?"*\n\n' + "\n".join(lines)
-                + f"\n\n**상금표** (최종 순위)  베팅 **{amount:,}원**\n" + prize_lines(amount, table),
+    e = ui.card(f"제{no}회 축구 봇 대선", f"후보 여섯 명이 출마했어요. 로비할 후보를 버튼으로 골라 주세요.\n로비 금액 **{amount:,}원**",
                 ui.INFO, user, SECTION)
-    e.set_footer(text="고른 후보가 사퇴하거나 합당하면 건 돈을 돌려받아요.\n"
-                      "당선돼도 임기 중 공약이 멈추면 상금이 절반, 탄핵되면 상금이 없어요.\n"
-                      "60초 안에 후보를 고르지 않으면 베팅금은 돌려받지 못합니다.")
+    for i, c in enumerate(g["cands"]):
+        e.add_field(name=f"{i + 1}번 {c['name']}", value=f"{c['party']}\n지지율 {round(g['start'][i])}%", inline=True)
+    e.add_field(name="상금 (최종 순위)", inline=False,
+                value="\n".join(f"{k + 1}위  {_prize(amount, m)}" for k, m in enumerate(table)))
+    e.add_field(name="알아 둘 것", inline=False, value=(
+        "고른 후보가 사퇴하거나 합당하면 로비한 돈을 돌려받아요.\n"
+        "당선돼도 임기 중 공약이 멈추면 상금이 절반, 탄핵되면 상금이 없어요.\n"
+        "60초 안에 고르지 않으면 로비한 돈은 사라져요."))
     return e
 
 
@@ -84,30 +103,36 @@ class PickView(discord.ui.View):
             pass
 
 
-def frames(g: dict, pick: int, no: int) -> list[tuple[str, str, int]]:
-    """연출 장면 [(제목, 본문, 색)] — 선거운동 사건 → 개표 → 임기."""
-    cands, title = g["cands"], f"제{no}회 축구 봇 대선"
-    out = [(f"{title} 선거운동 시작", '> *"선거운동이 시작됐습니다!"*\n\n' + board(cands, g["start"], pick), ui.DARK)]
+def frames(g: dict, pick: int, no: int) -> list[tuple[str, str, int, float]]:
+    """연출 장면 [(제목, 본문, 색, 다음 장면까지 초)] — 선거운동 사건 → 개표 → 임기."""
+    cands = g["cands"]
+    out = [(f"제{no}회 축구 봇 대선", f"{_steps(0)}\n\n선거운동이 시작됐어요.\n\n" + standings(cands, g["start"], pick), ui.DARK, GAP)]
+    prev = g["start"]
     for k, ev in enumerate(g["events"]):
-        head = "속보" if ev["out"] is not None else f"선거운동 {k + 1}일차"
-        out.append((f"{title} {head}", f'> *"{ev["text"]}"*\n\n' + board(cands, ev["sup"], pick),
-                    ui.LOSE if ev["out"] is not None else ui.DARK))
+        big = ev["out"] is not None
+        head = "속보" if big else f"선거운동 {k + 1}일차 뉴스"
+        out.append((head, f"{_steps(0)}\n\n**{ev['text']}**\n\n" + standings(cands, ev["sup"], pick, prev),
+                    ui.LOSE if big else ui.DARK, GAP_BIG if big else GAP))
+        prev = ev["sup"]
     for pct, sh in g["count"]:
         if pct < 100:
-            out.append((f"{title} 개표 {pct}%", '> *"개표가 진행되고 있습니다!"*\n\n' + board(cands, sh, pick), ui.DARK))
+            out.append((f"개표율 {pct}%", f"{_steps(1)}\n\n개표가 진행되고 있어요. 이건 득표율이에요.\n\n" + standings(cands, sh, pick),
+                        ui.DARK, GAP))
     w = cands[g["winner"]]
-    out.append((f"{title} 개표 끝", f'> *"{w["name"]} 후보 당선! 득표율 {g["final"][g["winner"]]:.1f}%"*\n\n'
-                + board(cands, g["final"], pick), ui.GOLD))
+    mine = "  (내 후보)" if g["winner"] == pick else ""
+    out.append(("개표 끝", f"{_steps(1)}\n\n**{w['name']} 후보 당선{mine}**\n득표율 {g['final'][g['winner']]:.1f}%\n\n"
+                + standings(cands, g["final"], pick), ui.GOLD, GAP_BIG))
     for k, t in enumerate(g["term"]):
         color = {"impeach": ui.DOOM, "suspend": ui.LOSE}.get(t["kind"], ui.DARK)
-        out.append((f"{w['name']} 대통령 임기 {k + 1}년차", f'> *"{t["text"]}"*', color))
+        note = {"impeach": "\n\n탄핵됐어요. 이 대통령에게 로비한 사람은 상금을 받지 못해요.",
+                "suspend": "\n\n공약이 멈췄어요. 이 대통령에게 로비한 사람은 상금이 절반이 돼요."}.get(t["kind"], "")
+        out.append((f"{w['name']} 대통령 임기 {k + 1}년차", f"{_steps(2)}\n\n**{t['text']}**{note}", color,
+                    GAP_BIG if t["kind"] != "ok" else GAP))
     return out
 
 
 def result_card(user, g: dict, pick: int, r: dict, bal: int) -> discord.Embed:
     cands, c = g["cands"], g["cands"][pick]
-    ranks = "\n".join(f"{n + 1}위 " + (f"**{cands[i]['name']}** (내 후보)" if i == pick else cands[i]["name"])
-                      + ("  사퇴" if cands[i]["out"] else "") for n, i in enumerate(g["order"]))
     if r["why"] == "out":
         head, color = f"{c['name']} 후보가 선거에서 빠져서 로비한 돈을 돌려받았어요.", ui.EVEN
     elif r["why"] == "impeach":
@@ -118,7 +143,13 @@ def result_card(user, g: dict, pick: int, r: dict, bal: int) -> discord.Embed:
         head, color = f"{c['name']} 후보 당선! 탁월한 안목이에요.", ui.GOLD
     else:
         head, color = f"{c['name']} 후보는 {r['rank'] + 1}위로 낙선했어요.", ui.tone(r["delta"])
-    return ui.card("대선 결과", f"{head}\n\n{ranks}\n\n`정산` **{ui.won(r['delta'])}**\n`잔액` **{bal:,}원**", color, user, SECTION)
+    e = ui.card("대선 결과", head, color, user, SECTION)
+    e.add_field(name="최종 순위", inline=False, value="\n".join(
+        f"{n + 1}위  " + (f"**{cands[i]['name']}** (내 후보)" if i == pick else cands[i]["name"])
+        + ("  사퇴" if cands[i]["out"] else "") for n, i in enumerate(g["order"])))
+    e.add_field(name="정산", value=ui.won(r["delta"]), inline=True)
+    e.add_field(name="잔액", value=f"{bal:,}원", inline=True)
+    return e
 
 
 class Lobby(commands.Cog):
@@ -169,10 +200,11 @@ class Lobby(commands.Cog):
             return await interaction.followup.send(f"DB 오류: {type(ex).__name__}")
         scenes = frames(g, pick, view.no)
         try:
-            for k, (title, body, color) in enumerate(scenes):
-                await asyncio.sleep(GAP_LAST if k >= len(scenes) - 2 else GAP)
+            wait = 2.0
+            for title, body, color, nxt in scenes:
+                await asyncio.sleep(wait)
                 await interaction.edit_original_response(embed=ui.card(title, body, color, user, SECTION))
-            await asyncio.sleep(GAP)
+                wait = nxt
         except discord.HTTPException:
             pass
         e = result_card(user, g, pick, r, bal)

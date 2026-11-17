@@ -351,9 +351,9 @@ def test_lobby_game():
         assert len(scenes) >= 1 + L.GAME_EVENTS + 3 + 1
         e = CL.ticket_card(user, 10_000, g, table, 3)
         res = CL.result_card(user, g, 0, L.settle_game(g, 0, 10_000, table), 5)
-        for t, body, _ in scenes:
-            assert len(body) < 4096
-        assert len(e.description) < 4096 and "대선 결과" == res.title
+        for t, body, _, wait in scenes:
+            assert len(body) < 4096 and "·" not in body and wait >= CL.GAP
+        assert len(e) < 6000 and "대선 결과" == res.title
     assert {"impeach", "suspend", None, True} <= seen                           # 탄핵 · 공약 중단 · 사퇴가 다 나온다
     assert "로비" in release.hidden_commands(1) and "로비" not in release.hidden_commands(release.TEST_GUILD)
 
