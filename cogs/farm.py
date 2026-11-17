@@ -97,6 +97,17 @@ def _grid_fields(e: discord.Embed, fields: list[tuple[str, str]]):
         e.add_field(name="\u200b", value="\u200b")
 
 
+def farm_title(owner, f: Optional[dict]) -> str:
+    """농장 이름 — 주인이 정한 이름, 없으면 'ㅇㅇ의 농장'. 스레드 이름과 농장 화면 제목에 쓴다."""
+    name = f.get("name") if f else None
+    return (name or f"{getattr(owner, 'display_name', '주인')}의 농장")[:100]
+
+
+def farm_label(x: dict) -> str:
+    """농장 고르는 메뉴에 보이는 이름 — 정한 이름, 없으면 땅 이름."""
+    return (x.get("name") or f"{F.LANDS[x['land']][1]} 농장")[:100]
+
+
 def panel_embed(user, f: dict, now: int, note: str = "") -> discord.Embed:
     """11/11 규완님 '가독성이 너무 별로야' — 값은 칸마다 하나, 목록은 한 줄에 하나 (· 로 이어 붙이지 않는다)."""
     _, ln, _, res = F.LANDS[f["land"]]
@@ -123,7 +134,7 @@ def panel_embed(user, f: dict, now: int, note: str = "") -> discord.Embed:
     if not (ready or growing or animals or f["items"]):
         desc += "\n\n아래 메뉴에서 당근을 골라 심어 보세요. 당근은 씨앗이 필요 없어요."
     desc += f"\n-# 씨앗과 동물은 {_shop_link(user)}에서 사요"
-    e = ui.card(f"{user.display_name}의 농장", desc, ui.WIN, user, SECTION)
+    e = ui.card(farm_title(user, f), desc, ui.WIN, user, SECTION)
 
     chests = sum(f["chests"].values())
     stats = [("에너지", f"**{f['energy']}** / {F.ENERGY_MAX}"), ("코인", f"**{f['coins']:,}**"), ("낫", f"**+{f['sickle']}**"),
@@ -235,7 +246,10 @@ class FarmPanel(discord.ui.View):
                 ("offer", "인수 제안", discord.ButtonStyle.secondary, 4, self._offer),
                 ("offers", f"받은 인수 제안 ({offers})" if offers else "받은 인수 제안", discord.ButtonStyle.secondary, 4,
                  self._offers),
-                ("newfarm", "새 밭 만들기", discord.ButtonStyle.secondary, 4, self._newfarm)):
+                ("newfarm", "새 밭 만들기", discord.ButtonStyle.secondary, 4, self._newfarm),
+                ("name", "이름 짓기", discord.ButtonStyle.secondary, 4, self._name)):
+            if cid == "name" and f is not None and not f.get("v382"):   # 3.8.2 공개 전엔 테스트 서버 농장만
+                continue
             b = discord.ui.Button(custom_id=f"farm:{cid}", label=label, style=style, row=row)
             b.callback = cb
             self.add_item(b)
@@ -360,6 +374,10 @@ class FarmPanel(discord.ui.View):
         view = LandPick(self.cog, interaction.user, f["id"], interaction.message)
         await interaction.response.send_message(embed=land_embed(interaction.user, None, True), view=view, ephemeral=True)
 
+    async def _name(self, interaction: discord.Interaction):
+        f = await self.cog.db.get(await self._fid(interaction), int(time.time()))
+        await interaction.response.send_modal(NameModal(self.cog, f, interaction.message))
+
     async def _exchange(self, interaction: discord.Interaction):
         f = await self.cog.db.get(await self._fid(interaction), int(time.time()))
         await interaction.response.send_modal(ExchangeModal(self.cog, f["id"], f["coins"]))
@@ -384,6 +402,39 @@ class FarmPanel(discord.ui.View):
         offers = await self.cog.db.farm_offers(interaction.user.id, f["id"], now)
         view = OwnerOffers(self.cog, interaction.user, f, offers, interaction.message, release.preview_382(interaction.guild_id))
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+
+class NameModal(discord.ui.Modal):
+    """농장 이름 짓기 — 스레드 이름과 농장 화면 제목이 바뀐다. 비우면 원래대로."""
+    def __init__(self, cog: "Farm", f: dict, panel):
+        super().__init__(title="농장 이름 짓기")
+        self.cog, self.fid, self.panel = cog, f["id"], panel
+        self.name = discord.ui.TextInput(label=f"농장 이름 ({F.NAME_MAX}자까지, 비우면 원래대로)", required=False,
+                                         max_length=F.NAME_MAX, default=f.get("name") or "", placeholder="예: 햇살 농장")
+        self.add_item(self.name)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        now = int(time.time())
+        r = await self.cog.db.set_name(interaction.user.id, self.fid, str(self.name.value), now)
+        if not r["ok"]:
+            return await interaction.response.send_message(
+                f"이름은 {F.NAME_MAX}자까지 지을 수 있어요." if r["reason"] == "long" else "내 농장에서만 이름을 지을 수 있어요.",
+                ephemeral=True)
+        f = await self.cog.db.get(self.fid, now)
+        title = farm_title(interaction.user, f)
+        await interaction.response.send_message(f"농장 이름을 **{title}**(으)로 정했어요.", ephemeral=True)
+        try:
+            if self.panel is not None:
+                await self.panel.edit(embed=panel_embed(interaction.user, f, now), view=FarmPanel(self.cog, f))
+        except discord.HTTPException:
+            pass
+        for tid in await self.cog.db.threads_of(self.fid):
+            th = self.cog.bot.get_channel(tid)
+            try:
+                if isinstance(th, discord.Thread) and th.name != title:
+                    await th.edit(name=title)
+            except discord.HTTPException as ex:   # 디스코드는 스레드 이름을 10분에 두 번까지만 바꾸게 한다
+                print(f"[농사] 스레드 이름 바꾸기 오류 {tid}: {type(ex).__name__}: {ex}")
 
 
 # ───────────── 작은 화면들 (누른 사람에게만 보인다 — 끝나면 농장 화면도 고친다) ─────────────
@@ -760,7 +811,7 @@ class OfferStart(discord.ui.View):
         self.add_item(propose)
         if len(self.mine) > 1 and not self.purse:
             sel = discord.ui.Select(placeholder="어느 농장의 코인으로 낼지 고르기", row=1, options=[
-                discord.SelectOption(label=f"{F.LANDS[x['land']][1]} 농장"[:100], description=f"코인 {x['coins']:,}",
+                discord.SelectOption(label=farm_label(x), description=f"코인 {x['coins']:,}",
                                      value=str(x["id"]), default=x["id"] == self.pay) for x in self.mine[:25]])
             sel.callback = self._pick
             self.add_item(sel)
@@ -1009,7 +1060,7 @@ class BuyView(discord.ui.View):
             self.add_item(b)
         if len(self.farms) > 1 and not f.get("v382"):   # 3.8.2 코인 지갑은 하나라 고를 것이 없다
             sel = discord.ui.Select(placeholder="어느 농장의 코인으로 살지 고르기", row=1, options=[
-                discord.SelectOption(label=f"{F.LANDS[x['land']][1]} 농장"[:100], description=f"코인 {x['coins']:,}",
+                discord.SelectOption(label=farm_label(x), description=f"코인 {x['coins']:,}",
                                      value=str(x["id"]), default=x["id"] == self.fid) for x in self.farms[:25]])
             sel.callback = self._farm
             self.add_item(sel)
@@ -1146,7 +1197,7 @@ class FarmPick(discord.ui.View):
         super().__init__(timeout=180)
         self.cog, self.user = cog, user
         sel = discord.ui.Select(placeholder="열 농장 고르기", options=[
-            discord.SelectOption(label=f"{F.LANDS[f['land']][1]} 농장"[:100], description=f"코인 {f['coins']:,}", value=str(f["id"]))
+            discord.SelectOption(label=farm_label(f), description=f"코인 {f['coins']:,}", value=str(f["id"]))
             for f in farms[:25]])
         sel.callback = self._picked
         self.add_item(sel)
@@ -1247,7 +1298,7 @@ class Farm(commands.Cog):
             return
         owner = guild.get_member(f["owner"]) or await self.bot.fetch_user(f["owner"])
         now = int(time.time())
-        th = await parent.create_thread(name=f"{owner.display_name}의 농장"[:100], type=discord.ChannelType.public_thread,
+        th = await parent.create_thread(name=farm_title(owner, f), type=discord.ChannelType.public_thread,
                                         auto_archive_duration=10080, reason="지워진 농장 스레드 다시 열기")
         await self.db.set_thread(fid, guild.id, th.id)
         await th.send(content=f"{owner.mention} 농장 스레드가 지워져서 다시 열었어요. 농장은 그대로예요.",
@@ -1491,7 +1542,7 @@ class Farm(commands.Cog):
                 if not isinstance(parent, discord.TextChannel):
                     return await interaction.followup.send(
                         "농장 스레드는 일반 채팅 채널에서만 열 수 있어요. 채팅 채널에서 `/농사`를 써 주세요.", ephemeral=True)
-                thread = await parent.create_thread(name=f"{user.display_name}의 농장"[:100],
+                thread = await parent.create_thread(name=farm_title(user, f),
                                                     type=discord.ChannelType.public_thread, auto_archive_duration=10080,
                                                     reason=f"/농사 — {user}")
                 await self.db.set_thread(fid, guild.id, thread.id)
@@ -1546,7 +1597,7 @@ class Farm(commands.Cog):
             th = self.bot.get_channel(tid)
             try:
                 if isinstance(th, discord.Thread):
-                    await th.edit(name=f"{owner.display_name}의 농장"[:100])
+                    await th.edit(name=farm_title(owner, f))
             except discord.HTTPException:
                 pass
 

@@ -113,6 +113,34 @@ def test_animals_auto():
     run(flow())
 
 
+def test_farm_name():
+    from cogs import farm as CF
+    db = F.FarmDB()
+
+    async def flow():
+        A, B = 38281, 38282
+        G = (await db.create(A, "plain", T))["id"]
+        await db.upgrade(A)
+        assert (await db.set_name(B, G, "남의 농장", T))["reason"] == "none"        # 주인만
+        assert (await db.set_name(A, G, "가" * (F.NAME_MAX + 1), T))["reason"] == "long"
+        assert (await db.set_name(A, G, "  햇살   농장 ", T))["name"] == "햇살 농장"
+        f = await db.get(G, T)
+
+        class U:
+            display_name = "규완"
+            id = A
+            display_avatar = type("Av", (), {"url": "https://example.com/a.png"})()
+            mention = "<@1>"
+        assert CF.farm_title(U(), f) == "햇살 농장" and CF.farm_label(f) == "햇살 농장"
+        assert CF.panel_embed(U(), f, T).title.endswith("햇살 농장")
+        assert any(getattr(c, "custom_id", "") == "farm:name" for c in CF.FarmPanel(None, f).children)
+        await db.set_name(A, G, "", T)                                              # 비우면 원래대로
+        f = await db.get(G, T)
+        assert f["name"] is None and CF.farm_title(U(), f) == "규완의 농장"
+
+    run(flow())
+
+
 def test_crops_and_chests():
     for k in F.NEW_CROPS_382:
         assert k in F.CROPS and k in F.ITEMS and F.shop_price(k)
