@@ -8,6 +8,8 @@
 # 11/17 규완님 '선거를 방식을 /경마나 그런 느낌으로 그냥 바꾸자' → 후보마다 배당(배수)이 붙고, 로비할 때 배당이 정해진다.
 #   당선되면 그 후보에게 로비한 돈 × 그때 배당을 받는다 (낙선 후보에게 넣은 돈은 잃는다). 로비는 여전히 지지율도 올린다.
 # 11/17 규완님 '그런 이벤트들 추가해줘' → 뉴스 대신 가끔 합당 · 사퇴 · 자격 박탈. 빠진 후보에게 로비한 돈은 돌려준다.
+# 11/17 규완님 '/로비 -> 여러 사건 -> 개표 -> 임기 이렇게. 임기 도중 사건이 일어나서 문제가 생길 수도 있게'
+#   → 당선자는 다음 선거 개표까지 임기. 임기 중 가끔 사건이 터져 공약 하나가 멈추거나, 드물게 탄핵돼 공약이 전부 멈춘다.
 # 수치는 전부 내 기본값.
 import json
 import random
@@ -31,6 +33,9 @@ ODDS_RANGE = (1.5, 50.0)          # 배당 최소 · 최대 (1배 근처는 안 
 ODDS_SIMS = 3000                  # 당선 확률 계산할 때 선거를 몇 번 돌려 보는지
 DROP_CHANCE = 0.12                # 뉴스 차례마다 합당 · 사퇴 사건이 날 확률
 DROP_KEEP = 2                     # 후보가 이만큼 남으면 더 빠지지 않는다
+TERM_GAP = (12 * 3600, 24 * 3600)   # 임기 중 사건을 굴리는 간격
+TERM_TROUBLE = 0.35               # 굴릴 때마다 문제가 터질 확률
+TERM_IMPEACH = 0.15               # 터진 문제가 탄핵일 확률 (나머지는 공약 하나 중단)
 MERGE_GIVE = 0.7                  # 합당하면 빠지는 후보 인기(기본 + 사건)의 이만큼이 받는 후보에게
 
 # 가상 인물 이름 · 정당 (실제 정치인 · 정당 이름은 쓰지 않는다)
@@ -78,6 +83,13 @@ DROP_MERGE = ("{n} 후보, {m} 후보와 전격 합당. {n} 후보는 후보직�
               "{n} 후보, {m} 후보로 단일화 합의하고 사퇴")
 DROP_QUIT = ("{n} 후보, 지지율 부진 끝에 전격 사퇴", "{n} 후보, 건강 문제로 후보직 사퇴")
 DROP_BAN = ("{n} 후보, 선거법 위반으로 후보 자격 박탈", "{n} 후보, 서류 위조가 드러나 후보 등록 무효")
+
+# 임기 중 사건: {n} = 당선자, {p} = 멈추는 공약
+TERM_SUSPEND = ("{n} 대통령, '{p}' 예산 비리 의혹으로 그 공약 중단",
+                "{n} 대통령 측근 비리 터져, '{p}' 공약 보류",
+                "국회, '{p}' 공약 예산 전액 삭감")
+TERM_IMPEACH_TEXT = ("{n} 대통령 탄핵 소추안 가결. 남은 임기 동안 모든 공약이 멈춥니다",
+                     "{n} 대통령, 로비 스캔들로 탄핵. 남은 임기 동안 모든 공약이 멈춥니다")
 
 # 당선 공약 효과: key → 배수 (선거가 끝날 때 cog 가 채운다) · 공개 전 효과를 받는 사람 (테스트 서버 멤버)
 ACTIVE: dict[str, float] = {}
@@ -403,6 +415,40 @@ class LobbyDB(EconomyDB):
         return {"eid": e["id"], "text": text, "delta": 0, "cand": i, "kind": kind, "into": j,
                 "support": sup[j] if j is not None else None, "refund": refund}
 
+    async def term_tick(self, now_ts: int, rng=random) -> Optional[dict]:
+        """임기 중 사건: 시각이 되면 굴려서 문제가 터지면 → {text, kind, winner(바뀐 당선자)} (아니면 None)."""
+        def fn(con):
+            last = self._last(con)
+            if not last or last["winner"] is None or now_ts < last["next_news_ts"]:
+                return None
+            w = last["cands"][last["winner"]]
+            kept = w.get("kept") or [True] * len(w["pledges"])
+            on = [k for k, ok in enumerate(kept) if ok]
+            if w.get("impeached") or not on:
+                return None
+            nxt = int(now_ts) + rng.randint(*TERM_GAP)
+            out = None
+            if rng.random() < TERM_TROUBLE:
+                if rng.random() < TERM_IMPEACH:
+                    w["impeached"] = True
+                    out = {"kind": "impeach", "text": rng.choice(TERM_IMPEACH_TEXT).format(n=w["name"])}
+                else:
+                    k = rng.choice(on)
+                    kept[k] = False
+                    w["kept"] = kept
+                    w.setdefault("suspended", []).append(k)
+                    out = {"kind": "suspend", "text": rng.choice(TERM_SUSPEND).format(
+                        n=w["name"], p=pledge_text(*w["pledges"][k]))}
+            con.execute("UPDATE lobby_elections SET cands=?, next_news_ts=? WHERE id=?",
+                        (json.dumps(last["cands"], ensure_ascii=False), nxt, last["id"]))
+            if out:
+                cur = self._current(con, now_ts, rng)   # 뉴스는 지금 선거 화면에도 보이게
+                con.execute("INSERT INTO lobby_news(eid, ts, text) VALUES(?,?,?)", (cur["id"], int(now_ts), out["text"]))
+                out["winner"] = w
+                out["eid"] = last["id"]
+            return out
+        return await self._tx(fn)
+
     async def settle(self, now_ts: int, rng=random) -> Optional[dict]:
         """마감이 지난 선거를 정산한다 → {eid, winner, cand, support, paid: {uid: 돈}, caught: [uid], pool, ...} (아니면 None).
         정산과 함께 다음 선거를 연다. 한 트랜잭션이라 두 번 정산되지 않는다."""
@@ -436,8 +482,8 @@ class LobbyDB(EconomyDB):
                 con.execute("INSERT OR REPLACE INTO lobby_results(eid, uid, staked, paid, caught) VALUES(?,?,?,?,?)",
                             (e["id"], u, s, paid.get(u, 0), 1 if u in caught else 0))
             e["cands"][w]["kept"] = keep_pledges(e["cands"][w], rng)   # 공약 이행률 — 지킨 공약만 적용
-            con.execute("UPDATE lobby_elections SET status='done', winner=?, cands=? WHERE id=?",
-                        (w, json.dumps(e["cands"], ensure_ascii=False), e["id"]))
+            con.execute("UPDATE lobby_elections SET status='done', winner=?, cands=?, next_news_ts=? WHERE id=?",
+                        (w, json.dumps(e["cands"], ensure_ascii=False), int(now_ts) + rng.randint(*TERM_GAP), e["id"]))
             sup = support(e["cands"], pots)
             con.execute("INSERT INTO lobby_news(eid, ts, cand, text) VALUES(?,?,?,?)",
                         (e["id"], int(now_ts), w, f"{e['cands'][w]['name']} 후보 당선! 득표율 {shares[w]:.1f}%"))
@@ -452,7 +498,7 @@ class LobbyDB(EconomyDB):
 
 def active_from(winner: Optional[dict]) -> dict[str, float]:
     """당선자 공약 → {공약 key: 배수}."""
-    if not winner:
+    if not winner or winner.get("impeached"):
         return {}
     kept = winner.get("kept") or [True] * len(winner["pledges"])
     return {k: 1 + float(p) for (k, p), ok in zip(winner["pledges"], kept) if ok and k in PLEDGES}
