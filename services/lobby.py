@@ -101,7 +101,7 @@ def mult(key: str, uid: Optional[int] = None) -> float:
     m = ACTIVE.get(key)
     if not m:
         return 1.0
-    if release.released_382() or (uid is not None and int(uid) in TESTERS):
+    if (release.RELEASE_LOBBY_TS is not None and release.preview_lobby(None)) or (uid is not None and int(uid) in TESTERS):
         return m
     return 1.0
 

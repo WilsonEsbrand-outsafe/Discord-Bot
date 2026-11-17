@@ -163,7 +163,7 @@ class Lobby(commands.Cog):
     @app_commands.rename(amount="베팅액")
     @app_commands.describe(amount="로비 금액 (최소 1,000원)")
     async def lobby(self, interaction: discord.Interaction, amount: app_commands.Range[int, L.GAME_MIN]):
-        if not release.preview_382(interaction.guild_id):
+        if not release.preview_lobby(interaction.guild_id):
             return await interaction.response.send_message("/로비 는 아직 이 서버에서 쓸 수 없어요.", ephemeral=True)
         user, amount = interaction.user, int(amount)
         await interaction.response.defer()

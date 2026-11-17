@@ -1,3 +1,4 @@
+import calendar
 """3.8.2: 농장 코인 지갑 하나 · 에너지 2배 · 새 작물 · 상자 상향 · 바로 인수 없앰 (농장 · 명문 구단) · 리그 중간 순위 · 농장 스레드 다시 열기."""
 import asyncio
 import random
@@ -31,7 +32,11 @@ def _set_coins(fid, c):
 
 
 def test_switch():
-    assert release.preview_382(release.TEST_GUILD) and release.RELEASE_382_TS is None and not release.preview_382(1)
+    t = release.RELEASE_382_TS
+    assert t == calendar.timegm((2026, 11, 17, 7, 30, 0))                                     # 16:30 KST 점검 시작과 함께 공개
+    assert release.preview_382(release.TEST_GUILD, t - 60) and not release.preview_382(1, t - 60) and release.preview_382(1, t)
+    assert not release.preview_lobby(1, t + 86400) and release.preview_lobby(release.TEST_GUILD)  # /로비 는 다음 패치
+    assert "로비" in release.hidden_commands(1, t + 60)
 
 
 def test_purse_and_takeover():
@@ -458,4 +463,34 @@ def test_energy_max_and_drinks():
         assert r["used"] == 2 and r["left"] == 0
         f = await db.get(G, T + 10 ** 6)
         assert any(getattr(c, "custom_id", "") == "farm:drink" for c in CF.FarmPanel(None, f).children)
+    run(flow())
+
+
+def test_big_field_and_cell_harvest():
+    """11/17 '둘 다 따로 두기': 큰 밭 그림(이모지만 있는 글) + 칸 버튼 — 누른 칸만 거둔다. 3.8.2 와 함께 공개."""
+    from cogs import farm as CF
+    db = F.FarmDB()
+
+    async def flow():
+        A = 38311
+        G = (await db.create(A, "plain", T))["id"]
+        await db.upgrade(A)
+        r = await db.plant(A, G, "carrot", T)
+        assert r["ok"] and r["count"] >= 2
+        later = T + 10 ** 6
+        f = await db.get(G, later)
+        text = CF.field_text(f)
+        assert "\n" in text and all(len(line) for line in text.split("\n")) and len(f["fields"]) <= 27
+        v = CF.FieldView(None, f)
+        assert len(v.children) == len(f["fields"]) and v.children[0].style == CF.discord.ButtonStyle.success
+        assert len(CF.FieldView(None).children) == F.PLOTS_MAX                       # 재시작용 틀은 모든 칸
+        ready = [i for i, p in enumerate(f["fields"]) if p and p["ready"]]
+        h = await db.harvest(A, G, later, slots={ready[0]})
+        assert h["ok"] and h["count"] == 1
+        g = await db.get(G, later)
+        assert g["fields"][ready[0]] is None and all(g["fields"][i] for i in ready[1:])   # 누른 칸만
+        t = release.RELEASE_382_TS
+        th = MagicMock(spec=CF.discord.Thread)
+        th.guild = MagicMock(id=1)
+        assert not CF.Farm.big(th) or time.time() >= t
     run(flow())
