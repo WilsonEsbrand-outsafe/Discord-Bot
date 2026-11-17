@@ -89,6 +89,7 @@ def shop_price(key: str) -> Optional[int]:
         return TOOLS[key][1]
     return ANIMALS[key][2] if key in ANIMALS else None
 ANIMAL_REFUND = 0.5           # 동물을 내보내면 입양 값의 절반
+NAME_MAX = 20                 # 농장 이름 글자 수
 
 # 합치기: 같은 물건 · 같은 등급 3개 → 한 등급 위 1개 (★5 까지). 등급이 오를수록 3개 값보다 조금씩 더 비싸다
 TIER_MAX, MERGE_NEED = 5, 3
@@ -297,6 +298,8 @@ class FarmDB(EconomyDB):
                 con.execute("ALTER TABLE farms ADD COLUMN fert_on INTEGER NOT NULL DEFAULT 1")
             if "scare_until" not in cols:
                 con.execute("ALTER TABLE farms ADD COLUMN scare_until INTEGER NOT NULL DEFAULT 0")
+            if "name" not in cols:   # 3.8.2 농장 이름 (주인이 정한다, 없으면 'ㅇㅇ의 농장')
+                con.execute("ALTER TABLE farms ADD COLUMN name TEXT")
             shop_cols = {r[1] for r in con.execute("PRAGMA table_info(farm_shops)")}
             if "msg_id" not in shop_cols:
                 con.execute("ALTER TABLE farm_shops ADD COLUMN msg_id INTEGER")
@@ -357,7 +360,7 @@ class FarmDB(EconomyDB):
     @staticmethod
     def _farm(con, fid: int, now_ts: int) -> Optional[dict]:
         r = con.execute("SELECT land, coins, energy, energy_ts, plots, sickle, whet, c_wood, c_silver, c_gold, plant_n, "
-                        "daily_day, owner, ask, fert_on, scare_until FROM farms WHERE id=?", (int(fid),)).fetchone()
+                        "daily_day, owner, ask, fert_on, scare_until, name FROM farms WHERE id=?", (int(fid),)).fetchone()
         if not r or r[0] not in LANDS:
             return None
         res = LANDS[r[0]][3]
@@ -380,7 +383,7 @@ class FarmDB(EconomyDB):
                   if shop_price(k)}
         seeds = {k: q for k, q in bought.items() if k not in TOOLS}
         tools = {k: bought[k] for k in TOOLS if k in bought}   # 상점에서 사 둔 아이템 (같은 표 farm_seeds)
-        f = {"id": int(fid), "seeds": seeds, "tools": tools, "fert_on": bool(r[14]), "scare_until": int(r[15] or 0),
+        f = {"id": int(fid), "name": r[16] or None, "seeds": seeds, "tools": tools, "fert_on": bool(r[14]), "scare_until": int(r[15] or 0),
              "owner": int(r[12]), "land": r[0], "res": res, "coins": int(r[1]) if purse is None else purse,
              "farm_coins": int(r[1]), "v382": purse is not None, "cost": ENERGY_COST_382 if purse is not None else 1,
              "energy_f": e, "energy": int(e),
@@ -392,6 +395,19 @@ class FarmDB(EconomyDB):
         f["worth"] = farm_worth(f)
         f["fair"] = farm_fair(f["worth"], f["ask"])
         return f
+
+    async def set_name(self, uid: int, fid: int, name: str, now_ts: int) -> dict:
+        """농장 이름 정하기 (주인만, 11/17 규완님 'ㅇㅇ의 농장이 너무 많아지잖아. 구별할 수 있게 이름을 설정해').
+        빈 이름이면 원래대로('ㅇㅇ의 농장'). reason: none / long."""
+        name = " ".join(str(name).split())
+        def fn(con):
+            if not self._mine(con, uid, fid, now_ts):
+                return {"ok": False, "reason": "none"}
+            if len(name) > NAME_MAX:
+                return {"ok": False, "reason": "long"}
+            con.execute("UPDATE farms SET name=? WHERE id=?", (name or None, int(fid)))
+            return {"ok": True, "name": name or None}
+        return await self._tx(fn)
 
     @classmethod
     def _mine(cls, con, uid: int, fid: int, now_ts: int) -> Optional[dict]:
