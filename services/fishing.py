@@ -9,8 +9,8 @@ import time
 from typing import Optional
 
 import release
-from services import lobby
-from services.economy_db import EconomyDB, give_item, _kst_day
+from services import burning, lobby
+from services.economy_db import EconomyDB, give_item, _kst_day, pay_384
 
 # ───────────── 물고기 ─────────────
 GRADES = ("흔함", "보통", "희귀", "영웅", "전설")
@@ -224,8 +224,8 @@ def freshness(caught_ts: int, now_ts: int, icebox: bool = False) -> float:
 
 
 def fish_price(key: str, size: float, mult: float, supply: float, fresh: float) -> int:
-    """판매가 = 기준가 × 크기 × 싯가 × 서버 판매량 × 신선도."""
-    return max(10, int(round(FISH[key][4] * size_mult(key, size) * mult * supply * fresh, -1)))
+    """판매가 = 기준가 × 크기 × 싯가 × 서버 판매량 × 신선도. 3.9.1 공개 서버는 10배 (economy_db.PAY_384)."""
+    return max(10, int(round(FISH[key][4] * pay_384("fish") * size_mult(key, size) * mult * supply * fresh, -1)))
 
 
 def market_step(mult: float, supply: float, grade: int, rng) -> tuple[float, float]:
@@ -476,6 +476,7 @@ class FishingDB(EconomyDB):
         xp = catch_xp(key, size, new_xp)
         if "grill" in buffs:
             xp = round(xp * 1.3)
+        xp = round(xp * burning.mult("fish_xp", uid, now_ts))   # 3.9.1 수능 버닝 경험치 두 배
         level, lxp, up = add_xp(s["level"], s["xp"], xp)
         con.execute("UPDATE fish_state SET level=?, xp=?, caught=caught+1 WHERE user_id=?", (level, lxp, uid))
         cur = con.execute("INSERT INTO fish_bag(user_id, species, size, caught_ts) VALUES(?,?,?,?)", (uid, key, size, now_ts))
@@ -577,6 +578,7 @@ class FishingDB(EconomyDB):
                     con.execute("UPDATE fish_market SET supply=? WHERE species=?", (m["supply"], f["species"]))
                 con.execute("DELETE FROM fish_bag WHERE id=?", (f["id"],))
             total = int(total * lobby.mult("fish_sell", uid))   # 3.8.2 /로비 당선 공약
+            total = int(total * burning.mult("fish_sell", uid, now_ts))   # 3.9.1 수능 버닝 판매 1.5배
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (uid,))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (total, uid))
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (uid,)).fetchone()[0]

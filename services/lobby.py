@@ -22,8 +22,9 @@ from services.economy_db import EconomyDB
 HISTORY_N = 15                    # 미리 돌려 둔 대선 수 (제1회 ~ 제15회)
 HISTORY_SEED = 384                # 기록은 늘 같게
 FIRST_NO = HISTORY_N + 1          # 플레이어가 참여하는 첫 대선
-# 11/21 규완님 공지 '11월 넷째 주 대선 예정' → 제16회 개표는 11월 29일 (일) 21:00 KST, 그다음부터 일요일 21:00 마다
-FIRST_CLOSE = calendar.timegm((2026, 11, 29, 12, 0, 0))
+# 11/21 규완님 '대선은 오늘 패치 종료 후 바로 시작, 종료는 내일 오후 9시' → 제16회는 3.9.1 공개 때 새로 열고 (restart)
+# 개표는 11월 22일 (일) 21:00 KST, 그다음부터 일요일 21:00 마다. (처음엔 '11월 넷째 주' 로 11/29 였다)
+FIRST_CLOSE = calendar.timegm((2026, 11, 22, 12, 0, 0))
 CLOSE_WDAY, CLOSE_HOUR = 6, 21    # 일요일 21:00 KST 마감 (월요일 = 0)
 
 # ───────────── 투표 · 베팅 ─────────────
@@ -275,6 +276,7 @@ _TABLES = (
     "CREATE TABLE IF NOT EXISTS elect_news (id INTEGER PRIMARY KEY AUTOINCREMENT, no INTEGER NOT NULL, ts INTEGER NOT NULL, "
     "text TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS lobby_threads (guild_id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL)",   # 서버마다 대선 뉴스 스레드
+    "CREATE TABLE IF NOT EXISTS elect_flags (key TEXT PRIMARY KEY, ts INTEGER NOT NULL)",   # 한 번만 하는 일 (restart)
 )
 _COLS = "no, status, opens_ts, closes_ts, cands, shares, winner, next_news_ts, approval, impeached, term_next_ts, top"
 
@@ -290,6 +292,9 @@ class LobbyDB(EconomyDB):
                 for h in make_history():
                     con.execute("INSERT INTO elect_rounds(no, status, cands, shares, winner) VALUES(?,?,?,?,?)",
                                 (h["no"], "history", json.dumps(h["cands"], ensure_ascii=False), json.dumps(h["shares"]), h["winner"]))
+            # 3.9.1: 첫 대선 개표를 11/29 → 11/22 21:00 으로 당겼다 — 테스트 서버에서 이미 열린 제16회도 맞춘다
+            con.execute("UPDATE elect_rounds SET closes_ts=? WHERE status='open' AND no<=? AND closes_ts>?",
+                        (FIRST_CLOSE, FIRST_NO, FIRST_CLOSE))
             con.commit()
         finally:
             con.close()
@@ -320,6 +325,29 @@ class LobbyDB(EconomyDB):
         con.execute("INSERT INTO elect_news(no, ts, text) VALUES(?,?,?)",
                     (no, int(now_ts), f"제{no}회 축구 봇 대선 후보 등록 마감. 후보 {len(cands)}명이 선거전에 뛰어들었습니다"))
         return cls._row(con.execute(f"SELECT {_COLS} FROM elect_rounds WHERE no=?", (no,)).fetchone())
+
+    async def restart(self, now_ts: int, rng=random) -> Optional[dict]:
+        """3.9.1 공개 때 한 번: 테스트 서버에서 열려 있던 대선은 없던 일로 하고 (투표에 낸 돈 · 베팅 돌려줌) 지금 새로 연다.
+        → {"no", "closes_ts", "refunds": {uid: 돈}} (이미 했으면 None)."""
+        def fn(con):
+            if con.execute("SELECT 1 FROM elect_flags WHERE key='restart_391'").fetchone():
+                return None
+            con.execute("INSERT INTO elect_flags(key, ts) VALUES('restart_391', ?)", (int(now_ts),))
+            refunds: dict[int, int] = {}
+            for (no,) in con.execute("SELECT no FROM elect_rounds WHERE status='open'").fetchall():
+                for uid, m in con.execute("SELECT uid, paid FROM elect_votes WHERE no=?", (no,)).fetchall():
+                    refunds[int(uid)] = refunds.get(int(uid), 0) + int(m)
+                for uid, m in con.execute("SELECT uid, amount FROM elect_bets WHERE no=? AND paid IS NULL", (no,)).fetchall():
+                    refunds[int(uid)] = refunds.get(int(uid), 0) + int(m)
+                for t in ("elect_votes", "elect_bets", "elect_news", "elect_rounds"):
+                    con.execute(f"DELETE FROM {t} WHERE no=?", (no,))
+            for uid, m in refunds.items():
+                if m:
+                    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (uid,))
+                    con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (m, uid))
+            e = self._current(con, now_ts, rng)
+            return {"no": e["no"], "closes_ts": e["closes_ts"], "refunds": {u: m for u, m in refunds.items() if m}}
+        return await self._tx(fn)
 
     @staticmethod
     def _votes(con, no: int, n: int) -> list[int]:

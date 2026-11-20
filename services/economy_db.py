@@ -255,6 +255,17 @@ def _reset_rod(con, user_id: int, rod: str) -> None:
 # 출석: 누적 출석 일수가 이 날에 닿으면 보너스 (빠져도 초기화되지 않는다)
 ATTEND_BONUS = {7: 50_000, 14: 100_000, 30: 300_000, 50: 500_000, 100: 1_000_000, 200: 2_000_000, 365: 5_000_000}
 
+# 3.9.1 (코드 이름 384, release.preview_384 서버): 11/21 규완님 '현재 축구 봇 자금 운용 상태에 맞게 출석, 스카우트, 훈련, 직관,
+# 낚시의 전반적인 가격을 초 대폭 상승'. 배수는 내 기본값 — 11/21 부팅 로그 기준 최근 7일 출석 7명 지갑 중앙값 약 -1억,
+# 상위 10% 45억. 출석 · 스카우트 · 훈련 · 직관은 100배 (하루 다 채우면 각각 1~3억 정도), 낚시는 원래 하루 수입이 그
+# 열 배쯤이라 10배로 비슷하게 맞춘다. 돈 범위(성공 · 실패 모두)에 곱한다.
+PAY_384 = {"attend": 100, "scout": 100, "train": 100, "watch": 100, "fish": 10}
+
+
+def pay_384(key: str) -> int:
+    """지금 상호작용 서버(release.GUILD)가 3.9.1 이면 그 보상 배수, 아니면 1."""
+    return PAY_384[key] if release.ctx_384() else 1
+
 TRANSFER_DAILY_LIMIT = 100_000_000   # 하루(KST) 보낼 수 있는 송금 총액
 TRANSFER_DAILY_LIMIT_372 = 1_000_000_000   # 3.7.2 (release.preview_372 서버): 규완님 "송금 한도를 10억으로"
 
@@ -534,6 +545,11 @@ class EconomyDB:
                 )
                 """
             )
+            # 3.9.1 수능 버닝 미션 (services/burning.py): 기간 중 센 값 · 받은 보상
+            con.execute("CREATE TABLE IF NOT EXISTS burn_count (user_id INTEGER NOT NULL, key TEXT NOT NULL, "
+                        "n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, key))")
+            con.execute("CREATE TABLE IF NOT EXISTS burn_claims (user_id INTEGER NOT NULL, mission TEXT NOT NULL, "
+                        "ts INTEGER NOT NULL, PRIMARY KEY (user_id, mission))")
 
             con.commit()
         finally:
@@ -659,11 +675,12 @@ class EconomyDB:
             if last and _kst_day(last) == today:
                 return (False, 0, (today + 1) * 86400 - (now_ts + 9 * 3600), int(total), 0)
             total = int(total) + 1
-            bonus = ATTEND_BONUS.get(total, 0)
+            bonus = ATTEND_BONUS.get(total, 0) * pay_384("attend")   # 3.9.1 누적 출석 보너스도 같이 오른다
             from services import lobby   # 3.8.2 /로비 당선 공약 '출석 보상 더' — 더 받는 몫은 보너스로 보인다
             bonus += int(reward * (lobby.mult("attend", user_id) - 1))
             from services import burning   # 3.8.4 수능 버닝 '출석 보상 두 배'
             bonus += int(reward * (burning.mult("attend", user_id, now_ts) - 1))
+            burning.bump(con, user_id, "attend", 1, now_ts)   # 3.9.1 버닝 미션 '기간 중 출석'
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (reward + bonus, user_id))
             con.execute("UPDATE daily_claims SET last_claim_ts=?, total_days=? WHERE user_id=?", (now_ts, total, user_id))
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]

@@ -874,6 +874,7 @@ class FarmDB(EconomyDB):
             for c in chests + ([DAILY_CHEST] if daily else []):
                 con.execute(f"UPDATE farms SET c_{c} = c_{c} + 1 WHERE id=?", (fid,))
             self._spend(con, fid, f, n * f["cost"], now_ts)
+            burning.bump(con, uid, "harvest", n, now_ts)   # 3.9.1 버닝 미션 '농사 거두기'
             return {"ok": True, "got": got, "extra": extra, "high": high, "chests": chests, "daily": daily, "count": n,
                     "left": len(ready) - n, "scare": scare}
         return await self._tx(fn)

@@ -121,7 +121,7 @@ class PatchNotesCog(commands.Cog):
                 es = [discord.Embed(title=f"{title} · {sub}" if sub else title, description=body, color=0xE67E22)
                       for sub, body in parts]
                 es[-1].timestamp = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
-                ok, fail = await self.send_all(es, everyone=key.startswith("patch-"), thread=True)
+                ok, fail = await self.send_all(es, everyone=key.startswith(("patch-", "elect-")), thread=True)   # 3.9.1 대선 공지도 @everyone
                 print(f"[공지] {key} 성공 {ok} / 실패 {fail}")
 
     async def _thread_notices(self, now: int):

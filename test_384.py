@@ -72,7 +72,7 @@ def test_close_dates():
     first = L.FIRST_CLOSE
     import time as _t
     t = _t.gmtime(first + KST)
-    assert (t.tm_mon, t.tm_mday, t.tm_hour, t.tm_wday) == (11, 29, 21, 6)        # 11월 넷째 주 일요일 21:00 KST
+    assert (t.tm_mon, t.tm_mday, t.tm_hour, t.tm_wday) == (11, 22, 21, 6)        # 3.9.1: 내일(11/22 일) 21:00 KST 개표
     assert L.close_after(first) == first + 7 * 86400
 
 

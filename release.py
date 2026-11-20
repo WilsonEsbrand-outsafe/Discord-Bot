@@ -209,6 +209,7 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = out if preview_381(guild_id, now) else out | PREVIEW_381
     out = out if preview_382(guild_id, now) else out | PREVIEW_382
     out = out if preview_lobby(guild_id, now) else out | PREVIEW_LOBBY
+    out = out if preview_384(guild_id, now) else out | PREVIEW_384
     return out if preview_310(guild_id, now) else out | PREVIEW_310
 
 
@@ -322,8 +323,12 @@ def preview_382(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_382(now)
 
 
+def released_lobby(now: Optional[float] = None) -> bool:
+    return RELEASE_LOBBY_TS is not None and _now(now) >= RELEASE_LOBBY_TS
+
+
 def preview_lobby(guild_id: Optional[int], now: Optional[float] = None) -> bool:
-    return guild_id == TEST_GUILD or (RELEASE_LOBBY_TS is not None and _now(now) >= RELEASE_LOBBY_TS)
+    return guild_id == TEST_GUILD or released_lobby(now)
 
 
 # 2026-11-11 규완님: 관리자 계정 — 모든 순위 · 집계에서 뺀다 (3.8.1 — 공개 전엔 테스트 서버에서만)
@@ -362,6 +367,7 @@ def preview_383(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 # 3.8.4 — 공개 전엔 테스트 서버에서만: /로비 첫 버전(주간 대선) + 투표 · 베팅 · 탄핵, 농사 숫돌 주괴 · 씨앗 인챈트 · 낫 +15, 수능 버닝 이벤트.
 # /로비 는 RELEASE_LOBBY_TS (위) 로 따로 연다 — 3.8.4 공개 때 같은 시각으로 맞춘다. None = 아직
 RELEASE_384_TS: Optional[int] = None
+PREVIEW_384: set[str] = {"버닝"}   # 3.9.1 수능 버닝 미션 화면
 
 
 def released_384(now: Optional[float] = None) -> bool:
@@ -370,3 +376,8 @@ def released_384(now: Optional[float] = None) -> bool:
 
 def preview_384(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_384(now)
+
+
+def ctx_384() -> bool:
+    """3.9.1 (코드 이름 384) 이 공개된 서버에서 온 상호작용인가 — 출석 · 스카우트 · 훈련 · 직관 · 낚시 보상 배수 (DB 안쪽에서 쓴다)."""
+    return preview_384(GUILD.get())

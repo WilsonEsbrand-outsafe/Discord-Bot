@@ -195,6 +195,7 @@ class Lobby(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = L.LobbyDB()
+        self._restarted = False
         self.threads: dict[int, int] = {}   # 서버 → 대선 뉴스 스레드
 
     async def cog_load(self):
@@ -230,6 +231,11 @@ class Lobby(commands.Cog):
         if not any(release.preview_lobby(x.id) for x in self.bot.guilds):
             return
         now = int(time.time())
+        if release.released_lobby(now) and not self._restarted:   # 3.9.1 공개: 테스트 서버 대선은 없던 일로, 지금 새로 시작
+            self._restarted = True
+            st = await self.db.restart(now)
+            if st:
+                print(f"[대선] 공개: 제{st['no']}회 새로 시작, 개표 {st['closes_ts']}, 테스트 때 낸 돈 돌려줌 {st['refunds']}")
         r = await self.db.settle(now)
         if r:
             self._apply(r)

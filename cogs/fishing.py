@@ -12,7 +12,7 @@ from discord.ext import commands
 
 import release
 from cogs.economy import ITEM_HANDLERS
-from services import ui
+from services import burning, ui
 from services.club_db import ClubDB
 from services.economy_db import ITEM_PRICES, ITEMS, SHOP_ONE_ONLY, EconomyDB, give_item
 from services.fishing import (
@@ -505,7 +505,8 @@ class Fishing(commands.Cog):
     async def _sell(self, interaction, view: HubView, ids: list[int]):
         r = await self.db.sell(view.user.id, None if 0 in ids else ids, int(time.time()), self._n(view.user), self._live(view.user))
         if r["ok"]:
-            note = ui.card(f"💰 {r['count']}마리 판매!", f"`정산` **+{r['gain']:,}원** · `잔액` **{r['balance']:,}원**",
+            note = ui.card(f"💰 {r['count']}마리 판매!", f"`정산` **+{r['gain']:,}원** · `잔액` **{r['balance']:,}원**"
+                           + (f"\n{burning.NAME}: 판매 1.5배" if burning.on(time.time(), view.user.id) else ""),   # 3.9.1
                            ui.WIN, view.user, SECTION)
         else:
             note = ui.card("🙅 팔 수 없어요", "이미 없거나 수족관에 전시 중인 물고기예요.", ui.LOSE, view.user, SECTION)
