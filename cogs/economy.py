@@ -11,7 +11,7 @@ from auth import owner_only
 
 from services.economy_db import (
     BANKRUPT_310, BANKRUPT_350, BANKRUPT_FORGIVE, CASH_ITEMS, GRIND_REQUIRE, ITEMS, MUFFLER_BONUS, PASSIVE_ITEMS, RESET_ITEMS,
-    SKIP_ITEMS, shop_open,
+    SKIP_ITEMS, shop_open, pay_384,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
     BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, transfer_limit, WATCH_MAX_LEVEL, give_item,
@@ -638,7 +638,7 @@ class Economy(commands.Cog):
     @app_commands.command(name="출석", description="하루 1번 출석 보상 · 누적 출석 일수에 따라 보너스 (빠져도 초기화 없음)")
     async def daily(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        user, reward = interaction.user, self.ATTEND_REWARD
+        user, reward = interaction.user, self.ATTEND_REWARD * pay_384("attend")   # 3.9.1 100배
         try:
             ok, new_bal, remaining, total, bonus = await self.db.claim_daily(user.id, reward, int(time.time()))
         except Exception as ex:
@@ -735,10 +735,11 @@ class Economy(commands.Cog):
         ev = random.choice(self.TRAIN_EVENTS)
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
         mult = self.train_money_mult(level, v311)
+        pay = pay_384("train")   # 3.9.1 돈 범위 100배
         if random.random() >= rate:
-            base = random.randint(*ev["lose"])
+            base = random.randint(*ev["lose"]) * pay
             return int(base * mult), -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "base": base, "mult": mult}
-        base = random.randint(*ev["win"])
+        base = random.randint(*ev["win"]) * pay
         return int(base * mult), 3, {"ev": ev, "ok": True, "line": ev["success_text"], "base": base, "mult": mult}
 
     @staticmethod
@@ -893,8 +894,9 @@ class Economy(commands.Cog):
         ev = random.choice(self.SCOUT_EVENTS)
         rate = min(self.TRAIN_RATE_CAP, ev["success_rate"] + self.TRAIN_RATE_PER_LV * (level - 1))
         mult = self.scout_money_mult(level)
+        pay = pay_384("scout")   # 3.9.1 돈 범위 100배
         if random.random() >= rate:
-            base = random.randint(*ev["lose"])
+            base = random.randint(*ev["lose"]) * pay
             return base * mult, -1, {"ev": ev, "ok": False, "line": ev["fail_text"], "found": None,
                                      "base": base, "mult": mult}
         found = None
@@ -905,6 +907,7 @@ class Economy(commands.Cog):
         base = random.randint(*ev["win"])
         if v360:
             base = round(base * self.SCOUT_WIN_360, -2)
+        base *= pay
         return base * mult, 3, {"ev": ev, "ok": True, "line": ev["success_text"], "found": found,
                                 "base": base, "mult": mult}
 
@@ -1190,7 +1193,7 @@ class Economy(commands.Cog):
             return 0, 3, {"ev": ev, "kind": kind, "ok": True, "item": item, "base": 0, "mult": mult,
                           "line": random.choice(self.WATCH_ITEM_EVENTS[item])}
         ok = kind == "관람"
-        base = random.randint(*ev["win" if ok else "lose"])
+        base = random.randint(*ev["win" if ok else "lose"]) * pay_384("watch")   # 3.9.1 돈 범위 100배
         return base * mult, 3 if ok else -1, {"ev": ev, "kind": kind, "ok": ok, "item": None, "base": base, "mult": mult,
                                               "line": ev["success_text" if ok else "fail_text"]}
 

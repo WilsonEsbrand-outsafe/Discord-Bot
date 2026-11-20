@@ -14,7 +14,7 @@ from services.club_db import (
     PROSPECT_DAILY_GROWTH, PROSPECT_PRICE, PROSPECT_PRIME_END, PROSPECT_RETIRE_AGE, PROSPECT_YEAR,
 )
 from services.economy_db import (
-    ITEMS, ROOKIE_DAYS, ROOKIE_GRIND_MULT, SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB,
+    ITEMS, ROOKIE_DAYS, ROOKIE_GRIND_MULT, SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB, pay_384,
 )
 
 SECTION = "📘 튜토리얼"
@@ -454,10 +454,11 @@ class Tutorial(commands.Cog):
         return f"✅ 자동편성 완료 · 선발 **{t['filled']}/11** · 전력 **{t['rating']}**"
 
     async def _ob_daily(self, user) -> str:
-        ok, bal, _, total, bonus = await self.db.claim_daily(user.id, ATTEND_REWARD, int(time.time()))
+        reward = ATTEND_REWARD * pay_384("attend")   # 3.9.1 100배
+        ok, bal, _, total, bonus = await self.db.claim_daily(user.id, reward, int(time.time()))
         if not ok:
             return "✅ 오늘은 이미 출석했어요. 내일 또 `/출석`!"
-        return f"✅ 출석 완료 **+{ATTEND_REWARD + bonus:,}원** · 잔액 {bal:,}원 · 누적 {total}일"
+        return f"✅ 출석 완료 **+{reward + bonus:,}원** · 잔액 {bal:,}원 · 누적 {total}일"
 
     async def _ob_match(self, user) -> str:
         t = await self.clubs.get_team(user.id)

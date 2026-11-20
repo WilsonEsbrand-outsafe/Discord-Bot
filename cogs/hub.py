@@ -16,7 +16,7 @@ from services.club_db import (
 )
 from services.dungeon import THEMES, DungeonDB, theme_of
 from services.economy_db import (
-    ROOKIE_GRIND_MULT, SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB, rookie_until,
+    ROOKIE_GRIND_MULT, SCOUT_DAILY_LIMIT, TRAIN_DAILY_LIMIT, WATCH_DAILY_LIMIT, EconomyDB, pay_384, rookie_until,
 )
 from services.fishing import FishingDB
 from services.hub import HubView, Page
@@ -197,12 +197,13 @@ class Hubs(commands.Cog):
         e = ui.card(f"📋 오늘 할 일 · {done}/{len(lines)}", f"{ui.bar(done, len(lines))}\n\n" + "\n".join(lines)
                     + ("\n\n" + "\n".join(extra) if extra else ""), ui.GOLD if done == len(lines) else ui.INFO, user, "📅 오늘")
         if not s["attended"]:
-            b = discord.ui.Button(label=f"출석하기 +{ATTEND_REWARD:,}원", emoji="📅", style=discord.ButtonStyle.success, row=0)
+            reward = ATTEND_REWARD * pay_384("attend")   # 3.9.1 100배
+            b = discord.ui.Button(label=f"출석하기 +{reward:,}원", emoji="📅", style=discord.ButtonStyle.success, row=0)
 
             async def attend(interaction: discord.Interaction):
-                ok, bal, _, total, bonus = await self.db.claim_daily(user.id, ATTEND_REWARD, int(time.time()))
+                ok, bal, _, total, bonus = await self.db.claim_daily(user.id, reward, int(time.time()))
                 note = ui.card("✅ 출석 완료" if ok else "⏳ 이미 출석했어요",
-                               (f"`보상` **+{ATTEND_REWARD + bonus:,}원** · `잔액` **{bal:,}원** · `누적` {total}일") if ok else
+                               (f"`보상` **+{reward + bonus:,}원** · `잔액` **{bal:,}원** · `누적` {total}일") if ok else
                                "내일 00시에 다시 할 수 있어요.", ui.WIN if ok else ui.EVEN, user, "📅 출석")
                 await view.refresh(interaction, note)
             b.callback = attend
