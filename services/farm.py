@@ -77,6 +77,7 @@ PRODUCTS = {"egg": ("🥚", "달걀", 30), "feather": ("🪶", "깃털", 50), "h
 # 3.8.4 규완님 '숫돌 주괴는 씨앗 50개 당 하나로 소모되며 인챈트 시 그 씨앗의 가치, 완성품의 가치가 대폭 상승'
 # 인챈트한 씨앗은 '감자_e' 처럼 따로 쌓이고 (farm_seeds), 심으면 그 칸에서 '인챈트 감자'가 나온다. 값은 ENCH_MULT 배 (내 기본값)
 ENCH, ENCH_MULT, ENCH_SEEDS, INGOT_NEED = "_e", 5, 50, 9   # 숫돌 9개 → 숫돌 주괴 1개, 주괴 1개 → 씨앗 50개 인챈트
+ENCH_SLOW = 1.1   # 11/21 규완님 '인챈트 된 씨앗은 가격이 5배인 대신 진짜 살짝 조금의 페널티' → 자라는 시간 10% 더 (내 기본값)
 ECROPS = {k + ENCH: (e, f"인챈트 {n}", v * ENCH_MULT) for k, (e, n, _, _, v) in CROPS.items()}
 ITEMS = {**{k: (e, n, v) for k, (e, n, _, _, v) in CROPS.items()}, **PRODUCTS, **ECROPS}   # 창고에 들어가는 것: key → (이모지, 이름, ★1 판매가)
 ANIMAL_PER_PLOTS = 3          # 동물은 땅 3칸당 1마리
@@ -843,8 +844,11 @@ class FarmDB(EconomyDB):
             fert = min(n, f["tools"].get("fert", 0)) if not animal and f["fert_on"] else 0
             fert_ready = int(now_ts + sec * FERT_MULT)
             for i, slot in enumerate(empty[:n]):
+                at = fert_ready if i < fert else ready
+                if i < en:   # 인챈트 씨앗은 조금 늦게 자란다 (ENCH_SLOW)
+                    at = int(now_ts + (at - now_ts) * ENCH_SLOW)
                 con.execute("INSERT OR REPLACE INTO farm_fields(farm_id, slot, kind, key, ready_ts, ench) VALUES(?,?,?,?,?,?)",
-                            (fid, slot, "animal" if animal else "crop", key, fert_ready if i < fert else ready, 1 if i < en else 0))
+                            (fid, slot, "animal" if animal else "crop", key, at, 1 if i < en else 0))
             if en:
                 self._seed_add(con, fid, key + ENCH, -en)
             if bought and n - en:

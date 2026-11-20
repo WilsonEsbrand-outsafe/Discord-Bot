@@ -105,8 +105,10 @@ ITEMS = {
     "gem_cash":    ("💵", "원석 환전금",     "가지고 있던 원석을 돈으로 바꾼 것 · 사용하면 전부 지갑으로"),
     # 3.8.1 농사 베타 테스트 보상 (11/12 규완님 '3000만원 지갑에 바로 넣지 말고 가방에 넣어줘') — 수량 = 원
     "beta_cash":   ("💵", "농사 베타 보상금", "농사 베타 테스트 보상이에요. 사용하면 전부 지갑으로 들어가요"),
+    # 3.9.1 (11/21 규완님 '베타 테스트 참여 및 아이디어 제공으로 … 가방에 제공') — 수량 = 원
+    "reward_cash": ("💵", "특별 보상금",      "베타 테스트 참여와 아이디어 제공 보상이에요. 사용하면 전부 지갑으로 들어가요"),
 }
-CASH_ITEMS = {"gem_cash", "beta_cash"}   # 수량이 곧 금액(원)인 가방 아이템 — 사용하면 전부 지갑으로
+CASH_ITEMS = {"gem_cash", "beta_cash", "reward_cash"}   # 수량이 곧 금액(원)인 가방 아이템 — 사용하면 전부 지갑으로
 # 가지고만 있으면 효과가 나는 아이템 (가방에 [사용] 버튼이 없다) · 다른 기능이 쓰는 재료
 PASSIVE_ITEMS = {"bait", "bait_gold", "rod_carbon", "rod_pro", "rod_legend", "icebox", "spice",
                  "bow_pro", "windbreaker", "focus", "torch", "potion", "antidote", "dkey", "scroll", "feather",
@@ -260,6 +262,10 @@ ATTEND_BONUS = {7: 50_000, 14: 100_000, 30: 300_000, 50: 500_000, 100: 1_000_000
 # 상위 10% 45억. 출석 · 스카우트 · 훈련 · 직관은 100배 (하루 다 채우면 각각 1~3억 정도), 낚시는 원래 하루 수입이 그
 # 열 배쯤이라 10배로 비슷하게 맞춘다. 돈 범위(성공 · 실패 모두)에 곱한다.
 PAY_384 = {"attend": 100, "scout": 100, "train": 100, "watch": 100, "fish": 10}
+
+# 11/21 규완님: '1146659618790051960 에게 베타 테스트 참여 및 아이디어 제공으로 2억 5천만원 가방에 제공',
+# '725662872327159838 에게 아이디어 제공으로 1억원 가방에 제공' → 💵 특별 보상금 (reward_cash), 한 번만 (gift_once 표)
+GIFTS_391 = (("gift-391-a", 1146659618790051960, 250_000_000), ("gift-391-b", 725662872327159838, 100_000_000))
 
 
 def pay_384(key: str) -> int:
@@ -1749,6 +1755,18 @@ class EconomyDB:
             give_item(con, user_id, item, qty)
             con.execute("UPDATE inventory SET qty = MAX(0, qty) WHERE user_id=? AND item=?", (user_id, item))
             return int(con.execute("SELECT qty FROM inventory WHERE user_id=? AND item=?", (user_id, item)).fetchone()[0])
+        return await self._tx(fn)
+
+    async def give_gifts_once(self, gifts, now_ts: int) -> list[tuple[int, int]]:
+        """(키, 유저, 원) 마다 한 번만 가방에 💵 특별 보상금 → 이번에 준 [(유저, 원)]."""
+        def fn(con):
+            con.execute("CREATE TABLE IF NOT EXISTS gift_once (key TEXT PRIMARY KEY, ts INTEGER NOT NULL)")
+            out = []
+            for key, uid, won in gifts:
+                if con.execute("INSERT OR IGNORE INTO gift_once(key, ts) VALUES(?, ?)", (key, int(now_ts))).rowcount:
+                    give_item(con, uid, "reward_cash", won)
+                    out.append((int(uid), int(won)))
+            return out
         return await self._tx(fn)
 
     async def use_gem_cash(self, user_id: int, item: str = "gem_cash") -> dict:

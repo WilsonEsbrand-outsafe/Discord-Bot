@@ -89,6 +89,10 @@ class Burning(commands.Cog):
     @flush.before_loop
     async def _wait(self):
         await self.bot.wait_until_ready()
+        from services.economy_db import GIFTS_391   # 3.9.1 규완님이 정한 보상금 (한 번만)
+        given = await self.db.give_gifts_once(GIFTS_391, int(time.time()))
+        if given:
+            print(f"[보상] 특별 보상금 가방에 넣음: {given}")
 
     @app_commands.command(name="버닝", description="수능 기념 버닝 이벤트: 효과와 미션 보상")
     async def burning(self, interaction: discord.Interaction):

@@ -223,3 +223,19 @@ def test_farm_cap_and_tool_price():
         assert F.shop_price("drink") == F.TOOLS["drink"][1] * 5 and F.tool_price("fert", False) == F.TOOLS["fert"][1]
     finally:
         release.GUILD.reset(tok)
+
+
+def test_gifts_once_and_enchant_slow():
+    db = edb.EconomyDB()
+    gifts = (("gift-t-a", 39141, 250_000_000), ("gift-t-b", 39142, 100_000_000))
+    assert run(db.give_gifts_once(gifts, int(MID))) == [(39141, 250_000_000), (39142, 100_000_000)]
+    assert run(db.give_gifts_once(gifts, int(MID) + 5)) == []                     # 한 번만
+    con = _con()
+    q = con.execute("SELECT qty FROM inventory WHERE user_id=39141 AND item='reward_cash'").fetchone()[0]
+    con.close()
+    assert q == 250_000_000 and "reward_cash" in edb.CASH_ITEMS
+    r = run(db.use_gem_cash(39141, "reward_cash"))
+    assert r["ok"] and r["amount"] == 250_000_000 and _bal(39141) == 250_000_000
+    assert [g[1:] for g in edb.GIFTS_391] == [(1146659618790051960, 250_000_000), (725662872327159838, 100_000_000)]
+    import services.farm as F
+    assert F.ENCH_SLOW == 1.1 and F.ENCH_MULT == 5

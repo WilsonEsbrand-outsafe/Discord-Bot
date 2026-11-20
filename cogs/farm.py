@@ -227,7 +227,7 @@ def help_embed(user, v382: bool = False, v384: bool = False) -> discord.Embed:
     if v384:
         e.add_field(name="숫돌 주괴와 인챈트", inline=False, value=(
             f"**아이템**에서 숫돌 {F.INGOT_NEED}개로 숫돌 주괴를 만들어요.\n"
-            f"숫돌 주괴 1개로 사 둔 씨앗 {F.ENCH_SEEDS}개를 인챈트하면, 그 씨앗으로 기른 작물이 훨씬 비싸게 팔려요.\n"
+            f"숫돌 주괴 1개로 사 둔 씨앗 {F.ENCH_SEEDS}개를 인챈트하면, 그 씨앗으로 기른 작물이 훨씬 비싸게 팔려요. 대신 조금 늦게 자라요.\n"
             "인챈트한 씨앗은 심을 때 먼저 써요."))
     return e
 
@@ -781,7 +781,7 @@ class ItemView(_Sub):
         if self.v384:
             desc += (f"\n**숫돌 주괴**: 숫돌 {F.INGOT_NEED}개로 만들어요.\n"
                      f"**씨앗 인챈트**: 숫돌 주괴 1개로 사 둔 씨앗 {F.ENCH_SEEDS}개를 인챈트해요. "
-                     "인챈트한 씨앗으로 기른 작물은 훨씬 비싸게 팔려요.")
+                     "인챈트한 씨앗으로 기른 작물은 훨씬 비싸게 팔리는 대신 조금 늦게 자라요.")
         e = ui.card("아이템", (f"{self.note}\n\n" if self.note else "") + desc
                     + f"\n-# 아이템은 {_shop_link(self.user)}에서 사요.", ui.INFO, self.user, SECTION)
         _grid_fields(e, [(n, f"**{f['tools'].get(k, 0):,}**개") for k, (n, _, _) in F.TOOLS.items()]
