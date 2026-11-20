@@ -941,6 +941,18 @@ class PlayerMarketDB:
                     "SELECT MIN(ovr), MAX(ovr), COUNT(*), SUM(ovr < 65) FROM pm_players "
                     "WHERE retired=0 AND player_id NOT LIKE 'AMT_%'").fetchone()
                 print(f"[DB] 선수풀 현역 {n or 0:,}명 · OVR {lo}~{hi} · 65 미만 {under or 0:,}명")
+                # 3.8.4: 지갑 분포 (최근 7일 출석한 사람, 관리자 빼고) — 출석 · 훈련 · 직관 · 낚시 · 스카우트 값 정할 때 참고
+                try:
+                    import time as _t
+                    rows = sorted(int(b) for b, in con.execute(
+                        "SELECT w.balance FROM wallets w JOIN daily_claims d ON d.user_id = w.user_id "
+                        "WHERE d.last_claim_ts > ? AND w.user_id NOT IN (673864024030445569)", (int(_t.time()) - 7 * 86400,)))
+                    if rows:
+                        q = lambda x: rows[min(len(rows) - 1, int(len(rows) * x))]
+                        print(f"[경제] 최근 7일 출석 {len(rows)}명 지갑: 중앙값 {q(0.5):,} / 상위 25% {q(0.75):,} / "
+                              f"상위 10% {q(0.9):,} / 최고 {rows[-1]:,} / 합계 {sum(rows):,}")
+                except Exception as e:
+                    print(f"[경제] 지갑 분포 오류: {e!r}")
         finally:
             con.close()
 
