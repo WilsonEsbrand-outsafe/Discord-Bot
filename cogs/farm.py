@@ -240,12 +240,18 @@ class FarmPanel(discord.ui.View):
                 for k, (e, n, price, sec, sell) in F.CROPS.items()
                 if f is None or f.get("v382") or k not in F.NEW_CROPS_382]
         if f is not None and f.get("bag"):
-            # 3.8.4 동물이 늘어 메뉴(25개)가 넘칠 수 있다 → 사 둔 동물만 보이고, 그래도 넘치면 씨앗 없는 작물(당근 빼고)을 뺀다
+            # 3.8.4 규완님 '심을 작물이나 입양할 동물 고르기 드롭다운을 선택하였을 때, 자신이 보유한 작물이나 동물만 띄워줘'
+            # → 사 둔 씨앗(인챈트 포함)이 있는 작물과 사 둔 동물만. 당근은 씨앗 없이 심는 작물이라 늘 둔다.
             eh = f.get("eseeds", {})
-            pets = [(k, v[1]) for k, v in F.ANIMALS.items() if have.get(k, 0) > 0]
-            if len(opts) + len(pets) > 25:
-                opts = [o for o in opts if not F.CROPS[o.value][2] or have.get(o.value, 0) or eh.get(o.value, 0)]
-            opts += [discord.SelectOption(label=f"{n} 입양", value=k, description=f"사 둔 {n} {have.get(k, 0)}마리") for k, n in pets]
+            opts = []
+            for k, (e, n, price, sec, sell) in F.CROPS.items():
+                q, eq = have.get(k, 0), eh.get(k, 0)
+                if price and not (q or eq):
+                    continue
+                desc = "씨앗 없이 바로 심어요" if not price else f"사 둔 씨앗 {q:,}개" + (f", 인챈트 {eq:,}개" if eq else "")
+                opts.append(discord.SelectOption(label=f"{n} 심기", value=k, description=desc))
+            opts += [discord.SelectOption(label=f"{v[1]} 입양", value=k, description=f"사 둔 {v[1]} {have[k]:,}마리")
+                     for k, v in F.ANIMALS.items() if have.get(k, 0) > 0]
             opts = opts[:25]
         else:
             opts += [discord.SelectOption(label=f"{n} 입양", value=k, description=f"사 둔 {n} {have.get(k, 0)}마리")
