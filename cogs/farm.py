@@ -24,6 +24,9 @@ ROW = 6   # 땅 그림 한 줄 칸 수
 SHOP_NAME = "농사 상점"
 STICKY_WAIT = 3     # 농장 스레드에 글이 올라오면 이만큼(초) 조용해진 뒤 밭을 맨 밑으로 다시 올린다
 STICKY_SCAN = 50    # 지울 옛 밭 화면을 찾는 최근 글 수
+LIVE_EVERY = 10     # 3.8.4 규완님 '새로고침을 자동으로 계속, 메시지를 다시 보내는 방식 말고' — 이만큼(초)마다 같은 글을 고친다
+LIVE_FOR = 600      # 마지막으로 누른 뒤 이만큼(초) 동안만 (아무도 안 보는 농장까지 계속 고치지 않게)
+LIVE_NOTE = 60      # 버튼을 누른 결과 문구는 이만큼(초) 동안 남겨 둔다
 SHOPS: dict[int, int] = {}   # 서버 → 농사 상점 스레드 (farm_shops 표를 읽어 둔 것)
 SHOP_MSGS: dict[int, tuple[Optional[int], int]] = {}   # 서버 → (상점 글, 상점 화면 버전)
 
@@ -229,6 +232,13 @@ def help_embed(user, v382: bool = False, v384: bool = False) -> discord.Embed:
     return e
 
 
+def _replant_label(f: Optional[dict]) -> str:
+    k = f.get("last_plant") if f else None
+    if not k:
+        return "다시 심기"
+    return f"다시 입양: {F.ANIMALS[k][1]}" if k in F.ANIMALS else f"다시 심기: {F.CROPS[k][1]}"
+
+
 # ───────────── 농장 화면 (봇이 재시작해도 눌리는 버튼) ─────────────
 class FarmPanel(discord.ui.View):
     def __init__(self, cog: "Farm", f: Optional[dict] = None):
@@ -275,6 +285,7 @@ class FarmPanel(discord.ui.View):
                 ("store", "창고", discord.ButtonStyle.primary, 2, self._store),
                 ("chest", f"상자 ({chests})" if chests else "상자", discord.ButtonStyle.primary, 2, self._chest),
                 ("refresh", "새로고침", discord.ButtonStyle.secondary, 2, self._reload),
+                ("replant", _replant_label(f), discord.ButtonStyle.success, 2, self._replant),
                 ("expand", f"땅 넓히기 ({cost:,} 코인)" if cost else "땅 넓히기", discord.ButtonStyle.secondary, 3, self._expand),
                 ("sickle", "낫 강화", discord.ButtonStyle.secondary, 3, self._sickle),
                 ("items", "아이템", discord.ButtonStyle.secondary, 3, self._items),
@@ -288,7 +299,13 @@ class FarmPanel(discord.ui.View):
                 ("drink", f"에너지 음료 ({drinks})" if drinks else "에너지 음료", discord.ButtonStyle.secondary, 4, self._drink)):
             if cid in ("name", "drink") and f is not None and not f.get("v382"):   # 3.8.2 공개 전엔 테스트 서버 농장만
                 continue
-            b = discord.ui.Button(custom_id=f"farm:{cid}", label=label, style=style, row=row)
+            # 3.8.4 (보관함을 합친 농장): 화면이 저절로 새로고침되니 [새로고침] 자리에 [다시 심기]. 재시작용 화면(f=None)은 새로고침만
+            # (다시 심기 버튼은 ReplantButton 이 따로 받는다 — 한 줄에 버튼 5개까지라 같이 못 넣는다)
+            live = f is not None and f.get("bag")
+            if (cid == "refresh" and live) or (cid == "replant" and not live):
+                continue
+            b = discord.ui.Button(custom_id=f"farm:{cid}", label=label, style=style, row=row,
+                                  disabled=cid == "replant" and not f.get("last_plant"))
             b.callback = cb
             self.add_item(b)
 
@@ -319,7 +336,17 @@ class FarmPanel(discord.ui.View):
         return await self.cog.db.thread_farm(interaction.channel_id) or 0
 
     async def _plant(self, interaction: discord.Interaction):
-        key, fid, now = interaction.data["values"][0], await self._fid(interaction), int(time.time())
+        await self._plant_key(interaction, interaction.data["values"][0])
+
+    async def _replant(self, interaction: discord.Interaction):
+        """3.8.4 규완님 '최근에 심은/입양한 작물/동물을 다시 심을 수 있는 버튼'."""
+        f = await self.cog.db.get(await self._fid(interaction), int(time.time()))
+        if not f or not f.get("last_plant"):
+            return await interaction.response.send_message("아직 심은 작물이나 입양한 동물이 없어요.", ephemeral=True)
+        await self._plant_key(interaction, f["last_plant"])
+
+    async def _plant_key(self, interaction: discord.Interaction, key: str):
+        fid, now = await self._fid(interaction), int(time.time())
         r = await self.cog.db.plant(interaction.user.id, fid, key, now)
         if not r["ok"]:
             what = f"사 둔 {_name(key)}이(가)" if key in F.ANIMALS else f"{_name(key)} 씨앗이"
@@ -590,6 +617,7 @@ class _Sub(discord.ui.View):
         await interaction.response.edit_message(embed=self.embed(f), view=self)
         try:
             await self.panel.edit(embed=panel_embed(self.user, f, now, panel_note), view=FarmPanel(self.cog, f))
+            self.cog.track(self.panel, self.fid, panel_note)
             await self.cog.sync_field(self.panel.channel, f)
         except discord.HTTPException:
             pass
@@ -1416,12 +1444,25 @@ class FarmPick(discord.ui.View):
         await self.cog.open(interaction, self.user, int(interaction.data["values"][0]))
 
 
+class ReplantButton(FarmPanel):
+    """재시작 전에 올라간 농장 화면의 [다시 심기] 버튼을 받는다 (FarmPanel(None) 에는 자리가 없어서 따로)."""
+
+    def __init__(self, cog: "Farm"):
+        discord.ui.View.__init__(self, timeout=None)
+        self.cog = cog
+        b = discord.ui.Button(custom_id="farm:replant", label="다시 심기", style=discord.ButtonStyle.success)
+        b.callback = self._replant
+        self.add_item(b)
+
+
 class Farm(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = F.FarmDB()
         self.panel = FarmPanel(self)
         bot.add_view(self.panel)   # 재시작 전에 올라간 농장 화면의 버튼도 받는다
+        bot.add_view(ReplantButton(self))
+        self._live: dict[int, dict] = {}   # 3.8.4 저절로 새로고침하는 농장 화면: 스레드 → {msg, fid, until, note, sent, field}
         bot.add_view(FieldView(self))   # 큰 밭 그림의 칸 버튼도 (3.8.2)
         self.shop = ShopPanel(self)
         bot.add_view(self.shop)    # 농사 상점 버튼도
@@ -1438,8 +1479,10 @@ class Farm(commands.Cog):
         self.shop_loop.start()
         self.beta_loop.start()
         self.purse_loop.start()
+        self.live_loop.start()
 
     def cog_unload(self):
+        self.live_loop.cancel()
         self.panel.stop()
         self.shop.stop()
         self.shop_loop.cancel()
@@ -1665,7 +1708,62 @@ class Farm(commands.Cog):
         now = int(time.time())
         f = await self.db.get(fid, now)
         await interaction.response.edit_message(embed=panel_embed(interaction.user, f, now, note), view=FarmPanel(self, f))
+        self.track(interaction.message, fid, note)
         await self.sync_field(interaction.channel, f)
+
+    # ───────────── 3.8.4 저절로 새로고침 (같은 글을 고친다) ─────────────
+    def track(self, msg, fid: int, note: Optional[str] = None):
+        """농장 화면 글을 저절로 새로고침할 목록에 넣는다 (누를 때마다 LIVE_FOR 연장). 공개 전엔 테스트 서버만."""
+        th = getattr(msg, "channel", None)
+        if msg is None or th is None or not release.preview_384(getattr(getattr(th, "guild", None), "id", None)):
+            return
+        e = self._live.get(th.id)
+        if e is None or e.get("msg") is None or e["msg"].id != msg.id:
+            e = {"field": None}
+        e.update(msg=msg, fid=int(fid), until=time.time() + LIVE_FOR)
+        if note is not None:
+            e.update(note=note, note_ts=time.time())
+        self._live[th.id] = e
+
+    @tasks.loop(seconds=LIVE_EVERY)
+    async def live_loop(self):
+        now = int(time.time())
+        for tid, e in list(self._live.items()):
+            if e["until"] < now:
+                self._live.pop(tid, None)
+                continue
+            try:
+                await self._live_one(e, now)
+            except discord.NotFound:
+                self._live.pop(tid, None)
+            except Exception as ex:   # 한 농장이 안 돼도 나머지는 계속
+                print(f"[농사] {tid} 자동 새로고침 오류: {type(ex).__name__}: {ex}")
+
+    async def _live_one(self, e: dict, now: int):
+        f = await self.db.get(e["fid"], now)
+        msg = e["msg"]
+        if f is None:   # 농장이 없어졌다
+            e["until"] = 0
+            return
+        th = msg.channel
+        owner = th.guild.get_member(f["owner"]) or self.bot.get_user(f["owner"]) or await self.bot.fetch_user(f["owner"])
+        note = e.get("note", "") if now - e.get("note_ts", 0) < LIVE_NOTE else ""
+        em = panel_embed(owner, f, now, note)
+        d = {k: v for k, v in em.to_dict().items() if k != "timestamp"}
+        if d != e.get("sent"):
+            await msg.edit(embed=em, view=FarmPanel(self, f))
+            e["sent"] = d
+        if self.big(th):
+            text = field_text(f)
+            if text != e.get("field_text"):
+                m = e.get("field") or await self._find(th, _is_field)
+                if m is not None:
+                    await m.edit(content=text, view=FieldView(self, f))
+                    e["field"], e["field_text"] = m, text
+
+    @live_loop.before_loop
+    async def _before_live(self):
+        await self.bot.wait_until_ready()
 
     @staticmethod
     def big(channel) -> bool:
@@ -1704,6 +1802,7 @@ class Farm(commands.Cog):
         owner = th.guild.get_member(f["owner"]) or await self.bot.fetch_user(f["owner"])
         try:
             await m.edit(embed=panel_embed(owner, f, now, note), view=FarmPanel(self, f))
+            self.track(m, fid, note)
         except discord.HTTPException:
             pass
 
@@ -1766,7 +1865,8 @@ class Farm(commands.Cog):
             owner = th.guild.get_member(f["owner"]) or await self.bot.fetch_user(f["owner"])
             if big:
                 await th.send(content=field_text(f), view=FieldView(self, f))
-            await th.send(embed=panel_embed(owner, f, now), view=FarmPanel(self, f))
+            sent = await th.send(embed=panel_embed(owner, f, now), view=FarmPanel(self, f))
+            self.track(sent, fid, "")
             for m in old:
                 try:
                     await m.delete()
