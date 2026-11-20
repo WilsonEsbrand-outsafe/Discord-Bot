@@ -192,3 +192,34 @@ def test_election_restart_at_release():
         assert s["no"] == L.FIRST_NO and s["my_vote"] is None and sum(s["votes"]) == 0
         assert await db.restart(rel + 60) is None                                  # 한 번만
     run(flow())
+
+
+def test_farm_cap_and_tool_price():
+    import services.farm as F
+    db = F.FarmDB()
+    U, O = 39131, 39132
+    t = MID
+    L.TESTERS.clear()
+    L.TESTERS.add(U)
+    try:
+        assert F.farm_cap(U, t) == 7 and F.farm_cap(O, t) is None                  # 공개 전엔 테스트 서버 사람만
+        con = _con()
+        for i in range(7):
+            con.execute("INSERT INTO farms(owner, land, energy, energy_ts, plots, created_ts) VALUES(?,?,?,?,?,?)",
+                        (U, "plain", 100, int(t), 6, int(t) + i))
+        cur = con.execute("INSERT INTO farms(owner, land, energy, energy_ts, plots, created_ts) VALUES(?,?,?,?,?,?)",
+                          (O, "plain", 100, int(t), 6, int(t)))
+        other = cur.lastrowid
+        mine = con.execute("SELECT id FROM farms WHERE owner=? ORDER BY id LIMIT 1", (U,)).fetchone()[0]
+        con.commit(); con.close()
+        r = run(db.create_more(U, "plain", mine, int(t)))
+        assert not r["ok"] and r["reason"] == "max" and r["max"] == 7
+        r = run(db.offer_farm(U, other, 10, int(t), mine, auto=False))
+        assert not r["ok"] and r["reason"] == "max"
+    finally:
+        L.TESTERS.clear()
+    tok = _in(release.TEST_GUILD)
+    try:
+        assert F.shop_price("drink") == F.TOOLS["drink"][1] * 5 and F.tool_price("fert", False) == F.TOOLS["fert"][1]
+    finally:
+        release.GUILD.reset(tok)

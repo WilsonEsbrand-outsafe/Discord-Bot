@@ -7,6 +7,7 @@
 import random
 from typing import Optional
 
+import release
 from services import burning, lobby
 from services.economy_db import EconomyDB, _kst_day, give_item
 
@@ -94,12 +95,21 @@ FEED_MULT = 0.5               # 동물 사료: 남은 생산 시간 × 0.5
 SCARE_SEC, SCARE_BONUS = 600, 0.15   # 허수아비: 10분 · ★2 확률 +15%p (세워 둔 동안 또 세우면 10분 늘어난다)
 
 
+TOOL_PRICE_391 = 5   # 3.9.1 (11/21 규완님 '농사 아이템 코인 가격도 좀 높여줘') — 상점 아이템 값 5배 (배수는 내 기본값)
+
+
+def tool_price(key: str, v391: Optional[bool] = None) -> int:
+    """상점 아이템 값 (코인). v391 을 안 주면 지금 상호작용 서버로 본다 (release.ctx_384)."""
+    v = release.ctx_384() if v391 is None else v391
+    return TOOLS[key][1] * (TOOL_PRICE_391 if v else 1)
+
+
 def shop_price(key: str) -> Optional[int]:
     """농사 상점에서 파는 값 (코인). 무료 씨앗(당근)은 팔지 않는다 — 씨앗 없이 바로 심는다. 모르는 것은 None."""
     if key in CROPS:
         return CROPS[key][2] or None
     if key in TOOLS:
-        return TOOLS[key][1]
+        return tool_price(key)
     return ANIMALS[key][2] if key in ANIMALS else None
 ANIMAL_REFUND = 0.5           # 동물을 내보내면 입양 값의 절반
 NAME_MAX = 20                 # 농장 이름 글자 수
@@ -233,6 +243,20 @@ FARM_ASK = (1.5, 5.0)         # 주인이 정할 수 있는 적정 인수 금액
 FARM_OFFER_HOURS = 24         # 인수 제안은 24시간 뒤 만료
 FARM_WORTH_MIN = 1_000        # 농장 가치 최소 (코인) — 막 연 농장도 적정 인수 금액이 너무 낮지 않게
 NEW_FARM_COST = 1_000_000     # 11/12 규완님 '100만 코인 모으면 밭 하나 더' — 농장 하나의 코인으로 새 농장(밭)을 하나 더 연다
+FARM_MAX_391 = 7              # 3.9.1 (11/21 규완님 '농장 개수 제한 7개로') — 새 밭 · 인수로 더 늘릴 수 없다 (이미 더 가진 건 그대로)
+
+
+def farm_cap(uid: int, now_ts: float) -> Optional[int]:
+    """한 사람이 가질 수 있는 농장 수 (3.9.1 공개 전엔 테스트 서버 사람만 7개, 아니면 제한 없음 = None)."""
+    return FARM_MAX_391 if release.released_384(now_ts) or int(uid) in lobby.TESTERS else None
+
+
+def _over_cap(con, uid: int, now_ts: float) -> Optional[dict]:
+    cap = farm_cap(uid, now_ts)
+    if cap is None:
+        return None
+    n = int(con.execute("SELECT COUNT(*) FROM farms WHERE owner=?", (int(uid),)).fetchone()[0])
+    return {"ok": False, "reason": "max", "max": cap} if n >= cap else None
 # 11/12 규완님: 정식 출시(3.8.1 공개) 때 베타 농사 기록은 지우고, 베타 참여자에게
 # '베타 농장 가치의 50% + 금상자 은상자 나무상자 각각 한 개, 축구 봇 돈 3000만원' (beta_reset)
 BETA_RATE = 0.5                                      # 사람마다 베타 농장 가치(가진 농장 전부 + 맡아 둔 코인) × → 새 농장 코인
@@ -655,6 +679,9 @@ class FarmDB(EconomyDB):
             p = con.execute("SELECT owner FROM farms WHERE id=?", (int(pay_fid),)).fetchone()
             if not p or int(p[0]) != int(uid):
                 return {"ok": False, "reason": "pay"}
+            full = _over_cap(con, uid, now_ts)   # 3.9.1 농장은 7개까지
+            if full:
+                return full
             p = (p[0], self._coins(con, int(pay_fid)))
             if int(p[1]) < NEW_FARM_COST:
                 return {"ok": False, "reason": "coins", "cost": NEW_FARM_COST, "have": int(p[1])}
@@ -1185,7 +1212,7 @@ class FarmDB(EconomyDB):
                 return {"ok": False, "reason": "mine"}
             if amount <= 0:
                 return {"ok": False, "reason": "amount"}
-            bad = self._pay_check(con, fid, int(buyer), int(amount), pay_fid)
+            bad = _over_cap(con, buyer, now_ts) or self._pay_check(con, fid, int(buyer), int(amount), pay_fid)   # 3.9.1 7개까지
             if bad:
                 return bad
             if auto and amount >= f["fair"]:
@@ -1237,7 +1264,7 @@ class FarmDB(EconomyDB):
             if not accept:
                 con.execute("UPDATE farm_offers SET status='rejected' WHERE id=?", (int(offer_id),))
                 return {"ok": True, "accepted": False, **base}
-            t = self._farm_transfer(con, fid, buyer, int(owner), amount, r[6])
+            t = _over_cap(con, buyer, now_ts) or self._farm_transfer(con, fid, buyer, int(owner), amount, r[6])   # 3.9.1 7개까지
             if not t["ok"]:
                 con.execute("UPDATE farm_offers SET status='closed' WHERE id=?", (int(offer_id),))
                 return {**t, **base, "ok": False}

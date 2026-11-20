@@ -958,6 +958,8 @@ def _offer_fail(r: dict) -> str:
         return f"낼 농장의 코인이 모자라요.\n필요한 코인 **{r.get('cost', 0):,}**\n가진 코인 **{r.get('have', 0):,}**"
     if r["reason"] == "pay":
         return "인수 금액은 내 농장의 코인으로 내야 해요."
+    if r["reason"] == "max":   # 3.9.1
+        return f"농장은 한 사람이 {r['max']}개까지 가질 수 있어요."
     return _OFFER_FAIL.get(r["reason"], "인수할 수 없어요.")
 
 
@@ -1146,7 +1148,7 @@ SHOP_VER = 5   # 상점 화면을 바꾸면 올린다 — 이미 올라간 상�
 
 def shop_ver(guild_id) -> int:
     """서버의 상점 화면 버전 — 3.8.2 새 작물은 공개 전엔 테스트 서버 상점에만 (공개되면 다른 서버 상점 글도 고친다)."""
-    return 7 if release.preview_384(guild_id) else 6 if release.preview_382(guild_id) else SHOP_VER
+    return 8 if release.preview_384(guild_id) else 6 if release.preview_382(guild_id) else SHOP_VER   # 8: 3.9.1 아이템 값
 
 
 def _animals_for(guild_id) -> list[str]:
@@ -1172,8 +1174,8 @@ def shop_embeds(guild_id=None) -> list[discord.Embed]:
     for k in _animals_for(guild_id):
         animals.add_field(name=F.ANIMALS[k][1], value=f"{F.ANIMALS[k][2]:,} 코인")
     tools = discord.Embed(title="아이템", description="농장 화면의 **아이템**에서 써요.", color=ui.GOLD)
-    for n, price, what in F.TOOLS.values():
-        tools.add_field(name=n, value=f"**{price:,} 코인**\n{what}")
+    for k, (n, _, what) in F.TOOLS.items():
+        tools.add_field(name=n, value=f"**{F.tool_price(k, release.preview_384(guild_id)):,} 코인**\n{what}")   # 3.9.1 5배
     return [head, seeds, animals, tools]
 
 
@@ -1306,8 +1308,8 @@ class BuyView(discord.ui.View):
             info = [f"값 **{price:,} 코인**", f"만드는 것 **{F.PRODUCTS[prod][1]}**",
                     f"{F.PRODUCTS[prod][1]} 하나를 팔면 **{F.PRODUCTS[prod][2]:,} 코인**", f"{_dur(sec)}마다 하나씩 만들어요"]
         elif k in F.TOOLS:
-            n, price, what = F.TOOLS[k]
-            info = [f"값 **{price:,} 코인**", f"{what}."]
+            n, _, what = F.TOOLS[k]
+            info = [f"값 **{F.tool_price(k):,} 코인**", f"{what}."]
         else:
             _, n, price, sec, sell = F.CROPS[k]
             info = [f"값 **{price:,} 코인**", f"다 자라는 데 **{_dur(sec)}**", f"다 자라면 팔 때 **{sell:,} 코인**"]
@@ -1412,7 +1414,8 @@ class LandPick(discord.ui.View):
         r = await self.cog.db.create_more(self.user.id, self.pick, self.pay_fid, now)
         if not r["ok"]:
             msg = (f"코인이 모자라요.\n필요한 코인 **{r.get('cost', 0):,}**\n가진 코인 **{r.get('have', 0):,}**"
-                   if r["reason"] == "coins" else "내 농장이 아니에요.")
+                   if r["reason"] == "coins" else
+                   f"농장은 한 사람이 {r['max']}개까지 가질 수 있어요." if r["reason"] == "max" else "내 농장이 아니에요.")
             return await interaction.response.edit_message(embed=ui.card("새 밭 만들기", msg, ui.LOSE, self.user, SECTION), view=None)
         self.stop()
         _, n, desc, _ = F.LANDS[self.pick]
