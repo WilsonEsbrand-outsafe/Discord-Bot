@@ -1,16 +1,16 @@
-# services/lobby.py — /로비 (3.8.2, 테스트 서버 먼저): 일주일에 한 번 열리는 축구 봇 대선
-# 11/16 규완님: '대선후보한테 로비해주는 그런 느낌' · '일주일에 한 번' · '공약 갯수를 늘리고' ·
-#              '사건이 하루하루 혹은 몇 시간마다 뉴스로 터져도 ㄱㅊ을듯'
-# 당마다 후보 한 명(모두 가상 인물), 후보마다 공약 5개. 유저는 축구 봇 돈으로 후보에게 로비한다 → 로비가 몰릴수록 지지율이 오른다.
-# 몇 시간마다 사건 뉴스(토론 · 스캔들 · 지지 선언 …)가 터져서 지지율이 오르내린다.
-# 일요일 21:00 (KST) 마감: 지지율 + 선거일 변수로 당선자 결정. 당선자에게 로비한 사람마다 LOBBY_CAUGHT 확률로 '로비 적발' — 원금 · 배당 없음.
-# 당선 공약은 다음 선거가 끝날 때까지 적용된다 (공개 전엔 테스트 서버 사람만 — TESTERS).
-# 11/17 규완님 '선거를 방식을 /경마나 그런 느낌으로 그냥 바꾸자' → 후보마다 배당(배수)이 붙고, 로비할 때 배당이 정해진다.
-#   당선되면 그 후보에게 로비한 돈 × 그때 배당을 받는다 (낙선 후보에게 넣은 돈은 잃는다). 로비는 여전히 지지율도 올린다.
-# 11/17 규완님 '그런 이벤트들 추가해줘' → 뉴스 대신 가끔 합당 · 사퇴 · 자격 박탈. 빠진 후보에게 로비한 돈은 돌려준다.
-# 11/17 규완님 '/로비 -> 여러 사건 -> 개표 -> 임기 이렇게. 임기 도중 사건이 일어나서 문제가 생길 수도 있게'
-#   → 당선자는 다음 선거 개표까지 임기. 임기 중 가끔 사건이 터져 공약 하나가 멈추거나, 드물게 탄핵돼 공약이 전부 멈춘다.
+# services/lobby.py — /로비 (3.8.4, 테스트 서버 먼저): 일주일에 한 번 열리는 축구 봇 대선
+# 11/21 규완님 '/로비를 초안으로 되돌리기' → 3.8.2 의 첫 /로비 (PR #146, 일주일마다 대선 · 사건 뉴스 · 당선 공약) 로 되돌리고,
+# 그 위에 규완님이 적은 추가 구성:
+#   - 현실처럼 다당제지만 양당제 양상: 큰 두 당이 표의 85% 쯤을 가져가고, 나머지 3~4당은 동정표 · 버리는 표.
+#     후보가 진짜 능력 있으면(돌풍) 작은 당도 뚫을 수 있다.
+#   - 축구 봇만의 대선 15번을 먼저 돌려 둔 기록이 있고, 플레이어는 제16회부터. 지지 기반은 그 기록에서 나온다.
+#     여러 번 집권한 당과 이번 대선 당선 확률을 보여 준다.
+#   - 누가 당선될지 베팅 (당선 확률로 정한 배당, 베팅할 때 고정).
+#   - 투표: 사람마다 기본 1표(무료), 100만원에 1표씩 더, 최대 100표. 지지 후보는 한 명.
+#     지지한 후보가 당선되면 혜택(당선 공약), 그 후보에게 표를 가장 많이 준 사람은 혜택이 두 배.
+#   - 당선된 대통령은 임기 중 하는 일(사건 뉴스)에 따라 국정 지지율이 오르내리고, 너무 떨어지면 탄핵 (공약이 멈춘다).
 # 수치는 전부 내 기본값.
+import calendar
 import json
 import random
 from typing import Optional
@@ -18,34 +18,52 @@ from typing import Optional
 import release
 from services.economy_db import EconomyDB
 
-LOBBY_MIN = 10_000            # 한 번에 넣는 최소 로비 금액
-LOBBY_CAUGHT = 0.05           # 당선자에게 로비한 사람이 적발될 확률
-PLEDGES_N = 5                 # 11/17 규완님 '후보별 공약 개수를 늘려주고' (3 → 5)
-RATE_RANGE = (40, 95)         # 11/17 규완님 '공약 이행률' — 당선되면 공약마다 이 확률로 지킨다 (지킨 공약만 적용)
-LOBBY_WEIGHT = 25.0           # 지지율 = 기본 인기 + 사건 + 로비 몫(전체 로비 중 그 후보 몫) × 이것
-ELECTION_SWING = 15.0         # 선거일 변수: 후보마다 ± 이만큼 (지지율 점수)
-NEWS_GAP = (2 * 3600, 4 * 3600)   # 사건 뉴스 간격 (2~4시간)
-SNAP_GAP = 3600                   # 지지율 그래프 기록 간격 (뉴스 · 로비 때는 따로 남긴다)
-SNAP_MERGE = 600                  # 이 안에 또 기록하면 새 점 대신 마지막 점을 고친다 (로비가 몰려도 점이 너무 많지 않게)
+# ───────────── 회차 · 일정 ─────────────
+HISTORY_N = 15                    # 미리 돌려 둔 대선 수 (제1회 ~ 제15회)
+HISTORY_SEED = 384                # 기록은 늘 같게
+FIRST_NO = HISTORY_N + 1          # 플레이어가 참여하는 첫 대선
+# 11/21 규완님 공지 '11월 넷째 주 대선 예정' → 제16회 개표는 11월 29일 (일) 21:00 KST, 그다음부터 일요일 21:00 마다
+FIRST_CLOSE = calendar.timegm((2026, 11, 29, 12, 0, 0))
 CLOSE_WDAY, CLOSE_HOUR = 6, 21    # 일요일 21:00 KST 마감 (월요일 = 0)
-ODDS_MARGIN = 0.9                 # 배당 = 이것 / 당선 확률
-ODDS_RANGE = (1.5, 50.0)          # 배당 최소 · 최대 (1배 근처는 안 나오게)
-ODDS_SIMS = 3000                  # 당선 확률 계산할 때 선거를 몇 번 돌려 보는지
-DROP_CHANCE = 0.12                # 뉴스 차례마다 합당 · 사퇴 사건이 날 확률
-DROP_KEEP = 2                     # 후보가 이만큼 남으면 더 빠지지 않는다
-TERM_GAP = (12 * 3600, 24 * 3600)   # 임기 중 사건을 굴리는 간격
-TERM_TROUBLE = 0.35               # 굴릴 때마다 문제가 터질 확률
-TERM_IMPEACH = 0.15               # 터진 문제가 탄핵일 확률 (나머지는 공약 하나 중단)
-MERGE_GIVE = 0.7                  # 합당하면 빠지는 후보 인기(기본 + 사건)의 이만큼이 받는 후보에게
 
-# 가상 인물 이름 · 정당 (실제 정치인 · 정당 이름은 쓰지 않는다)
-# 11/17 규완님 '후보 이름을 좀 바꿔줘' → '이름을 유명 연예인 말고 다르게' — 흔치 않은 성 + 이름으로 지어낸 이름
+# ───────────── 투표 · 베팅 ─────────────
+VOTE_FREE = 1                     # 사람마다 기본 1표
+VOTE_PRICE = 1_000_000            # 그다음부터 100만원에 1표
+VOTE_MAX = 100                    # 한 사람 최대 100표
+BET_MIN = 10_000                  # 한 번에 거는 최소 베팅
+BET_CAUGHT = 0.05                 # 당선자에게 건 사람이 '로비 적발'될 확률 (첫 /로비 그대로) — 당첨금 없음
+ODDS_MARGIN = 0.9                 # 배당 = 이것 / 당선 확률
+ODDS_RANGE = (1.2, 50.0)          # 배당 최소 · 최대
+ODDS_SIMS = 2000                  # 당선 확률을 계산할 때 선거일을 몇 번 돌려 보는지
+TOP_FACTOR = 2                    # 당선자에게 표를 가장 많이 준 사람: 공약 효과 두 배
+
+# ───────────── 지지율 ─────────────
+MAJOR_SHARE = 85.0                # 큰 두 당이 가져가는 표 (%)
+MINOR_RUN = (3, 4)                # 작은 당 후보 수
+ABILITY_W = 0.8                   # 능력(1~10) 한 칸마다 지지율 점수
+STORM_P = 0.08                    # 작은 당 후보 하나가 돌풍을 일으킬 확률
+STORM_BONUS = (14, 22)            # 돌풍 후보 점수
+INCUMBENT = 2.0                   # 지난번 이긴 당은 이만큼 깎인다 (정권 심판)
+VOTE_WEIGHT = 20.0                # 플레이어 표: 그 후보 몫 × 이것 (점수)
+VOTE_FLOOR = 100                  # 표가 적을 때 몇 표로 몇 점이 휙 바뀌지 않게 (전체 표가 이보다 적으면 이것으로 나눈다)
+SWING = 9.0                       # 선거일 변수: 후보마다 ± 이만큼 (점수)
+NEWS_GAP = (2 * 3600, 4 * 3600)   # 선거운동 사건 뉴스 간격 (2~4시간)
+
+# ───────────── 임기 ─────────────
+TERM_GAP = (3 * 3600, 6 * 3600)   # 임기 중 뉴스 간격
+TERM_START = 55.0                 # 국정 지지율 처음 값
+TERM_DELTA = (3, 10)              # 뉴스 한 번에 오르내리는 폭
+IMPEACH_AT = 20.0                 # 국정 지지율이 이 아래로 떨어지면 탄핵
+
+# 가상 인물 이름 · 정당 (실제 정치인 이름은 쓰지 않는다)
+# 11/17 규완님 '이름을 유명 연예인 말고 다르게' — 흔치 않은 성 + 이름으로 지어낸 이름
 NAMES = ("탁서율", "변하진", "길도운", "봉채이", "예소담", "방시온", "국태린", "소연우", "피은재", "여다솔",
          "함주호", "모가윤", "어지환", "맹서후", "추다빈", "편리안", "용하람", "남궁태오")
-# 11/17 규완님: '당 이름을 우리나라 당이랑 비슷하게' — 실제 당 이름을 비튼 것 (그대로 쓰지는 않는다)
-PARTIES = ("더불어골대당", "국민의골", "조국축구당", "개혁슈팅당", "진보킥당", "정의패스당")
-CANDIDATES_N = len(PARTIES)   # 11/17 규완님 '후보가 4개 말고 있는 당 다로' — 당마다 후보 한 명
-_OLD_PARTIES = dict(zip(("골대당", "잔디당", "그물당", "코너킥당", "오프사이드당", "하프라인당"), PARTIES))
+# 11/17 규완님 '당 이름을 우리나라 당이랑 비슷하게' — 실제 당 이름을 비튼 것
+MAJORS = ("더불어골대당", "국민의골")
+MINORS = ("조국축구당", "개혁슈팅당", "진보킥당", "정의패스당")
+PARTIES = MAJORS + MINORS
+PLEDGES_N = 3                     # 첫 /로비 그대로 후보마다 공약 3개
 
 # 공약: key → (설명 틀, 세기 후보) — 세기는 배수에 더하는 값 (0.3 = 30% 더)
 PLEDGES = {
@@ -60,55 +78,50 @@ PLEDGES = {
     "item_cost": ("아이템상점 값 {p}% 할인", (0.1, 0.2)),
 }
 
-# 사건 뉴스: (틀, 지지율 변화 최소, 최대) — {n} = 후보 이름
+# 선거운동 사건 뉴스: (틀, 점수 변화 최소, 최대) — {n} = 후보 이름
 NEWS_GOOD = (
-    ("{n} 후보, TV 토론에서 압승했다는 평가", 4, 8),
-    ("{n} 후보, 유명 축구 선수의 공개 지지를 받아", 3, 7),
-    ("{n} 후보의 길거리 유세에 구름 인파", 2, 5),
-    ("{n} 후보, 공약 발표회에서 박수 세례", 2, 5),
-    ("{n} 후보, 키코 인형 탈을 쓰고 깜짝 등장", 1, 4),
-    ("{n} 후보, 여론조사 1위 단체의 지지 선언", 3, 6),
+    ("{n} 후보, TV 토론에서 압승했다는 평가", 2, 4),
+    ("{n} 후보, 유명 축구 선수의 공개 지지를 받아", 1, 4),
+    ("{n} 후보의 길거리 유세에 구름 인파", 1, 3),
+    ("{n} 후보, 공약 발표회에서 박수 세례", 1, 3),
+    ("{n} 후보, 키코 인형 탈을 쓰고 깜짝 등장", 1, 2),
+    ("{n} 후보, 여론조사 1위 단체의 지지 선언", 2, 3),
 )
 NEWS_BAD = (
-    ("{n} 후보, 과거 발언 논란으로 사과", 3, 7),
-    ("{n} 후보 캠프, 회계 의혹 보도", 4, 8),
-    ("{n} 후보, TV 토론에서 말실수 연발", 2, 6),
-    ("{n} 후보, 유세 도중 넘어져 화제", 1, 3),
-    ("{n} 후보, 공약 베끼기 논란", 2, 5),
-    ("{n} 후보 측근, 로비 연루 의혹으로 조사", 3, 7),
+    ("{n} 후보, 과거 발언 논란으로 사과", 1, 4),
+    ("{n} 후보 캠프, 회계 의혹 보도", 2, 4),
+    ("{n} 후보, TV 토론에서 말실수 연발", 1, 3),
+    ("{n} 후보, 유세 도중 넘어져 화제", 1, 2),
+    ("{n} 후보, 공약 베끼기 논란", 1, 3),
+    ("{n} 후보 측근, 로비 연루 의혹으로 조사", 2, 4),
 )
+# 임기 중 뉴스: {n} = 대통령, {p} = 공약 하나
+TERM_GOOD = ("{n} 대통령, '{p}' 공약 예정보다 빨리 시행", "{n} 대통령, 축구 봇 경제 살리기 대책 발표에 호평",
+             "{n} 대통령, 국가대표 경기 직관 응원으로 화제", "{n} 대통령, 야당 대표와 손잡고 민생 법안 통과",
+             "{n} 대통령, 재난 현장 신속 대응에 박수")
+TERM_BAD = ("{n} 대통령 측근 비리 의혹 보도", "{n} 대통령, '{p}' 공약 예산 낭비 논란",
+            "{n} 대통령, 기자회견 막말 논란", "{n} 대통령 가족 특혜 의혹 확산",
+            "{n} 대통령, 로비 스캔들 연루 의혹으로 국회 조사")
+IMPEACH_TEXT = "{n} 대통령 탄핵 소추안 가결. 국정 지지율 {a}%. 남은 임기 동안 모든 공약이 멈춥니다"
 
-# 합당 · 사퇴 사건: {n} = 빠지는 후보, {m} = 합당해서 받는 후보
-DROP_MERGE = ("{n} 후보, {m} 후보와 전격 합당. {n} 후보는 후보직을 내려놓습니다",
-              "{n} 후보, {m} 후보로 단일화 합의하고 사퇴")
-DROP_QUIT = ("{n} 후보, 지지율 부진 끝에 전격 사퇴", "{n} 후보, 건강 문제로 후보직 사퇴")
-DROP_BAN = ("{n} 후보, 선거법 위반으로 후보 자격 박탈", "{n} 후보, 서류 위조가 드러나 후보 등록 무효")
-
-# 임기 중 사건: {n} = 당선자, {p} = 멈추는 공약
-TERM_SUSPEND = ("{n} 대통령, '{p}' 예산 비리 의혹으로 그 공약 중단",
-                "{n} 대통령 측근 비리 터져, '{p}' 공약 보류",
-                "국회, '{p}' 공약 예산 전액 삭감")
-TERM_IMPEACH_TEXT = ("{n} 대통령 탄핵 소추안 가결. 남은 임기 동안 모든 공약이 멈춥니다",
-                     "{n} 대통령, 로비 스캔들로 탄핵. 남은 임기 동안 모든 공약이 멈춥니다")
-
-# 당선 공약 효과: key → 배수 (선거가 끝날 때 cog 가 채운다) · 공개 전 효과를 받는 사람 (테스트 서버 멤버)
+# 당선 공약 효과: key → 배수 · 지지자 uid → 몇 배로 받는지 (cog 가 DB 에서 채운다)
 ACTIVE: dict[str, float] = {}
-TESTERS: set[int] = set()
+VOTERS: dict[int, int] = {}
+TESTERS: set[int] = set()        # 테스트 서버 멤버 (다른 3.8.4 기능이 공개 전 효과를 줄 때 쓴다)
 
 
 def mult(key: str, uid: Optional[int] = None) -> float:
-    """지금 적용 중인 당선 공약 배수 (없으면 1). 공개 전엔 테스트 서버 사람만."""
+    """지금 적용 중인 당선 공약 배수 (없으면 1). 당선자를 지지(투표)한 사람만, 가장 많이 준 사람은 효과 두 배."""
     m = ACTIVE.get(key)
-    if not m:
+    k = VOTERS.get(int(uid)) if uid is not None else None
+    if not m or not k:
         return 1.0
-    if (release.RELEASE_LOBBY_TS is not None and release.preview_lobby(None)) or (uid is not None and int(uid) in TESTERS):
-        return m
-    return 1.0
+    return 1 + (m - 1) * k
 
 
 def discount(key: str, uid: Optional[int] = None) -> float:
     """할인 공약 (pack_cost · item_cost) → 값에 곱할 수 (할인 없으면 1)."""
-    return max(0.0, 2 - mult(key, uid))
+    return max(0.1, 2 - mult(key, uid))
 
 
 def pledge_text(key: str, power: float) -> str:
@@ -126,105 +139,144 @@ def close_after(ts: float) -> int:
     return close - 9 * 3600
 
 
-def make_candidates(rng=random) -> list[dict]:
-    names, parties = rng.sample(NAMES, CANDIDATES_N), list(PARTIES)   # 당마다 한 명 (당 순서 그대로)
+def votes_cost(had: int, n: int) -> int:
+    """이미 had 표를 가진 사람이 n 표를 더 넣을 때 드는 돈 (첫 1표는 무료)."""
+    free = max(0, VOTE_FREE - had)
+    return max(0, n - free) * VOTE_PRICE
+
+
+# ───────────── 후보 · 지지율 ─────────────
+def party_base(history: list[dict]) -> dict[str, float]:
+    """지난 대선 기록 → 당마다 지지 기반 (기록에 나온 득표율 평균). 큰 두 당이 MAJOR_SHARE 를 나누고 작은 당이 나머지."""
+    sums = {p: [] for p in PARTIES}
+    for h in history:
+        for c, s in zip(h["cands"], h["shares"]):
+            sums[c["party"]].append(s)
+    base = {p: (sum(v) / len(v) if v else (MAJOR_SHARE / 2 if p in MAJORS else (100 - MAJOR_SHARE) / len(MINORS)))
+            for p, v in sums.items()}
+    major = sum(base[p] for p in MAJORS) or 1
+    minor = sum(base[p] for p in MINORS) or 1
+    return {p: base[p] * (MAJOR_SHARE / major if p in MAJORS else (100 - MAJOR_SHARE) / minor) for p in PARTIES}
+
+
+def make_candidates(base: dict[str, float], last_party: Optional[str] = None, rng=random) -> list[dict]:
+    """큰 두 당 + 작은 당 3~4. 후보마다 능력(1~10), 가끔 작은 당 돌풍."""
+    parties = list(MAJORS) + rng.sample(MINORS, rng.randint(*MINOR_RUN))
+    names = rng.sample(NAMES, len(parties))
+    run = sum(base[p] for p in parties)
+    storm = rng.randrange(2, len(parties)) if rng.random() < STORM_P else None
     out = []
-    for i in range(CANDIDATES_N):
+    for i, p in enumerate(parties):
         keys = rng.sample(list(PLEDGES), PLEDGES_N)
-        out.append({"name": names[i], "party": parties[i], "base": rng.randint(10, 30), "events": 0,
-                    "rate": rng.randint(*RATE_RANGE), "out": None,
-                    "pledges": [[k, rng.choice(PLEDGES[k][1])] for k in keys]})
+        b = base[p] * 100 / run - (INCUMBENT if p == last_party else 0)
+        out.append({"name": names[i], "party": p, "major": p in MAJORS, "ability": rng.randint(1, 10),
+                    "storm": i == storm, "bonus": rng.randint(*STORM_BONUS) if i == storm else 0,
+                    "base": round(b, 2), "events": 0, "pledges": [[k, rng.choice(PLEDGES[k][1])] for k in keys]})
     return out
 
 
-def keep_pledges(c: dict, rng=random) -> list[bool]:
-    """당선자가 공약마다 이행률(rate)만큼의 확률로 지킨다 → 공약마다 지켰는지."""
-    return [rng.random() * 100 < c.get("rate", 100) for _ in c["pledges"]]
+def scores(cands: list[dict], votes: list[int]) -> list[float]:
+    total = max(VOTE_FLOOR, sum(votes))
+    return [max(0.5, c["base"] + (c["ability"] - 5.5) * ABILITY_W + c["bonus"] + c["events"] + VOTE_WEIGHT * v / total)
+            for c, v in zip(cands, votes)]
 
 
-def alive(c: dict) -> bool:
-    return not c.get("out")
+def _norm(xs: list[float]) -> list[float]:
+    s = sum(xs) or 1
+    return [x * 100 / s for x in xs]
 
 
-def support(cands: list[dict], pots: list[int]) -> list[float]:
-    """지지율 (%) — 기본 인기 + 사건 + 로비 몫. 합 100. 사퇴 · 합당한 후보는 0."""
-    total = sum(p for c, p in zip(cands, pots) if alive(c))
-    score = [max(1.0, c["base"] + c["events"] + (LOBBY_WEIGHT * p / total if total else 0)) if alive(c) else 0.0
-             for c, p in zip(cands, pots)]
-    s = sum(score)
-    return [x * 100 / s for x in score]
+def support(cands: list[dict], votes: list[int]) -> list[float]:
+    """지금 지지율 (%) — 합 100."""
+    return _norm(scores(cands, votes))
 
 
-def final_shares(cands: list[dict], pots: list[int], rng=random) -> list[float]:
-    """선거일 득표율 (%) — 지지율에 후보마다 ±ELECTION_SWING 변수를 더한 것. 합 100."""
-    sup = support(cands, pots)
-    raw = [max(0.5, s + rng.uniform(-ELECTION_SWING, ELECTION_SWING)) if s > 0 else 0.0 for s in sup]
-    t = sum(raw)
-    return [x * 100 / t for x in raw]
+def final_shares(cands: list[dict], votes: list[int], rng=random) -> list[float]:
+    """선거일 득표율 (%) — 점수에 후보마다 ±SWING."""
+    return _norm([max(0.5, s + rng.uniform(-SWING, SWING)) for s in scores(cands, votes)])
 
 
-def pick_winner(cands: list[dict], pots: list[int], rng=random) -> int:
-    """선거일: 득표율이 가장 높은 후보."""
-    sh = final_shares(cands, pots, rng)
-    return max(range(len(cands)), key=lambda i: sh[i])
-
-
-def count_frames(final: list[float], rng=random, steps=(8, 21, 37, 55, 72, 88, 100)) -> list[tuple[int, list[float]]]:
-    """개표 장면: [(개표율, 후보별 득표율)] — 초반엔 흔들리다가 100%에서 최종 득표율과 같아진다."""
-    noise = [rng.uniform(-12, 12) for _ in final]
-    out = []
-    for p in steps:
-        left = (1 - p / 100) ** 1.2
-        raw = [max(0.5, f + left * (n + rng.uniform(-3, 3))) if f > 0 else 0.0 for f, n in zip(final, noise)]
-        t = sum(raw)
-        out.append((p, [x * 100 / t for x in raw] if p < 100 else list(final)))
-    return out
-
-
-def win_chances(cands: list[dict], pots: list[int]) -> list[float]:
-    """후보마다 당선 확률 (0~1) — 선거일을 ODDS_SIMS 번 돌려 본다. 같은 지지율이면 늘 같은 값 (배당이 화면마다 흔들리지 않게)."""
-    sup = support(cands, pots)
-    rng = random.Random(json.dumps([round(x, 3) for x in sup]))
+def win_chances(cands: list[dict], votes: list[int], sims: int = ODDS_SIMS) -> list[float]:
+    """당선 확률 (0~1) — 선거일을 sims 번 돌려 본다 (같은 상태면 늘 같은 값)."""
+    rng = random.Random(7)
+    sc = scores(cands, votes)
     wins = [0] * len(cands)
-    live = [i for i, s in enumerate(sup) if s > 0]
-    for _ in range(ODDS_SIMS):
-        wins[max(live, key=lambda i: sup[i] + rng.uniform(-ELECTION_SWING, ELECTION_SWING))] += 1
-    return [w / ODDS_SIMS for w in wins]
+    for _ in range(sims):
+        wins[max(range(len(sc)), key=lambda i: sc[i] + rng.uniform(-SWING, SWING))] += 1
+    return [w / sims for w in wins]
 
 
-def odds(cands: list[dict], pots: list[int]) -> list[float]:
-    """후보마다 배당 (배수, 소수 한 자리). 빠진 후보는 0."""
-    lo, hi = ODDS_RANGE
-    return [round(min(hi, max(lo, ODDS_MARGIN / p)) if p > 0 else hi, 1) if alive(c) else 0.0
-            for c, p in zip(cands, win_chances(cands, pots))]
+def odds_of(p: float) -> float:
+    return round(min(ODDS_RANGE[1], max(ODDS_RANGE[0], ODDS_MARGIN / max(p, 1e-6))), 2)
 
 
-def payouts(tickets: list[tuple[int, int, int, float]], winner: int, caught: set[int]) -> dict[int, int]:
-    """tickets = [(uid, 후보, 금액, 배당)] → {uid: 받을 돈 (원금 포함)} — 당선 후보 로비 × 로비할 때 배당. 적발된 사람은 0."""
+def make_history(rng=None) -> list[dict]:
+    """축구 봇만의 대선 15번 — 플레이어 표 없이 같은 규칙으로 돌린다. 지지 기반은 그때까지의 기록으로."""
+    rng = rng or random.Random(HISTORY_SEED)
+    out: list[dict] = []
+    for no in range(1, HISTORY_N + 1):
+        base = party_base(out)
+        cands = make_candidates(base, out[-1]["cands"][out[-1]["winner"]]["party"] if out else None, rng)
+        for c in cands:   # 선거운동 사건 몇 번
+            c["events"] = sum(rng.choice((1, -1)) * rng.randint(1, 3) for _ in range(rng.randint(2, 5)))
+        shares = final_shares(cands, [0] * len(cands), rng)
+        w = max(range(len(cands)), key=lambda i: shares[i])
+        out.append({"no": no, "cands": cands, "shares": [round(s, 1) for s in shares], "winner": w})
+    return out
+
+
+def party_wins(rounds: list[dict]) -> dict[str, int]:
+    """당마다 집권 횟수 (많은 순)."""
+    n = {p: 0 for p in PARTIES}
+    for r in rounds:
+        if r.get("winner") is not None:
+            n[r["cands"][r["winner"]]["party"]] += 1
+    return dict(sorted(n.items(), key=lambda x: -x[1]))
+
+
+def payouts(bets: list[tuple[int, int, int, float]], winner: int, caught: set[int]) -> dict[int, int]:
+    """bets = [(uid, 후보, 금액, 배당)] → {uid: 받을 돈}. 적발된 사람은 0."""
     out: dict[int, int] = {}
-    for u, c, a, o in tickets:
+    for u, c, a, o in bets:
         if c == winner and u not in caught:
             out[u] = out.get(u, 0) + int(a * o)
     return out
 
 
+def top_voter(votes: list[tuple[int, int, int]], winner: int) -> Optional[int]:
+    """votes = [(uid, 후보, 표)] — 당선자에게 표를 가장 많이 준 사람 (관리자 계정은 순위에서 뺀다, 같으면 먼저 투표한 사람)."""
+    best = None
+    for u, c, v in votes:
+        if c == winner and u not in release.RANK_EXCLUDE and (best is None or v > best[1]):
+            best = (u, v)
+    return best[0] if best else None
+
+
+def active_from(r: Optional[dict]) -> tuple[dict[str, float], dict[int, int]]:
+    """끝난 대선 → ({공약 key: 배수}, {지지자: 몇 배}). 탄핵됐으면 아무것도 없다."""
+    if not r or r.get("winner") is None or r.get("impeached"):
+        return {}, {}
+    w = r["cands"][r["winner"]]
+    voters = {int(u): 1 for u in r.get("supporters", [])}
+    if r.get("top") is not None:
+        voters[int(r["top"])] = TOP_FACTOR
+    return {k: 1 + float(p) for k, p in w["pledges"] if k in PLEDGES}, voters
+
+
 _TABLES = (
-    "CREATE TABLE IF NOT EXISTS lobby_elections (id INTEGER PRIMARY KEY AUTOINCREMENT, opens_ts INTEGER NOT NULL, "
-    "closes_ts INTEGER NOT NULL, cands TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', winner INTEGER, "
-    "next_news_ts INTEGER NOT NULL DEFAULT 0)",
-    "CREATE TABLE IF NOT EXISTS lobby_bets (eid INTEGER NOT NULL, uid INTEGER NOT NULL, cand INTEGER NOT NULL, "
-    "amount INTEGER NOT NULL, PRIMARY KEY(eid, uid, cand))",
-    "CREATE TABLE IF NOT EXISTS lobby_news (id INTEGER PRIMARY KEY AUTOINCREMENT, eid INTEGER NOT NULL, ts INTEGER NOT NULL, "
-    "cand INTEGER, delta INTEGER NOT NULL DEFAULT 0, text TEXT NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS lobby_results (eid INTEGER NOT NULL, uid INTEGER NOT NULL, staked INTEGER NOT NULL, "
-    "paid INTEGER NOT NULL, caught INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(eid, uid))",
-    "CREATE TABLE IF NOT EXISTS lobby_support (eid INTEGER NOT NULL, ts INTEGER NOT NULL, sup TEXT NOT NULL)",   # 지지율 그래프
-    "CREATE INDEX IF NOT EXISTS lobby_support_eid ON lobby_support(eid, ts)",
-    "CREATE TABLE IF NOT EXISTS lobby_tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, eid INTEGER NOT NULL, uid INTEGER NOT NULL, "
-    "cand INTEGER NOT NULL, amount INTEGER NOT NULL, odds REAL NOT NULL)",   # /경마처럼: 로비할 때 배당이 정해진다
-    "CREATE INDEX IF NOT EXISTS lobby_tickets_eid ON lobby_tickets(eid, cand)",
+    # 회차 하나: status history(미리 돌린 기록) / open(투표 중) / done(끝남 — 마지막 done 이 지금 대통령)
+    "CREATE TABLE IF NOT EXISTS elect_rounds (no INTEGER PRIMARY KEY, status TEXT NOT NULL, opens_ts INTEGER NOT NULL DEFAULT 0, "
+    "closes_ts INTEGER NOT NULL DEFAULT 0, cands TEXT NOT NULL, shares TEXT, winner INTEGER, next_news_ts INTEGER NOT NULL DEFAULT 0, "
+    "approval REAL, impeached INTEGER NOT NULL DEFAULT 0, term_next_ts INTEGER NOT NULL DEFAULT 0, top INTEGER)",
+    "CREATE TABLE IF NOT EXISTS elect_votes (no INTEGER NOT NULL, uid INTEGER NOT NULL, cand INTEGER NOT NULL, "
+    "votes INTEGER NOT NULL, paid INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(no, uid))",
+    "CREATE TABLE IF NOT EXISTS elect_bets (id INTEGER PRIMARY KEY AUTOINCREMENT, no INTEGER NOT NULL, uid INTEGER NOT NULL, "
+    "cand INTEGER NOT NULL, amount INTEGER NOT NULL, odds REAL NOT NULL, ts INTEGER NOT NULL, paid INTEGER, caught INTEGER NOT NULL DEFAULT 0)",
+    "CREATE TABLE IF NOT EXISTS elect_news (id INTEGER PRIMARY KEY AUTOINCREMENT, no INTEGER NOT NULL, ts INTEGER NOT NULL, "
+    "text TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS lobby_threads (guild_id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL)",   # 서버마다 대선 뉴스 스레드
 )
+_COLS = "no, status, opens_ts, closes_ts, cands, shares, winner, next_news_ts, approval, impeached, term_next_ts, top"
 
 
 class LobbyDB(EconomyDB):
@@ -234,396 +286,218 @@ class LobbyDB(EconomyDB):
         try:
             for ddl in _TABLES:
                 con.execute(ddl)
+            if not con.execute("SELECT 1 FROM elect_rounds LIMIT 1").fetchone():
+                for h in make_history():
+                    con.execute("INSERT INTO elect_rounds(no, status, cands, shares, winner) VALUES(?,?,?,?,?)",
+                                (h["no"], "history", json.dumps(h["cands"], ensure_ascii=False), json.dumps(h["shares"]), h["winner"]))
             con.commit()
         finally:
             con.close()
 
     @staticmethod
     def _row(r) -> dict:
-        cands = json.loads(r[3])
-        for c in cands:                                   # 예전 당 이름으로 열린 선거도 새 이름으로 보이게
-            c["party"] = _OLD_PARTIES.get(c["party"], c["party"])
-        return {"id": int(r[0]), "opens_ts": int(r[1]), "closes_ts": int(r[2]), "cands": cands,
-                "status": r[4], "winner": r[5], "next_news_ts": int(r[6])}
+        return {"no": int(r[0]), "status": r[1], "opens_ts": int(r[2]), "closes_ts": int(r[3]), "cands": json.loads(r[4]),
+                "shares": json.loads(r[5]) if r[5] else None, "winner": r[6], "next_news_ts": int(r[7]),
+                "approval": r[8], "impeached": bool(r[9]), "term_next_ts": int(r[10]), "top": r[11]}
+
+    @classmethod
+    def _rounds(cls, con, where: str = "status IN ('history', 'done')") -> list[dict]:
+        return [cls._row(r) for r in con.execute(f"SELECT {_COLS} FROM elect_rounds WHERE {where} ORDER BY no")]
 
     @classmethod
     def _current(cls, con, now_ts: int, rng=random) -> dict:
-        """열려 있는 선거 (없으면 새로 연다)."""
-        r = con.execute("SELECT id, opens_ts, closes_ts, cands, status, winner, next_news_ts FROM lobby_elections "
-                        "WHERE status='open' ORDER BY id DESC LIMIT 1").fetchone()
+        """열려 있는 대선 (없으면 새로 연다)."""
+        r = con.execute(f"SELECT {_COLS} FROM elect_rounds WHERE status='open' ORDER BY no DESC LIMIT 1").fetchone()
         if r:
-            e = cls._row(r)
-            if len(e["cands"]) == CANDIDATES_N and all("rate" in c and "out" in c for c in e["cands"]):
-                return e
-            # 11/17 후보 수 · 공약 · 이행률 · 배당 방식이 바뀌기 전에 열린 선거 (테스트 서버만) → 로비한 돈을 돌려주고 새로 연다
-            for u, a in con.execute("SELECT uid, SUM(amount) FROM lobby_bets WHERE eid=? GROUP BY uid", (e["id"],)).fetchall():
-                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (int(a), int(u)))
-            con.execute("UPDATE lobby_elections SET status='void' WHERE id=?", (e["id"],))
-        cands = make_candidates(rng)
-        closes = close_after(now_ts)
-        cur = con.execute("INSERT INTO lobby_elections(opens_ts, closes_ts, cands, next_news_ts) VALUES(?,?,?,?)",
-                          (int(now_ts), closes, json.dumps(cands, ensure_ascii=False), int(now_ts) + rng.randint(*NEWS_GAP)))
-        eid = int(cur.lastrowid)
-        con.execute("INSERT INTO lobby_news(eid, ts, text) VALUES(?,?,?)",
-                    (eid, int(now_ts), f"제{eid}회 축구 봇 대선 후보 등록 마감. 후보 {CANDIDATES_N}명이 선거전에 뛰어들었습니다"))
-        cls._snap(con, eid, cands, now_ts, force=True)
-        return {"id": eid, "opens_ts": int(now_ts), "closes_ts": closes, "cands": cands, "status": "open", "winner": None,
-                "next_news_ts": int(now_ts) + NEWS_GAP[0]}
+            return cls._row(r)
+        past = cls._rounds(con)
+        last = past[-1] if past else None
+        no = (last["no"] if last else 0) + 1
+        cands = make_candidates(party_base(past), last["cands"][last["winner"]]["party"] if last else None, rng)
+        closes = FIRST_CLOSE if no <= FIRST_NO and now_ts < FIRST_CLOSE else close_after(now_ts)
+        con.execute("INSERT INTO elect_rounds(no, status, opens_ts, closes_ts, cands, next_news_ts) VALUES(?,?,?,?,?,?)",
+                    (no, "open", int(now_ts), closes, json.dumps(cands, ensure_ascii=False), int(now_ts) + rng.randint(*NEWS_GAP)))
+        con.execute("INSERT INTO elect_news(no, ts, text) VALUES(?,?,?)",
+                    (no, int(now_ts), f"제{no}회 축구 봇 대선 후보 등록 마감. 후보 {len(cands)}명이 선거전에 뛰어들었습니다"))
+        return cls._row(con.execute(f"SELECT {_COLS} FROM elect_rounds WHERE no=?", (no,)).fetchone())
 
     @staticmethod
-    def _pots(con, eid: int, n: int) -> list[int]:
-        pots = [0] * n
-        for c, a in con.execute("SELECT cand, SUM(amount) FROM lobby_bets WHERE eid=? GROUP BY cand", (eid,)):
+    def _votes(con, no: int, n: int) -> list[int]:
+        out = [0] * n
+        for c, v in con.execute("SELECT cand, SUM(votes) FROM elect_votes WHERE no=? GROUP BY cand", (no,)):
             if 0 <= int(c) < n:
-                pots[int(c)] = int(a)
-        return pots
+                out[int(c)] = int(v)
+        return out
+
+    @staticmethod
+    def _supporters(con, no: int, winner: int) -> list[int]:
+        return [int(u) for (u,) in con.execute("SELECT uid FROM elect_votes WHERE no=? AND cand=?", (no, winner))]
 
     @classmethod
-    def _snap(cls, con, eid: int, cands: list[dict], now_ts: int, force: bool = False) -> list[float]:
-        """지금 지지율을 그래프 기록에 남긴다. SNAP_MERGE 안의 기록은 (force 가 아니면) 마지막 점을 고친다."""
-        sup = support(cands, cls._pots(con, eid, len(cands)))
-        last = con.execute("SELECT rowid, ts FROM lobby_support WHERE eid=? ORDER BY ts DESC, rowid DESC LIMIT 1", (eid,)).fetchone()
-        txt = json.dumps([round(x, 2) for x in sup])
-        if last and not force and now_ts - int(last[1]) < SNAP_MERGE:
-            con.execute("UPDATE lobby_support SET sup=? WHERE rowid=?", (txt, last[0]))
-        else:
-            con.execute("INSERT INTO lobby_support(eid, ts, sup) VALUES(?,?,?)", (eid, int(now_ts), txt))
-        return sup
-
-    @staticmethod
-    def _history(con, eid: int) -> list[tuple[int, list[float]]]:
-        return [(int(t), json.loads(s)) for t, s in con.execute(
-            "SELECT ts, sup FROM lobby_support WHERE eid=? ORDER BY ts, rowid", (eid,))]
+    def _president(cls, con) -> Optional[dict]:
+        """지금 대통령 (마지막으로 끝난 대선, 플레이어가 참여한 것) + 지지자."""
+        r = con.execute(f"SELECT {_COLS} FROM elect_rounds WHERE status='done' ORDER BY no DESC LIMIT 1").fetchone()
+        if not r:
+            return None
+        e = cls._row(r)
+        e["supporters"] = cls._supporters(con, e["no"], e["winner"])
+        return e
 
     async def state(self, uid: int, now_ts: int) -> dict:
-        """지금 선거 + 후보별 로비 총액 · 지지율 · 내 로비 · 최근 뉴스 · 지금 적용 중인 공약(지난 당선자)."""
+        """지금 대선 + 지지율 · 당선 확률 · 배당 · 내 표 · 내 베팅 · 최근 뉴스 · 지난 기록 · 지금 대통령."""
         def fn(con):
             e = self._current(con, now_ts)
             n = len(e["cands"])
-            e["pots"] = self._pots(con, e["id"], n)
-            e["support"] = support(e["cands"], e["pots"])
-            e["odds"] = odds(e["cands"], e["pots"])
-            mine = [0] * n
-            for c, a in con.execute("SELECT cand, amount FROM lobby_bets WHERE eid=? AND uid=?", (e["id"], int(uid))):
-                mine[int(c)] = int(a)
-            e["mine"] = mine
-            e["news"] = [{"ts": int(t), "text": x, "delta": int(d)} for t, x, d in con.execute(
-                "SELECT ts, text, delta FROM lobby_news WHERE eid=? ORDER BY id DESC LIMIT 6", (e["id"],))]
-            e["last"] = self._last(con)
-            e["history"] = self._history(con, e["id"])
+            e["votes"] = self._votes(con, e["no"], n)
+            e["support"] = support(e["cands"], e["votes"])
+            e["chance"] = win_chances(e["cands"], e["votes"])
+            e["odds"] = [odds_of(p) for p in e["chance"]]
+            r = con.execute("SELECT cand, votes FROM elect_votes WHERE no=? AND uid=?", (e["no"], int(uid))).fetchone()
+            e["my_vote"] = (int(r[0]), int(r[1])) if r else None
+            e["my_bets"] = [(int(c), int(a), float(o)) for c, a, o in con.execute(
+                "SELECT cand, amount, odds FROM elect_bets WHERE no=? AND uid=? ORDER BY id", (e["no"], int(uid)))]
+            e["news"] = [{"ts": int(t), "text": x} for t, x in con.execute(
+                "SELECT ts, text FROM elect_news WHERE no>=? ORDER BY id DESC LIMIT 6", (e["no"] - 1,))]
+            past = self._rounds(con)
+            e["history"] = past
+            e["wins"] = party_wins(past)
+            e["president"] = self._president(con)
             return e
         return await self._tx(fn)
 
-    @classmethod
-    def _last(cls, con) -> Optional[dict]:
-        r = con.execute("SELECT id, opens_ts, closes_ts, cands, status, winner, next_news_ts FROM lobby_elections "
-                        "WHERE status='done' ORDER BY id DESC LIMIT 1").fetchone()
-        return cls._row(r) if r else None
+    async def president(self) -> Optional[dict]:
+        return await self._tx(self._president)
 
-    async def last_winner(self) -> Optional[dict]:
-        """지난 당선자 {name, party, pledges} (없으면 None)."""
-        def fn(con):
-            e = self._last(con)
-            return e["cands"][e["winner"]] if e and e["winner"] is not None else None
-        return await self._tx(fn)
-
-    async def lobby(self, uid: int, cand: int, amount: int, now_ts: int) -> dict:
-        """후보 cand 에게 amount 원 로비. reason: amount(최소 미만) / cand / closed / balance(have)."""
+    async def vote(self, uid: int, cand: int, n: int, now_ts: int) -> dict:
+        """후보 cand 에게 n 표. 지지 후보는 한 명 (처음 투표한 후보). reason: cand / other(다른 후보를 이미 지지) /
+        n / max(left) / closed / balance(cost, have)."""
         def fn(con):
             e = self._current(con, now_ts)
             if not 0 <= cand < len(e["cands"]):
                 return {"ok": False, "reason": "cand"}
-            if not alive(e["cands"][cand]):
-                return {"ok": False, "reason": "out"}
-            if amount < LOBBY_MIN:
-                return {"ok": False, "reason": "amount", "min": LOBBY_MIN}
+            if now_ts >= e["closes_ts"]:
+                return {"ok": False, "reason": "closed"}
+            r = con.execute("SELECT cand, votes FROM elect_votes WHERE no=? AND uid=?", (e["no"], int(uid))).fetchone()
+            had = int(r[1]) if r else 0
+            if r and int(r[0]) != cand:
+                return {"ok": False, "reason": "other", "cand": e["cands"][int(r[0])]}
+            if n < 1:
+                return {"ok": False, "reason": "n"}
+            if had + n > VOTE_MAX:
+                return {"ok": False, "reason": "max", "left": VOTE_MAX - had}
+            cost = votes_cost(had, n)
+            con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(uid),))
+            bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(uid),)).fetchone()[0])
+            if bal < cost:
+                return {"ok": False, "reason": "balance", "cost": cost, "have": bal}
+            if cost:
+                con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (cost, int(uid)))
+            con.execute("INSERT INTO elect_votes(no, uid, cand, votes, paid, ts) VALUES(?,?,?,?,?,?) "
+                        "ON CONFLICT(no, uid) DO UPDATE SET votes = votes + excluded.votes, paid = paid + excluded.paid",
+                        (e["no"], int(uid), int(cand), int(n), cost, int(now_ts)))
+            return {"ok": True, "cand": e["cands"][cand], "n": int(n), "votes": had + n, "cost": cost, "balance": bal - cost}
+        return await self._tx(fn)
+
+    async def bet(self, uid: int, cand: int, amount: int, now_ts: int) -> dict:
+        """후보 cand 가 당선된다에 amount 원. 배당은 지금 당선 확률로 정하고 고정. reason: cand / amount / closed / balance(have)."""
+        def fn(con):
+            e = self._current(con, now_ts)
+            if not 0 <= cand < len(e["cands"]):
+                return {"ok": False, "reason": "cand"}
+            if amount < BET_MIN:
+                return {"ok": False, "reason": "amount"}
             if now_ts >= e["closes_ts"]:
                 return {"ok": False, "reason": "closed"}
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(uid),))
             bal = int(con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(uid),)).fetchone()[0])
             if bal < amount:
                 return {"ok": False, "reason": "balance", "have": bal}
+            o = odds_of(win_chances(e["cands"], self._votes(con, e["no"], len(e["cands"])))[cand])
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (int(amount), int(uid)))
-            con.execute("INSERT INTO lobby_bets(eid, uid, cand, amount) VALUES(?,?,?,?) "
-                        "ON CONFLICT(eid, uid, cand) DO UPDATE SET amount = amount + excluded.amount",
-                        (e["id"], int(uid), int(cand), int(amount)))
-            mine = int(con.execute("SELECT amount FROM lobby_bets WHERE eid=? AND uid=? AND cand=?",
-                                   (e["id"], int(uid), int(cand))).fetchone()[0])
-            # 배당은 이 로비까지 들어간 지지율로 정한다 (큰돈으로 지지율을 올리면서 높은 배당을 받는 걸 막는다)
-            o = odds(e["cands"], self._pots(con, e["id"], len(e["cands"])))[cand]
-            con.execute("INSERT INTO lobby_tickets(eid, uid, cand, amount, odds) VALUES(?,?,?,?,?)",
-                        (e["id"], int(uid), int(cand), int(amount), o))
-            self._snap(con, e["id"], e["cands"], now_ts)
-            return {"ok": True, "cand": e["cands"][cand], "amount": int(amount), "mine": mine, "odds": o,
+            con.execute("INSERT INTO elect_bets(no, uid, cand, amount, odds, ts) VALUES(?,?,?,?,?,?)",
+                        (e["no"], int(uid), int(cand), int(amount), o, int(now_ts)))
+            return {"ok": True, "cand": e["cands"][cand], "amount": int(amount), "odds": o, "win": int(amount * o),
                     "balance": bal - int(amount)}
         return await self._tx(fn)
 
     async def news_tick(self, now_ts: int, rng=random) -> Optional[dict]:
-        """뉴스 시각이 지났으면 사건 하나를 터뜨린다 → {eid, text, delta, cand} (아니면 None)."""
+        """선거운동 뉴스 시각이 지났으면 사건 하나 → {no, text, support, cand} (아니면 None)."""
         def fn(con):
             e = self._current(con, now_ts, rng)
-            if now_ts >= e["closes_ts"]:
+            if now_ts < e["next_news_ts"] or now_ts >= e["closes_ts"]:
                 return None
-            if now_ts < e["next_news_ts"]:
-                last = con.execute("SELECT MAX(ts) FROM lobby_support WHERE eid=?", (e["id"],)).fetchone()[0]
-                if last is None or now_ts - int(last) >= SNAP_GAP:
-                    self._snap(con, e["id"], e["cands"], now_ts, force=True)
-                return None
-            live = [k for k, c in enumerate(e["cands"]) if alive(c)]
-            if len(live) > DROP_KEEP and rng.random() < DROP_CHANCE:
-                return self._drop(con, e, live, now_ts, rng)
-            i = rng.choice(live)
+            i = rng.randrange(len(e["cands"]))
             good = rng.random() < 0.5
             tpl, lo, hi = rng.choice(NEWS_GOOD if good else NEWS_BAD)
-            delta = rng.randint(lo, hi) * (1 if good else -1)
-            e["cands"][i]["events"] += delta
+            e["cands"][i]["events"] += rng.randint(lo, hi) * (1 if good else -1)
             text = tpl.format(n=e["cands"][i]["name"])
-            con.execute("UPDATE lobby_elections SET cands=?, next_news_ts=? WHERE id=?",
-                        (json.dumps(e["cands"], ensure_ascii=False), int(now_ts) + rng.randint(*NEWS_GAP), e["id"]))
-            con.execute("INSERT INTO lobby_news(eid, ts, cand, delta, text) VALUES(?,?,?,?,?)", (e["id"], int(now_ts), i, delta, text))
-            sup = self._snap(con, e["id"], e["cands"], now_ts, force=True)
-            return {"eid": e["id"], "text": text, "delta": delta, "cand": i, "support": sup[i]}
+            con.execute("UPDATE elect_rounds SET cands=?, next_news_ts=? WHERE no=?",
+                        (json.dumps(e["cands"], ensure_ascii=False), int(now_ts) + rng.randint(*NEWS_GAP), e["no"]))
+            con.execute("INSERT INTO elect_news(no, ts, text) VALUES(?,?,?)", (e["no"], int(now_ts), text))
+            sup = support(e["cands"], self._votes(con, e["no"], len(e["cands"])))
+            return {"no": e["no"], "text": text, "cand": i, "support": sup[i]}
         return await self._tx(fn)
 
-    @classmethod
-    def _drop(cls, con, e: dict, live: list[int], now_ts: int, rng) -> dict:
-        """합당 · 사퇴 · 자격 박탈: 후보 하나가 빠진다. 그 후보에게 로비한 돈은 돌려준다 (경마 출전 취소처럼)."""
-        i = rng.choice(live)
-        c = e["cands"][i]
-        kind = rng.choice(("merge", "quit", "ban"))
-        if kind == "merge":
-            j = rng.choice([k for k in live if k != i])
-            m = e["cands"][j]
-            m["base"] += max(0, round((c["base"] + c["events"]) * MERGE_GIVE))
-            c["out"] = {"kind": "merge", "into": j}
-            text = rng.choice(DROP_MERGE).format(n=c["name"], m=m["name"])
-        else:
-            j = None
-            c["out"] = {"kind": kind}
-            text = rng.choice(DROP_QUIT if kind == "quit" else DROP_BAN).format(n=c["name"])
-        refund: dict[int, int] = {}
-        for u, a in con.execute("SELECT uid, amount FROM lobby_bets WHERE eid=? AND cand=?", (e["id"], i)).fetchall():
-            refund[int(u)] = refund.get(int(u), 0) + int(a)
-        for u, a in refund.items():
-            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (a, u))
-        con.execute("DELETE FROM lobby_bets WHERE eid=? AND cand=?", (e["id"], i))
-        con.execute("DELETE FROM lobby_tickets WHERE eid=? AND cand=?", (e["id"], i))
-        con.execute("UPDATE lobby_elections SET cands=?, next_news_ts=? WHERE id=?",
-                    (json.dumps(e["cands"], ensure_ascii=False), int(now_ts) + rng.randint(*NEWS_GAP), e["id"]))
-        con.execute("INSERT INTO lobby_news(eid, ts, cand, delta, text) VALUES(?,?,?,?,?)", (e["id"], int(now_ts), i, 0, text))
-        sup = cls._snap(con, e["id"], e["cands"], now_ts, force=True)
-        return {"eid": e["id"], "text": text, "delta": 0, "cand": i, "kind": kind, "into": j,
-                "support": sup[j] if j is not None else None, "refund": refund}
-
     async def term_tick(self, now_ts: int, rng=random) -> Optional[dict]:
-        """임기 중 사건: 시각이 되면 굴려서 문제가 터지면 → {text, kind, winner(바뀐 당선자)} (아니면 None)."""
+        """대통령 임기 중 뉴스 → {no, text, approval, impeached} (아니면 None). 능력이 좋을수록 좋은 뉴스가 많다."""
         def fn(con):
-            last = self._last(con)
-            if not last or last["winner"] is None or now_ts < last["next_news_ts"]:
+            p = self._president(con)
+            if not p or p["impeached"] or now_ts < p["term_next_ts"]:
                 return None
-            w = last["cands"][last["winner"]]
-            kept = w.get("kept") or [True] * len(w["pledges"])
-            on = [k for k, ok in enumerate(kept) if ok]
-            if w.get("impeached") or not on:
-                return None
-            nxt = int(now_ts) + rng.randint(*TERM_GAP)
-            out = None
-            if rng.random() < TERM_TROUBLE:
-                if rng.random() < TERM_IMPEACH:
-                    w["impeached"] = True
-                    out = {"kind": "impeach", "text": rng.choice(TERM_IMPEACH_TEXT).format(n=w["name"])}
-                else:
-                    k = rng.choice(on)
-                    kept[k] = False
-                    w["kept"] = kept
-                    w.setdefault("suspended", []).append(k)
-                    out = {"kind": "suspend", "text": rng.choice(TERM_SUSPEND).format(
-                        n=w["name"], p=pledge_text(*w["pledges"][k]))}
-            con.execute("UPDATE lobby_elections SET cands=?, next_news_ts=? WHERE id=?",
-                        (json.dumps(last["cands"], ensure_ascii=False), nxt, last["id"]))
-            if out:
-                cur = self._current(con, now_ts, rng)   # 뉴스는 지금 선거 화면에도 보이게
-                con.execute("INSERT INTO lobby_news(eid, ts, text) VALUES(?,?,?)", (cur["id"], int(now_ts), out["text"]))
-                out["winner"] = w
-                out["eid"] = last["id"]
+            w = p["cands"][p["winner"]]
+            good = rng.random() < 0.35 + 0.03 * w["ability"]
+            pledge = pledge_text(*rng.choice(w["pledges"]))
+            text = rng.choice(TERM_GOOD if good else TERM_BAD).format(n=w["name"], p=pledge)
+            a = max(0.0, min(100.0, float(p["approval"] or TERM_START) + rng.randint(*TERM_DELTA) * (1 if good else -1)))
+            imp = a < IMPEACH_AT
+            text += f". 국정 지지율 {a:.0f}%"
+            con.execute("UPDATE elect_rounds SET approval=?, impeached=?, term_next_ts=? WHERE no=?",
+                        (a, 1 if imp else 0, int(now_ts) + rng.randint(*TERM_GAP), p["no"]))
+            con.execute("INSERT INTO elect_news(no, ts, text) VALUES(?,?,?)", (p["no"], int(now_ts), text))
+            out = {"no": p["no"], "text": text, "approval": a, "impeached": imp, "good": good, "name": w["name"]}
+            if imp:
+                out["impeach_text"] = IMPEACH_TEXT.format(n=w["name"], a=round(a))
+                con.execute("INSERT INTO elect_news(no, ts, text) VALUES(?,?,?)", (p["no"], int(now_ts), out["impeach_text"]))
             return out
         return await self._tx(fn)
 
     async def settle(self, now_ts: int, rng=random) -> Optional[dict]:
-        """마감이 지난 선거를 정산한다 → {eid, winner, cand, support, paid: {uid: 돈}, caught: [uid], pool, ...} (아니면 None).
-        정산과 함께 다음 선거를 연다. 한 트랜잭션이라 두 번 정산되지 않는다."""
+        """마감이 지난 대선을 개표 · 정산하고 다음 대선을 연다 → {no, winner, cand, shares, paid, caught, top, ...} (아니면 None).
+        한 트랜잭션이라 두 번 정산되지 않는다."""
         def fn(con):
-            r = con.execute("SELECT id, opens_ts, closes_ts, cands, status, winner, next_news_ts FROM lobby_elections "
-                            "WHERE status='open' ORDER BY id DESC LIMIT 1").fetchone()
+            r = con.execute(f"SELECT {_COLS} FROM elect_rounds WHERE status='open' ORDER BY no DESC LIMIT 1").fetchone()
             if not r:
                 return None
             e = self._row(r)
             if now_ts < e["closes_ts"]:
                 return None
             n = len(e["cands"])
-            pots = self._pots(con, e["id"], n)
-            self._snap(con, e["id"], e["cands"], e["closes_ts"], force=True)   # 그래프 마지막 점 = 마감 순간
-            history = self._history(con, e["id"])
-            shares = final_shares(e["cands"], pots, rng)
+            votes = self._votes(con, e["no"], n)
+            shares = final_shares(e["cands"], votes, rng)
             w = max(range(n), key=lambda i: shares[i])
-            bets = [(int(u), int(c), int(a)) for u, c, a in con.execute(
-                "SELECT uid, cand, amount FROM lobby_bets WHERE eid=?", (e["id"],))]
-            tickets = [(int(u), int(c), int(a), float(o)) for u, c, a, o in con.execute(
-                "SELECT uid, cand, amount, odds FROM lobby_tickets WHERE eid=?", (e["id"],))]
-            caught = {u for u in {u for u, c, _ in bets if c == w} if rng.random() < LOBBY_CAUGHT}
-            paid = payouts(tickets, w, caught)
-            staked: dict[int, int] = {}
-            for u, _, a in bets:
-                staked[u] = staked.get(u, 0) + a
+            bets = [(int(i), int(u), int(c), int(a), float(o)) for i, u, c, a, o in con.execute(
+                "SELECT id, uid, cand, amount, odds FROM elect_bets WHERE no=?", (e["no"],))]
+            caught = {u for u in {u for _, u, c, _, _ in bets if c == w} if rng.random() < BET_CAUGHT}
+            paid = payouts([(u, c, a, o) for _, u, c, a, o in bets], w, caught)
+            for i, u, c, a, o in bets:
+                con.execute("UPDATE elect_bets SET paid=?, caught=? WHERE id=?",
+                            (int(a * o) if c == w and u not in caught else 0, 1 if u in caught and c == w else 0, i))
             for u, m in paid.items():
                 con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (u,))
                 con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (m, u))
-            for u, s in staked.items():
-                con.execute("INSERT OR REPLACE INTO lobby_results(eid, uid, staked, paid, caught) VALUES(?,?,?,?,?)",
-                            (e["id"], u, s, paid.get(u, 0), 1 if u in caught else 0))
-            e["cands"][w]["kept"] = keep_pledges(e["cands"][w], rng)   # 공약 이행률 — 지킨 공약만 적용
-            con.execute("UPDATE lobby_elections SET status='done', winner=?, cands=?, next_news_ts=? WHERE id=?",
-                        (w, json.dumps(e["cands"], ensure_ascii=False), int(now_ts) + rng.randint(*TERM_GAP), e["id"]))
-            sup = support(e["cands"], pots)
-            con.execute("INSERT INTO lobby_news(eid, ts, cand, text) VALUES(?,?,?,?)",
-                        (e["id"], int(now_ts), w, f"{e['cands'][w]['name']} 후보 당선! 득표율 {shares[w]:.1f}%"))
+            vrows = [(int(u), int(c), int(v)) for u, c, v in con.execute(
+                "SELECT uid, cand, votes FROM elect_votes WHERE no=? ORDER BY ts, rowid", (e["no"],))]
+            top = top_voter(vrows, w)
+            con.execute("UPDATE elect_rounds SET status='done', shares=?, winner=?, approval=?, impeached=0, term_next_ts=?, top=? "
+                        "WHERE no=?", (json.dumps([round(s, 1) for s in shares]), w, TERM_START,
+                                       int(now_ts) + rng.randint(*TERM_GAP), top, e["no"]))
+            c = e["cands"][w]
+            con.execute("INSERT INTO elect_news(no, ts, text) VALUES(?,?,?)",
+                        (e["no"], int(now_ts), f"{c['name']} ({c['party']}) 후보 당선! 득표율 {shares[w]:.1f}%"))
             nxt = self._current(con, now_ts, rng)
-            return {"eid": e["id"], "winner": w, "cand": e["cands"][w], "support": sup[w], "paid": paid,
-                    "cands": e["cands"], "shares": shares, "history": history, "opens_ts": e["opens_ts"],
-                    "closes_ts": e["closes_ts"],
-                    "caught": sorted(caught), "pool": sum(pots), "people": len(staked), "next": nxt["id"],
-                    "next_closes": nxt["closes_ts"]}
+            people = {u for _, u, _, _, _ in bets} | {u for u, _, _ in vrows}
+            return {"no": e["no"], "winner": w, "cand": c, "cands": e["cands"], "shares": shares, "paid": paid,
+                    "caught": sorted(caught), "top": top, "supporters": [u for u, cc, _ in vrows if cc == w],
+                    "votes": sum(votes), "bets": sum(a for _, _, _, a, _ in bets), "people": len(people),
+                    "next": nxt["no"], "next_closes": nxt["closes_ts"], "impeached": False}
         return await self._tx(fn)
-
-
-def active_from(winner: Optional[dict]) -> dict[str, float]:
-    """당선자 공약 → {공약 key: 배수}."""
-    if not winner or winner.get("impeached"):
-        return {}
-    kept = winner.get("kept") or [True] * len(winner["pledges"])
-    return {k: 1 + float(p) for (k, p), ok in zip(winner["pledges"], kept) if ok and k in PLEDGES}
-
-
-
-# ───────────── 11/17 규완님 '/경마 방식인데 저렇게 띄우라는 거지' — /로비 한 판 ─────────────
-# /로비 금액 → 후보 고르기 → 선거운동 사건 → 개표 → 당선자 임기 → 정산. 한 판에 바로 끝난다 (경마처럼 연출).
-# 상금표는 경마처럼 최종 순위별 배수 (cogs.race.race_prizes). 사퇴 · 합당한 후보는 꼴찌 쪽 순위.
-# 내가 고른 후보가 빠지면 건 돈을 돌려준다. 내가 고른 후보가 당선돼도 임기 중 문제가 터지면 상금이 줄거나(공약 중단) 없어진다(탄핵).
-GAME_MIN = 1_000
-GAME_EVENTS = 4            # 선거운동 사건 장면 수
-GAME_DROP = 0.18           # 사건 장면마다 합당 · 사퇴가 날 확률
-GAME_DROP_MAX = 2          # 한 판에 빠지는 후보 최대
-GAME_TERM = 3              # 임기 사건 장면 수
-GAME_SUSPEND = 0.2         # 임기 장면마다 공약 중단 (상금 절반)
-GAME_IMPEACH = 0.07        # 임기 장면마다 탄핵 (꼴찌만큼 잃는다)
-TERM_GOOD = ("{n} 대통령, 취임 첫날부터 공약 이행 시작", "{n} 대통령 지지율 고공 행진",
-             "{n} 대통령, 축구장 무료 개방 약속 지켜", "{n} 대통령, 국정 운영 무난하다는 평가")
-
-
-def _norm(xs: list[float]) -> list[float]:
-    t = sum(xs)
-    return [x * 100 / t if t else 0.0 for x in xs]
-
-
-GAME_SIMS = 1500           # 배당 정할 때 이 판을 몇 번 돌려 보는지
-# 11/17 규완님 '고정 배당 없애 · 당선 확률로 배당을 정해 · 본전이 경마에 어디있어' → 순위 상금표 없음.
-#   후보마다 배당 = ODDS_MARGIN / 당선 확률 (ODDS_RANGE 안). 고른 후보가 당선되면 로비 × 배당을 받고, 아니면 로비한 돈을 잃는다.
-
-
-def _rest(cands: list[dict], score: list[float], rng, full: bool = True) -> dict:
-    """후보 등록 뒤부터 끝까지: 선거운동 사건 → 득표 → (full 이면) 임기."""
-    events, drops = [], []
-    for _ in range(GAME_EVENTS):
-        live = [i for i, c in enumerate(cands) if not c["out"]]
-        if len(drops) < GAME_DROP_MAX and rng.random() < GAME_DROP:
-            i = rng.choice(live)
-            kind = rng.choice(("merge", "quit", "ban"))
-            j = rng.choice([k for k in live if k != i]) if kind == "merge" else None
-            if j is not None:
-                score[j] += score[i] * MERGE_GIVE
-            text = "" if not full else (rng.choice(DROP_MERGE).format(n=cands[i]["name"], m=cands[j]["name"]) if j is not None
-                                         else rng.choice(DROP_QUIT if kind == "quit" else DROP_BAN).format(n=cands[i]["name"]))
-            cands[i]["out"] = {"kind": kind, "into": j}
-            score[i] = 0.0
-            drops.append(i)
-            events.append({"text": text, "sup": _norm(score), "out": i})
-            continue
-        i = rng.choice(live)
-        good = rng.random() < 0.5
-        tpl, lo, hi = rng.choice(NEWS_GOOD if good else NEWS_BAD)
-        score[i] = max(1.0, score[i] + rng.randint(lo, hi) * (1 if good else -1))
-        events.append({"text": tpl.format(n=cands[i]["name"]) if full else "", "sup": _norm(score), "out": None})
-    sup = _norm(score)
-    final = _norm([max(0.5, x + rng.uniform(-ELECTION_SWING, ELECTION_SWING)) if x > 0 else 0.0 for x in sup])
-    live = sorted((i for i, x in enumerate(final) if x > 0), key=lambda i: -final[i])
-    order = live + drops[::-1]                       # 빠진 후보는 꼴찌 쪽 (먼저 빠진 쪽이 꼴찌)
-    out = {"events": events, "final": final, "order": order, "winner": order[0]}
-    if not full:
-        return out
-    term, trouble = [], None
-    goods = rng.sample(TERM_GOOD, len(TERM_GOOD))
-    n = cands[order[0]]["name"]
-    for _ in range(GAME_TERM):
-        r = rng.random()
-        if r < GAME_IMPEACH:
-            term.append({"text": rng.choice(TERM_IMPEACH_TEXT).format(n=n), "kind": "impeach"})
-            trouble = "impeach"
-            break
-        if r < GAME_IMPEACH + GAME_SUSPEND:
-            k = rng.choice(list(PLEDGES))
-            term.append({"text": rng.choice(TERM_SUSPEND).format(n=n, p=pledge_text(k, rng.choice(PLEDGES[k][1]))),
-                         "kind": "suspend"})
-            trouble = trouble or "suspend"
-        else:
-            term.append({"text": goods.pop().format(n=n), "kind": "ok"})
-    out.update(term=term, trouble=trouble, count=count_frames(final, rng, steps=(20, 55, 85, 100)))
-    return out
-
-
-def game_odds(cands: list[dict], score: list[float], rng=random) -> list[float]:
-    """후보 등록 순간의 당선 확률로 배당을 정한다 (이 판을 GAME_SIMS 번 돌려 본다)."""
-    wins = [0] * len(cands)
-    for _ in range(GAME_SIMS):
-        wins[_rest([dict(c) for c in cands], list(score), rng, full=False)["winner"]] += 1
-    lo, hi = ODDS_RANGE
-    return [round(min(hi, max(lo, ODDS_MARGIN * GAME_SIMS / w)) if w else hi, 1) for w in wins]
-
-
-def play(rng=random) -> dict:
-    """한 판을 처음부터 끝까지 정한다 (돈 정산 전에). 연출은 cog 가 이 결과대로 보여 준다.
-    → {cands, start, odds, events: [{text, sup, out}], final, order, count, winner, term: [{text, kind}], trouble}"""
-    names = rng.sample(NAMES, CANDIDATES_N)
-    cands = [{"name": names[i], "party": PARTIES[i], "out": None} for i in range(CANDIDATES_N)]
-    score = [float(rng.randint(10, 30)) for _ in cands]
-    g = {"cands": cands, "start": _norm(score), "odds": game_odds(cands, score, rng)}
-    g.update(_rest(cands, score, rng))
-    return g
-
-
-def settle_game(g: dict, pick: int, amount: int) -> dict:
-    """→ {delta (전체 돈 변동), odds, why}. 당선 = 로비 × 배당을 받는다 (순이익 = 로비 × (배당 - 1)), 아니면 로비한 돈을 잃는다.
-    why: lose(낙선) / out(사퇴 · 합당) / impeach(당선 후 탄핵 → 잃음) / suspend(공약 중단 → 순이익 절반) / None(당선)."""
-    o = g["odds"][pick]
-    if pick != g["winner"]:
-        return {"delta": -amount, "odds": o, "why": "out" if g["cands"][pick]["out"] else "lose"}
-    if g["trouble"] == "impeach":
-        return {"delta": -amount, "odds": o, "why": "impeach"}
-    gain = int(amount * (o - 1))
-    if g["trouble"] == "suspend":
-        return {"delta": gain // 2, "odds": o, "why": "suspend"}
-    return {"delta": gain, "odds": o, "why": None}
-
-
-async def void_weekly(db: "LobbyDB") -> int:
-    """일주일 선거를 닫는다: 열린 선거에 로비한 돈을 돌려주고 공약 효과를 끈다. 돌려준 사람 수."""
-    def fn(con):
-        n = 0
-        for (eid,) in con.execute("SELECT id FROM lobby_elections WHERE status='open'").fetchall():
-            for u, a in con.execute("SELECT uid, SUM(amount) FROM lobby_bets WHERE eid=? GROUP BY uid", (eid,)).fetchall():
-                con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(u),))
-                con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (int(a), int(u)))
-                n += 1
-            con.execute("UPDATE lobby_elections SET status='void' WHERE id=?", (eid,))
-        return n
-    ACTIVE.clear()
-    return await db._tx(fn)

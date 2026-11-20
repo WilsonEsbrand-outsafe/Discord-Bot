@@ -662,6 +662,8 @@ class EconomyDB:
             bonus = ATTEND_BONUS.get(total, 0)
             from services import lobby   # 3.8.2 /로비 당선 공약 '출석 보상 더' — 더 받는 몫은 보너스로 보인다
             bonus += int(reward * (lobby.mult("attend", user_id) - 1))
+            from services import burning   # 3.8.4 수능 버닝 '출석 보상 두 배'
+            bonus += int(reward * (burning.mult("attend", user_id, now_ts) - 1))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (reward + bonus, user_id))
             con.execute("UPDATE daily_claims SET last_claim_ts=?, total_days=? WHERE user_id=?", (now_ts, total, user_id))
             bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (user_id,)).fetchone()[0]

@@ -7,7 +7,7 @@
 import random
 from typing import Optional
 
-from services import lobby
+from services import burning, lobby
 from services.economy_db import EconomyDB, _kst_day, give_item
 
 # ───────────── 땅 ─────────────
@@ -61,10 +61,23 @@ ANIMALS = {
     "goat": ("🐐", "염소", 2_500, "cheese", 90),
     "pig": ("🐖", "돼지", 4_000, "truffle", 150),
     "cow": ("🐄", "소", 6_000, "milk", 4 * 60),
+    # 3.8.4 규완님 '동물 추가' (값 · 시간은 내 기본값, 원래 동물 사이사이와 소 위로)
+    "silkworm": ("🐛", "누에", 450, "silk", 18),
+    "goose": ("🪿", "거위", 1_300, "goose_egg", 48),
+    "llama": ("🦙", "라마", 3_200, "scarf", 2 * 60),
+    "bison": ("🦬", "들소", 9_000, "butter", 330),
+    "peacock": ("🦚", "공작", 14_000, "fan", 450),
 }
+NEW_ANIMALS_384 = ("silkworm", "goose", "llama", "bison", "peacock")   # 3.8.4 공개 전엔 테스트 서버 상점에만
 PRODUCTS = {"egg": ("🥚", "달걀", 30), "feather": ("🪶", "깃털", 50), "honey": ("🍯", "꿀", 80), "wool": ("🧶", "양털", 120),
-            "cheese": ("🧀", "치즈", 180), "truffle": ("🍄", "송로버섯", 280), "milk": ("🥛", "우유", 400)}
-ITEMS = {**{k: (e, n, v) for k, (e, n, _, _, v) in CROPS.items()}, **PRODUCTS}   # 창고에 들어가는 것: key → (이모지, 이름, ★1 판매가)
+            "cheese": ("🧀", "치즈", 180), "truffle": ("🍄", "송로버섯", 280), "milk": ("🥛", "우유", 400),
+            "silk": ("🧵", "비단", 40), "goose_egg": ("🪺", "거위 알", 100), "scarf": ("🧣", "라마 털목도리", 230),
+            "butter": ("🧈", "버터", 600), "fan": ("🪭", "공작 부채", 900)}
+# 3.8.4 규완님 '숫돌 주괴는 씨앗 50개 당 하나로 소모되며 인챈트 시 그 씨앗의 가치, 완성품의 가치가 대폭 상승'
+# 인챈트한 씨앗은 '감자_e' 처럼 따로 쌓이고 (farm_seeds), 심으면 그 칸에서 '인챈트 감자'가 나온다. 값은 ENCH_MULT 배 (내 기본값)
+ENCH, ENCH_MULT, ENCH_SEEDS, INGOT_NEED = "_e", 5, 50, 9   # 숫돌 9개 → 숫돌 주괴 1개, 주괴 1개 → 씨앗 50개 인챈트
+ECROPS = {k + ENCH: (e, f"인챈트 {n}", v * ENCH_MULT) for k, (e, n, _, _, v) in CROPS.items()}
+ITEMS = {**{k: (e, n, v) for k, (e, n, _, _, v) in CROPS.items()}, **PRODUCTS, **ECROPS}   # 창고에 들어가는 것: key → (이모지, 이름, ★1 판매가)
 ANIMAL_PER_PLOTS = 3          # 동물은 땅 3칸당 1마리
 
 # 아이템 (11/12 규완님이 고른 1 · 3 · 4 · 6): key → (이름, 값(코인), 한 줄 설명) — 농사 상점에서 사서 농장의 [아이템]에서 쓴다
@@ -122,7 +135,9 @@ def expand_cost(plots: int) -> int:
 
 # ───────────── ⚒️ 낫 강화 ─────────────
 SICKLE_MAX = 10
-SICKLE_CHANCE = (0.95, 0.90, 0.80, 0.70, 0.60, 0.50, 0.40, 0.30, 0.25, 0.20)   # +N → +N+1 성공 확률 (실패해도 안 내려간다)
+SICKLE_MAX_384 = 15                   # 3.8.4 규완님 '낫 강화 +15까지' (공개 전엔 테스트 서버만 — cog 가 cap 으로 넘긴다)
+SICKLE_CHANCE = (0.95, 0.90, 0.80, 0.70, 0.60, 0.50, 0.40, 0.30, 0.25, 0.20,
+                 0.15, 0.12, 0.10, 0.08, 0.05)   # +N → +N+1 성공 확률 (실패해도 안 내려간다) · +10 부터는 3.8.4 (내 기본값)
 CHARM_BONUS = 0.10                    # 🍀 행운 부적(축구 봇 돈): 성공 확률 +10%p
 CHARM_FEE = 300_000                   # × (다음 강화 단계)
 
@@ -230,7 +245,9 @@ _FARM_DATA = ("farms", "farm_fields", "farm_items", "farm_seeds", "farm_threads"
 def farm_worth(f: dict) -> int:
     """농장 가치 (코인): 농장 코인(3.8.2 코인 지갑은 사람 것이라 빼고) + 창고 + 사 둔 씨앗 · 동물 + 기르는 동물 + 넓힌 땅 + 낫 강화에 든 값 (최소 FARM_WORTH_MIN)."""
     w = f.get("farm_coins", f["coins"]) + sum(value(k, t) * q for k, t, q in f["items"])
-    w += sum((shop_price(k) or 0) * q for k, q in {**f["seeds"], **f.get("tools", {})}.items())
+    if not f.get("bag"):   # 3.8.4 보관함을 하나로 합친 사람은 씨앗 · 동물 · 아이템이 사람 것이라 뺀다
+        w += sum((shop_price(k) or 0) * q for k, q in {**f["seeds"], **f.get("tools", {})}.items())
+        w += sum(CROPS[k][2] * ENCH_MULT * q for k, q in f.get("eseeds", {}).items())   # 3.8.4 인챈트한 씨앗
     w += sum(ANIMALS[p["key"]][2] for p in f["fields"] if p and p["kind"] == "animal")
     w += sum(expand_cost(p) for p in range(PLOTS_BASE, f["plots"]))
     w += sum(sickle_cost(lv) for lv in range(f["sickle"]))
@@ -304,6 +321,10 @@ class FarmDB(EconomyDB):
                 con.execute("ALTER TABLE farms ADD COLUMN fert_on INTEGER NOT NULL DEFAULT 1")
             if "scare_until" not in cols:
                 con.execute("ALTER TABLE farms ADD COLUMN scare_until INTEGER NOT NULL DEFAULT 0")
+            if "ingot" not in cols:   # 3.8.4 숫돌 주괴
+                con.execute("ALTER TABLE farms ADD COLUMN ingot INTEGER NOT NULL DEFAULT 0")
+            if "ench" not in {r[1] for r in con.execute("PRAGMA table_info(farm_fields)")}:   # 3.8.4 인챈트 씨앗을 심은 칸
+                con.execute("ALTER TABLE farm_fields ADD COLUMN ench INTEGER NOT NULL DEFAULT 0")
             if "name" not in cols:   # 3.8.2 농장 이름 (주인이 정한다, 없으면 'ㅇㅇ의 농장')
                 con.execute("ALTER TABLE farms ADD COLUMN name TEXT")
             shop_cols = {r[1] for r in con.execute("PRAGMA table_info(farm_shops)")}
@@ -325,6 +346,12 @@ class FarmDB(EconomyDB):
             # 농장을 판 사람이 남은 농장이 없을 때 받은 인수 대금 (코인) — 다음에 여는 농장에 들어간다
             # (_TABLES 에 넣지 않는다: user_id 열이 있으면 _to_multi 가 옛 표로 본다 → 열 이름도 owner)
             con.execute("CREATE TABLE IF NOT EXISTS farm_held (owner INTEGER PRIMARY KEY, coins INTEGER NOT NULL)")
+            # 3.8.4 사람마다 보관함 하나 — 숫돌 · 상자 · 숫돌 주괴 (farm_stash) 와 사 둔 씨앗 · 동물 · 아이템 (farm_bag)
+            con.execute("CREATE TABLE IF NOT EXISTS farm_stash (owner INTEGER PRIMARY KEY, whet INTEGER NOT NULL DEFAULT 0, "
+                        "c_wood INTEGER NOT NULL DEFAULT 0, c_silver INTEGER NOT NULL DEFAULT 0, c_gold INTEGER NOT NULL DEFAULT 0, "
+                        "ingot INTEGER NOT NULL DEFAULT 0)")
+            con.execute("CREATE TABLE IF NOT EXISTS farm_bag (owner INTEGER NOT NULL, key TEXT NOT NULL, qty INTEGER NOT NULL, "
+                        "PRIMARY KEY(owner, key))")
             # 3.8.2 사람마다 코인 지갑 하나 (농장마다 따로 두지 않는다)
             con.execute("CREATE TABLE IF NOT EXISTS farm_purse (owner INTEGER PRIMARY KEY, coins INTEGER NOT NULL)")
             # 11/12 베타 보상 상자 · 쿠폰 숫돌도 맡아 둔다 (beta = 베타 보상)
@@ -366,12 +393,13 @@ class FarmDB(EconomyDB):
     @staticmethod
     def _farm(con, fid: int, now_ts: int) -> Optional[dict]:
         r = con.execute("SELECT land, coins, energy, energy_ts, plots, sickle, whet, c_wood, c_silver, c_gold, plant_n, "
-                        "daily_day, owner, ask, fert_on, scare_until, name FROM farms WHERE id=?", (int(fid),)).fetchone()
+                        "daily_day, owner, ask, fert_on, scare_until, name, ingot FROM farms WHERE id=?", (int(fid),)).fetchone()
         if not r or r[0] not in LANDS:
             return None
         res = LANDS[r[0]][3]
         purse = FarmDB._purse(con, int(r[12]))   # 3.8.2: 코인 지갑을 쓰는 주인이면 코인은 지갑 (농장 코인은 0)
-        every = ENERGY_SEC * time_mult(res["water"]) / lobby.mult("farm_energy", int(r[12]))   # 3.8.2 /로비 공약
+        every = (ENERGY_SEC * time_mult(res["water"]) / lobby.mult("farm_energy", int(r[12]))   # 3.8.2 /로비 공약
+                 / burning.mult("farm_energy", int(r[12]), now_ts))                         # 3.8.4 수능 버닝
         e = float(r[2])
         emax = energy_max(int(r[4]), purse is not None)
         if e < emax:
@@ -379,18 +407,27 @@ class FarmDB(EconomyDB):
         if purse is not None:
             FarmDB._auto_animals(con, int(fid), res, int(r[5]), now_ts)
         fields: list[Optional[dict]] = [None] * int(r[4])
-        for slot, kind, key, ready in con.execute("SELECT slot, kind, key, ready_ts FROM farm_fields WHERE farm_id=?", (fid,)):
+        for slot, kind, key, ready, ench in con.execute("SELECT slot, kind, key, ready_ts, ench FROM farm_fields WHERE farm_id=?", (fid,)):
             if 0 <= slot < len(fields) and key in (CROPS if kind == "crop" else ANIMALS):
-                fields[slot] = {"kind": kind, "key": key, "ready_ts": int(ready), "ready": now_ts >= int(ready)}
+                fields[slot] = {"kind": kind, "key": key, "ready_ts": int(ready), "ready": now_ts >= int(ready),
+                                "ench": bool(ench) and kind == "crop"}
         items = [(k, int(t), int(q)) for k, t, q in con.execute(
             "SELECT key, tier, qty FROM farm_items WHERE farm_id=? AND qty>0", (fid,)) if k in ITEMS]
         order = list(ITEMS)
         items.sort(key=lambda x: (order.index(x[0]), x[1]))
-        bought = {k: int(q) for k, q in con.execute("SELECT key, qty FROM farm_seeds WHERE farm_id=? AND qty>0", (fid,))
-                  if shop_price(k)}
+        stash = FarmDB._sweep(con, int(r[12]))   # 3.8.4: 보관함을 하나로 합친 주인이면 농장마다 따로 쌓인 것을 보관함으로
+        if stash is None:
+            rows = con.execute("SELECT key, qty FROM farm_seeds WHERE farm_id=? AND qty>0", (fid,)).fetchall()
+        else:
+            rows = con.execute("SELECT key, qty FROM farm_bag WHERE owner=? AND qty>0", (int(r[12]),)).fetchall()
+        bought = {k: int(q) for k, q in rows if shop_price(k)}
+        eseeds = {k[:-len(ENCH)]: int(q) for k, q in rows if k.endswith(ENCH) and k[:-len(ENCH)] in CROPS}   # 3.8.4 인챈트한 씨앗
         seeds = {k: q for k, q in bought.items() if k not in TOOLS}
         tools = {k: bought[k] for k in TOOLS if k in bought}   # 상점에서 사 둔 아이템 (같은 표 farm_seeds)
-        f = {"id": int(fid), "name": r[16] or None, "seeds": seeds, "tools": tools, "fert_on": bool(r[14]), "scare_until": int(r[15] or 0),
+        if stash is not None:
+            r = list(r)
+            r[6], r[7], r[8], r[9], r[17] = stash["whet"], stash["c_wood"], stash["c_silver"], stash["c_gold"], stash["ingot"]
+        f = {"id": int(fid), "name": r[16] or None, "seeds": seeds, "eseeds": eseeds, "ingot": int(r[17] or 0), "bag": stash is not None, "tools": tools, "fert_on": bool(r[14]), "scare_until": int(r[15] or 0),
              "owner": int(r[12]), "land": r[0], "res": res, "coins": int(r[1]) if purse is None else purse,
              "farm_coins": int(r[1]), "v382": purse is not None, "cost": ENERGY_COST_382 if purse is not None else 1,
              "energy_f": e, "energy": int(e),
@@ -402,6 +439,58 @@ class FarmDB(EconomyDB):
         f["worth"] = farm_worth(f)
         f["fair"] = farm_fair(f["worth"], f["ask"])
         return f
+
+    # ───────────── 3.8.4 보관함 하나로 (규완님 '숫돌, 상자, 씨앗, 동물, 아이템 통합') ─────────────
+    # 코인 지갑(3.8.2)처럼 사람마다 하나. 농장에 쌓이는 곳(farms 의 whet · c_* · ingot 칸, farm_seeds)은 그대로 두고 받은 편지함처럼 쓰고,
+    # 농장을 읽을 때마다 그 사람 농장 전부의 것을 보관함으로 옮긴다 (빼 쓴 것은 음수로 남았다가 같이 옮겨진다).
+    _STASH = ("whet", "c_wood", "c_silver", "c_gold", "ingot")
+
+    @classmethod
+    def _sweep(cls, con, owner: int) -> Optional[dict]:
+        """owner 의 보관함 (합치지 않은 사람이면 None). 그 사람 농장들에 쌓인 것을 먼저 옮긴다."""
+        if not con.execute("SELECT 1 FROM farm_stash WHERE owner=?", (int(owner),)).fetchone():
+            return None
+        cols = ", ".join(cls._STASH)
+        for row in con.execute(f"SELECT id, {cols} FROM farms WHERE owner=?", (int(owner),)).fetchall():
+            if any(row[1:]):
+                con.execute(f"UPDATE farm_stash SET {', '.join(f'{c} = {c} + ?' for c in cls._STASH)} WHERE owner=?",
+                            (*[int(x) for x in row[1:]], int(owner)))
+                con.execute(f"UPDATE farms SET {', '.join(f'{c} = 0' for c in cls._STASH)} WHERE id=?", (int(row[0]),))
+        for fid, key, qty in con.execute("SELECT s.farm_id, s.key, s.qty FROM farm_seeds s JOIN farms f ON f.id = s.farm_id "
+                                         "WHERE f.owner=? AND s.qty != 0", (int(owner),)).fetchall():
+            con.execute("INSERT INTO farm_bag(owner, key, qty) VALUES(?,?,?) ON CONFLICT(owner, key) DO UPDATE SET qty = qty + excluded.qty",
+                        (int(owner), key, int(qty)))
+            con.execute("UPDATE farm_seeds SET qty = 0 WHERE farm_id=? AND key=?", (int(fid), key))
+        r = con.execute(f"SELECT {cols} FROM farm_stash WHERE owner=?", (int(owner),)).fetchone()
+        return dict(zip(cls._STASH, (int(x) for x in r)))
+
+    @staticmethod
+    def _seed_add(con, fid: int, key: str, n: int):
+        """농장 fid 의 사 둔 씨앗 · 동물 · 아이템 ± (보관함을 합친 사람은 다음에 읽을 때 보관함으로 옮겨진다)."""
+        con.execute("INSERT INTO farm_seeds(farm_id, key, qty) VALUES(?,?,?) "
+                    "ON CONFLICT(farm_id, key) DO UPDATE SET qty = qty + excluded.qty", (int(fid), key, int(n)))
+
+    async def upgrade_384(self, uid: int) -> bool:
+        """uid 의 숫돌 · 상자 · 씨앗 · 동물 · 아이템을 보관함 하나로 합친다 (이미 합쳤으면 False)."""
+        def fn(con):
+            if con.execute("SELECT 1 FROM farm_stash WHERE owner=?", (int(uid),)).fetchone():
+                return False
+            con.execute("INSERT INTO farm_stash(owner) VALUES(?)", (int(uid),))
+            self._sweep(con, uid)
+            return True
+        return await self._tx(fn)
+
+    async def upgrade_all_384(self) -> int:
+        """3.8.4 공개: 농장이 있는 모든 사람의 보관함을 합친다 → 합친 사람 수."""
+        def fn(con):
+            n = 0
+            for (o,) in con.execute("SELECT DISTINCT owner FROM farms").fetchall():
+                if not con.execute("SELECT 1 FROM farm_stash WHERE owner=?", (int(o),)).fetchone():
+                    con.execute("INSERT INTO farm_stash(owner) VALUES(?)", (int(o),))
+                    self._sweep(con, int(o))
+                    n += 1
+            return n
+        return await self._tx(fn)
 
     async def set_name(self, uid: int, fid: int, name: str, now_ts: int) -> dict:
         """농장 이름 정하기 (주인만, 11/17 규완님 'ㅇㅇ의 농장이 너무 많아지잖아. 구별할 수 있게 이름을 설정해').
@@ -697,7 +786,8 @@ class FarmDB(EconomyDB):
             if key not in CROPS and key not in ANIMALS:
                 return {"ok": False, "reason": "key"}
             bought, have = shop_price(key) is not None, f["seeds"].get(key, 0)
-            if bought and have <= 0:
+            ehave = f["eseeds"].get(key, 0) if key in CROPS else 0   # 3.8.4 인챈트한 씨앗부터 심는다
+            if bought and have + ehave <= 0:
                 return {"ok": False, "reason": "seeds"}
             empty = [i for i, p in enumerate(f["fields"]) if p is None]
             if not empty:
@@ -712,23 +802,27 @@ class FarmDB(EconomyDB):
                     return {"ok": False, "reason": "cap", "cap": f["animal_cap"]}
                 n = 1
             else:
-                sec = CROPS[key][3] * time_mult(f["res"]["soil"]) / lobby.mult("farm_grow", uid)   # 3.8.2 /로비 공약
+                sec = (CROPS[key][3] * time_mult(f["res"]["soil"]) / lobby.mult("farm_grow", uid)   # 3.8.2 /로비 공약
+                       / burning.mult("farm_grow", uid, now_ts))                                    # 3.8.4 수능 버닝
                 n = min(f["plant_n"] or len(empty), len(empty), f["energy"] // cost)
                 if bought:
-                    n = min(n, have)
+                    n = min(n, have + ehave)
+            en = min(n, ehave)   # 인챈트 씨앗으로 심는 칸
             ready = int(now_ts + sec)
             # 비료 (켜 두면): 작물 한 칸에 하나씩, 그 칸은 절반 시간에 자란다
             fert = min(n, f["tools"].get("fert", 0)) if not animal and f["fert_on"] else 0
             fert_ready = int(now_ts + sec * FERT_MULT)
             for i, slot in enumerate(empty[:n]):
-                con.execute("INSERT OR REPLACE INTO farm_fields(farm_id, slot, kind, key, ready_ts) VALUES(?,?,?,?,?)",
-                            (fid, slot, "animal" if animal else "crop", key, fert_ready if i < fert else ready))
-            if bought:
-                con.execute("UPDATE farm_seeds SET qty = qty - ? WHERE farm_id=? AND key=?", (n, fid, key))
+                con.execute("INSERT OR REPLACE INTO farm_fields(farm_id, slot, kind, key, ready_ts, ench) VALUES(?,?,?,?,?,?)",
+                            (fid, slot, "animal" if animal else "crop", key, fert_ready if i < fert else ready, 1 if i < en else 0))
+            if en:
+                self._seed_add(con, fid, key + ENCH, -en)
+            if bought and n - en:
+                self._seed_add(con, fid, key, -(n - en))
             if fert:
-                con.execute("UPDATE farm_seeds SET qty = qty - ? WHERE farm_id=? AND key='fert'", (fert, fid))
+                self._seed_add(con, fid, "fert", -fert)
             self._spend(con, fid, f, n * cost, now_ts)
-            return {"ok": True, "key": key, "animal": animal, "count": n, "ready_ts": ready, "left": have - n if bought else None,
+            return {"ok": True, "key": key, "animal": animal, "count": n, "ready_ts": ready, "left": have - (n - en) if bought else None, "ench": en, "ench_left": ehave - en,
                     "fert": fert, "fert_ready": fert_ready, "fert_left": f["tools"].get("fert", 0) - fert}
         return await self._tx(fn)
 
@@ -755,7 +849,7 @@ class FarmDB(EconomyDB):
             hp = high_p(f["sickle"]) + (SCARE_BONUS if scare else 0)
             for slot, p in ready[:n]:
                 if p["kind"] == "crop":
-                    key = p["key"]
+                    key = p["key"] + (ENCH if p.get("ench") else "")   # 3.8.4 인챈트 씨앗을 심은 칸은 인챈트 작물
                     con.execute("DELETE FROM farm_fields WHERE farm_id=? AND slot=?", (fid, slot))
                 else:
                     key = ANIMALS[p["key"]][3]
@@ -819,7 +913,7 @@ class FarmDB(EconomyDB):
                 until = max(int(now_ts), f["scare_until"]) + SCARE_SEC
                 con.execute("UPDATE farms SET scare_until=? WHERE id=?", (until, fid))
                 out.update(until=until)
-            con.execute("UPDATE farm_seeds SET qty = qty - ? WHERE farm_id=? AND key=?", (used, fid, key))
+            self._seed_add(con, fid, key, -used)
             return out
         return await self._tx(fn)
 
@@ -856,7 +950,8 @@ class FarmDB(EconomyDB):
             sold = [(k, t, min(q, int(n)) if n else q) for k, t, q in have]
             if not sold:
                 return {"ok": False, "reason": "empty"}
-            total = int(sum(value(k, t) * q for k, t, q in sold) * lobby.mult("farm_sell", uid))   # 3.8.2 /로비 공약
+            total = int(sum(value(k, t) * q for k, t, q in sold) * lobby.mult("farm_sell", uid)   # 3.8.2 /로비 공약
+                        * burning.mult("farm_sell", uid, now_ts))                         # 3.8.4 수능 버닝
             for (k, t, q), (_, _, left) in zip(sold, have):
                 if q < left:
                     con.execute("UPDATE farm_items SET qty = qty - ? WHERE farm_id=? AND key=? AND tier=?", (q, fid, k, t))
@@ -899,7 +994,8 @@ class FarmDB(EconomyDB):
         return await self._tx(fn)
 
     # ───────────── 낫 강화 ─────────────
-    async def enhance(self, uid: int, fid: int, now_ts: int, use_whet: bool = False, charm: bool = False, rng=random) -> dict:
+    async def enhance(self, uid: int, fid: int, now_ts: int, use_whet: bool = False, charm: bool = False, rng=random,
+                      cap: int = SICKLE_MAX) -> dict:
         """낫 강화 — 코인 또는 숫돌. charm = 🍀 행운 부적(축구 봇 돈)으로 성공 확률 +10%p. 실패해도 단계는 그대로.
         reason: none / max / coins(cost) / whet(need) / money(fee)."""
         def fn(con):
@@ -907,7 +1003,7 @@ class FarmDB(EconomyDB):
             if not f:
                 return {"ok": False, "reason": "none"}
             lv = f["sickle"]
-            if lv >= SICKLE_MAX:
+            if lv >= cap:
                 return {"ok": False, "reason": "max"}
             cost, need, fee = sickle_cost(lv), sickle_whet(lv), CHARM_FEE * (lv + 1)
             if use_whet and f["whet"] < need:
@@ -927,6 +1023,41 @@ class FarmDB(EconomyDB):
             if success:
                 con.execute("UPDATE farms SET sickle = sickle + 1 WHERE id=?", (fid,))
             return {"ok": True, "success": success, "level": lv + success, "chance": p, "fee": fee if charm else 0}
+        return await self._tx(fn)
+
+    # ───────────── 3.8.4 숫돌 주괴 · 씨앗 인챈트 ─────────────
+    async def make_ingot(self, uid: int, fid: int, now_ts: int, n: Optional[int] = None) -> dict:
+        """숫돌 INGOT_NEED 개 → 숫돌 주괴 1개 (n = 만들 개수, None 이면 되는 만큼). reason: none / whet(have)."""
+        def fn(con):
+            f = self._mine(con, uid, fid, now_ts)
+            if not f:
+                return {"ok": False, "reason": "none"}
+            can = f["whet"] // INGOT_NEED
+            k = can if n is None else min(int(n), can)
+            if k <= 0:
+                return {"ok": False, "reason": "whet", "have": f["whet"]}
+            con.execute("UPDATE farms SET whet = whet - ?, ingot = ingot + ? WHERE id=?", (k * INGOT_NEED, k, fid))
+            return {"ok": True, "made": k, "ingot": f["ingot"] + k, "whet": f["whet"] - k * INGOT_NEED}
+        return await self._tx(fn)
+
+    async def enchant(self, uid: int, fid: int, key: str, now_ts: int) -> dict:
+        """숫돌 주괴 1개로 사 둔 씨앗 ENCH_SEEDS 개를 인챈트한다. reason: none / key / ingot / seeds(have)."""
+        def fn(con):
+            f = self._mine(con, uid, fid, now_ts)
+            if not f:
+                return {"ok": False, "reason": "none"}
+            if key not in CROPS or not CROPS[key][2]:
+                return {"ok": False, "reason": "key"}
+            if f["ingot"] <= 0:
+                return {"ok": False, "reason": "ingot"}
+            have = f["seeds"].get(key, 0)
+            if have < ENCH_SEEDS:
+                return {"ok": False, "reason": "seeds", "have": have}
+            con.execute("UPDATE farms SET ingot = ingot - 1 WHERE id=?", (fid,))
+            self._seed_add(con, fid, key, -ENCH_SEEDS)
+            self._seed_add(con, fid, key + ENCH, ENCH_SEEDS)
+            return {"ok": True, "key": key, "n": ENCH_SEEDS, "ingot": f["ingot"] - 1, "left": have - ENCH_SEEDS,
+                    "eseeds": f["eseeds"].get(key, 0) + ENCH_SEEDS}
         return await self._tx(fn)
 
     # ───────────── 상자 ─────────────
