@@ -10,7 +10,7 @@ from typing import Optional
 TEST_GUILD = 757761125403066419   # 2026-11-11 부터 (그 전엔 1374213619793006704)
 RELEASE_TS: Optional[int] = calendar.timegm((2026, 10, 19, 15, 0, 0))   # 2.8 공개: 2026-10-20 00:00 KST
 MAINT_OPEN_END = calendar.timegm((2100, 1, 1, 0, 0, 0))   # 끝 시각을 정하지 않은 무기한 점검
-MAINTENANCE = (calendar.timegm((2026, 11, 17, 7, 30, 0)), calendar.timegm((2026, 11, 17, 7, 35, 0)))   # 11/17 16:30 ~ 16:35 KST — 3.8.2 점검
+MAINTENANCE = (calendar.timegm((2026, 11, 21, 1, 0, 0)), calendar.timegm((2026, 11, 21, 1, 20, 0)))   # 11/21 10:00 ~ 10:20 KST — 3.9.1 점검
 # 3.7.4 점검은 11/04 14:10 ~ 14:15 KST 였다
 # 3.7.2 점검은 11/03 09:20 ~ 10:05 KST 였다 (연장 → 3.7.3 공개하고 끝)
 # 3.7.1 점검은 11/02 10:50 ~ 11:00 KST 였다
@@ -311,7 +311,7 @@ def farm_beta_over(guild_id: Optional[int], now: Optional[float] = None) -> bool
 RELEASE_382_TS: Optional[int] = calendar.timegm((2026, 11, 17, 7, 30, 0))   # 2026-11-17 16:30 KST (점검 시작과 함께 공개)
 PREVIEW_382: set[str] = set()
 # 11/17 규완님 '/로비는 다음 패치 때 업데이트' — /로비 는 3.8.2 공개에서 빼고 테스트 서버에만. None = 아직
-RELEASE_LOBBY_TS: Optional[int] = None
+RELEASE_LOBBY_TS: Optional[int] = calendar.timegm((2026, 11, 21, 1, 0, 0))   # 2026-11-21 10:00 KST — 3.9.1 점검 시작과 함께 (RELEASE_384_TS 와 같게)
 PREVIEW_LOBBY: set[str] = {"로비"}
 
 
@@ -366,7 +366,7 @@ def preview_383(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 
 # 3.8.4 — 공개 전엔 테스트 서버에서만: /로비 첫 버전(주간 대선) + 투표 · 베팅 · 탄핵, 농사 숫돌 주괴 · 씨앗 인챈트 · 낫 +15, 수능 버닝 이벤트.
 # /로비 는 RELEASE_LOBBY_TS (위) 로 따로 연다 — 3.8.4 공개 때 같은 시각으로 맞춘다. None = 아직
-RELEASE_384_TS: Optional[int] = None
+RELEASE_384_TS: Optional[int] = calendar.timegm((2026, 11, 21, 1, 0, 0))   # 2026-11-21 10:00 KST — 3.9.1 점검 시작과 함께 공개
 PREVIEW_384: set[str] = {"버닝"}   # 3.9.1 수능 버닝 미션 화면
 
 

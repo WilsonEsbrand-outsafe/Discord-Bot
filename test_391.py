@@ -11,6 +11,7 @@ import services.economy_db as edb
 edb.DB_PATH = Path(tempfile.mkdtemp()) / "t391.sqlite3"
 
 import release  # noqa: E402
+release.RELEASE_384_TS = release.RELEASE_LOBBY_TS = None   # 공개 전(테스트 서버만) 기준으로 본다 — 공개 뒤 동작은 테스트 안에서 시각을 넣어 본다
 from services import burning as B  # noqa: E402
 from services import fishing as FI  # noqa: E402
 from services import lobby as L  # noqa: E402
@@ -136,8 +137,12 @@ def test_burning_missions():
     L.TESTERS.add(U)
     try:
         r = run(db._tx(lambda c: B.claim(c, U, MID)))
-        want = sum(m[4] for m in B.MISSIONS if m[0] in {"attend3", "fish50", "harvest50", "play30"})
-        assert len(r["claimed"]) == 4 and r["money"] == want and _bal(U) == want
+        assert len(r["claimed"]) == 4 and r["items"] == {"scout_skip": 1, "auto_fish": 2, "watch_skip": 1}
+        con = _con()
+        inv = dict(con.execute("SELECT item, qty FROM inventory WHERE user_id=?", (U,)).fetchall())
+        con.close()
+        assert inv == {"scout_skip": 1, "auto_fish": 2, "watch_skip": 1}
+        assert all(k in edb.ITEMS and k not in edb.ITEM_PRICES for m in B.MISSIONS for k in m[4])   # 상점에서 못 사는 것만
         assert run(db._tx(lambda c: B.claim(c, U, MID)))["claimed"] == []          # 한 번씩만
         assert run(db._tx(lambda c: B.claim(c, U, B.END + B.CLAIM_GRACE)))["claimed"] == []
     finally:
@@ -157,10 +162,10 @@ def test_burning_ui_smoke():
         id, display_name, mention, guild = 1, "테스터", "<@1>", None
         class display_avatar:
             url = "https://example.com/a.png"
-    rows = [{"key": k, "name": n, "what": w, "goal": g, "money": m, "value": 0, "done": False, "claimed": False}
+    rows = [{"key": k, "name": n, "what": w, "goal": g, "items": m, "value": 0, "done": False, "claimed": False}
             for k, n, w, g, m in B.MISSIONS]
     e = burning_embed(U(), rows, MID, "")
-    assert e.title == B.NAME and len(e.fields) == 2 and "500만원" in e.fields[1].value and "1억원" in e.fields[1].value
+    assert e.title == B.NAME and len(e.fields) == 2 and "변호사 선임권" in e.fields[1].value and "얼티밋팩 교환권" in e.fields[1].value
     assert len(e.fields[1].value) <= 1024
 
 
