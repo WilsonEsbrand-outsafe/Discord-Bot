@@ -8,7 +8,7 @@ from discord.ext import commands, tasks
 
 from services import burning as B
 from services import ui
-from services.economy_db import EconomyDB
+from services.economy_db import ITEMS, EconomyDB
 
 SECTION = "수능 버닝"
 
@@ -18,12 +18,9 @@ def _kst(ts: int) -> str:
     return f"{t.tm_mon}월 {t.tm_mday}일 {t.tm_hour:02d}:{t.tm_min:02d}"
 
 
-def _won(n: int) -> str:
-    if n >= 100_000_000 and n % 100_000_000 == 0:
-        return f"{n // 100_000_000}억원"
-    if n >= 10_000 and n % 10_000 == 0:
-        return f"{n // 10_000:,}만원"
-    return f"{n:,}원"
+def _items(items: dict) -> str:
+    """{'lawyer': 1} → '변호사 선임권' (2개 이상이면 '변호사 선임권 2개')."""
+    return ", ".join(ITEMS[k][1] + (f" {q}개" if q > 1 else "") for k, q in items.items())
 
 
 def burning_embed(user, rows: list[dict], now: float, note: str = "") -> discord.Embed:
@@ -38,7 +35,7 @@ def burning_embed(user, rows: list[dict], now: float, note: str = "") -> discord
     lines = []
     for m in rows:
         state = "받음" if m["claimed"] else ("받을 수 있어요" if m["done"] else f"{m['value']:,}/{m['goal']:,}{B.UNIT[m['what']]}")
-        lines.append(f"**{m['name']}** {_won(m['money'])}\n`{ui.bar(m['value'], m['goal'])}` {state}")
+        lines.append(f"**{m['name']}** {_items(m['items'])}\n`{ui.bar(m['value'], m['goal'])}` {state}")
     e.add_field(name="버닝 미션", value="\n".join(lines), inline=False)
     e.set_footer(text="플레이 시간은 봇을 쓴 시간이에요 (1분 안에 한 번이라도 쓰면 1분). 물고기는 자동 낚시도 세요.")
     return e
@@ -64,7 +61,7 @@ class BurningView(discord.ui.View):
         now = time.time()
         r = await self.cog.db._tx(lambda con: B.claim(con, self.user.id, now))
         rows = await self.cog.rows(self.user.id)
-        note = (f"보상 {len(r['claimed'])}개 **+{r['money']:,}원** 받았어요. 잔액 **{r['balance']:,}원**"
+        note = (f"미션 {len(r['claimed'])}개 보상으로 **{_items(r['items'])}** 을(를) 받았어요. `/가방` 에 넣었어요."
                 if r["claimed"] else "지금 받을 보상이 없어요.")
         await interaction.response.edit_message(embed=burning_embed(self.user, rows, now, note),
                                                 view=BurningView(self.cog, self.user, rows))

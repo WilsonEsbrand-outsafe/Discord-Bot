@@ -11,6 +11,7 @@ import services.economy_db as edb
 edb.DB_PATH = Path(tempfile.mkdtemp()) / "t384.sqlite3"
 
 import release  # noqa: E402
+release.RELEASE_384_TS = release.RELEASE_LOBBY_TS = None   # 공개 전(테스트 서버만) 기준으로 본다 — 공개 뒤 동작은 테스트 안에서 시각을 넣어 본다
 import services.farm as F  # noqa: E402
 from services import burning  # noqa: E402
 from services import lobby as L  # noqa: E402

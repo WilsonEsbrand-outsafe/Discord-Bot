@@ -24,19 +24,20 @@ TEXT = ("농작물이 두 배 빨리 자라요", "농사 에너지가 두 배 �
         "물고기 판매 1.5배", "낚시 경험치 두 배")
 
 # ───────────── 버닝 미션 ─────────────
-# (키, 이름, 세는 것, 목표, 보상 돈). 세는 것: play(봇을 쓴 시간, 분) · attend(기간 중 출석한 날) · fish(낚은 물고기) · harvest(농사 거두기)
+# 11/21 규완님 '버닝 미션 보상은 얻기 어려운 아이템 ex) 변호사 선임권으로 주자' — 상점에서 못 사는 아이템만. 어떤 미션에 무엇을 줄지는 내 기본값.
+# (키, 이름, 세는 것, 목표, 보상 {아이템: 수}). 세는 것: play(봇을 쓴 시간, 분) · attend(기간 중 출석한 날) · fish(낚은 물고기) · harvest(농사 거두기)
 MISSIONS = (
-    ("play30", "플레이 30분", "play", 30, 5_000_000),
-    ("play60", "플레이 1시간", "play", 60, 10_000_000),
-    ("play180", "플레이 3시간", "play", 180, 30_000_000),
-    ("play300", "플레이 5시간", "play", 300, 50_000_000),
-    ("attend3", "출석 3일", "attend", 3, 10_000_000),
-    ("attend6", "출석 6일", "attend", 6, 30_000_000),
-    ("attend9", "출석 9일 (매일)", "attend", 9, 100_000_000),
-    ("fish50", "물고기 50마리 낚기", "fish", 50, 10_000_000),
-    ("fish200", "물고기 200마리 낚기", "fish", 200, 30_000_000),
-    ("harvest50", "농사 50번 거두기", "harvest", 50, 10_000_000),
-    ("harvest200", "농사 200번 거두기", "harvest", 200, 30_000_000),
+    ("play30", "플레이 30분", "play", 30, {"watch_skip": 1}),
+    ("play60", "플레이 1시간", "play", 60, {"train_skip": 1}),
+    ("play180", "플레이 3시간", "play", 180, {"auto_fish": 1}),
+    ("play300", "플레이 5시간", "play", 300, {"lawyer": 1}),
+    ("attend3", "출석 3일", "attend", 3, {"scout_skip": 1}),
+    ("attend6", "출석 6일", "attend", 6, {"lawyer": 1}),
+    ("attend9", "출석 9일 (매일)", "attend", 9, {"pack_ticket": 1}),
+    ("fish50", "물고기 50마리 낚기", "fish", 50, {"auto_fish": 1}),
+    ("fish200", "물고기 200마리 낚기", "fish", 200, {"lawyer": 1}),
+    ("harvest50", "농사 50번 거두기", "harvest", 50, {"auto_fish": 1}),
+    ("harvest200", "농사 200번 거두기", "harvest", 200, {"pack_ticket": 1}),
 )
 UNIT = {"play": "분", "attend": "일", "fish": "마리", "harvest": "번"}
 
@@ -109,23 +110,24 @@ def status(con, uid: int) -> list[dict]:
         got = {m for (m,) in con.execute("SELECT mission FROM burn_claims WHERE user_id=?", (int(uid),))}
     except sqlite3.OperationalError:
         got = set()
-    return [{"key": k, "name": name, "what": what, "goal": goal, "money": money, "value": min(have[what], goal),
-             "done": have[what] >= goal, "claimed": k in got} for k, name, what, goal, money in MISSIONS]
+    return [{"key": k, "name": name, "what": what, "goal": goal, "items": items, "value": min(have[what], goal),
+             "done": have[what] >= goal, "claimed": k in got} for k, name, what, goal, items in MISSIONS]
 
 
 def claim(con, uid: int, now: float) -> dict:
-    """다 채운 · 안 받은 미션 보상을 한 번에 → {claimed: [이름], money, balance}. 버닝이 끝나도 3일 동안은 받을 수 있다."""
+    """다 채운 · 안 받은 미션 보상(아이템)을 한 번에 → {claimed: [이름], items: {아이템: 수}}. 버닝이 끝나도 사흘 동안은 받을 수 있다."""
+    from services.economy_db import give_item
     if not can_claim(uid, now):
-        return {"claimed": [], "money": 0, "balance": None}
+        return {"claimed": [], "items": {}}
     rows = [m for m in status(con, uid) if m["done"] and not m["claimed"]]
-    money = sum(m["money"] for m in rows)
+    items: dict[str, int] = {}
     for m in rows:
         con.execute("INSERT INTO burn_claims(user_id, mission, ts) VALUES(?, ?, ?)", (int(uid), m["key"], int(now)))
-    con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (int(uid),))
-    if money:
-        con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (money, int(uid)))
-    bal = con.execute("SELECT balance FROM wallets WHERE user_id=?", (int(uid),)).fetchone()[0]
-    return {"claimed": [m["name"] for m in rows], "money": money, "balance": int(bal)}
+        for k, q in m["items"].items():
+            items[k] = items.get(k, 0) + q
+    for k, q in items.items():
+        give_item(con, uid, k, q)
+    return {"claimed": [m["name"] for m in rows], "items": items}
 
 
 CLAIM_GRACE = 3 * 86400   # 끝난 뒤에도 사흘 동안은 다 채운 보상을 받을 수 있다
