@@ -249,3 +249,41 @@ def test_new_animals():
     assert CF.shop_ver(release.TEST_GUILD) == 7
     emojis = [v[0] for v in F.PRODUCTS.values()] + [v[0] for v in F.ANIMALS.values()]
     assert len(set(emojis)) == len(emojis)                                                    # 밭 그림이 겹치지 않게
+
+
+def test_replant_and_live_refresh():
+    """3.8.4 [다시 심기] (마지막으로 심은 것) · 농장 화면 저절로 새로고침 (같은 글을 고친다, 바뀐 게 있을 때만)."""
+    import time as _t
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+    from cogs import farm as CF
+    db = F.FarmDB()
+    T = int(_t.time())
+
+    async def flow():
+        A = 38440
+        G = (await db.create(A, "plain", T))["id"]
+        await db.upgrade(A)
+        await db.upgrade_384(A)
+        f = await db.get(G, T)
+        assert f["last_plant"] is None
+        btn = {b.custom_id: b for b in CF.FarmPanel(None, f).children if hasattr(b, "custom_id")}
+        assert "farm:refresh" not in btn and btn["farm:replant"].disabled
+        assert (await db.plant(A, G, "carrot", T))["ok"]
+        f = await db.get(G, T)
+        btn = {b.custom_id: b for b in CF.FarmPanel(None, f).children if hasattr(b, "custom_id")}
+        assert f["last_plant"] == "carrot" and btn["farm:replant"].label == "다시 심기: 당근" and not btn["farm:replant"].disabled
+        assert "farm:refresh" in {b.custom_id for b in CF.FarmPanel(None, None).children}           # 재시작용 화면
+        cog = CF.Farm.__new__(CF.Farm)
+        cog.bot, cog.db, cog._live = MagicMock(), db, {}
+        cog.big = lambda ch: False
+        member = SimpleNamespace(id=A, display_name="t", display_avatar=SimpleNamespace(url="x"), mention="@t")
+        th = SimpleNamespace(id=5, guild=SimpleNamespace(id=release.TEST_GUILD, get_member=lambda i: member))
+        msg = SimpleNamespace(id=1, channel=th, edit=AsyncMock())
+        cog.track(msg, G, "심었어요")
+        await cog._live_one(cog._live[5], T + 1)
+        await cog._live_one(cog._live[5], T + 1)
+        assert msg.edit.await_count == 1                                                            # 그대로면 안 고친다
+        cog.track(SimpleNamespace(id=2, channel=SimpleNamespace(id=6, guild=SimpleNamespace(id=1))), G)
+        assert 6 not in cog._live                                                                   # 공개 전엔 테스트 서버만
+    run(flow())

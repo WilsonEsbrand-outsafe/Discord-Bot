@@ -321,6 +321,8 @@ class FarmDB(EconomyDB):
                 con.execute("ALTER TABLE farms ADD COLUMN fert_on INTEGER NOT NULL DEFAULT 1")
             if "scare_until" not in cols:
                 con.execute("ALTER TABLE farms ADD COLUMN scare_until INTEGER NOT NULL DEFAULT 0")
+            if "last_plant" not in cols:   # 3.8.4 마지막으로 심은 작물 · 입양한 동물 (다시 심기 버튼)
+                con.execute("ALTER TABLE farms ADD COLUMN last_plant TEXT")
             if "ingot" not in cols:   # 3.8.4 숫돌 주괴
                 con.execute("ALTER TABLE farms ADD COLUMN ingot INTEGER NOT NULL DEFAULT 0")
             if "ench" not in {r[1] for r in con.execute("PRAGMA table_info(farm_fields)")}:   # 3.8.4 인챈트 씨앗을 심은 칸
@@ -393,7 +395,7 @@ class FarmDB(EconomyDB):
     @staticmethod
     def _farm(con, fid: int, now_ts: int) -> Optional[dict]:
         r = con.execute("SELECT land, coins, energy, energy_ts, plots, sickle, whet, c_wood, c_silver, c_gold, plant_n, "
-                        "daily_day, owner, ask, fert_on, scare_until, name, ingot FROM farms WHERE id=?", (int(fid),)).fetchone()
+                        "daily_day, owner, ask, fert_on, scare_until, name, ingot, last_plant FROM farms WHERE id=?", (int(fid),)).fetchone()
         if not r or r[0] not in LANDS:
             return None
         res = LANDS[r[0]][3]
@@ -427,7 +429,8 @@ class FarmDB(EconomyDB):
         if stash is not None:
             r = list(r)
             r[6], r[7], r[8], r[9], r[17] = stash["whet"], stash["c_wood"], stash["c_silver"], stash["c_gold"], stash["ingot"]
-        f = {"id": int(fid), "name": r[16] or None, "seeds": seeds, "eseeds": eseeds, "ingot": int(r[17] or 0), "bag": stash is not None, "tools": tools, "fert_on": bool(r[14]), "scare_until": int(r[15] or 0),
+        f = {"id": int(fid), "name": r[16] or None, "seeds": seeds, "eseeds": eseeds, "ingot": int(r[17] or 0), "bag": stash is not None,
+             "last_plant": r[18] if r[18] in CROPS or r[18] in ANIMALS else None, "tools": tools, "fert_on": bool(r[14]), "scare_until": int(r[15] or 0),
              "owner": int(r[12]), "land": r[0], "res": res, "coins": int(r[1]) if purse is None else purse,
              "farm_coins": int(r[1]), "v382": purse is not None, "cost": ENERGY_COST_382 if purse is not None else 1,
              "energy_f": e, "energy": int(e),
@@ -822,6 +825,7 @@ class FarmDB(EconomyDB):
             if fert:
                 self._seed_add(con, fid, "fert", -fert)
             self._spend(con, fid, f, n * cost, now_ts)
+            con.execute("UPDATE farms SET last_plant=? WHERE id=?", (key, fid))
             return {"ok": True, "key": key, "animal": animal, "count": n, "ready_ts": ready, "left": have - (n - en) if bought else None, "ench": en, "ench_left": ehave - en,
                     "fert": fert, "fert_ready": fert_ready, "fert_left": f["tools"].get("fert", 0) - fert}
         return await self._tx(fn)
