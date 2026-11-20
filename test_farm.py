@@ -302,7 +302,7 @@ def test_takeover():
         assert f["worth"] == F.FARM_WORTH_MIN and f["fair"] == F.FARM_WORTH_MIN * 3 and f["offers"] == 0
         con = sqlite3.connect(edb.DB_PATH)
         con.execute("UPDATE farms SET coins=1000, plots=8, sickle=2 WHERE id=?", (G,))
-        con.execute("INSERT INTO farm_fields VALUES(?, 0, 'animal', 'chicken', ?)", (G, T + 99))
+        con.execute("INSERT INTO farm_fields(farm_id, slot, kind, key, ready_ts) VALUES(?, 0, 'animal', 'chicken', ?)", (G, T + 99))
         con.execute("INSERT INTO farm_items VALUES(?, 'corn', 2, 2)", (G,))
         con.commit(); con.close()
         worth = 1000 + 300 + 2 * F.value("corn", 2) + 150 + 400 + 150 + 600

@@ -357,3 +357,16 @@ def released_383(now: Optional[float] = None) -> bool:
 
 def preview_383(guild_id: Optional[int], now: Optional[float] = None) -> bool:
     return guild_id == TEST_GUILD or released_383(now)
+
+
+# 3.8.4 — 공개 전엔 테스트 서버에서만: /로비 첫 버전(주간 대선) + 투표 · 베팅 · 탄핵, 농사 숫돌 주괴 · 씨앗 인챈트 · 낫 +15, 수능 버닝 이벤트.
+# /로비 는 RELEASE_LOBBY_TS (위) 로 따로 연다 — 3.8.4 공개 때 같은 시각으로 맞춘다. None = 아직
+RELEASE_384_TS: Optional[int] = None
+
+
+def released_384(now: Optional[float] = None) -> bool:
+    return RELEASE_384_TS is not None and _now(now) >= RELEASE_384_TS
+
+
+def preview_384(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_384(now)
