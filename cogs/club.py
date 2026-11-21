@@ -243,11 +243,11 @@ class Club(commands.Cog):
     @app_commands.command(name="구단", description="구단 정보와 선발 명단을 봅니다. (다른 유저 구단도 가능)")
     @app_commands.describe(유저="볼 구단의 주인 (비우면 내 구단)")
     async def show_club(self, interaction: discord.Interaction, 유저: Optional[discord.Member] = None):
+        await interaction.response.defer()   # 11/22 '적시에 응답하지 않았다' — DB 를 읽기 전에 먼저 응답한다
         hubs = self.bot.get_cog("Hubs") if self.bot else None
         if hubs and release.preview(interaction.guild_id) and (유저 is None or 유저.id == interaction.user.id) \
                 and await self.clubs.get_club(interaction.user.id):   # 2.8: 내 구단은 허브 화면 (◀ 🏠 ▶)
             return await hubs.club_view(interaction.user, guild_id=interaction.guild_id).send(interaction, ephemeral=False)
-        await interaction.response.defer()
         owner = 유저 or interaction.user
         team = await self.clubs.get_team(owner.id)
         if not team:

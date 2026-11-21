@@ -26,7 +26,7 @@ USER = SimpleNamespace(id=U, display_name="허브", display_avatar=SimpleNamespa
 
 class Resp:
     def __init__(self, log):
-        self.log, self.done = log, False
+        self.log, self.done, self.eph = log, False, None
 
     def is_done(self):
         return self.done
@@ -38,13 +38,15 @@ class Resp:
     edit_message = send_message
 
     async def defer(self, *a, **k):
-        self.done = True
+        self.done, self.eph = True, k.get("ephemeral", False)   # 11/22 허브 화면은 먼저 defer 하고 그 글을 고친다
 
 
 def _inter(log, guild=release.TEST_GUILD):
+    resp = Resp(log)
+
     async def edit_orig(*a, **k):
-        log.append(((k.get("embeds") or [k.get("embed")])[-1], k.get("view"), None))
-    return SimpleNamespace(user=USER, guild_id=guild, response=Resp(log), edit_original_response=edit_orig,
+        log.append(((k.get("embeds") or [k.get("embed")])[-1], k.get("view"), resp.eph))
+    return SimpleNamespace(user=USER, guild_id=guild, response=resp, edit_original_response=edit_orig,
                            followup=SimpleNamespace(send=edit_orig))
 
 
