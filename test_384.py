@@ -171,6 +171,10 @@ def test_farm_ingot_enchant_sickle():
         assert f["ingot"] == 1 and f["seeds"]["potato"] == 10 and f["eseeds"] == {"potato": 50}
         p = await db.plant(A, fid, "potato", T)                                     # 인챈트 씨앗부터
         assert p["ok"] and p["ench"] == p["count"] == 6 and p["ench_left"] == 44 and p["left"] == 10
+        con = sqlite3.connect(edb.DB_PATH)                                          # 3.9.1 인챈트 칸은 10% 늦게
+        readys = {r for (r,) in con.execute("SELECT ready_ts FROM farm_fields WHERE farm_id=? AND ench=1", (fid,))}
+        con.close()
+        assert readys == {int(T + (p["ready_ts"] - T) * F.ENCH_SLOW)} and p["ready_ts"] > T
         h = await db.harvest(A, fid, T + 10 ** 5, random.Random(1))
         assert h["ok"] and all(k == "potato" + F.ENCH for (k, _), _ in h["got"].items())
         assert F.value("potato" + F.ENCH, 1) == F.value("potato", 1) * F.ENCH_MULT
@@ -247,7 +251,7 @@ def test_new_animals():
     assert all(k in F.ANIMALS and F.ANIMALS[k][3] in F.PRODUCTS for k in F.NEW_ANIMALS_384)
     assert set(F.NEW_ANIMALS_384) <= set(CF._animals_for(release.TEST_GUILD))
     assert not set(F.NEW_ANIMALS_384) & set(CF._animals_for(1))
-    assert CF.shop_ver(release.TEST_GUILD) == 7
+    assert CF.shop_ver(release.TEST_GUILD) == 8                                  # 3.9.1 아이템 값
     emojis = [v[0] for v in F.PRODUCTS.values()] + [v[0] for v in F.ANIMALS.values()]
     assert len(set(emojis)) == len(emojis)                                                    # 밭 그림이 겹치지 않게
 

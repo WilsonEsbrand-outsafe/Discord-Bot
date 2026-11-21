@@ -29,6 +29,9 @@ LIVE_FOR = 600      # 마지막으로 누른 뒤 이만큼(초) 동안만 (아�
 LIVE_NOTE = 60      # 버튼을 누른 결과 문구는 이만큼(초) 동안 남겨 둔다
 SHOPS: dict[int, int] = {}   # 서버 → 농사 상점 스레드 (farm_shops 표를 읽어 둔 것)
 SHOP_MSGS: dict[int, tuple[Optional[int], int]] = {}   # 서버 → (상점 글, 상점 화면 버전)
+# 11/21 규완님 '봇 테스트 서버는 축구-봇 채팅 채널에 농사 상점 스레드를 열어줘 지금은 #패치노트에 열려있어'
+# 서버 → 상점 스레드를 열 채널 이름 (패치노트 채널 대신). 다른 채널에 열려 있던 상점은 이 채널로 옮기고 옛 스레드는 지운다.
+SHOP_HOME = {release.TEST_GUILD: "축구-봇"}
 
 
 def _name(key: str) -> str:
@@ -227,7 +230,7 @@ def help_embed(user, v382: bool = False, v384: bool = False) -> discord.Embed:
     if v384:
         e.add_field(name="숫돌 주괴와 인챈트", inline=False, value=(
             f"**아이템**에서 숫돌 {F.INGOT_NEED}개로 숫돌 주괴를 만들어요.\n"
-            f"숫돌 주괴 1개로 사 둔 씨앗 {F.ENCH_SEEDS}개를 인챈트하면, 그 씨앗으로 기른 작물이 훨씬 비싸게 팔려요.\n"
+            f"숫돌 주괴 1개로 사 둔 씨앗 {F.ENCH_SEEDS}개를 인챈트하면, 그 씨앗으로 기른 작물이 훨씬 비싸게 팔려요. 대신 조금 늦게 자라고 수능 버닝 효과는 받지 않아요.\n"
             "인챈트한 씨앗은 심을 때 먼저 써요."))
     return e
 
@@ -781,7 +784,7 @@ class ItemView(_Sub):
         if self.v384:
             desc += (f"\n**숫돌 주괴**: 숫돌 {F.INGOT_NEED}개로 만들어요.\n"
                      f"**씨앗 인챈트**: 숫돌 주괴 1개로 사 둔 씨앗 {F.ENCH_SEEDS}개를 인챈트해요. "
-                     "인챈트한 씨앗으로 기른 작물은 훨씬 비싸게 팔려요.")
+                     "인챈트한 씨앗으로 기른 작물은 훨씬 비싸게 팔리는 대신 조금 늦게 자라고 수능 버닝 효과는 받지 않아요.")
         e = ui.card("아이템", (f"{self.note}\n\n" if self.note else "") + desc
                     + f"\n-# 아이템은 {_shop_link(self.user)}에서 사요.", ui.INFO, self.user, SECTION)
         _grid_fields(e, [(n, f"**{f['tools'].get(k, 0):,}**개") for k, (n, _, _) in F.TOOLS.items()]
@@ -958,6 +961,8 @@ def _offer_fail(r: dict) -> str:
         return f"낼 농장의 코인이 모자라요.\n필요한 코인 **{r.get('cost', 0):,}**\n가진 코인 **{r.get('have', 0):,}**"
     if r["reason"] == "pay":
         return "인수 금액은 내 농장의 코인으로 내야 해요."
+    if r["reason"] == "max":   # 3.9.1
+        return f"농장은 한 사람이 {r['max']}개까지 가질 수 있어요."
     return _OFFER_FAIL.get(r["reason"], "인수할 수 없어요.")
 
 
@@ -1146,7 +1151,7 @@ SHOP_VER = 5   # 상점 화면을 바꾸면 올린다 — 이미 올라간 상�
 
 def shop_ver(guild_id) -> int:
     """서버의 상점 화면 버전 — 3.8.2 새 작물은 공개 전엔 테스트 서버 상점에만 (공개되면 다른 서버 상점 글도 고친다)."""
-    return 7 if release.preview_384(guild_id) else 6 if release.preview_382(guild_id) else SHOP_VER
+    return 8 if release.preview_384(guild_id) else 6 if release.preview_382(guild_id) else SHOP_VER   # 8: 3.9.1 아이템 값
 
 
 def _animals_for(guild_id) -> list[str]:
@@ -1172,8 +1177,8 @@ def shop_embeds(guild_id=None) -> list[discord.Embed]:
     for k in _animals_for(guild_id):
         animals.add_field(name=F.ANIMALS[k][1], value=f"{F.ANIMALS[k][2]:,} 코인")
     tools = discord.Embed(title="아이템", description="농장 화면의 **아이템**에서 써요.", color=ui.GOLD)
-    for n, price, what in F.TOOLS.values():
-        tools.add_field(name=n, value=f"**{price:,} 코인**\n{what}")
+    for k, (n, _, what) in F.TOOLS.items():
+        tools.add_field(name=n, value=f"**{F.tool_price(k, release.preview_384(guild_id)):,} 코인**\n{what}")   # 3.9.1 5배
     return [head, seeds, animals, tools]
 
 
@@ -1306,8 +1311,8 @@ class BuyView(discord.ui.View):
             info = [f"값 **{price:,} 코인**", f"만드는 것 **{F.PRODUCTS[prod][1]}**",
                     f"{F.PRODUCTS[prod][1]} 하나를 팔면 **{F.PRODUCTS[prod][2]:,} 코인**", f"{_dur(sec)}마다 하나씩 만들어요"]
         elif k in F.TOOLS:
-            n, price, what = F.TOOLS[k]
-            info = [f"값 **{price:,} 코인**", f"{what}."]
+            n, _, what = F.TOOLS[k]
+            info = [f"값 **{F.tool_price(k):,} 코인**", f"{what}."]
         else:
             _, n, price, sec, sell = F.CROPS[k]
             info = [f"값 **{price:,} 코인**", f"다 자라는 데 **{_dur(sec)}**", f"다 자라면 팔 때 **{sell:,} 코인**"]
@@ -1412,7 +1417,8 @@ class LandPick(discord.ui.View):
         r = await self.cog.db.create_more(self.user.id, self.pick, self.pay_fid, now)
         if not r["ok"]:
             msg = (f"코인이 모자라요.\n필요한 코인 **{r.get('cost', 0):,}**\n가진 코인 **{r.get('have', 0):,}**"
-                   if r["reason"] == "coins" else "내 농장이 아니에요.")
+                   if r["reason"] == "coins" else
+                   f"농장은 한 사람이 {r['max']}개까지 가질 수 있어요." if r["reason"] == "max" else "내 농장이 아니에요.")
             return await interaction.response.edit_message(embed=ui.card("새 밭 만들기", msg, ui.LOSE, self.user, SECTION), view=None)
         self.stop()
         _, n, desc, _ = F.LANDS[self.pick]
@@ -1467,6 +1473,7 @@ class Farm(commands.Cog):
         self.shop = ShopPanel(self)
         bot.add_view(self.shop)    # 농사 상점 버튼도
         self._shop_lock = asyncio.Lock()
+        self._home_warned: set[int] = set()   # SHOP_HOME 채널을 못 찾았다고 한 번만 알린 서버
         self._sticky: dict[int, asyncio.Task] = {}   # 농장 스레드 → 밭을 다시 올릴 예약
         self._sticky_lock = asyncio.Lock()
 
@@ -1602,7 +1609,7 @@ class Farm(commands.Cog):
 
     async def _shop_parents(self, guild, near=None) -> list:
         """상점 스레드를 만들 채널 후보: 패치노트가 가는 채널 (패치노트가 스레드로 가는 서버는 그 스레드의 채널) → near."""
-        out = []
+        out = [self._shop_home(guild)]
         tid = PATCH_THREADS.get(guild.id)
         if tid:
             th = guild.get_channel_or_thread(tid)
@@ -1632,31 +1639,72 @@ class Farm(commands.Cog):
                     except discord.HTTPException:     # 잠깐 안 되는 것일 수 있다 — 새로 만들지 않는다
                         return None
                 if isinstance(th, discord.Thread):
+                    home = self._shop_home(guild)
+                    if home is not None and th.parent_id != home.id:   # 정한 채널이 아닌 곳에 열려 있다 → 옮긴다
+                        new = await self._make_shop(guild, [home])
+                        if new is not None:
+                            await self._drop_old_shop(guild, th, new)
+                            return new
+                        if guild.id not in self._home_warned:
+                            self._home_warned.add(guild.id)
+                            print(f"[농사 상점] {guild.id} #{home.name} 에 상점 스레드를 못 만듦 (권한?) — 있던 스레드 그대로")
+                    elif home is None and guild.id in SHOP_HOME and guild.id not in self._home_warned:
+                        self._home_warned.add(guild.id)
+                        print(f"[농사 상점] {guild.id} '{SHOP_HOME[guild.id]}' 채널을 못 찾음 — 있던 스레드 그대로")
                     await self._open_shop(guild, th)
                     if SHOP_MSGS.get(guild.id, (None, 0))[1] != shop_ver(guild.id):
                         await self._refresh_shop(guild, th)
                     return th
-            for parent in await self._shop_parents(guild, near):
-                perms = parent.permissions_for(guild.me)
-                if not (perms.view_channel and perms.create_public_threads and perms.send_messages_in_threads):
-                    continue
-                try:
-                    if parent.is_news():   # 공지 채널의 스레드는 글에서만 열 수 있다
-                        first = await parent.send(f"**{SHOP_NAME}**이 열렸어요. 씨앗과 동물은 이 글의 스레드에서 사요.")
-                        th = await first.create_thread(name=SHOP_NAME, auto_archive_duration=10080, reason=SHOP_NAME)
-                    else:
-                        th = await parent.create_thread(name=SHOP_NAME, type=discord.ChannelType.public_thread,
-                                                        auto_archive_duration=10080, reason=SHOP_NAME)
-                    msg = await th.send(embeds=shop_embeds(guild.id), view=ShopPanel(self, guild.id))
-                except discord.HTTPException as ex:
-                    print(f"[농사 상점] {guild.id} 스레드 만들기 오류: {type(ex).__name__}: {ex}")
-                    continue
-                await self.db.set_shop_thread(guild.id, th.id, msg.id, shop_ver(guild.id))
-                SHOPS[guild.id], SHOP_MSGS[guild.id] = th.id, (msg.id, shop_ver(guild.id))
-                print(f"[농사 상점] {guild.id} 스레드 {th.id} 만듦 (#{parent.name})")
-                await self._open_shop(guild, th)
-                return th
+            return await self._make_shop(guild, await self._shop_parents(guild, near))
+
+    @staticmethod
+    def _shop_home(guild):
+        """SHOP_HOME 에 정한 채널 (이름이 같은 채널 → 이름에 들어 있는 채널). 없으면 None."""
+        name = SHOP_HOME.get(getattr(guild, "id", None))
+        if not name:
             return None
+        chans = [c for c in getattr(guild, "text_channels", []) if isinstance(c, discord.TextChannel)]
+        key = name.replace("-", "")
+        same = [c for c in chans if c.name == name] or [c for c in chans if key in c.name.replace("-", "")]
+        return same[0] if same else None
+
+    async def _drop_old_shop(self, guild, old, new):
+        """옮기고 남은 옛 상점 스레드를 지운다 (못 지우면 새 상점을 알리고 닫아 둔다)."""
+        where = getattr(old.parent, "name", old.parent_id)
+        try:
+            await old.delete(reason=f"{SHOP_NAME} 옮김")
+            print(f"[농사 상점] {guild.id} 상점 스레드 옮김: #{where} {old.id} 지움 → #{getattr(new.parent, 'name', new.parent_id)} {new.id}")
+        except discord.HTTPException as ex:
+            print(f"[농사 상점] {guild.id} 옛 상점 스레드 {old.id} 지우기 오류: {type(ex).__name__}: {ex}")
+            try:
+                await old.send(f"{SHOP_NAME}은 {new.mention} 으로 옮겼어요.")
+                await old.edit(archived=True, locked=True)
+            except discord.HTTPException:
+                pass
+
+    async def _make_shop(self, guild, parents):
+        """parents 중 처음으로 되는 채널에 상점 스레드를 새로 만든다. 만들 수 없으면 None."""
+        for parent in parents:
+            perms = parent.permissions_for(guild.me)
+            if not (perms.view_channel and perms.create_public_threads and perms.send_messages_in_threads):
+                continue
+            try:
+                if parent.is_news():   # 공지 채널의 스레드는 글에서만 열 수 있다
+                    first = await parent.send(f"**{SHOP_NAME}**이 열렸어요. 씨앗과 동물은 이 글의 스레드에서 사요.")
+                    th = await first.create_thread(name=SHOP_NAME, auto_archive_duration=10080, reason=SHOP_NAME)
+                else:
+                    th = await parent.create_thread(name=SHOP_NAME, type=discord.ChannelType.public_thread,
+                                                    auto_archive_duration=10080, reason=SHOP_NAME)
+                msg = await th.send(embeds=shop_embeds(guild.id), view=ShopPanel(self, guild.id))
+            except discord.HTTPException as ex:
+                print(f"[농사 상점] {guild.id} 스레드 만들기 오류: {type(ex).__name__}: {ex}")
+                continue
+            await self.db.set_shop_thread(guild.id, th.id, msg.id, shop_ver(guild.id))
+            SHOPS[guild.id], SHOP_MSGS[guild.id] = th.id, (msg.id, shop_ver(guild.id))
+            print(f"[농사 상점] {guild.id} 스레드 {th.id} 만듦 (#{parent.name})")
+            await self._open_shop(guild, th)
+            return th
+        return None
 
     async def _open_shop(self, guild, th):
         """보관된 상점 스레드는 다시 열고, 잠겨 있으면 푼다.
