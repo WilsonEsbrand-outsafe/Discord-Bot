@@ -317,3 +317,31 @@ def test_shop_moves_to_home_channel():
         loose = text_channel(82, "💬축구-봇-채팅")                                       # 이름에 들어 있으면
         assert cog._shop_home(MagicMock(id=release.TEST_GUILD, text_channels=[notes, loose])) is loose
     run(flow())
+
+
+def test_live_old_message_reposts():
+    """11/21 로그: 1시간 넘은 밭 화면을 10초마다 고치다가 디스코드 30046 오류 → 새 글로 올리고 다시 고친다."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+    import discord
+    import cogs.farm as C
+
+    def old_limit():
+        return discord.HTTPException(MagicMock(status=429, reason="Too Many Requests"),
+                                     {"code": 30046, "message": "Maximum number of edits to messages older than 1 hour reached."})
+
+    async def flow():
+        cog = C.Farm.__new__(C.Farm)
+        cog.bot, cog._live = MagicMock(), {}
+        th = SimpleNamespace(id=7, guild=SimpleNamespace(id=release.TEST_GUILD))
+        msg = SimpleNamespace(id=1, channel=th)
+        cog.track(msg, 99, "")
+        cog._live_one = AsyncMock(side_effect=old_limit())
+        cog.repost = AsyncMock(return_value=True)
+        await cog.live_loop.coro(cog)
+        cog.repost.assert_awaited_once_with(th, 99, force=True)
+        assert old_limit().code == C.OLD_EDIT_LIMIT
+        cog._live_one = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500, reason="x"), "boom"))
+        await cog.live_loop.coro(cog)                                                       # 다른 오류는 새로 올리지 않는다
+        assert cog.repost.await_count == 1
+    run(flow())

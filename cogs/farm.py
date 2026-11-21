@@ -25,6 +25,7 @@ SHOP_NAME = "농사 상점"
 STICKY_WAIT = 3     # 농장 스레드에 글이 올라오면 이만큼(초) 조용해진 뒤 밭을 맨 밑으로 다시 올린다
 STICKY_SCAN = 50    # 지울 옛 밭 화면을 찾는 최근 글 수
 LIVE_EVERY = 10     # 3.8.4 규완님 '새로고침을 자동으로 계속, 메시지를 다시 보내는 방식 말고' — 이만큼(초)마다 같은 글을 고친다
+OLD_EDIT_LIMIT = 30046   # 디스코드 오류: 1시간 넘은 글 고치기 횟수 제한 (11/21 자동 새로고침이 걸림) → 새 글로 올린다
 LIVE_FOR = 600      # 마지막으로 누른 뒤 이만큼(초) 동안만 (아무도 안 보는 농장까지 계속 고치지 않게)
 LIVE_NOTE = 60      # 버튼을 누른 결과 문구는 이만큼(초) 동안 남겨 둔다
 SHOPS: dict[int, int] = {}   # 서버 → 농사 상점 스레드 (farm_shops 표를 읽어 둔 것)
@@ -1784,8 +1785,22 @@ class Farm(commands.Cog):
                 await self._live_one(e, now)
             except discord.NotFound:
                 self._live.pop(tid, None)
+            except discord.HTTPException as ex:
+                if getattr(ex, "code", 0) == OLD_EDIT_LIMIT:
+                    await self._fresh(e["msg"].channel, e["fid"])
+                else:
+                    print(f"[농사] {tid} 자동 새로고침 오류: {type(ex).__name__}: {ex}")
             except Exception as ex:   # 한 농장이 안 돼도 나머지는 계속
                 print(f"[농사] {tid} 자동 새로고침 오류: {type(ex).__name__}: {ex}")
+
+    async def _fresh(self, th, fid: int):
+        """디스코드는 1시간 넘은 글을 자주 고치지 못하게 한다 (30046) → 밭 화면을 새 글로 올리고 옛 글은 지운다.
+        새 글은 다시 10초마다 고칠 수 있다 (repost 가 새 글을 track)."""
+        try:
+            if await self.repost(th, fid, force=True):
+                print(f"[농사] {th.id} 1시간 넘은 밭 화면을 새 글로 올림")
+        except discord.HTTPException as ex:
+            print(f"[농사] {th.id} 밭 화면 새로 올리기 오류: {type(ex).__name__}: {ex}")
 
     async def _live_one(self, e: dict, now: int):
         f = await self.db.get(e["fid"], now)
@@ -1838,7 +1853,10 @@ class Farm(commands.Cog):
             else:
                 await self.repost(th, f["id"], force=True)
         except discord.HTTPException as ex:
-            print(f"[농사] {th.id} 큰 밭 그림 고치기 오류: {type(ex).__name__}: {ex}")
+            if getattr(ex, "code", 0) == OLD_EDIT_LIMIT:
+                await self._fresh(th, f["id"])
+            else:
+                print(f"[농사] {th.id} 큰 밭 그림 고치기 오류: {type(ex).__name__}: {ex}")
 
     async def panel_note(self, th, fid: int, note: str):
         """칸 버튼으로 거둔 뒤 밭 화면(아래 글)도 고친다."""
@@ -1851,8 +1869,9 @@ class Farm(commands.Cog):
         try:
             await m.edit(embed=panel_embed(owner, f, now, note), view=FarmPanel(self, f))
             self.track(m, fid, note)
-        except discord.HTTPException:
-            pass
+        except discord.HTTPException as ex:
+            if getattr(ex, "code", 0) == OLD_EDIT_LIMIT:
+                await self._fresh(th, fid)
 
     # ───────────── 밭을 맨 밑에 (11/11 규완님: 누가 채팅을 치면 밭이 위로 올라간다) ─────────────
     @commands.Cog.listener()
