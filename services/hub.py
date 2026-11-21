@@ -94,9 +94,13 @@ class HubView(discord.ui.View):
         await self.go(interaction, self.page, note)
 
     async def send(self, interaction: discord.Interaction, ephemeral: bool = True):
+        # 11/22 규완님 '/구단을 치니까 적시에 응답하지 않았다고 떠' — 디스코드는 3초 안에 첫 응답이 없으면 실패로 띄운다.
+        # 화면(DB 여러 번)을 그리기 전에 먼저 '생각 중'으로 응답해 두고, 다 그리면 그 글을 화면으로 바꾼다.
         self._inter = interaction
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral, thinking=True)
         e = await self.build()
-        await interaction.response.send_message(embed=e, view=self, ephemeral=ephemeral)
+        await interaction.edit_original_response(embed=e, view=self)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
