@@ -78,6 +78,8 @@ PRODUCTS = {"egg": ("🥚", "달걀", 30), "feather": ("🪶", "깃털", 50), "h
 # 인챈트한 씨앗은 '감자_e' 처럼 따로 쌓이고 (farm_seeds), 심으면 그 칸에서 '인챈트 감자'가 나온다. 값은 ENCH_MULT 배 (내 기본값)
 ENCH, ENCH_MULT, ENCH_SEEDS, INGOT_NEED = "_e", 5, 50, 9   # 숫돌 9개 → 숫돌 주괴 1개, 주괴 1개 → 씨앗 50개 인챈트
 ENCH_SLOW = 1.1   # 11/21 규완님 '인챈트 된 씨앗은 가격이 5배인 대신 진짜 살짝 조금의 페널티' → 자라는 시간 10% 더 (내 기본값)
+# 이어서 '페널티로 이번 버닝에 적용되지 않게' → '10% 늦게 자라는 거도 적용해줘': 둘 다.
+# 인챈트 씨앗을 심은 칸은 10% 늦게 자라고 버닝 '두 배 빨리 자람'을 받지 않으며, 인챈트 작물은 버닝 '판매 1.5배'를 받지 않는다.
 ECROPS = {k + ENCH: (e, f"인챈트 {n}", v * ENCH_MULT) for k, (e, n, _, _, v) in CROPS.items()}
 ITEMS = {**{k: (e, n, v) for k, (e, n, _, _, v) in CROPS.items()}, **PRODUCTS, **ECROPS}   # 창고에 들어가는 것: key → (이모지, 이름, ★1 판매가)
 ANIMAL_PER_PLOTS = 3          # 동물은 땅 3칸당 1마리
@@ -845,8 +847,8 @@ class FarmDB(EconomyDB):
             fert_ready = int(now_ts + sec * FERT_MULT)
             for i, slot in enumerate(empty[:n]):
                 at = fert_ready if i < fert else ready
-                if i < en:   # 인챈트 씨앗은 조금 늦게 자란다 (ENCH_SLOW)
-                    at = int(now_ts + (at - now_ts) * ENCH_SLOW)
+                if i < en:   # 인챈트 씨앗은 10% 늦게 자라고 (ENCH_SLOW) 버닝 '두 배 빨리 자람'을 받지 않는다
+                    at = int(now_ts + (at - now_ts) * burning.mult("farm_grow", uid, now_ts) * ENCH_SLOW)
                 con.execute("INSERT OR REPLACE INTO farm_fields(farm_id, slot, kind, key, ready_ts, ench) VALUES(?,?,?,?,?,?)",
                             (fid, slot, "animal" if animal else "crop", key, at, 1 if i < en else 0))
             if en:
@@ -986,8 +988,9 @@ class FarmDB(EconomyDB):
             sold = [(k, t, min(q, int(n)) if n else q) for k, t, q in have]
             if not sold:
                 return {"ok": False, "reason": "empty"}
-            total = int(sum(value(k, t) * q for k, t, q in sold) * lobby.mult("farm_sell", uid)   # 3.8.2 /로비 공약
-                        * burning.mult("farm_sell", uid, now_ts))                         # 3.8.4 수능 버닝
+            burn = burning.mult("farm_sell", uid, now_ts)   # 3.8.4 수능 버닝 (인챈트 작물은 빼고)
+            total = int(sum(value(k, t) * q * (1 if k.endswith(ENCH) else burn) for k, t, q in sold)
+                        * lobby.mult("farm_sell", uid))                                    # 3.8.2 /로비 공약
             for (k, t, q), (_, _, left) in zip(sold, have):
                 if q < left:
                     con.execute("UPDATE farm_items SET qty = qty - ? WHERE farm_id=? AND key=? AND tier=?", (q, fid, k, t))

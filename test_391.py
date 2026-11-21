@@ -237,5 +237,83 @@ def test_gifts_once_and_enchant_slow():
     r = run(db.use_gem_cash(39141, "reward_cash"))
     assert r["ok"] and r["amount"] == 250_000_000 and _bal(39141) == 250_000_000
     assert [g[1:] for g in edb.GIFTS_391] == [(1146659618790051960, 250_000_000), (725662872327159838, 100_000_000)]
+
+
+def test_enchant_skips_burning():
     import services.farm as F
-    assert F.ENCH_SLOW == 1.1 and F.ENCH_MULT == 5
+    db = F.FarmDB()
+    A = 39151
+    L.TESTERS.clear()
+    L.TESTERS.add(A)                                                              # 버닝을 받는 사람
+    try:
+        async def flow():
+            fid = (await db.create(A, "plain", int(MID)))["id"]
+            con = _con()
+            con.execute("UPDATE farms SET whet=9, energy=1000, plots=12 WHERE id=?", (fid,))
+            con.execute("INSERT INTO farm_seeds(farm_id, key, qty) VALUES(?, 'potato', 56)", (fid,))
+            con.commit(); con.close()
+            assert (await db.make_ingot(A, fid, int(MID)))["ok"] and (await db.enchant(A, fid, "potato", int(MID)))["ok"]
+            con = _con()
+            con.execute("UPDATE farm_seeds SET qty=3 WHERE farm_id=? AND key='potato_e'", (fid,))
+            con.execute("UPDATE farms SET plant_n=6 WHERE id=?", (fid,))
+            con.commit(); con.close()
+            p = await db.plant(A, fid, "potato", int(MID))
+            assert p["ok"] and p["ench"] == 3 and p["count"] == 6
+            con = _con()
+            rows = dict(con.execute("SELECT ench, MAX(ready_ts) FROM farm_fields WHERE farm_id=? GROUP BY ench", (fid,)).fetchall())
+            con.close()
+            normal, ench = rows[0] - int(MID), rows[1] - int(MID)
+            assert abs(ench - normal * B.BUFFS["farm_grow"] * F.ENCH_SLOW) <= 2      # 인챈트 칸은 버닝 '두 배 빨리'가 없고 10% 늦다
+            con = _con()
+            con.execute("DELETE FROM farm_items WHERE farm_id=?", (fid,))
+            con.execute("INSERT INTO farm_items(farm_id, key, tier, qty) VALUES(?, 'potato', 1, 10)", (fid,))
+            con.execute("INSERT INTO farm_items(farm_id, key, tier, qty) VALUES(?, 'potato_e', 1, 10)", (fid,))
+            con.commit(); con.close()
+            r = await db.sell(A, fid, int(MID))
+            want = int(F.value("potato", 1) * 10 * B.BUFFS["farm_sell"] + F.value("potato_e", 1) * 10)
+            assert r["ok"] and abs(r["coins"] - want) <= 1, (r, want)
+        run(flow())
+    finally:
+        L.TESTERS.clear()
+
+
+def test_shop_moves_to_home_channel():
+    """11/21 테스트 서버 농사 상점은 '축구-봇' 채널로 — #패치노트에 있던 스레드는 옮기고 지운다."""
+    from unittest.mock import AsyncMock, MagicMock
+    import discord
+    import cogs.farm as C
+
+    def text_channel(cid, name):
+        ch = MagicMock(spec=discord.TextChannel, id=cid)
+        ch.name = name
+        ch.is_news = MagicMock(return_value=False)
+        ch.permissions_for = MagicMock(return_value=MagicMock(view_channel=True, create_public_threads=True,
+                                                              send_messages_in_threads=True))
+        return ch
+
+    def thread(tid, parent):
+        th = MagicMock(spec=discord.Thread, id=tid, parent_id=parent.id, archived=False, locked=False)
+        th.parent = parent
+        th.send = AsyncMock(return_value=MagicMock(id=tid + 1))
+        th.delete, th.edit = AsyncMock(), AsyncMock()
+        return th
+
+    async def flow():
+        bot = MagicMock()
+        cog = C.Farm(bot)
+        notes, home = text_channel(80, "패치노트"), text_channel(81, "축구-봇")
+        old, new = thread(8100, notes), thread(8200, home)
+        home.create_thread = AsyncMock(return_value=new)
+        guild = MagicMock(id=release.TEST_GUILD, text_channels=[notes, home])
+        guild.get_thread = MagicMock(return_value=old)
+        await cog.db.set_shop_thread(guild.id, old.id, 1, C.shop_ver(guild.id))
+        C.SHOPS[guild.id], C.SHOP_MSGS[guild.id] = old.id, (1, C.shop_ver(guild.id))
+        assert cog._shop_home(guild) is home and cog._shop_home(MagicMock(id=1, text_channels=[home])) is None
+        assert await cog.ensure_shop(guild) is new
+        assert home.create_thread.await_args.kwargs["name"] == "농사 상점" and old.delete.await_count == 1
+        assert C.SHOPS[guild.id] == new.id and (await cog.db.shop_threads())[guild.id][0] == new.id
+        guild.get_thread = MagicMock(return_value=new)                                  # 다시 부르면 그대로
+        assert await cog.ensure_shop(guild) is new and home.create_thread.await_count == 1
+        loose = text_channel(82, "💬축구-봇-채팅")                                       # 이름에 들어 있으면
+        assert cog._shop_home(MagicMock(id=release.TEST_GUILD, text_channels=[notes, loose])) is loose
+    run(flow())
