@@ -1,0 +1,74 @@
+name: Economy probe (read-only)
+on:
+  push:
+    branches: [claude/project-thread-rfyftm]
+    paths: [.github/workflows/eco-probe.yml]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            cd /home/ubuntu/discord-bot || exit 1
+            echo "배포 커밋: $(git rev-parse --short HEAD)"
+            echo "=== JOURNAL [경제] ==="
+            sudo journalctl -u discord-bot --since "45 days ago" --no-pager | grep -F "[경제]" | tail -n 80
+            python3 - <<'PY'
+            import sqlite3, time, statistics
+            con = sqlite3.connect("file:data/economy.sqlite3?mode=ro", uri=True)
+            now = int(time.time()); D = 86400
+            ADMIN = 673864024030445569
+            tabs = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+            print("=== TABLES ===")
+            info = {}
+            for t in tabs:
+                cols = [(c[1], (c[2] or "").upper()) for c in con.execute(f'PRAGMA table_info("{t}")')]
+                info[t] = cols
+                n = con.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+                print(f"{t} rows={n} cols={','.join(c for c,_ in cols)}")
+            print("=== WALLETS ===")
+            rows = [b for u, b in con.execute("SELECT user_id, balance FROM wallets WHERE user_id > 100000000000 AND user_id != ?", (ADMIN,))]
+            rows.sort()
+            def q(p): return rows[min(len(rows)-1, int(p*len(rows)))]
+            print("users", len(rows), "sum", sum(rows), "pos_sum", sum(b for b in rows if b>0), "neg_sum", sum(b for b in rows if b<0), "neg_n", sum(1 for b in rows if b<0))
+            print("p10 %d p25 %d p50 %d p75 %d p90 %d p99 %d max %d" % (q(.1), q(.25), q(.5), q(.75), q(.9), q(.99), rows[-1]))
+            print("top20", [ (u, b) for u, b in con.execute("SELECT user_id, balance FROM wallets WHERE user_id > 100000000000 AND user_id != ? ORDER BY balance DESC LIMIT 20", (ADMIN,))])
+            print("admin", con.execute("SELECT balance FROM wallets WHERE user_id=?", (ADMIN,)).fetchone())
+            print("bots", con.execute("SELECT COUNT(*), SUM(balance) FROM wallets WHERE user_id <= 100000000000").fetchone())
+            act = [r[0] for r in con.execute("SELECT user_id FROM daily_claims WHERE last_claim_ts > ? AND user_id != ?", (now-7*D, ADMIN))]
+            print("active7d (attend)", len(act))
+            ab = sorted(b for (b,) in con.execute(f"SELECT balance FROM wallets WHERE user_id IN ({','.join(map(str,act)) or '0'})"))
+            if ab: print("active wallets sum", sum(ab), "median", ab[len(ab)//2], "top", ab[-5:])
+            print("=== MONEY-LIKE COLUMNS ===")
+            for t, cols in info.items():
+                for c, ty in cols:
+                    if any(k in c.lower() for k in ("balance","cash","coin","amount","money","stake","payout","prize","reward","debt","fund","bank","price","won","gold")) and "INT" in ty or (c.lower() in ("balance","cash","coins","amount")):
+                        try:
+                            s = con.execute(f'SELECT COUNT(*), SUM("{c}"), MAX("{c}") FROM "{t}"').fetchone()
+                            print(f"{t}.{c}: n={s[0]} sum={s[1]} max={s[2]}")
+                        except Exception as e: print(t, c, e)
+            print("=== ACTIVITY (ts columns) ===")
+            for t, cols in info.items():
+                names = [c for c,_ in cols]
+                ucol = next((c for c in names if c in ("user_id","owner","owner_id","uid","buyer_id","seller_id")), None)
+                for c in names:
+                    cl = c.lower()
+                    if cl == "ts" or cl.endswith("_ts") or cl.endswith("_at") or cl in ("ts","time","created","updated"):
+                        try:
+                            mx = con.execute(f'SELECT MAX("{c}") FROM "{t}"').fetchone()[0]
+                            if not isinstance(mx, (int, float)) or mx < 1e9 or mx > 1e11: continue
+                            r = []
+                            for d in (1, 7, 30):
+                                if ucol:
+                                    a = con.execute(f'SELECT COUNT(*), COUNT(DISTINCT "{ucol}") FROM "{t}" WHERE "{c}" > ?', (now-d*D,)).fetchone()
+                                else:
+                                    a = (con.execute(f'SELECT COUNT(*) FROM "{t}" WHERE "{c}" > ?', (now-d*D,)).fetchone()[0], "-")
+                                r.append(f"{d}d={a[0]}/{a[1]}")
+                            print(f"{t}.{c} [{ucol}] last={(now-mx)/3600:.1f}h ago  " + "  ".join(r))
+                        except Exception as e: print(t, c, e)
+            PY
