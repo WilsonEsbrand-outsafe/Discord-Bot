@@ -16,27 +16,12 @@ jobs:
           script: |
             cd /home/ubuntu/discord-bot || exit 1
             echo "배포 커밋: $(git rev-parse --short HEAD)"
-            echo "=== JOURNAL [경제] ==="
-            sudo journalctl -u discord-bot --since "45 days ago" --no-pager | grep -F "[경제]" | tail -n 80
             python3 - <<'PY'
-            import sqlite3, time, os
-            now = int(time.time()); D = 86400
-            for f in ("data/sports.sqlite3", "data/ufc.sqlite3"):
-                if not os.path.exists(f): print(f, "없음"); continue
-                con = sqlite3.connect(f"file:{f}?mode=ro", uri=True)
-                for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'"):
-                    cols = [c[1] for c in con.execute(f'PRAGMA table_info("{t}")')]
-                    n = con.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
-                    print(f, t, n, cols)
-                    u = "user_id" if "user_id" in cols else None
-                    for c in cols:
-                        if c.endswith("_ts") or c in ("ts", "created_at", "placed_at"):
-                            mx = con.execute(f'SELECT MAX("{c}") FROM "{t}"').fetchone()[0]
-                            if not isinstance(mx, (int, float)) or mx < 1e9: continue
-                            r = [con.execute(f'SELECT COUNT(*), COUNT(DISTINCT {u or "1"}) FROM "{t}" WHERE "{c}" > ?', (now - d * D,)).fetchone() for d in (7, 30)]
-                            print("   ", c, f"last={(now-mx)/3600:.1f}h", "7d", r[0], "30d", r[1])
+            import sqlite3
             con = sqlite3.connect("file:data/economy.sqlite3?mode=ro", uri=True)
-            print("bankruptcy", con.execute("SELECT user_id, times, (strftime('%s','now')-last_ts)/3600 FROM bankruptcy ORDER BY last_ts DESC").fetchall())
-            print("inventory lawyer", con.execute("SELECT SUM(qty), COUNT(*) FROM inventory WHERE item='lawyer' AND qty>0").fetchone())
-            print("elite", con.execute("SELECT key, owner_id, price, income_day FROM elite_clubs").fetchall())
+            print("purse", con.execute("SELECT owner, coins FROM farm_purse ORDER BY coins DESC").fetchall())
+            print("farms", con.execute("SELECT owner, COUNT(*), SUM(plots), MAX(land) FROM farms GROUP BY owner ORDER BY 2 DESC").fetchall())
+            print("fields", con.execute("SELECT key, ench, COUNT(*) FROM farm_fields WHERE key IS NOT NULL GROUP BY key, ench ORDER BY 3 DESC LIMIT 15").fetchall())
+            print("seeds", con.execute("SELECT key, SUM(qty) FROM farm_seeds GROUP BY key ORDER BY 2 DESC LIMIT 20").fetchall())
+            print("wallet of purse owners", con.execute("SELECT p.owner, w.balance FROM farm_purse p LEFT JOIN wallets w ON w.user_id=p.owner").fetchall())
             PY
