@@ -1433,6 +1433,40 @@ class FarmDB(EconomyDB):
             f = self._mine(con, uid, fid, now_ts)
             if not f:
                 return {"ok": False, "reason": "none"}
+            return self._open_one(con, uid, fid, f, tier, now_ts, lucky, rng)
+        return await self._tx(fn)
+
+    async def open_all(self, uid: int, fid: int, now_ts: int, lucky: bool = False, rng=random) -> dict:
+        """3.9.2 (11/23 규완님 '상자 한 번에 까기'): 가진 상자를 전부 연다 (행운 열기면 돈이 되는 만큼).
+        → {opened: {tier: 수}, rewards: [보상 합친 것], fee, stop(돈이 모자라 멈췄나)}. reason: none / empty."""
+        def fn(con):
+            f = self._mine(con, uid, fid, now_ts)
+            if not f:
+                return {"ok": False, "reason": "none"}
+            if not sum(f["chests"].values()):
+                return {"ok": False, "reason": "empty"}
+            opened, fee, stop, got = {}, 0, False, {}
+            for tier in CHESTS:
+                for _ in range(f["chests"][tier]):
+                    r = self._open_one(con, uid, fid, f, tier, now_ts, lucky, rng)
+                    if not r["ok"]:
+                        stop = r["reason"] == "money"
+                        break
+                    opened[tier] = opened.get(tier, 0) + 1
+                    fee += r["fee"]
+                    for x in r["rewards"]:
+                        k = (x["kind"], x.get("key"), x.get("tier"))
+                        got[k] = got.get(k, 0) + x["n"]
+                if stop:
+                    break
+            rewards = [{"kind": k, "key": key, "tier": t, "n": n} for (k, key, t), n in got.items()]
+            return {"ok": bool(opened), "reason": "money" if not opened else None, "opened": opened, "rewards": rewards,
+                    "fee": fee, "stop": stop}
+        return await self._tx(fn)
+
+    def _open_one(self, con, uid: int, fid: int, f: dict, tier: str, now_ts: int, lucky: bool, rng) -> dict:
+        """상자 하나 (f 는 연 농장 — 에너지는 f 에 더해 간다)."""
+        if True:
             if tier not in CHESTS:
                 return {"ok": False, "reason": "tier"}
             if f["chests"][tier] <= 0:
@@ -1454,8 +1488,8 @@ class FarmDB(EconomyDB):
                     con.execute("UPDATE farms SET energy=?, energy_ts=? WHERE id=?", (f["energy_f"], int(now_ts), fid))
                 else:
                     self._give(con, fid, r["key"], r["tier"], r["n"])
+            f["chests"][tier] -= 1
             return {"ok": True, "tier": tier, "rewards": rewards, "fee": fee}
-        return await self._tx(fn)
 
     # ───────────── 3.9.2 동물 이름 ─────────────
     async def name_pet(self, uid: int, fid: int, slot: int, name: str, now_ts: int) -> dict:

@@ -1912,6 +1912,19 @@ class Economy(commands.Cog):
         (7, 1, "🎫 컨퍼런스리그 진출"), (12, 0, "😐 중위권"), (17, -3, "😰 하위권"), (20, -15, "⬇️ 강등"),
     ]
 
+    # 3.9.2 (11/23 규완님 '확률이랑 배당을 쪼개서 40배 확률을 줄이고'): 순위마다 확률이 다르다 (우승 1%). 기대값 -5%.
+    # (순위 끝, 그 칸 하나의 확률 %, 순이익 배수, 라벨) — 8~12위는 칸마다 6%
+    LEAGUE_TABLE_392 = [
+        (1, 1, 40, "🏆 리그 우승"), (2, 3, 15, "⭐ 챔피언스리그 진출"), (3, 4, 8, "⭐ 챔피언스리그 진출"),
+        (4, 5, 5, "⭐ 챔피언스리그 진출"), (5, 6, 3, "🌍 유로파리그 진출"), (6, 6, 2, "🌍 유로파리그 진출"),
+        (7, 6, 1.5, "🎫 컨퍼런스리그 진출"), (12, 6, 0, "😐 중위권"), (14, 4, -2, "😰 하위권"),
+        (17, 16 / 3, -2.5, "😰 하위권"), (18, 5, -5, "⬇️ 강등"), (19, 5, -8, "⬇️ 강등"), (20, 5, -13, "⬇️ 강등"),
+    ]
+    # 3.9.2 '리그 진행 상황을 조금 더 길게': 중간 순위를 여섯 번 보여 준다
+    LEAGUE_ROUNDS_392 = (("개막 5라운드", 5), ("10라운드", 10), ("전반기 종료", 19), ("25라운드", 25), ("30라운드", 30),
+                         ("35라운드", 35))
+    LEAGUE_GAPS_392 = (5.0, 3.0, 3.5)
+
     LEAGUE_GAPS_311 = (5.0, 3.0, 3.5)   # 3.1.1 /리그 화면 간격(초): 개막(배당표) 뒤 · 중간 순위 사이 · 최종 순위 전
 
     @classmethod
@@ -1926,8 +1939,45 @@ class Economy(commands.Cog):
     LEAGUE_ROUNDS = (("개막 5라운드", 5), ("전반기 종료", 19), ("30라운드", 30))
 
     @classmethod
-    def league_payout(cls, rank: int, new: bool = False) -> tuple[float, str]:
+    def league_payout(cls, rank: int, new: bool = False, v392: bool = False) -> tuple[float, str]:
+        if v392:
+            return next((m, label) for last, _, m, label in cls.LEAGUE_TABLE_392 if rank <= last)
         return next((m, label) for last, m, label in (cls.LEAGUE_PAYOUT_310 if new else cls.LEAGUE_PAYOUT) if rank <= last)
+
+    @classmethod
+    def league_weights_392(cls) -> list[float]:
+        """1~20위 각각의 확률 (%)."""
+        out, prev = [], 0
+        for last, p, _, _ in cls.LEAGUE_TABLE_392:
+            out += [p] * (last - prev)
+            prev = last
+        return out
+
+    @classmethod
+    def league_rank_392(cls, rng=random) -> int:
+        return rng.choices(range(1, 21), weights=cls.league_weights_392())[0]
+
+    @classmethod
+    def league_odds_text_392(cls) -> str:
+        """순위 구간마다 한 줄: 라벨, 순위, 확률, 배당."""
+        rows, prev = [], 0
+        for last, p, m, label in cls.LEAGUE_TABLE_392:
+            places = f"{last}위" if last == prev + 1 else f"{prev + 1}~{last}위"
+            rows.append(f"{label} `{places}` **{round(p * (last - prev))}%** {cls._pk_label(m)}")
+            prev = last
+        return "\n".join(rows)
+
+    @staticmethod
+    def league_path_392(rank: int, n: int, rng=random) -> list[int]:
+        """3.9.2 '순위 변동에 개연성이 조금은': 시즌 중 순위가 한 번에 크게 뛰지 않고 최종 순위 쪽으로 차츰 다가간다.
+        처음엔 최종 순위에서 많이 떨어져 있을 수 있다 (±9), 단계마다 거리가 줄고 조금씩 흔들린다."""
+        off = rng.randint(max(-9, 1 - rank), min(9, 20 - rank))   # 1위 · 20위도 처음엔 다른 순위에서 시작할 수 있게
+        path = []
+        for i in range(n):
+            left = (n - i) / (n + 1)                     # 남은 시즌 비율
+            off = round(off * 0.7 + rng.randint(-3, 3) * left)
+            path.append(max(1, min(20, rank + off)))
+        return path
 
     @staticmethod
     def league_mid(rank: int, stage: int, wild: bool = False, rng=random) -> int:
@@ -1968,11 +2018,12 @@ class Economy(commands.Cog):
         league = random.choice(list(self.LEAGUES))
         mine = (await self.db.club_name(user.id)) or f"{user.display_name} FC"
         others = random.sample(self.LEAGUES[league], 19)
-        rank = random.randint(1, 20)                       # 최종 순위는 완전 랜덤
+        v392 = release.preview_392(getattr(getattr(interaction, "guild", None), "id", None))
+        rank = self.league_rank_392() if v392 else random.randint(1, 20)   # 3.9.2 순위마다 확률이 다르다 (예전엔 완전 랜덤)
         order = others[:rank - 1] + [mine] + others[rank - 1:]
         table = self._league_table(order)
         new = release.preview_310(getattr(getattr(interaction, "guild", None), "id", None))
-        mult, label = self.league_payout(rank, new)
+        mult, label = self.league_payout(rank, new, v392)
         delta = int(amount * mult)
         try:
             new_bal = await self.db.add_balance(user.id, delta)
@@ -1993,16 +2044,25 @@ class Economy(commands.Cog):
                 user, f"🎲 추첨 결과… {league} 개막!", f"{mine}, {amount:,}원을 걸고 {league}에 뛰어듭니다! 목표는 우승!",
                 ui.DARK, sec)
             if new:
-                opening.description += "\n\n" + self.league_odds_text()
+                opening.description += "\n\n" + (self.league_odds_text_392() if v392 else self.league_odds_text())
             msg = await interaction.followup.send(embed=opening, wait=True)
             slow = release.preview_311(getattr(getattr(interaction, "guild", None), "id", None))   # 3.1.1: 화면마다 읽을 시간을 더 준다
             first, gap, last = self.LEAGUE_GAPS_311 if slow else (1.3, 1.3, 1.5)
             wild = release.preview_382(getattr(getattr(interaction, "guild", None), "id", None))
-            for i, (stage, _rnd) in enumerate(self.LEAGUE_ROUNDS):
+            rounds = self.LEAGUE_ROUNDS_392 if v392 else self.LEAGUE_ROUNDS
+            path = self.league_path_392(rank, len(rounds)) if v392 else None
+            prev = None
+            for i, (stage, rnd) in enumerate(rounds):
                 await asyncio.sleep(first if i == 0 else gap)
-                mid = self.league_mid(rank, i, wild)
-                await msg.edit(embed=self._caster_card(
-                    user, f"📊 {stage} — {mine} {mid}위", f"{league} {stage}! 현재 {mid}위를 달리고 있습니다.", ui.DARK, sec))
+                mid = path[i] if path else self.league_mid(rank, i, wild)
+                text = f"{league} {stage}! 현재 {mid}위를 달리고 있습니다."
+                if path:
+                    pts = max(rnd, round(rnd * (2.4 - (mid - 1) * 0.08)))   # 순위에 맞춘 그럴듯한 승점
+                    move = ("" if prev is None or prev == mid else
+                            f" 지난번보다 {prev - mid}계단 올라섰어요." if mid < prev else f" 지난번보다 {mid - prev}계단 내려앉았어요.")
+                    text = f"{league} {stage}! {rnd}경기를 치러 승점 {pts}점, 현재 **{mid}위**입니다.{move}"
+                prev = mid
+                await msg.edit(embed=self._caster_card(user, f"📊 {stage} — {mine} {mid}위", text, ui.DARK, sec))
             await asyncio.sleep(last)
             await msg.edit(embed=final)
         except discord.HTTPException:

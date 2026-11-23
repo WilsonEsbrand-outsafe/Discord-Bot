@@ -51,8 +51,57 @@ def president_text(p: dict) -> str:
     return head + f"\n국정 지지율 **{float(p['approval'] or L.TERM_START):.0f}%**\n지지자에게 적용 중인 공약\n{_pledges(w)}"
 
 
+def _short(user) -> bool:
+    """3.9.2 (11/23 규완님 '/로비를 모바일에서 치면 너무 길게 나오고 가독성이 떨어져'): 짧은 화면 (공개 전엔 테스트 서버만)."""
+    return release.preview_392(getattr(getattr(user, "guild", None), "id", None))
+
+
+def lobby_short(user, e: dict) -> discord.Embed:
+    """후보마다 세 줄 (지지율, 당선 확률, 배당) + 내 표와 베팅. 공약, 지난 대선, 대통령, 뉴스는 아래 버튼으로."""
+    em = ui.card(f"제{e['no']}회 축구 봇 대선", f"개표 **{kst(e['closes_ts'])}**\n-# 공약과 뉴스는 아래 버튼으로 봐요.",
+                 ui.INFO, user, SECTION)
+    my = e["my_vote"]
+    for i, c in enumerate(e["cands"]):
+        lines = [f"지지율 **{e['support'][i]:.0f}%**", f"당선 확률 **{e['chance'][i] * 100:.0f}%**", f"배당 **{_odds(e['odds'][i])}**"]
+        if my and my[0] == i:
+            lines.append(f"내 표 **{my[1]}표**")
+        bet = sum(a for cc, a, _ in e["my_bets"] if cc == i)
+        if bet:
+            lines.append(f"내 베팅 **{bet:,}원**")
+        em.add_field(name=f"{i + 1}. {c['name']}" + (" (돌풍)" if c.get("storm") else ""), value="\n".join(lines))
+    if e["president"]:
+        p = e["president"]
+        w = p["cands"][p["winner"]]
+        em.add_field(name="지금 대통령", value=f"**{w['name']}** ({w['party']})\n" + (
+            "탄핵됨" if p["impeached"] else f"국정 지지율 **{float(p['approval'] or L.TERM_START):.0f}%**"), inline=False)
+    return em
+
+
+def detail_embed(user, e: dict, page: str) -> discord.Embed:
+    """짧은 화면의 버튼: 후보와 공약 / 지난 대선과 대통령 / 뉴스 / 규칙."""
+    if page == "cands":
+        em = ui.card("후보와 공약", "", ui.INFO, user, SECTION)
+        for i, c in enumerate(e["cands"]):
+            em.add_field(name=f"{i + 1}. {c['name']} ({c['party']})", value=(
+                f"능력 {c['ability']}/10\n받은 표 {e['votes'][i]:,}표\n공약\n{_pledges(c)}")[:1024], inline=False)
+        return em
+    if page == "history":
+        em = ui.card("지난 대선", history_text(e)[:4000] if e["history"] else "아직 없어요.", ui.INFO, user, SECTION)
+        if e["president"]:
+            em.add_field(name="지금 대통령", value=president_text(e["president"])[:1024], inline=False)
+        return em
+    if page == "news":
+        return ui.card("최근 뉴스", "\n".join(f"{kst(n['ts'])}\n{n['text']}" for n in e["news"])[:4000] or "아직 없어요.",
+                       ui.INFO, user, SECTION)
+    return ui.card("규칙", f"투표는 기본 1표, 그다음부터 100만원에 1표씩 최대 {L.VOTE_MAX}표까지예요. 지지 후보는 한 명이에요.\n\n"
+                   "지지한 후보가 당선되면 그 후보의 공약 혜택을 받고, 표를 가장 많이 준 사람은 혜택이 두 배예요.\n\n"
+                   "베팅 배당은 걸 때의 당선 확률로 정해져요. 가끔 로비가 적발되면 당첨금을 받지 못해요.", ui.INFO, user, SECTION)
+
+
 def lobby_embed(user, e: dict) -> discord.Embed:
     """한 칸에 후보 하나, 값은 한 줄에 하나 (가운뎃점으로 이어 붙이지 않는다)."""
+    if _short(user):
+        return lobby_short(user, e)
     em = ui.card(f"제{e['no']}회 축구 봇 대선", (
         "지지하는 후보에게 투표하고, 누가 당선될지 베팅하세요.\n"
         f"개표 **{kst(e['closes_ts'])}**"), ui.INFO, user, SECTION)
@@ -157,6 +206,17 @@ class LobbyView(discord.ui.View):
         ref.callback = self._refresh_btn
         for x in (vote, bet, ref):
             self.add_item(x)
+        if _short(self.user):   # 3.9.2 자세한 것은 버튼으로 (누른 사람에게만)
+            for page, label in (("cands", "공약"), ("history", "지난 대선"), ("news", "뉴스"), ("rules", "규칙")):
+                b = discord.ui.Button(label=label, style=discord.ButtonStyle.primary, row=2)
+                b.callback = self._detail(page)
+                self.add_item(b)
+
+    def _detail(self, page: str):
+        async def cb(interaction: discord.Interaction):
+            e = await self.cog.db.state(interaction.user.id, int(time.time()))
+            await interaction.response.send_message(embed=detail_embed(interaction.user, e, page), ephemeral=True)
+        return cb
 
     async def _vote(self, interaction: discord.Interaction):
         i = int(interaction.data["values"][0])
