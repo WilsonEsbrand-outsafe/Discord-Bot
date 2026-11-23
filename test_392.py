@@ -323,3 +323,44 @@ def test_help_fits():
         assert len(e.fields) <= 25 and len(e) <= 6000
     finally:
         L.TESTERS.clear()
+
+
+def test_facility_titles_emblems():
+    import services.club_db as CD
+    CD.DB_PATH = edb.DB_PATH
+    db = CD.ClubDB()
+    A = 392000000000071
+    tok = release.GUILD.set(release.TEST_GUILD)
+    try:
+        assert CD.facility_max() == 8 and CD.facility_costs()[5] == 2_000_000_000
+        assert "🏆" in CD.emblems() and CD.emblem_price("🏆") == CD.EMBLEM_PRICE_392 and CD.emblem_price("🦁") == CD.EMBLEM_PRICE
+        _set(A, 150_000_000)
+        assert run(db.set_title(A, "veteran", NOW))["reason"] == "balance"
+        r = run(db.set_title(A, "rising", NOW))
+        assert r["ok"] and r["fee"] == 100_000_000 and _bal(A) == 50_000_000
+        from services import ui
+        assert ui.TITLES[A] == "떠오르는 구단주"
+        assert run(db.set_title(A, None, NOW))["ok"] and A not in ui.TITLES
+        assert run(db.set_title(A, "rising", NOW))["fee"] == 0 and run(db.titles(A)) == {"own": {"rising"}, "now": "떠오르는 구단주"}
+        # 창단 멤버는 다른 칭호를 달아도 다시 달 수 있다
+        F_ = 392000000000072
+        con = _con()
+        con.execute("INSERT INTO user_titles(user_id, title, source, ts) VALUES(?, ?, 'founder', 0)", (F_, edb.FOUNDER_TITLE))
+        con.commit()
+        con.close()
+        _set(F_, 100_000_000)
+        assert run(db.set_title(F_, "rising", NOW))["ok"] and "founder" in run(db.titles(F_))["own"]
+        assert run(db.set_title(F_, "founder", NOW))["title"] == edb.FOUNDER_TITLE
+    finally:
+        release.GUILD.reset(tok)
+        con = _con()   # 다른 테스트(창단 멤버 칭호)가 같은 DB 를 보므로 치운다
+        con.execute("DELETE FROM user_titles WHERE user_id IN (?, ?)", (A, F_))
+        con.commit()
+        con.close()
+        ui.TITLES.pop(A, None)
+        ui.TITLES.pop(F_, None)
+    tok = release.GUILD.set(1)
+    try:
+        assert CD.facility_max() == 5 and "🏆" not in CD.emblems()
+    finally:
+        release.GUILD.reset(tok)

@@ -11,7 +11,7 @@ import sqlite3
 from typing import Optional
 
 import release
-from services.club_db import FACILITY_COSTS, ClubDB, kst_day
+from services.club_db import FACILITY_COSTS_392, ClubDB, kst_day
 from services.economy_db import EconomyDB
 from services.fishing import FishingDB
 
@@ -39,7 +39,7 @@ def wages(ovrs: list[int]) -> int:
 
 
 def facility_spent(levels: dict[str, int]) -> int:
-    return sum(sum(FACILITY_COSTS[:lv]) for lv in levels.values())
+    return sum(sum(FACILITY_COSTS_392[:lv]) for lv in levels.values())   # 3.9.2 고급 단계도 (Lv.5 까지는 같다)
 
 
 def form_score(recent: str) -> int:

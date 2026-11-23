@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 import release
 from services import ui
 from services.club_db import (
-    CLUB_NAME_MAX, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS, FACILITY_MAX, MANAGERS, MEDICS, PROSPECT_PRICE,
+    CLUB_NAME_MAX, EMBLEM_PRICE, EMBLEM_PRICE_392, EMBLEMS, EMBLEMS_392, TITLE_SHOP_392, FACILITIES, emblems, facility_costs, facility_max, MANAGERS, MEDICS, PROSPECT_PRICE,
     AUTO_RESERVE_EVERY, AUTO_RESERVE_HOURS, AUTO_RESERVE_XP, PROMOTE_OVR, RESERVE_COOLDOWN, RESERVE_XP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, facility_effect, match_highlights,
     simulate_match,
 )
@@ -306,13 +306,40 @@ class Hubs(commands.Cog):
     async def _p_decor(self, view: HubView) -> discord.Embed:
         user = view.user
         team = await self.clubs.get_team(user.id)
+        v392 = release.preview_392(getattr(user.guild, "id", None) if getattr(user, "guild", None) else None)
         e = ui.card("🎨 꾸미기 · 설정",
                     f"`구단명` **{team['name']}** · 무료 (최대 {CLUB_NAME_MAX}자)\n"
-                    f"`엠블럼` {team.get('emblem') or '없음'} · {_won(EMBLEM_PRICE)}원\n"
+                    f"`엠블럼` {team.get('emblem') or '없음'} · {_won(EMBLEM_PRICE)}원"
+                    + (f" (고급 엠블럼 {_won(EMBLEM_PRICE_392)}원)" if v392 else "") + "\n"
                     f"`경기장` {team.get('stadium') or '없음'} · {_won(STADIUM_PRICE)}원 (경기 중계에 나와요)",
                     ui.INFO, user, "🎨 꾸미기")
         emb = discord.ui.Select(placeholder=f"🛡️ 엠블럼 바꾸기 · {_won(EMBLEM_PRICE)}원", row=0, options=[
-            discord.SelectOption(label=f"{x} 엠블럼", value=x, default=x == team.get("emblem")) for x in EMBLEMS[:25]])
+            discord.SelectOption(label=f"{x} " + ("고급 엠블럼" if x in EMBLEMS_392 else "엠블럼"), value=x,
+                                 default=x == team.get("emblem")) for x in (emblems() if v392 else EMBLEMS)[:25]])
+        if v392:   # 3.9.2 칭호 상점
+            t = await self.clubs.titles(user.id)
+            e.add_field(name="칭호", value=f"지금 **{t['now'] or '없음'}**\n-# 경마, 토토 같은 중계 화면에서 이름 옆에 보여요. 한 번 사면 언제든 다시 달 수 있어요.",
+                        inline=False)
+            opts = [discord.SelectOption(label=f"{n} " + ("(가지고 있음)" if k in t["own"] else f"({_won(price)}원)"), value=k,
+                                         default=t["now"] == n) for k, (n, price) in TITLE_SHOP_392.items()]
+            if "founder" in t["own"]:
+                from services.economy_db import FOUNDER_TITLE
+                opts.insert(0, discord.SelectOption(label=f"{FOUNDER_TITLE} (가지고 있음)", value="founder", default=t["now"] == FOUNDER_TITLE))
+            opts.append(discord.SelectOption(label="칭호 떼기", value="-"))
+            ts = discord.ui.Select(placeholder="칭호 사기 또는 달기", row=2, options=opts)
+
+            async def set_title(interaction: discord.Interaction):
+                k = ts.values[0]
+                r = await self.clubs.set_title(user.id, None if k == "-" else k, int(time.time()))
+                if r["ok"]:
+                    note = ui.card("칭호", (f"**{r['title']}** 칭호를 달았어요." + (f" (-{r['fee']:,}원)" if r["fee"] else ""))
+                                   if r["title"] else "칭호를 뗐어요.", ui.GOLD, user, "🎨 꾸미기")
+                else:
+                    note = ui.card("❌ 칭호", f"칭호 값 **{r.get('fee', 0):,}원**이 필요해요." if r["reason"] == "balance" else "달 수 없는 칭호예요.",
+                                   ui.LOSE, user, "🎨 꾸미기")
+                await view.refresh(interaction, note)
+            ts.callback = set_title
+            view.add_item(ts)
 
         async def set_emblem(interaction: discord.Interaction):
             await view.refresh(interaction, await self._decorate(user, "emblem", emb.values[0], "엠블럼"))
@@ -941,8 +968,8 @@ class Hubs(commands.Cog):
         lv = await self.clubs.facilities(view.user.id)
         lines = []
         for k, (e_, n_, _, _) in FACILITIES.items():
-            nxt = f"다음 **{_won(FACILITY_COSTS[lv[k]])}원** → {facility_effect(k, lv[k] + 1)}" if lv[k] < FACILITY_MAX else "최고 레벨"
-            lines.append(f"{e_} **{n_}** Lv.{lv[k]}/{FACILITY_MAX} · {facility_effect(k, lv[k])}\n　{nxt}")
+            nxt = f"다음 **{_won(facility_costs()[lv[k]])}원** → {facility_effect(k, lv[k] + 1)}" if lv[k] < facility_max() else "최고 레벨"
+            lines.append(f"{e_} **{n_}** Lv.{lv[k]}/{facility_max()} · {facility_effect(k, lv[k])}\n　{nxt}")
         e = ui.card("🏗️ 시설", "\n".join(lines), ui.INFO, view.user, "🏗️ 시설")
         if not view.ctx.get("g311"):
             e.set_footer(text="/시설 업그레이드:<시설> 로 한 단계 올려요")
@@ -950,9 +977,9 @@ class Hubs(commands.Cog):
         e.set_footer(text="버튼을 두 번 누르면 한 단계 올려요 · 시설은 구단을 지워도 남아요")
         for k, (e_, n_, _, _) in FACILITIES.items():   # 3.1.1: /시설 을 여기로
             sure = view.ctx.get("confirm") == ("facility", k)
-            top = lv[k] >= FACILITY_MAX
+            top = lv[k] >= facility_max()
             b = discord.ui.Button(label=f"{n_} 최고" if top else
-                                  (f"정말 올리기 {_won(FACILITY_COSTS[lv[k]])}원" if sure else f"{n_} Lv.{lv[k] + 1}"),
+                                  (f"정말 올리기 {_won(facility_costs()[lv[k]])}원" if sure else f"{n_} Lv.{lv[k] + 1}"),
                                   emoji=e_, row=0, disabled=top,
                                   style=discord.ButtonStyle.danger if sure else discord.ButtonStyle.primary)
             b.callback = self._facility_cb(view, k)
