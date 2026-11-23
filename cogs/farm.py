@@ -154,6 +154,11 @@ def panel_embed(user, f: dict, now: int, note: str = "") -> discord.Embed:
         stats.append(("숫돌", f"**{f['whet']}**개"))
     if f.get("ingot"):
         stats.append(("숫돌 주괴", f"**{f['ingot']}**개"))
+    if F.v392(f["owner"], now):   # 3.9.2 계절 · 날씨 · 꾸미기
+        wx = F.WEATHER[F.weather_of(now)]
+        stats.append(("계절과 날씨", f"**{F.season_of(now)[0]}**, **{wx[0]}**\n{wx[1]}"))
+        if f.get("deco"):
+            stats.append(("꾸미기", f"**{F.DECOS[f['deco']][0]}**"))
     _grid_fields(e, stats)
 
     lists = []
@@ -216,7 +221,10 @@ def help_embed(user, v382: bool = False, v384: bool = False) -> discord.Embed:
                              "코인이 모자라면 그만둬요."),
                ("농장 레벨", "거둔 물건과 납품 의뢰로 경험치를 모아요.\n레벨이 오르면 상자를 받아요. **더 보기**에서 봐요."),
                ("도감", "얻어 본 물건을 모아 봐요.\n거둘 때 가끔 값이 두 배인 황금 물건이 나와요."),
-               ("납품 의뢰", "한 주에 세 개씩 새로 나와요.\n창고의 물건을 내면 상자와 경험치를 받아요."),) if F.v392(user.id) else ()),
+               ("납품 의뢰", "한 주에 세 개씩 새로 나와요.\n창고의 물건을 내면 상자와 경험치를 받아요."),
+               ("계절과 날씨", "계절은 매주, 날씨는 매일 바뀌어요.\n제철 작물은 빨리 자라고, 날씨마다 좋은 일이나 나쁜 일이 있어요."),
+               ("동물과 꾸미기", "동물에게 이름을 지어 줄 수 있어요. 오래 기를수록 친해져서 빨리 만들어요.\n코인으로 꾸미기를 사서 농장에 걸 수 있어요."),
+               ("교환", "다른 농부와 창고 물건을 바꿀 수 있어요."),) if F.v392(user.id) else ()),
             *((("유지비", "농장이 두 개 이상이면 매일 0시에 코인이 나가요.\n"
                          f"두 번째 농장은 하루 {F.UPKEEP_392:,} 코인, 세 번째는 {F.UPKEEP_392 * 2:,} 코인처럼 늘어나요."),) if F.v392(user.id) else ()),
             ("거두기", "다 자란 작물과 동물이 만든 것을 창고로 옮겨요."),
@@ -999,8 +1007,219 @@ class OrderView(_Sub):
         return cb
 
 
+class SeasonView(_Sub):
+    """3.9.2 계절과 날씨."""
+
+    def build(self, f: dict):
+        pass
+
+    def embed(self, f: dict) -> discord.Embed:
+        now = int(time.time())
+        name, crops = F.season_of(now)
+        wx = F.WEATHER[F.weather_of(now)]
+        e = ui.card("계절과 날씨", f"지금은 **{name}**이에요. 계절은 매주 월요일에 바뀌어요.\n"
+                    f"오늘 날씨는 **{wx[0]}**: {wx[1]}.\n-# 날씨는 매일 0시에 바뀌어요.", ui.INFO, self.user, SECTION)
+        e.add_field(name="제철 작물", value="\n".join(F.CROPS[k][1] for k in crops) + f"\n-# 제철 작물은 {round((1 - F.SEASON_FAST) * 100)}% 빨리 자라요",
+                    inline=False)
+        e.add_field(name="날씨 종류", value="\n".join(f"{n}: {d}" for n, d, _ in F.WEATHER.values()), inline=False)
+        return e
+
+
+class PetNameModal(discord.ui.Modal):
+    def __init__(self, view: "PetView", slot: int):
+        super().__init__(title="동물 이름 짓기")
+        self.view, self.slot = view, slot
+        self.name = discord.ui.TextInput(label=f"이름 ({F.PET_NAME_MAX}자까지, 비우면 지워요)", max_length=F.PET_NAME_MAX, required=False)
+        self.add_item(self.name)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        v = self.view
+        r = await v.cog.db.name_pet(v.user.id, v.fid, self.slot, self.name.value, int(time.time()))
+        note = ((f"이름을 **{r['name']}**(으)로 지었어요." if r["name"] else "이름을 지웠어요.") if r["ok"] else
+                f"이름은 {F.PET_NAME_MAX}자까지예요." if r["reason"] == "long" else "그 땅에는 동물이 없어요.")
+        await v.redraw(interaction, note)
+
+
+class PetView(_Sub):
+    """3.9.2 동물 이름과 친밀도: 거둘 때마다 친밀도 +1, 높을수록 빨리 만든다."""
+
+    def build(self, f: dict):
+        pets = [(i, p) for i, p in enumerate(f["fields"]) if p and p["kind"] == "animal"]
+        if pets:
+            sel = discord.ui.Select(placeholder="이름을 지어 줄 동물", options=[
+                discord.SelectOption(label=f"{i + 1}번 땅 {F.ANIMALS[p['key']][1]}" + (f" {p['pet']}" if p.get("pet") else ""),
+                                     value=str(i)) for i, p in pets[:25]])
+            sel.callback = self._pick
+            self.add_item(sel)
+
+    def embed(self, f: dict) -> discord.Embed:
+        pets = [(i, p) for i, p in enumerate(f["fields"]) if p and p["kind"] == "animal"]
+        lines = [f"{i + 1}번 땅 {F.ANIMALS[p['key']][1]}" + (f" **{p['pet']}**" if p.get("pet") else "")
+                 + f"\n친밀도 {p.get('love', 0)} / {F.LOVE_MAX}" for i, p in pets]
+        return ui.card("동물", (f"{self.note}\n\n" if self.note else "") + ("\n".join(lines) or "기르는 동물이 없어요.")
+                       + f"\n-# 하나 만들 때마다 친밀도가 1 올라요. {F.LOVE_MAX}이면 {round(F.LOVE_FAST * 100)}% 빨리 만들어요.",
+                       ui.INFO, self.user, SECTION)
+
+    async def _pick(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(PetNameModal(self, int(interaction.data["values"][0])))
+
+
+class DecoView(_Sub):
+    """3.9.2 농장 꾸미기: 코인으로 한 번 사면 내 모든 농장에 걸 수 있다."""
+
+    async def load(self):
+        self._own = await self.cog.db.decos(self.user.id)
+
+    def build(self, f: dict):
+        own = getattr(self, "_own", set()) or set()
+        sel = discord.ui.Select(placeholder="걸 꾸미기 (없으면 사서 걸어요)", options=[
+            discord.SelectOption(label=f"{n}" + (" (가지고 있음)" if k in own else f" ({price:,} 코인)"), value=k,
+                                 default=f.get("deco") == k) for k, (n, price) in F.DECOS.items()])
+        sel.callback = self._set
+        self.add_item(sel)
+        b = discord.ui.Button(label="떼기", style=discord.ButtonStyle.secondary, disabled=not f.get("deco"))
+        b.callback = self._off
+        self.add_item(b)
+
+    def embed(self, f: dict) -> discord.Embed:
+        cur = F.DECOS[f["deco"]][0] if f.get("deco") else "없음"
+        e = ui.card("꾸미기", (f"{self.note}\n\n" if self.note else "") + f"지금 건 꾸미기 **{cur}**\n"
+                    "-# 농장 화면에 보여요. 한 번 사면 내 다른 농장에도 걸 수 있어요.", ui.INFO, self.user, SECTION)
+        e.add_field(name="가진 코인", value=f"**{f['coins']:,}**")
+        return e
+
+    async def redraw(self, interaction: discord.Interaction, note: str = "", panel_note: str = "", win: bool = False):
+        await self.load()
+        await super().redraw(interaction, note, panel_note, win)
+
+    async def _set(self, interaction: discord.Interaction):
+        key = interaction.data["values"][0]
+        r = await self.cog.db.deco(self.user.id, self.fid, key, int(time.time()))
+        note = ((f"**{F.DECOS[key][0]}**을(를) 샀어요 (코인 -{r['paid']:,})." if r["paid"] else f"**{F.DECOS[key][0]}**을(를) 걸었어요.")
+                if r["ok"] else f"코인이 모자라요 ({r.get('cost', 0):,} 코인)." if r["reason"] == "coins" else "걸 수 없어요.")
+        await self.redraw(interaction, note, note if r["ok"] else "")
+
+    async def _off(self, interaction: discord.Interaction):
+        await self.cog.db.deco(self.user.id, self.fid, None, int(time.time()))
+        await self.redraw(interaction, "꾸미기를 뗐어요.")
+
+
+def _find_item(text: str) -> Optional[str]:
+    """물건 이름(띄어쓰기 무시) → key."""
+    t = "".join(str(text).split())
+    return next((k for k, v in F.ITEMS.items() if "".join(v[1].split()) == t), None)
+
+
+class TradeModal(discord.ui.Modal):
+    def __init__(self, view: "TradeView"):
+        super().__init__(title="교환 제안")
+        self.view = view
+        k, t, q = view.pick
+        self.give = discord.ui.TextInput(label=f"줄 개수 ({_item(k, t)} {q:,}개 가짐)", max_length=9)
+        self.want = discord.ui.TextInput(label="받고 싶은 물건 이름 (예: 감자, 황금 달걀)", max_length=20)
+        self.want_n = discord.ui.TextInput(label="받고 싶은 개수", max_length=9)
+        for x in (self.give, self.want, self.want_n):
+            self.add_item(x)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        v = self.view
+        gq, wq, wk = _num(self.give.value), _num(self.want_n.value), _find_item(self.want.value)
+        if not gq or not wq:
+            return await interaction.response.send_message("개수는 숫자로 적어 주세요.", ephemeral=True)
+        if not wk:
+            return await interaction.response.send_message("그런 물건이 없어요. 창고에 보이는 이름 그대로 적어 주세요.", ephemeral=True)
+        k, t, _ = v.pick
+        r = await v.cog.db.offer_trade(v.user.id, v.fid, v.target.id, k, t, gq, wk, wq, int(time.time()))
+        if r["ok"]:
+            v.pick = None
+        note = (f"{v.target.mention}님에게 {_item(k, t)} {gq:,}개를 주고 {_item(wk)} {wq:,}개를 받는 교환을 제안했어요.\n"
+                f"-# 상대가 {F.TRADE_HOURS}시간 안에 받지 않으면 물건이 돌아와요." if r["ok"] else
+                {"self": "나 자신과는 교환할 수 없어요.", "target": "그 사람은 농장이 없어요.", "few": "줄 물건이 모자라요."}
+                .get(r["reason"], "제안할 수 없어요."))
+        await v.redraw(interaction, note)
+
+
+class TradeView(_Sub):
+    """3.9.2 농부끼리 교환: 내 창고 물건을 내놓고 상대 물건을 달라고 제안한다."""
+    target = None
+    pick = None
+
+    async def load(self):
+        self._t = await self.cog.db.trades(self.user.id, int(time.time()))
+
+    def build(self, f: dict):
+        t = getattr(self, "_t", None) or {"in": [], "out": []}
+        us = discord.ui.UserSelect(placeholder="교환할 사람" if not self.target else f"교환할 사람: {self.target.display_name}", row=0)
+        us.callback = self._who
+        self._us = us
+        self.add_item(us)
+        if f["items"]:
+            sel = discord.ui.Select(placeholder="내가 줄 물건", row=1, options=[
+                discord.SelectOption(label=f"{_item(k, tt)} {q:,}개", value=f"{k}:{tt}:{q}",
+                                     default=self.pick == (k, tt, q)) for k, tt, q in f["items"][:25]])
+            sel.callback = self._what
+            self.add_item(sel)
+        b = discord.ui.Button(label="교환 제안하기", style=discord.ButtonStyle.success, row=2,
+                              disabled=not (self.target and self.pick))
+        b.callback = self._offer
+        self.add_item(b)
+        for x in t["in"][:2]:
+            for ok, label, style in ((True, "받기", discord.ButtonStyle.success), (False, "거절", discord.ButtonStyle.danger)):
+                b = discord.ui.Button(label=f"{x['id']}번 {label}", style=style, row=3)
+                b.callback = self._answer(x["id"], ok)
+                self.add_item(b)
+        for x in t["out"][:5]:
+            b = discord.ui.Button(label=f"{x['id']}번 취소", style=discord.ButtonStyle.secondary, row=4)
+            b.callback = self._answer(x["id"], False)
+            self.add_item(b)
+
+    def embed(self, f: dict) -> discord.Embed:
+        t = getattr(self, "_t", None) or {"in": [], "out": []}
+        e = ui.card("교환", (f"{self.note}\n\n" if self.note else "") + "사람과 줄 물건을 고르고 **교환 제안하기**를 눌러요.\n"
+                    "-# 내놓은 물건은 바로 빠지고, 거절되거나 취소하면 돌아와요. 받을 때는 이 농장 창고에서 내요.",
+                    ui.INFO, self.user, SECTION)
+
+        def line(x, mine):
+            who = f"<@{x['to_uid']}>님에게" if mine else f"<@{x['from_uid']}>님이"
+            return (f"**{x['id']}번** {who}\n{_item(x['give_key'], x['give_tier'])} {x['give_qty']:,}개를 주고 "
+                    f"{_item(x['want_key'])} {x['want_qty']:,}개를 받아요")
+        e.add_field(name="받은 제안", value="\n".join(line(x, False) for x in t["in"][:5]) or "없어요.", inline=False)
+        e.add_field(name="보낸 제안", value="\n".join(line(x, True) for x in t["out"][:5]) or "없어요.", inline=False)
+        return e
+
+    async def redraw(self, interaction: discord.Interaction, note: str = "", panel_note: str = "", win: bool = False):
+        await self.load()
+        await super().redraw(interaction, note, panel_note, win)
+
+    async def _who(self, interaction: discord.Interaction):
+        self.target = self._us.values[0] if self._us.values else None
+        await self.redraw(interaction)
+
+    async def _what(self, interaction: discord.Interaction):
+        k, t, q = interaction.data["values"][0].rsplit(":", 2)
+        self.pick = (k, int(t), int(q))
+        await self.redraw(interaction)
+
+    async def _offer(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(TradeModal(self))
+
+    def _answer(self, tid: int, ok: bool):
+        async def cb(interaction: discord.Interaction):
+            r = await self.cog.db.answer_trade(self.user.id, self.fid, tid, ok, int(time.time()))
+            if not r["ok"]:
+                note = (f"{_item(r['key'])}이(가) 모자라요 ({r['qty']:,}개 필요)." if r["reason"] == "few"
+                        else "이미 끝난 제안이에요.")
+            elif r["accepted"]:
+                gk, gt, gq = r["give"]
+                note = f"교환했어요. {_item(gk, gt)} {gq:,}개를 받았어요."
+            else:
+                note = "제안을 닫았어요. 내놓은 물건은 돌아갔어요."
+            await self.redraw(interaction, note, note if r.get("accepted") else "")
+        return cb
+
+
 MoreView.PAGES = (("아이템", ItemView), ("아르바이트", StaffView), ("농장 레벨", LevelView), ("도감", DexView),
-                  ("납품 의뢰", OrderView))
+                  ("납품 의뢰", OrderView), ("계절과 날씨", SeasonView), ("동물", PetView), ("꾸미기", DecoView), ("교환", TradeView))
 
 
 class ChestView(_Sub):
