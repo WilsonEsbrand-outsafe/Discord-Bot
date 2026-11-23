@@ -81,7 +81,11 @@ ENCH_SLOW = 1.1   # 11/21 규완님 '인챈트 된 씨앗은 가격이 5배인 �
 # 이어서 '페널티로 이번 버닝에 적용되지 않게' → '10% 늦게 자라는 거도 적용해줘': 둘 다.
 # 인챈트 씨앗을 심은 칸은 10% 늦게 자라고 버닝 '두 배 빨리 자람'을 받지 않으며, 인챈트 작물은 버닝 '판매 1.5배'를 받지 않는다.
 ECROPS = {k + ENCH: (e, f"인챈트 {n}", v * ENCH_MULT) for k, (e, n, _, _, v) in CROPS.items()}
-ITEMS = {**{k: (e, n, v) for k, (e, n, _, _, v) in CROPS.items()}, **PRODUCTS, **ECROPS}   # 창고에 들어가는 것: key → (이모지, 이름, ★1 판매가)
+# 3.9.2 희귀 변이 (11/23 규완님 D 36): 거둘 때 가끔 황금 작물 · 황금 생산품이 나온다 (인챈트 작물은 빼고). 값 2배 · 확률은 내 기본값
+MUT, MUT_P, MUT_MULT = "_g", 0.02, 2
+MITEMS = {k + MUT: (e, f"황금 {n}", v * MUT_MULT)
+          for k, (e, n, v) in {**{k: (e, n, v) for k, (e, n, _, _, v) in CROPS.items()}, **PRODUCTS}.items()}
+ITEMS = {**{k: (e, n, v) for k, (e, n, _, _, v) in CROPS.items()}, **PRODUCTS, **ECROPS, **MITEMS}   # 창고에 들어가는 것: key → (이모지, 이름, ★1 판매가)
 ANIMAL_PER_PLOTS = 3          # 동물은 땅 3칸당 1마리
 
 # 아이템 (11/12 규완님이 고른 1 · 3 · 4 · 6): key → (이름, 값(코인), 한 줄 설명) — 농사 상점에서 사서 농장의 [아이템]에서 쓴다
@@ -160,6 +164,41 @@ STAFF = {
     "veteran": ("베테랑 알바", 30_000, 120, ("harvest", "replant", "sell")),
 }
 STAFF_JOBS = {"harvest": "다 자란 것 거두기", "replant": "마지막에 심은 것 다시 심기", "sell": "창고 물건 팔기"}
+
+
+# 3.9.2 농장 레벨 · 도감 · 주간 납품 의뢰 (11/23 규완님 D 27 28 29 '코인이 목적이 아니더라도 농사를 계속'). 수치는 내 기본값.
+# 레벨: 사람마다 하나. 거둔 물건 하나에 경험치 1, 납품 의뢰 하나에 ORDER_XP. 레벨이 오를 때마다 은 상자, 5레벨마다 금 상자 (코인은 주지 않는다).
+LEVEL_MAX, ORDER_XP = 50, 300
+ORDER_N = 3                                   # 한 주(월요일 KST 시작)에 의뢰 세 개
+ORDER_COINS = (3_000, 10_000, 30_000)         # 의뢰마다 물건 값 합이 대략 이만큼 되게 개수를 정한다 (★1 값 기준)
+ORDER_CHEST = ("wood", "silver", "gold")      # 의뢰마다 보상 상자
+
+
+def level_need(lv: int) -> int:
+    """lv → lv+1 에 필요한 경험치."""
+    return 100 * int(lv)
+
+
+def level_of(xp: int) -> tuple[int, int, int]:
+    """경험치 → (레벨, 이번 레벨에서 모은 경험치, 다음 레벨까지 필요한 경험치). 최대 레벨이면 필요 0."""
+    lv, xp = 1, int(xp)
+    while lv < LEVEL_MAX and xp >= level_need(lv):
+        xp -= level_need(lv)
+        lv += 1
+    return lv, xp, 0 if lv >= LEVEL_MAX else level_need(lv)
+
+
+def week_of(now_ts: float) -> int:
+    return (_kst_day(int(now_ts)) + 3) // 7   # 1970-01-01 은 목요일 → 월요일에 바뀐다
+
+
+def week_end(now_ts: float) -> int:
+    return ((week_of(now_ts) + 1) * 7 - 3) * 86400 - 9 * 3600
+
+
+def base_items() -> list[str]:
+    """도감 · 의뢰에 쓰는 기본 물건 (작물 · 생산품)."""
+    return list(CROPS) + list(PRODUCTS)
 
 
 def v392(uid: int, now_ts: Optional[float] = None) -> bool:
@@ -397,6 +436,11 @@ class FarmDB(EconomyDB):
                         "paid_until INTEGER NOT NULL, next_ts INTEGER NOT NULL, work INTEGER NOT NULL DEFAULT 0, "
                         "wages INTEGER NOT NULL DEFAULT 0)")
             con.execute("CREATE TABLE IF NOT EXISTS farm_upkeep (owner INTEGER PRIMARY KEY, day_key INTEGER NOT NULL)")
+            con.execute("CREATE TABLE IF NOT EXISTS farm_prog (owner INTEGER PRIMARY KEY, xp INTEGER NOT NULL DEFAULT 0)")
+            con.execute("CREATE TABLE IF NOT EXISTS farm_dex (owner INTEGER NOT NULL, key TEXT NOT NULL, tier INTEGER NOT NULL, "
+                        "ts INTEGER NOT NULL, PRIMARY KEY(owner, key))")
+            con.execute("CREATE TABLE IF NOT EXISTS farm_orders (owner INTEGER NOT NULL, week INTEGER NOT NULL, idx INTEGER NOT NULL, "
+                        "key TEXT NOT NULL, qty INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(owner, week, idx))")
             if "name" not in cols:   # 3.8.2 농장 이름 (주인이 정한다, 없으면 'ㅇㅇ의 농장')
                 con.execute("ALTER TABLE farms ADD COLUMN name TEXT")
             shop_cols = {r[1] for r in con.execute("PRAGMA table_info(farm_shops)")}
@@ -724,6 +768,98 @@ class FarmDB(EconomyDB):
     def _give(con, fid: int, key: str, tier: int, n: int):
         con.execute("INSERT INTO farm_items(farm_id, key, tier, qty) VALUES(?,?,?,?) "
                     "ON CONFLICT(farm_id, key, tier) DO UPDATE SET qty = qty + excluded.qty", (fid, key, tier, n))
+        if n > 0:   # 3.9.2 도감: 처음 얻은 물건 · 가장 높은 등급
+            con.execute("INSERT INTO farm_dex(owner, key, tier, ts) SELECT owner, ?, ?, CAST(strftime('%s','now') AS INTEGER) "
+                        "FROM farms WHERE id=? ON CONFLICT(owner, key) DO UPDATE SET tier = MAX(tier, excluded.tier)",
+                        (key, int(tier), int(fid)))
+
+    # ───────────── 3.9.2 농장 레벨 ─────────────
+    @staticmethod
+    def _xp_have(con, owner: int) -> int:
+        r = con.execute("SELECT xp FROM farm_prog WHERE owner=?", (int(owner),)).fetchone()
+        return int(r[0]) if r else 0
+
+    @classmethod
+    def _add_xp(cls, con, owner: int, fid: int, n: int) -> list[int]:
+        """경험치 +n. 오른 레벨마다 상자를 농장 fid 에 (5레벨마다 금 상자, 나머지는 은 상자). → 새로 오른 레벨들."""
+        if n <= 0:
+            return []
+        before = level_of(cls._xp_have(con, owner))[0]
+        con.execute("INSERT INTO farm_prog(owner, xp) VALUES(?, ?) ON CONFLICT(owner) DO UPDATE SET xp = xp + excluded.xp",
+                    (int(owner), int(n)))
+        after = level_of(cls._xp_have(con, owner))[0]
+        ups = list(range(before + 1, after + 1))
+        for lv in ups:
+            c = "gold" if lv % 5 == 0 else "silver"
+            con.execute(f"UPDATE farms SET c_{c} = c_{c} + 1 WHERE id=?", (int(fid),))
+        return ups
+
+    async def level(self, owner: int) -> dict:
+        """→ {xp, level, cur, need}."""
+        def fn(con):
+            xp = self._xp_have(con, owner)
+            lv, cur, need = level_of(xp)
+            return {"xp": xp, "level": lv, "cur": cur, "need": need}
+        return await self._tx(fn)
+
+    # ───────────── 3.9.2 도감 ─────────────
+    async def dex(self, owner: int) -> dict[str, int]:
+        """owner 가 얻어 본 물건 → 가장 높은 등급. 지금 창고에 있는 것도 넣는다 (도감이 생기기 전에 얻은 것)."""
+        def fn(con):
+            con.execute("INSERT INTO farm_dex(owner, key, tier, ts) SELECT f.owner, i.key, MAX(i.tier), CAST(strftime('%s','now') AS INTEGER) "
+                        "FROM farm_items i JOIN farms f ON f.id = i.farm_id WHERE f.owner=? AND i.qty > 0 GROUP BY i.key "
+                        "ON CONFLICT(owner, key) DO UPDATE SET tier = MAX(tier, excluded.tier)", (int(owner),))
+            return {k: int(t) for k, t in con.execute("SELECT key, tier FROM farm_dex WHERE owner=?", (int(owner),)) if k in ITEMS}
+        return await self._tx(fn)
+
+    # ───────────── 3.9.2 주간 납품 의뢰 ─────────────
+    @staticmethod
+    def _orders(con, owner: int, now_ts: int) -> list[dict]:
+        wk = week_of(now_ts)
+        rows = con.execute("SELECT idx, key, qty, done FROM farm_orders WHERE owner=? AND week=? ORDER BY idx", (int(owner), wk)).fetchall()
+        if not rows:
+            seen = [k for (k,) in con.execute("SELECT key FROM farm_dex WHERE owner=?", (int(owner),)) if k in base_items()]
+            pool = seen if len(seen) >= ORDER_N else list(CROPS)[:5] + ["egg"]
+            rng = random.Random(f"{int(owner)}:{wk}")
+            keys = rng.sample(pool, ORDER_N)
+            rows = []
+            for i, k in enumerate(keys):
+                q = max(5, min(300, round(ORDER_COINS[i] / max(1, ITEMS[k][2]))))
+                con.execute("INSERT INTO farm_orders(owner, week, idx, key, qty) VALUES(?,?,?,?,?)", (int(owner), wk, i, k, q))
+                rows.append((i, k, q, 0))
+        return [{"idx": int(i), "key": k, "qty": int(q), "done": bool(d), "chest": ORDER_CHEST[int(i)]} for i, k, q, d in rows]
+
+    async def orders(self, owner: int, now_ts: int) -> list[dict]:
+        return await self._tx(lambda con: self._orders(con, owner, now_ts))
+
+    async def deliver(self, uid: int, fid: int, idx: int, now_ts: int) -> dict:
+        """의뢰 idx 에 농장 fid 창고의 물건을 낸다 (등급은 상관없이 낮은 등급부터 하나씩 센다).
+        보상: 상자 하나 + 경험치 ORDER_XP. reason: none / idx / done / few(have, need)."""
+        def fn(con):
+            f = self._mine(con, uid, fid, now_ts)
+            if not f:
+                return {"ok": False, "reason": "none"}
+            o = next((x for x in self._orders(con, uid, now_ts) if x["idx"] == int(idx)), None)
+            if not o:
+                return {"ok": False, "reason": "idx"}
+            if o["done"]:
+                return {"ok": False, "reason": "done"}
+            have = sorted((t, q) for k, t, q in f["items"] if k == o["key"])
+            if sum(q for _, q in have) < o["qty"]:
+                return {"ok": False, "reason": "few", "have": sum(q for _, q in have), "need": o["qty"], "key": o["key"]}
+            left = o["qty"]
+            for t, q in have:
+                if left <= 0:
+                    break
+                use = min(q, left)
+                con.execute("UPDATE farm_items SET qty = qty - ? WHERE farm_id=? AND key=? AND tier=?", (use, int(fid), o["key"], t))
+                left -= use
+            con.execute("DELETE FROM farm_items WHERE farm_id=? AND qty <= 0", (int(fid),))
+            con.execute("UPDATE farm_orders SET done=1 WHERE owner=? AND week=? AND idx=?", (int(uid), week_of(now_ts), int(idx)))
+            con.execute(f"UPDATE farms SET c_{o['chest']} = c_{o['chest']} + 1 WHERE id=?", (int(fid),))
+            ups = self._add_xp(con, uid, fid, ORDER_XP)
+            return {"ok": True, "key": o["key"], "qty": o["qty"], "chest": o["chest"], "xp": ORDER_XP, "levelup": ups}
+        return await self._tx(fn)
 
     @staticmethod
     def _wallet(con, uid: int) -> int:
@@ -1004,7 +1140,7 @@ class FarmDB(EconomyDB):
             if n <= 0:
                 return {"ok": False, "reason": "energy"}
             got: dict = {}
-            extra = high = 0
+            extra = high = mut = 0
             chests = []
             scare = f["scare_until"] > now_ts
             hp = high_p(f["sickle"]) + (SCARE_BONUS if scare else 0)
@@ -1018,6 +1154,9 @@ class FarmDB(EconomyDB):
                                 (int(now_ts + ANIMALS[p["key"]][4] * time_mult(f["res"]["grass"])), fid, slot))
                 tier = 2 if rng.random() < hp else 1
                 qty = 2 if rng.random() < extra_p(f["sickle"]) else 1
+                if new and not key.endswith(ENCH) and key + MUT in ITEMS and rng.random() < MUT_P:   # 3.9.2 희귀 변이
+                    key += MUT
+                    mut += 1
                 high += tier == 2
                 extra += qty == 2
                 got[(key, tier)] = got.get((key, tier), 0) + qty
@@ -1036,8 +1175,9 @@ class FarmDB(EconomyDB):
                 con.execute(f"UPDATE farms SET c_{c} = c_{c} + 1 WHERE id=?", (fid,))
             self._spend(con, fid, f, n * f["cost"], now_ts)
             burning.bump(con, uid, "harvest", n, now_ts)   # 3.9.1 버닝 미션 '농사 거두기'
+            ups = self._add_xp(con, uid, fid, sum(got.values())) if new else []   # 3.9.2 농장 레벨
             return {"ok": True, "got": got, "extra": extra, "high": high, "chests": chests, "daily": daily, "count": n,
-                    "left": len(ready) - n, "scare": scare}
+                    "left": len(ready) - n, "scare": scare, "mut": mut, "levelup": ups}
         return await self._tx(fn)
 
     # ───────────── 아이템 (농사 상점에서 사 둔 것) ─────────────
