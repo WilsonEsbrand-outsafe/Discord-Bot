@@ -1,7 +1,6 @@
 # services/usage.py — 3.9.2 명령어 · 버튼 사용 기록 (11/23 규완님 '돈 흐름 기록' + 안 쓰는 명령어 찾기).
 # bot.py 가 상호작용마다 record 하고, cogs/money.py 가 1분마다 take 해서 DB(cmd_log)에 넣는다.
 import time
-import warnings
 from typing import Optional
 
 _buf: list[tuple[int, str, int]] = []
@@ -13,9 +12,8 @@ def name_of(interaction) -> str:
     if cmd is not None and getattr(interaction, "type", None) is not None and interaction.type.name == "application_command":
         return getattr(cmd, "qualified_name", "") or "?"
     msg = getattr(interaction, "message", None)
-    with warnings.catch_warnings():   # 명령어 이름은 옛 msg.interaction 에만 있다 (interaction_metadata 엔 없다)
-        warnings.simplefilter("ignore", DeprecationWarning)
-        meta = getattr(msg, "interaction", None)
+    # 명령어 이름은 옛 msg.interaction 에만 있다 (interaction_metadata 엔 없다). 그 속성은 부를 때마다 경고를 찍어서 속 값을 바로 읽는다
+    meta = getattr(msg, "_interaction", None)
     src = getattr(meta, "name", None) or getattr(cmd, "qualified_name", None) or "?"
     return f"버튼:{str(src).split(' ')[0]}"
 
