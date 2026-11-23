@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 import release
-from services import lobby
+from services import lobby, ui
 from services.economy_db import rookie_until
 from services.enhance import ENH_DROP_FROM, ENH_DROP_P, ENH_MAX, ENH_MIN_OVR, ENH_PLAYERS, ENH_STONES, STAR_OVR, TRAITS, enh_ovr, parse_traits, trait_slots
 from services.enhance import chance as enh_chance
@@ -249,6 +249,16 @@ FACILITIES = {
 }
 FACILITY_COSTS = (10_000_000, 30_000_000, 100_000_000, 300_000_000, 1_000_000_000)
 FACILITY_MAX = len(FACILITY_COSTS)
+# 3.9.2 시설 고급 단계 (11/23 규완님 B 16 '돈 쓸 곳 늘리기'): Lv.6~8. 효과는 레벨당 그대로 (메디컬 센터 Lv.8 = 부상 -80%). 비용은 내 기본값
+FACILITY_COSTS_392 = FACILITY_COSTS + (2_000_000_000, 5_000_000_000, 10_000_000_000)
+
+
+def facility_costs() -> tuple:
+    return FACILITY_COSTS_392 if release.ctx_392() else FACILITY_COSTS
+
+
+def facility_max() -> int:
+    return len(facility_costs())
 
 
 STADIUM_TEXT_372 = "공식경기 상금 +{}%"   # 3.7.2 (release.preview_372 서버): 공식경기는 베팅이 없어서 '적중 상금' → 경기 상금에 붙는다
@@ -263,6 +273,23 @@ def facility_effect(key: str, level: int) -> str:
 EMBLEMS = ("🦁", "🐯", "🦅", "🐺", "🐉", "🦈", "🐻", "🦊", "🐝", "🦄",
            "⚡", "🔥", "⭐", "👑", "🛡️", "⚔️", "🌙", "☀️", "🌊", "💎")
 EMBLEM_PRICE = 10_000_000
+# 3.9.2 비싼 꾸미기: 고급 엠블럼 (내 기본값)
+EMBLEMS_392 = ("🏆", "🪐", "🦖", "🌈", "🎖️")
+EMBLEM_PRICE_392 = 1_000_000_000
+
+
+def emblems() -> tuple:
+    return EMBLEMS + EMBLEMS_392 if release.ctx_392() else EMBLEMS
+
+
+def emblem_price(value: str) -> int:
+    return EMBLEM_PRICE_392 if value in EMBLEMS_392 else EMBLEM_PRICE
+
+
+# 3.9.2 칭호 상점 (11/23 규완님 B 16): 돈으로 사서 하나를 단다 (도박 계열 화면의 이름 옆에 보인다). key → (칭호, 값)
+TITLE_SHOP_392 = {"rising": ("떠오르는 구단주", 100_000_000), "veteran": ("베테랑 구단주", 500_000_000),
+                  "master": ("명장", 1_000_000_000), "legend": ("전설의 구단주", 5_000_000_000),
+                  "kiko": ("키코의 친구", 10_000_000_000)}
 STADIUM_PRICE = 30_000_000
 STADIUM_NAME_MAX = 20
 
@@ -1004,9 +1031,9 @@ class ClubDB:
             if not con.execute("SELECT 1 FROM clubs WHERE user_id=?", (int(user_id),)).fetchone():
                 return {"ok": False, "reason": "no_club"}
             lv = self._facility(con, user_id, key)
-            if lv >= FACILITY_MAX:
+            if lv >= facility_max():
                 return {"ok": False, "reason": "max"}
-            fee = FACILITY_COSTS[lv]
+            fee = facility_costs()[lv]
             bal = self._pay(con, user_id, fee)
             if bal is None:
                 return {"ok": False, "reason": "balance", "fee": fee}
@@ -1017,7 +1044,7 @@ class ClubDB:
 
     async def decorate(self, user_id: int, col: str, value: str) -> dict:
         """구단 꾸미기: col = emblem(EMBLEMS 중) / stadium(경기장 이름). 실패 reason: no_club / same / balance."""
-        fee = EMBLEM_PRICE if col == "emblem" else STADIUM_PRICE
+        fee = emblem_price(value) if col == "emblem" else STADIUM_PRICE
 
         def fn(con):
             row = con.execute(f"SELECT {col} FROM clubs WHERE user_id=?", (int(user_id),)).fetchone()
@@ -1030,6 +1057,50 @@ class ClubDB:
                 return {"ok": False, "reason": "balance", "fee": fee}
             con.execute(f"UPDATE clubs SET {col}=? WHERE user_id=?", (value, int(user_id)))
             return {"ok": True, "fee": fee, "balance": bal}
+        return await self._tx(fn)
+
+    # ───────────── 3.9.2 칭호 상점 ─────────────
+    async def titles(self, user_id: int) -> dict:
+        """→ {own: {산 칭호 key}, now: 지금 단 칭호 글자 (없으면 None)}."""
+        def fn(con):
+            con.execute("CREATE TABLE IF NOT EXISTS title_owned (user_id INTEGER NOT NULL, key TEXT NOT NULL, PRIMARY KEY(user_id, key))")
+            own = {k for (k,) in con.execute("SELECT key FROM title_owned WHERE user_id=?", (int(user_id),))
+                   if k in TITLE_SHOP_392 or k == "founder"}
+            r = con.execute("SELECT title, source FROM user_titles WHERE user_id=?", (int(user_id),)).fetchone()
+            if r and r[1] == "founder":
+                own.add("founder")
+            return {"own": own, "now": r[0] if r else None}
+        return await self._tx(fn)
+
+    async def set_title(self, user_id: int, key: Optional[str], now_ts: int) -> dict:
+        """칭호 달기 (안 산 것이면 사서 단다, None 이면 떼기). 창단 멤버 칭호는 떼거나 바꾸면 'founder' 로 남겨 다시 달 수 있다.
+        reason: key / balance(fee)."""
+        def fn(con):
+            con.execute("CREATE TABLE IF NOT EXISTS title_owned (user_id INTEGER NOT NULL, key TEXT NOT NULL, PRIMARY KEY(user_id, key))")
+            cur = con.execute("SELECT title, source FROM user_titles WHERE user_id=?", (int(user_id),)).fetchone()
+            if cur and cur[1] == "founder":
+                con.execute("INSERT OR IGNORE INTO title_owned(user_id, key) VALUES(?, 'founder')", (int(user_id),))
+            if key is None:
+                con.execute("DELETE FROM user_titles WHERE user_id=?", (int(user_id),))
+                ui.TITLES.pop(int(user_id), None)
+                return {"ok": True, "title": None, "fee": 0}
+            if key == "founder":
+                if not con.execute("SELECT 1 FROM title_owned WHERE user_id=? AND key='founder'", (int(user_id),)).fetchone():
+                    return {"ok": False, "reason": "key"}
+                from services.economy_db import FOUNDER_TITLE
+                title, fee = FOUNDER_TITLE, 0
+            elif key in TITLE_SHOP_392:
+                title, price = TITLE_SHOP_392[key]
+                fee = 0 if con.execute("SELECT 1 FROM title_owned WHERE user_id=? AND key=?", (int(user_id), key)).fetchone() else price
+                if fee and self._pay(con, user_id, fee) is None:
+                    return {"ok": False, "reason": "balance", "fee": fee}
+                con.execute("INSERT OR IGNORE INTO title_owned(user_id, key) VALUES(?, ?)", (int(user_id), key))
+            else:
+                return {"ok": False, "reason": "key"}
+            con.execute("INSERT OR REPLACE INTO user_titles(user_id, title, source, ts) VALUES(?, ?, ?, ?)",
+                        (int(user_id), title, key, int(now_ts)))
+            ui.TITLES[int(user_id)] = title
+            return {"ok": True, "title": title, "fee": fee}
         return await self._tx(fn)
 
     # ───────────── 명문 구단 ─────────────

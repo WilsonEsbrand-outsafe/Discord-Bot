@@ -10,8 +10,8 @@ import release
 from services import ui
 from services.management import MgmtDB
 from services.club_db import (
-    ELITE_OFFER_HOURS, ELITE_CLUBS, elite_ask_range, ELITE_SELL_RATE, ELITE_SIZES, ELITE_TAKEOVER, EMBLEM_PRICE, EMBLEMS, FACILITIES, FACILITY_COSTS,
-    FACILITY_MAX, SLOT_GROUP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, elite_team, facility_effect,
+    ELITE_OFFER_HOURS, ELITE_CLUBS, elite_ask_range, ELITE_SELL_RATE, ELITE_SIZES, ELITE_TAKEOVER, EMBLEM_PRICE, EMBLEMS, FACILITIES, facility_costs,
+    facility_max, SLOT_GROUP, STADIUM_NAME_MAX, STADIUM_PRICE, ClubDB, elite_team, facility_effect,
 )
 
 SECTION = "🏟️ 구단"
@@ -489,9 +489,9 @@ class Elite(commands.Cog):
         lv = await self.clubs.facilities(user.id)
         lines = []
         for k, (e_, n_, _, _) in FACILITIES.items():
-            nxt = (f"다음 **{_eok(FACILITY_COSTS[lv[k]])}원** → {facility_effect(k, lv[k] + 1)}"
-                   if lv[k] < FACILITY_MAX else "최고 레벨")
-            lines.append(f"{e_} **{n_}** Lv.{lv[k]}/{FACILITY_MAX} · {facility_effect(k, lv[k])}\n　{nxt}")
+            nxt = (f"다음 **{_eok(facility_costs()[lv[k]])}원** → {facility_effect(k, lv[k] + 1)}"
+                   if lv[k] < facility_max() else "최고 레벨")
+            lines.append(f"{e_} **{n_}** Lv.{lv[k]}/{facility_max()} · {facility_effect(k, lv[k])}\n　{nxt}")
         e = ui.card(title, "\n".join(lines), color, user, SECTION)
         e.set_footer(text="/시설 업그레이드:<시설> · 시설은 구단을 지워도 남아요")
         await interaction.response.send_message(embed=e)
