@@ -1953,6 +1953,8 @@ class Farm(commands.Cog):
     async def staff_loop(self):
         """3.9.2 아르바이트생: 차례가 된 농장마다 시급을 내고 (모자라면 그만둠) 거두기 · 다시 심기 · 팔기."""
         now = int(time.time())
+        if not release.released_392(now):   # 공개 전 아르바이트생은 테스트 서버에서만 고용된다 → 테스트 서버 규칙으로 일한다
+            release.GUILD.set(release.TEST_GUILD)
         try:
             due = await self.db.staff_due(now)
         except Exception as e:

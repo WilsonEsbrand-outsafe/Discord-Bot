@@ -18,6 +18,17 @@ release.RELEASE_392_TS = None
 NOW = calendar.timegm((2026, 11, 23, 3, 0, 0))
 
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _test_guild():
+    """3.9.2 농사 규칙은 테스트 서버에서 온 상호작용에서만 켜진다."""
+    tok = release.GUILD.set(release.TEST_GUILD)
+    yield
+    release.GUILD.reset(tok)
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -410,3 +421,18 @@ def test_lobby_short_392():
     for page in ("cands", "history", "news", "rules"):
         e = CL.detail_embed(u, s, page)
         assert len(e) < 6000 and "·" not in (e.description or "") + "".join(f.value for f in e.fields)
+
+
+def test_v392_only_in_test_guild():
+    A = 392000000000091
+    L.TESTERS.clear()
+    L.TESTERS.add(A)
+    try:
+        assert F.v392(A) and F.rate(A) == F.RATE_392
+        tok = release.GUILD.set(1)   # 본 서버에서는 테스트 서버 멤버라도 예전 규칙
+        try:
+            assert not F.v392(A) and F.rate(A) == F.RATE
+        finally:
+            release.GUILD.reset(tok)
+    finally:
+        L.TESTERS.clear()

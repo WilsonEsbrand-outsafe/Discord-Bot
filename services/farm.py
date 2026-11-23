@@ -239,7 +239,9 @@ def love_mult(love: int) -> float:
 
 
 def v392(uid: int, now_ts: Optional[float] = None) -> bool:
-    return release.released_392(now_ts) or int(uid) in lobby.TESTERS
+    """3.9.2 농사 규칙. 공개 전엔 테스트 서버 안에서 테스트 서버 멤버만 (11/24 규완님 '일부가 본섭에 패치된 거 같은데':
+    예전엔 테스트 서버 멤버면 다른 서버에서도 켜졌다 → 이제 상호작용이 온 서버도 본다)."""
+    return release.released_392(now_ts) or (int(uid) in lobby.TESTERS and release.ctx_392())
 
 
 def rate(uid: int, now_ts: Optional[float] = None) -> int:

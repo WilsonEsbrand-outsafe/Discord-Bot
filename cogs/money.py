@@ -4,7 +4,7 @@ import time
 from discord.ext import commands, tasks
 
 import release
-from services import lobby, usage
+from services import usage
 from services.economy_db import EconomyDB, _kst_day
 from services.farm import FarmDB
 
@@ -37,9 +37,10 @@ class Money(commands.Cog):
         # 하루 한 번 (KST 날짜가 바뀐 뒤 첫 루프): 세금 · 기록 정리
         if getattr(self, "_day", None) == _kst_day(now):
             return
-        only = None if release.released_392(now) else set(lobby.TESTERS)
-        if only is not None and not only:   # 테스트 서버 멤버를 아직 못 읽었으면 다음 루프에
+        # 11/24 규완님 '일부가 본섭에 패치된 거 같은데': 세금 · 유지비는 지갑 · 코인이 모든 서버 공통이라 공개 전엔 걷지 않는다
+        if not release.released_392(now):
             return
+        only = None
         self._day = _kst_day(now)
         try:
             r = await self.db.wealth_tax(now, only)
