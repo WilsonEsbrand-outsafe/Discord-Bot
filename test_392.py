@@ -188,3 +188,57 @@ def test_staff():
         assert d and d[0]["quit"] and run(db.staff(fid)) is None
     finally:
         L.TESTERS.clear()
+
+
+class _Rng:
+    """random 대신: 늘 같은 값."""
+    def __init__(self, v):
+        self.v = v
+
+    def random(self):
+        return self.v
+
+    def choices(self, seq, weights=None):
+        return [seq[0]]
+
+
+def test_level_dex_orders_mutant():
+    db = F.FarmDB()
+    A = 392000000000031
+    L.TESTERS.clear()
+    L.TESTERS.add(A)
+    try:
+        assert F.level_of(0) == (1, 0, 100) and F.level_of(100) == (2, 0, 200) and F.level_of(10**9)[0] == F.LEVEL_MAX
+        assert F.week_end(NOW) > NOW and F.week_of(F.week_end(NOW)) == F.week_of(NOW) + 1
+        fid = _farm(db, A, energy=1000, plots=24)
+        con = _con()
+        for i in range(3):
+            con.execute("INSERT INTO farm_fields(farm_id, slot, kind, key, ready_ts) VALUES(?, ?, 'crop', 'carrot', ?)", (fid, i, NOW))
+        con.commit()
+        con.close()
+        # 희귀 변이 (rng 0.0 → 늘 나온다) · 경험치 · 도감
+        h = run(db.harvest(A, fid, NOW + 10, rng=_Rng(0.0)))
+        assert h["ok"] and h["mut"] == 3 and all(k == "carrot" + F.MUT for (k, t) in h["got"])
+        assert run(db.level(A))["xp"] == sum(h["got"].values())
+        assert "carrot" + F.MUT in run(db.dex(A))
+        # 레벨이 오르면 은 상자
+        con = _con()
+        c0 = con.execute("SELECT c_silver FROM farms WHERE id=?", (fid,)).fetchone()[0]
+        con.close()
+        o = run(db.orders(A, NOW))
+        assert len(o) == 3 and o == run(db.orders(A, NOW)) and [x["chest"] for x in o] == ["wood", "silver", "gold"]
+        k, q = o[0]["key"], o[0]["qty"]
+        assert run(db.deliver(A, fid, 0, NOW))["reason"] == "few"
+        con = _con()
+        con.execute("INSERT INTO farm_items(farm_id, key, tier, qty) VALUES(?, ?, 1, ?)", (fid, k, q - 1))
+        con.execute("INSERT INTO farm_items(farm_id, key, tier, qty) VALUES(?, ?, 2, 5)", (fid, k))
+        con.commit()
+        con.close()
+        r = run(db.deliver(A, fid, 0, NOW))
+        assert r["ok"] and r["levelup"] == [2, 3] and run(db.deliver(A, fid, 0, NOW))["reason"] == "done"
+        con = _con()
+        assert con.execute("SELECT qty FROM farm_items WHERE farm_id=? AND key=? AND tier=2", (fid, k)).fetchone()[0] == 4
+        assert con.execute("SELECT c_silver FROM farms WHERE id=?", (fid,)).fetchone()[0] == c0 + 2
+        con.close()
+    finally:
+        L.TESTERS.clear()

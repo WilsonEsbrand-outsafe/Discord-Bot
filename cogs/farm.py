@@ -213,7 +213,10 @@ def help_embed(user, v382: bool = False, v384: bool = False) -> discord.Embed:
                     + (f"\n같은 동물은 한 사람당 {F.SPECIES_CAP_392}마리까지예요.\n거두지 않으면 마리당 {F.AUTO_CAP_392}개까지만 쌓여요."
                        "\n소, 들소, 공작은 하나 만들 때마다 고급 사료를 하나 먹어요." if F.v392(user.id) else "")),
             *((("아르바이트생", "**더 보기**에서 고용해요.\n한 시간마다 시급(코인)을 먼저 내면 농장 에너지로 거두기, 다시 심기, 팔기를 대신 해 줘요.\n"
-                             "코인이 모자라면 그만둬요."),) if F.v392(user.id) else ()),
+                             "코인이 모자라면 그만둬요."),
+               ("농장 레벨", "거둔 물건과 납품 의뢰로 경험치를 모아요.\n레벨이 오르면 상자를 받아요. **더 보기**에서 봐요."),
+               ("도감", "얻어 본 물건을 모아 봐요.\n거둘 때 가끔 값이 두 배인 황금 물건이 나와요."),
+               ("납품 의뢰", "한 주에 세 개씩 새로 나와요.\n창고의 물건을 내면 상자와 경험치를 받아요."),) if F.v392(user.id) else ()),
             *((("유지비", "농장이 두 개 이상이면 매일 0시에 코인이 나가요.\n"
                          f"두 번째 농장은 하루 {F.UPKEEP_392:,} 코인, 세 번째는 {F.UPKEEP_392 * 2:,} 코인처럼 늘어나요."),) if F.v392(user.id) else ()),
             ("거두기", "다 자란 작물과 동물이 만든 것을 창고로 옮겨요."),
@@ -407,6 +410,9 @@ class FarmPanel(discord.ui.View):
                 note += f"\n오늘 첫 수확 선물: {c[1]}"
             if r["left"]:
                 note += f"\n에너지가 모자라서 {r['left']}칸은 남았어요."
+            if r.get("mut"):
+                note += f"\n황금 물건이 나왔어요: {r['mut']}개"
+            note += _level_lines(r.get("levelup"))
         await self.cog.show(interaction, fid, note)
 
     async def _reload(self, interaction: discord.Interaction):  # View._refresh 는 discord.py 내부용이라 이름을 피한다
@@ -575,6 +581,7 @@ class FieldView(discord.ui.View):
             note += "\n" + ", ".join(f"{F.CHESTS[c][1]}" for c in r["chests"]) + "을(를) 발견했어요"
         if r["daily"]:
             note += f"\n오늘 첫 수확 선물: {F.CHESTS[F.DAILY_CHEST][1]}"
+        note += _level_lines(r.get("levelup"))
         await self.cog.panel_note(interaction.channel, fid, note)
 
 
@@ -902,7 +909,98 @@ class ItemView(_Sub):
         return cb
 
 
-MoreView.PAGES = (("아이템", ItemView), ("아르바이트", StaffView))
+def _level_lines(ups: list) -> str:
+    """3.9.2 레벨이 오른 줄 (없으면 빈 글)."""
+    return "".join(f"\n농장 레벨 **{lv}** 달성: {F.CHESTS['gold' if lv % 5 == 0 else 'silver'][1]}" for lv in ups or [])
+
+
+class LevelView(_Sub):
+    """3.9.2 농장 레벨: 거둔 물건과 납품 의뢰로 경험치를 모은다."""
+
+    async def load(self):
+        self._lv = await self.cog.db.level(self.user.id)
+
+    def build(self, f: dict):
+        pass
+
+    def embed(self, f: dict) -> discord.Embed:
+        lv = getattr(self, "_lv", None) or {"level": 1, "cur": 0, "need": F.level_need(1), "xp": 0}
+        bar = "최고 레벨이에요." if not lv["need"] else f"다음 레벨까지 **{lv['cur']:,}** / {lv['need']:,}"
+        e = ui.card("농장 레벨", f"지금 **{lv['level']}레벨**\n{bar}", ui.INFO, self.user, SECTION)
+        e.add_field(name="경험치 얻는 법", value=f"거둔 물건 하나에 1\n납품 의뢰 하나에 {F.ORDER_XP}", inline=False)
+        e.add_field(name="레벨 보상", value=f"레벨이 오를 때마다 {F.CHESTS['silver'][1]}\n5레벨마다 {F.CHESTS['gold'][1]}\n"
+                                         f"최고 {F.LEVEL_MAX}레벨", inline=False)
+        return e
+
+
+class DexView(_Sub):
+    """3.9.2 도감: 얻어 본 작물, 생산품, 인챈트 작물, 황금 물건."""
+    GROUPS = (("작물", list(F.CROPS)), ("생산품", list(F.PRODUCTS)), ("인챈트 작물", list(F.ECROPS)), ("황금 물건", list(F.MITEMS)))
+
+    async def load(self):
+        self._dex = await self.cog.db.dex(self.user.id)
+
+    def build(self, f: dict):
+        pass
+
+    def embed(self, f: dict) -> discord.Embed:
+        dex = getattr(self, "_dex", {}) or {}
+        total = sum(len(keys) for _, keys in self.GROUPS)
+        found = sum(1 for _, keys in self.GROUPS for k in keys if k in dex)
+        e = ui.card("도감", f"모은 물건 **{found}** / {total}\n-# 가장 높은 등급을 같이 보여 줘요. 황금 물건은 거둘 때 가끔 나와요.",
+                    ui.INFO, self.user, SECTION)
+        for name, keys in self.GROUPS:
+            have = [k for k in keys if k in dex]
+            lines = "\n".join(f"{F.ITEMS[k][0]} {F.ITEMS[k][1]} ★{dex[k]}" for k in have)
+            e.add_field(name=f"{name} {len(have)} / {len(keys)}", value=(lines or "아직 없어요.")[:1024])
+        return e
+
+
+class OrderView(_Sub):
+    """3.9.2 주간 납품 의뢰: 한 주에 세 개, 창고의 물건을 내면 상자와 경험치."""
+
+    async def load(self):
+        self._orders = await self.cog.db.orders(self.user.id, int(time.time()))
+
+    def build(self, f: dict):
+        for o in getattr(self, "_orders", None) or []:
+            b = discord.ui.Button(label=f"{o['idx'] + 1}번 납품" + (" (끝)" if o["done"] else ""),
+                                  style=discord.ButtonStyle.secondary if o["done"] else discord.ButtonStyle.success,
+                                  disabled=o["done"])
+            b.callback = self._give(o["idx"])
+            self.add_item(b)
+
+    def embed(self, f: dict) -> discord.Embed:
+        now = int(time.time())
+        e = ui.card("납품 의뢰", (f"{self.note}\n\n" if self.note else "") + f"새 의뢰까지 {_left(F.week_end(now), now)}\n"
+                    "-# 이 농장 창고의 물건을 내요. 등급은 상관없이 하나씩 세요.", ui.INFO, self.user, SECTION)
+        for o in getattr(self, "_orders", None) or []:
+            have = sum(q for k, t, q in f["items"] if k == o["key"])
+            e.add_field(name=f"{o['idx'] + 1}번" + (" 끝" if o["done"] else ""),
+                        value=f"{F.ITEMS[o['key']][1]} **{o['qty']:,}개**\n가진 것 {have:,}개\n"
+                              f"보상 {F.CHESTS[o['chest']][1]}\n경험치 {F.ORDER_XP}")
+        return e
+
+    async def redraw(self, interaction: discord.Interaction, note: str = "", panel_note: str = "", win: bool = False):
+        await self.load()
+        await super().redraw(interaction, note, panel_note, win)
+
+    def _give(self, idx: int):
+        async def cb(interaction: discord.Interaction):
+            r = await self.cog.db.deliver(self.user.id, self.fid, idx, int(time.time()))
+            if r["ok"]:
+                note = (f"{F.ITEMS[r['key']][1]} {r['qty']:,}개를 냈어요.\n{F.CHESTS[r['chest']][1]}와 경험치 {r['xp']}를 받았어요."
+                        + _level_lines(r["levelup"]))
+            elif r["reason"] == "few":
+                note = f"{F.ITEMS[r['key']][1]}이(가) 모자라요 ({r['have']:,} / {r['need']:,}개)."
+            else:
+                note = "이미 끝낸 의뢰예요." if r["reason"] == "done" else "낼 수 없어요."
+            await self.redraw(interaction, note, note if r["ok"] else "")
+        return cb
+
+
+MoreView.PAGES = (("아이템", ItemView), ("아르바이트", StaffView), ("농장 레벨", LevelView), ("도감", DexView),
+                  ("납품 의뢰", OrderView))
 
 
 class ChestView(_Sub):
