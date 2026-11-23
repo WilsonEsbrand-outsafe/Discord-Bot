@@ -151,6 +151,17 @@ PFEED_ANIMALS = ("cow", "bison", "peacock")   # 비싼 동물은 생산품 하�
 UPKEEP_392 = 20_000                   # 농장 유지비: 두 번째 농장부터 하루 (순서 − 1) × 2만 코인 (7개면 하루 42만 코인)
 
 
+# 3.9.2 아르바이트생 (11/23 규완님 '코인을 지속적으로 소비할 수 있는 시스템, 아르바이트생'):
+# 농장마다 한 명. 한 시간마다 시급(코인)을 먼저 내고, 코인이 모자라면 그만둔다. 일은 농장 에너지를 써서 한다 (주인과 같은 규칙).
+# key → (이름, 시급(코인), 몇 초마다 일하나, 하는 일). 하는 일: harvest 거두기 · replant 마지막에 심은 것 다시 심기 · sell 창고 팔기
+STAFF = {
+    "rookie": ("초보 알바", 5_000, 600, ("harvest",)),
+    "skilled": ("숙련 알바", 15_000, 300, ("harvest", "replant")),
+    "veteran": ("베테랑 알바", 30_000, 120, ("harvest", "replant", "sell")),
+}
+STAFF_JOBS = {"harvest": "다 자란 것 거두기", "replant": "마지막에 심은 것 다시 심기", "sell": "창고 물건 팔기"}
+
+
 def v392(uid: int, now_ts: Optional[float] = None) -> bool:
     return release.released_392(now_ts) or int(uid) in lobby.TESTERS
 
@@ -382,6 +393,9 @@ class FarmDB(EconomyDB):
             if "auto" not in {r[1] for r in con.execute("PRAGMA table_info(farm_fields)")}:   # 3.9.2 거두지 않고 쌓은 생산품 수
                 con.execute("ALTER TABLE farm_fields ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
             con.execute("CREATE TABLE IF NOT EXISTS farm_exch (owner INTEGER PRIMARY KEY, day_key INTEGER NOT NULL, won INTEGER NOT NULL)")
+            con.execute("CREATE TABLE IF NOT EXISTS farm_staff (farm_id INTEGER PRIMARY KEY, tier TEXT NOT NULL, hired_ts INTEGER NOT NULL, "
+                        "paid_until INTEGER NOT NULL, next_ts INTEGER NOT NULL, work INTEGER NOT NULL DEFAULT 0, "
+                        "wages INTEGER NOT NULL DEFAULT 0)")
             con.execute("CREATE TABLE IF NOT EXISTS farm_upkeep (owner INTEGER PRIMARY KEY, day_key INTEGER NOT NULL)")
             if "name" not in cols:   # 3.8.2 농장 이름 (주인이 정한다, 없으면 'ㅇㅇ의 농장')
                 con.execute("ALTER TABLE farms ADD COLUMN name TEXT")
@@ -1271,6 +1285,75 @@ class FarmDB(EconomyDB):
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (coins * rt, uid))
             return {"ok": True, "coins": coins, "won": coins * rt, "balance": self._wallet(con, uid), "left": f["coins"] - coins}
         return await self._tx(fn)
+
+    # ───────────── 3.9.2 아르바이트생 ─────────────
+    async def staff(self, fid: int) -> Optional[dict]:
+        """농장 fid 의 아르바이트생 (없으면 None)."""
+        def fn(con):
+            r = con.execute("SELECT tier, hired_ts, paid_until, next_ts, work, wages FROM farm_staff WHERE farm_id=?", (int(fid),)).fetchone()
+            if not r or r[0] not in STAFF:
+                return None
+            return {"tier": r[0], "hired_ts": int(r[1]), "paid_until": int(r[2]), "next_ts": int(r[3]), "work": int(r[4]),
+                    "wages": int(r[5])}
+        return await self._tx(fn)
+
+    async def hire(self, uid: int, fid: int, tier: str, now_ts: int) -> dict:
+        """아르바이트생 고용 (이미 있으면 바꾼다). 첫 한 시간 시급을 바로 낸다. reason: none / tier / coins(cost)."""
+        def fn(con):
+            f = self._mine(con, uid, fid, now_ts)
+            if not f:
+                return {"ok": False, "reason": "none"}
+            if tier not in STAFF:
+                return {"ok": False, "reason": "tier"}
+            wage = STAFF[tier][1]
+            if f["coins"] < wage:
+                return {"ok": False, "reason": "coins", "cost": wage}
+            self._add_coins(con, fid, -wage)
+            con.execute("INSERT OR REPLACE INTO farm_staff(farm_id, tier, hired_ts, paid_until, next_ts, work, wages) "
+                        "VALUES(?,?,?,?,?,0,?)", (int(fid), tier, int(now_ts), int(now_ts) + 3600, int(now_ts) + 5, wage))
+            return {"ok": True, "tier": tier, "wage": wage, "coins": f["coins"] - wage}
+        return await self._tx(fn)
+
+    async def fire(self, uid: int, fid: int, now_ts: int) -> bool:
+        """아르바이트생 내보내기 (이미 낸 시급은 돌려주지 않는다)."""
+        def fn(con):
+            if not self._mine(con, uid, fid, now_ts):
+                return False
+            return bool(con.execute("DELETE FROM farm_staff WHERE farm_id=?", (int(fid),)).rowcount)
+        return await self._tx(fn)
+
+    async def staff_due(self, now_ts: int) -> list[dict]:
+        """일할 차례가 된 아르바이트생들. 시급 낼 때가 됐으면 주인 코인에서 내고, 모자라면 그만둔다 (quit=True).
+        → [{fid, owner, tier, jobs, quit}]. 일한 다음엔 staff_done 을 부른다."""
+        def fn(con):
+            out = []
+            for fid, tier, paid, nxt in con.execute("SELECT s.farm_id, s.tier, s.paid_until, s.next_ts FROM farm_staff s "
+                                                    "WHERE s.next_ts <= ?", (int(now_ts),)).fetchall():
+                own = con.execute("SELECT owner FROM farms WHERE id=?", (int(fid),)).fetchone()
+                if not own or tier not in STAFF:
+                    con.execute("DELETE FROM farm_staff WHERE farm_id=?", (int(fid),))
+                    continue
+                owner, (name, wage, every, jobs) = int(own[0]), STAFF[tier]
+                paid = int(paid)
+                quit_ = False
+                while paid <= now_ts:
+                    if self._coins(con, int(fid)) < wage:
+                        quit_ = True
+                        break
+                    self._add_coins(con, int(fid), -wage)
+                    con.execute("UPDATE farm_staff SET wages = wages + ? WHERE farm_id=?", (wage, int(fid)))
+                    paid += 3600
+                if quit_:
+                    con.execute("DELETE FROM farm_staff WHERE farm_id=?", (int(fid),))
+                else:
+                    con.execute("UPDATE farm_staff SET paid_until=?, next_ts=? WHERE farm_id=?", (paid, int(now_ts) + every, int(fid)))
+                out.append({"fid": int(fid), "owner": owner, "tier": tier, "jobs": jobs, "quit": quit_})
+            return out
+        return await self._tx(fn)
+
+    async def staff_done(self, fid: int, n: int):
+        if n:
+            await self._tx(lambda con: con.execute("UPDATE farm_staff SET work = work + ? WHERE farm_id=?", (int(n), int(fid))))
 
     async def pay_upkeep(self, now_ts: int, only: Optional[set] = None) -> list[tuple[int, int, int]]:
         """3.9.2 농장 유지비: 하루(KST) 한 번, 농장이 두 개 이상인 사람의 코인 지갑에서 upkeep(농장 수) 를 낸다.
