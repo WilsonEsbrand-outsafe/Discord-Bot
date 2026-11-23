@@ -212,6 +212,8 @@ def help_embed(user, v382: bool = False, v384: bool = False) -> discord.Embed:
             ("동물", f"입양하면 땅 한 칸에 살면서 달걀, 양털, 우유 같은 것을 계속 만들어요.\n땅 {F.ANIMAL_PER_PLOTS}칸마다 1마리까지 기를 수 있어요."
                     + (f"\n같은 동물은 한 사람당 {F.SPECIES_CAP_392}마리까지예요.\n거두지 않으면 마리당 {F.AUTO_CAP_392}개까지만 쌓여요."
                        "\n소, 들소, 공작은 하나 만들 때마다 고급 사료를 하나 먹어요." if F.v392(user.id) else "")),
+            *((("아르바이트생", "**더 보기**에서 고용해요.\n한 시간마다 시급(코인)을 먼저 내면 농장 에너지로 거두기, 다시 심기, 팔기를 대신 해 줘요.\n"
+                             "코인이 모자라면 그만둬요."),) if F.v392(user.id) else ()),
             *((("유지비", "농장이 두 개 이상이면 매일 0시에 코인이 나가요.\n"
                          f"두 번째 농장은 하루 {F.UPKEEP_392:,} 코인, 세 번째는 {F.UPKEEP_392 * 2:,} 코인처럼 늘어나요."),) if F.v392(user.id) else ()),
             ("거두기", "다 자란 작물과 동물이 만든 것을 창고로 옮겨요."),
@@ -297,7 +299,7 @@ class FarmPanel(discord.ui.View):
                 ("replant", _replant_label(f), discord.ButtonStyle.success, 2, self._replant),
                 ("expand", f"땅 넓히기 ({cost:,} 코인)" if cost else "땅 넓히기", discord.ButtonStyle.secondary, 3, self._expand),
                 ("sickle", "낫 강화", discord.ButtonStyle.secondary, 3, self._sickle),
-                ("items", "아이템", discord.ButtonStyle.secondary, 3, self._items),
+                ("items", "더 보기" if f is not None and F.v392(f["owner"]) else "아이템", discord.ButtonStyle.secondary, 3, self._items),
                 ("exchange", "환전", discord.ButtonStyle.secondary, 3, self._exchange),
                 ("help", "도움말", discord.ButtonStyle.secondary, 3, self._help),
                 ("offer", "인수 제안", discord.ButtonStyle.secondary, 4, self._offer),
@@ -424,6 +426,8 @@ class FarmPanel(discord.ui.View):
     async def _sub(self, interaction: discord.Interaction, cls):
         f = await self.cog.db.get(await self._fid(interaction), int(time.time()))
         view = cls(self.cog, interaction.user, interaction.message, f)
+        if hasattr(view, "load"):
+            await view.load()
         await interaction.response.send_message(embed=view.embed(f), view=view, ephemeral=True)
 
     async def _merge(self, interaction: discord.Interaction):
@@ -439,6 +443,8 @@ class FarmPanel(discord.ui.View):
         await self._sub(interaction, SickleView)
 
     async def _items(self, interaction: discord.Interaction):
+        if F.v392(interaction.user.id):   # 3.9.2 [더 보기]: 아이템, 아르바이트, …
+            return await self._sub(interaction, MoreView)
         await self._sub(interaction, ItemView)
 
     async def _newfarm(self, interaction: discord.Interaction):
@@ -736,6 +742,78 @@ class StoreView(_Sub):
         await self.redraw(interaction, note, note if r["ok"] else "")
 
 
+class MoreView(_Sub):
+    """3.9.2 농장 화면 버튼 칸이 다 차서 [아이템] 자리를 [더 보기]로 — 아이템, 아르바이트, …"""
+    PAGES: tuple = ()
+
+    def build(self, f: dict):
+        for label, cls in self.PAGES:
+            b = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
+            b.callback = self._go(cls)
+            self.add_item(b)
+
+    def embed(self, f: dict) -> discord.Embed:
+        return ui.card("더 보기", "아래에서 고르세요.", ui.INFO, self.user, SECTION)
+
+    def _go(self, cls):
+        async def cb(interaction: discord.Interaction):
+            f = await self.cog.db.get(self.fid, int(time.time()))
+            view = cls(self.cog, self.user, self.panel, f)
+            if hasattr(view, "load"):
+                await view.load()
+            await interaction.response.edit_message(embed=view.embed(f), view=view)
+        return cb
+
+
+class StaffView(_Sub):
+    """3.9.2 아르바이트생: 시급(코인)을 내면 농장 에너지로 대신 일해 준다."""
+
+    async def load(self):
+        self._cur = await self.cog.db.staff(self.fid)
+
+    def build(self, f: dict):
+        for key, (name, wage, every, jobs) in F.STAFF.items():
+            b = discord.ui.Button(label=f"{name} 고용", style=discord.ButtonStyle.success, row=0)
+            b.callback = self._hire(key)
+            self.add_item(b)
+        b = discord.ui.Button(label="내보내기", style=discord.ButtonStyle.danger, row=1)
+        b.callback = self._fire
+        self.add_item(b)
+
+    def embed(self, f: dict) -> discord.Embed:
+        cur = getattr(self, "_cur", None)
+        now = int(time.time())
+        if cur:
+            name, wage, every, jobs = F.STAFF[cur["tier"]]
+            head = (f"지금 **{name}**이(가) 일하고 있어요.\n다음 시급은 {_left(cur['paid_until'], now)} 뒤에 나가요.\n"
+                    f"지금까지 일한 횟수 {cur['work']:,}번, 낸 시급 {cur['wages']:,} 코인")
+        else:
+            head = "일하는 아르바이트생이 없어요."
+        e = ui.card("아르바이트생", (f"{self.note}\n\n" if self.note else "") + head
+                    + "\n-# 한 시간마다 시급을 먼저 내요. 코인이 모자라면 그만둬요. 일은 농장 에너지를 써서 해요.",
+                    ui.INFO, self.user, SECTION)
+        for key, (name, wage, every, jobs) in F.STAFF.items():
+            e.add_field(name=name, value=f"시급 **{wage:,}** 코인\n{_dur(every)}마다\n" + "\n".join(F.STAFF_JOBS[j] for j in jobs))
+        e.add_field(name="가진 코인", value=f"**{f['coins']:,}**", inline=False)
+        return e
+
+    async def redraw(self, interaction: discord.Interaction, note: str = "", panel_note: str = "", win: bool = False):
+        await self.load()
+        await super().redraw(interaction, note, panel_note, win)
+
+    def _hire(self, key: str):
+        async def cb(interaction: discord.Interaction):
+            r = await self.cog.db.hire(self.user.id, self.fid, key, int(time.time()))
+            note = (f"**{F.STAFF[key][0]}**을(를) 고용했어요. 첫 시급 {r['wage']:,} 코인을 냈어요." if r["ok"] else
+                    f"코인이 모자라요 (첫 시급 {r.get('cost', 0):,} 코인)." if r["reason"] == "coins" else "고용할 수 없어요.")
+            await self.redraw(interaction, note)
+        return cb
+
+    async def _fire(self, interaction: discord.Interaction):
+        ok = await self.cog.db.fire(self.user.id, self.fid, int(time.time()))
+        await self.redraw(interaction, "아르바이트생을 내보냈어요." if ok else "일하는 아르바이트생이 없어요.")
+
+
 class ItemView(_Sub):
     """11/12 농사 상점 아이템 쓰기 — 비료는 켜 두면 심을 때 쓰고, 나머지는 눌러서 하나씩 쓴다."""
 
@@ -822,6 +900,9 @@ class ItemView(_Sub):
                         "animals": "기다리는 동물이 없어요."}.get(r["reason"], "쓸 수 없어요.")
             await self.redraw(interaction, note, note if r["ok"] else "")
         return cb
+
+
+MoreView.PAGES = (("아이템", ItemView), ("아르바이트", StaffView))
 
 
 class ChestView(_Sub):
@@ -1507,9 +1588,11 @@ class Farm(commands.Cog):
         self.beta_loop.start()
         self.purse_loop.start()
         self.live_loop.start()
+        self.staff_loop.start()
 
     def cog_unload(self):
         self.live_loop.cancel()
+        self.staff_loop.cancel()
         self.panel.stop()
         self.shop.stop()
         self.shop_loop.cancel()
@@ -1530,6 +1613,39 @@ class Farm(commands.Cog):
         r = await self.db.beta_reset(int(time.time()))
         print(f"[농사] 정식 출시 베타 초기화: {r}")
         self.beta_loop.stop()
+
+    @tasks.loop(seconds=30)
+    async def staff_loop(self):
+        """3.9.2 아르바이트생: 차례가 된 농장마다 시급을 내고 (모자라면 그만둠) 거두기 · 다시 심기 · 팔기."""
+        now = int(time.time())
+        try:
+            due = await self.db.staff_due(now)
+        except Exception as e:
+            return print(f"[알바] 오류: {e!r}")
+        for d in due:
+            if d["quit"]:
+                print(f"[알바] {d['owner']} 농장 {d['fid']} 코인이 모자라 그만둠")
+                continue
+            n = 0
+            try:
+                if "harvest" in d["jobs"]:
+                    r = await self.db.harvest(d["owner"], d["fid"], now)
+                    n += r.get("count", 0) if r["ok"] else 0
+                if "replant" in d["jobs"]:
+                    f = await self.db.get(d["fid"], now)
+                    if f and f.get("last_plant") in F.CROPS:
+                        r = await self.db.plant(d["owner"], d["fid"], f["last_plant"], now)
+                        n += r.get("count", 0) if r["ok"] else 0
+                if "sell" in d["jobs"]:
+                    r = await self.db.sell(d["owner"], d["fid"], now)
+                    n += sum(q for _, _, q in r["sold"]) if r["ok"] else 0
+                await self.db.staff_done(d["fid"], n)
+            except Exception as e:
+                print(f"[알바] 농장 {d['fid']} 일하다 오류: {e!r}")
+
+    @staff_loop.before_loop
+    async def _before_staff(self):
+        await self.bot.wait_until_ready()
 
     @beta_loop.before_loop
     async def _before_beta(self):

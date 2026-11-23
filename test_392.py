@@ -51,7 +51,7 @@ def test_pay_and_hidden():
         release.GUILD.reset(tok)
     tok = release.GUILD.set(1)
     try:
-        assert edb.pay_384("attend") == 100   # 다른 서버는 3.9.1 그대로
+        assert edb.pay_384("attend") == (100 if release.released_384() else 1)   # 다른 서버는 3.9.1 그대로
     finally:
         release.GUILD.reset(tok)
     gone = {"달팽이", "조정", "양궁", "ufc", "농구", "야구"}
@@ -165,5 +165,26 @@ def test_farm_392():
         before = F.FarmDB._purse(_con(), A)
         assert run(db.pay_upkeep(NOW, {A})) == [(A, 60_000, 3)] and F.FarmDB._purse(_con(), A) == before - 60_000
         assert run(db.pay_upkeep(NOW + 60, {A})) == []
+    finally:
+        L.TESTERS.clear()
+
+
+def test_staff():
+    db = F.FarmDB()
+    A = 392000000000021
+    L.TESTERS.clear()
+    L.TESTERS.add(A)
+    try:
+        fid = _farm(db, A, energy=1000, plots=6)
+        con = _con()
+        con.execute("INSERT OR REPLACE INTO farm_purse(owner, coins) VALUES(?, 20000)", (A,))
+        con.commit()
+        con.close()
+        assert run(db.hire(A, fid, "skilled", NOW))["ok"] and F.FarmDB._purse(_con(), A) == 5_000
+        assert run(db.staff_due(NOW)) == []                                          # 아직 차례가 아님
+        d = run(db.staff_due(NOW + 10))
+        assert d and d[0]["fid"] == fid and not d[0]["quit"] and "replant" in d[0]["jobs"]
+        d = run(db.staff_due(NOW + 3700))                                            # 다음 시급 15,000 이 모자라 그만둔다
+        assert d and d[0]["quit"] and run(db.staff(fid)) is None
     finally:
         L.TESTERS.clear()
