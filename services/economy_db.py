@@ -268,9 +268,27 @@ PAY_384 = {"attend": 100, "scout": 100, "train": 100, "watch": 100, "fish": 10}
 GIFTS_391 = (("gift-391-a", 1146659618790051960, 250_000_000), ("gift-391-b", 725662872327159838, 100_000_000))
 
 
+# 3.9.2 (11/23 규완님 "돈 버는 행동들의 수입을 비슷하게"): 한 시간 해서 약 2,000만원 근처로 — 스카우트 8배 · 훈련 5배 · 직관 20배 · 낚시 원래대로 · 출석 10배
+PAY_392 = {"attend": 10, "scout": 8, "train": 5, "watch": 20, "fish": 1}
+
+
 def pay_384(key: str) -> int:
-    """지금 상호작용 서버(release.GUILD)가 3.9.1 이면 그 보상 배수, 아니면 1."""
+    """지금 상호작용 서버(release.GUILD)의 보상 배수 — 3.9.2 면 PAY_392, 3.9.1 이면 PAY_384, 아니면 1."""
+    if release.ctx_392():
+        return PAY_392[key]
     return PAY_384[key] if release.ctx_384() else 1
+
+
+# 3.9.2 송금 수수료 (11/23 규완님 고름 '송금 수수료 5%'): 받는 사람은 보낸 금액의 95% 를 받는다
+TRANSFER_FEE_392 = 0.05
+
+
+def transfer_fee(amount: int) -> int:
+    return int(amount * TRANSFER_FEE_392) if release.ctx_392() else 0
+
+
+# 3.9.2 큰 돈 세금 (11/23 규완님 고름 '잔액 10억 넘는 부분에 하루 1%'): 매일 00:00 KST, 관리자 · 봇 구단은 빼고
+TAX_FREE, TAX_RATE = 1_000_000_000, 0.01
 
 TRANSFER_DAILY_LIMIT = 100_000_000   # 하루(KST) 보낼 수 있는 송금 총액
 TRANSFER_DAILY_LIMIT_372 = 1_000_000_000   # 3.7.2 (release.preview_372 서버): 규완님 "송금 한도를 10억으로"
@@ -485,6 +503,17 @@ class EconomyDB:
             con.execute("CREATE TABLE IF NOT EXISTS rookie_claims (user_id INTEGER, mission TEXT, ts INTEGER, "
                         "PRIMARY KEY(user_id, mission))")
             con.execute("CREATE TABLE IF NOT EXISTS eco_migrations (name TEXT PRIMARY KEY)")
+            # 3.9.2 돈 흐름 기록 (11/23 규완님 고름): 지갑이 바뀔 때마다 한 줄 (어느 코드에서 바꿔도 남게 트리거로) ·
+            # 명령어 · 버튼 사용 기록 (services/usage.py) — 둘을 시간으로 맞춰 보면 어디서 돈이 들어오고 나갔는지 안다. 30일 보관
+            con.execute("CREATE TABLE IF NOT EXISTS money_log (user_id INTEGER NOT NULL, delta INTEGER NOT NULL, "
+                        "bal INTEGER NOT NULL, ts INTEGER NOT NULL)")
+            con.execute("CREATE INDEX IF NOT EXISTS money_log_ts ON money_log(ts)")
+            con.execute("CREATE TRIGGER IF NOT EXISTS money_log_upd AFTER UPDATE OF balance ON wallets "
+                        "WHEN NEW.balance != OLD.balance BEGIN INSERT INTO money_log(user_id, delta, bal, ts) "
+                        "VALUES(NEW.user_id, NEW.balance - OLD.balance, NEW.balance, CAST(strftime('%s','now') AS INTEGER)); END")
+            con.execute("CREATE TABLE IF NOT EXISTS cmd_log (user_id INTEGER NOT NULL, name TEXT NOT NULL, ts INTEGER NOT NULL)")
+            con.execute("CREATE INDEX IF NOT EXISTS cmd_log_ts ON cmd_log(ts)")
+            con.execute("CREATE TABLE IF NOT EXISTS tax_days (day_key INTEGER PRIMARY KEY, total INTEGER NOT NULL, n INTEGER NOT NULL)")
             con.execute("CREATE TABLE IF NOT EXISTS tutorial_done (user_id INTEGER PRIMARY KEY, ts INTEGER NOT NULL)")
             con.execute("CREATE TABLE IF NOT EXISTS user_titles (user_id INTEGER PRIMARY KEY, title TEXT NOT NULL, "
                         "source TEXT NOT NULL, ts INTEGER NOT NULL)")
@@ -644,6 +673,7 @@ class EconomyDB:
             return "자기 자신에게는 송금할 수 없습니다."
         day = _kst_day(now_ts)
         limit = transfer_limit()
+        fee = transfer_fee(amount)
 
         def fn(con):
             con.execute("INSERT OR IGNORE INTO wallets(user_id, balance) VALUES(?, 0)", (from_user,))
@@ -655,7 +685,7 @@ class EconomyDB:
             if bal < amount:
                 return "잔액이 부족합니다."
             con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (amount, from_user))
-            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount, to_user))
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (amount - fee, to_user))   # 3.9.2 수수료
             con.execute("INSERT OR REPLACE INTO transfer_daily(user_id, day_key, sent) VALUES(?,?,?)",
                         (from_user, day, sent + amount))
             return None
@@ -663,6 +693,55 @@ class EconomyDB:
             return await self._tx(fn)
         except Exception as e:
             return f"DB 오류: {type(e).__name__}"
+
+    async def wealth_tax(self, now_ts: int, only: Optional[set] = None) -> Optional[dict]:
+        """3.9.2 큰 돈 세금: 잔액 TAX_FREE 를 넘는 부분의 TAX_RATE 를 걷는다. 하루(KST) 한 번 (이미 걷었으면 None).
+        only = 이 사람들만 (공개 전엔 테스트 서버 사람만). 관리자 계정 · 봇 구단(작은 id)은 빼고."""
+        day = _kst_day(now_ts)
+
+        def fn(con):
+            if con.execute("SELECT 1 FROM tax_days WHERE day_key=?", (day,)).fetchone():
+                return None
+            rows = [(int(u), int(b)) for u, b in con.execute(
+                "SELECT user_id, balance FROM wallets WHERE balance > ? AND user_id > 100000000000 AND user_id != ?",
+                (TAX_FREE, 673864024030445569))]
+            if only is not None:
+                rows = [(u, b) for u, b in rows if u in only]
+            total, taxed = 0, []
+            for u, b in rows:
+                t = int((b - TAX_FREE) * TAX_RATE)
+                if t > 0:
+                    con.execute("UPDATE wallets SET balance = balance - ? WHERE user_id=?", (t, u))
+                    total += t
+                    taxed.append((u, t))
+            con.execute("INSERT INTO tax_days(day_key, total, n) VALUES(?,?,?)", (day, total, len(taxed)))
+            return {"day": day, "total": total, "taxed": taxed}
+        return await self._tx(fn)
+
+    async def redenominate_392(self) -> Optional[int]:
+        """3.9.2 공개 때 한 번 (11/23 규완님 '숫자를 줄이든 뭐든 하자' → 결정 카드 '잔액과 코인만 1/100'):
+        모든 지갑(빚 포함) · 농장 코인 · 맡아 둔 코인 · 토토 쌓인 당첨금을 1/100 로. 가격 · 보상은 그대로. → 바꾼 지갑 수 (이미 했으면 None)."""
+        def fn(con):
+            if not con.execute("INSERT OR IGNORE INTO eco_migrations(name) VALUES('redenom-392')").rowcount:
+                return None
+            n = con.execute("UPDATE wallets SET balance = CAST(balance / 100 AS INTEGER) WHERE balance != 0").rowcount
+            for t, c in (("farm_purse", "coins"), ("farms", "coins"), ("farm_held", "coins"), ("toto_held", "amount")):
+                if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone():
+                    con.execute(f"UPDATE {t} SET {c} = CAST({c} / 100 AS INTEGER) WHERE {c} != 0")
+            return n
+        return await self._tx(fn)
+
+    async def prune_logs(self, now_ts: int, days: int = 30) -> None:
+        """3.9.2 돈 흐름 · 명령어 기록은 30일만."""
+        cut = int(now_ts) - days * 86400
+        await self._tx(lambda con: [con.execute(f"DELETE FROM {t} WHERE ts < ?", (cut,))
+                                    for t in ("money_log", "cmd_log", "coin_log")
+                                    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()])
+
+    async def log_commands(self, rows: list[tuple[int, str, int]]) -> None:
+        """3.9.2 명령어 · 버튼 사용 기록 (services/usage.py 가 1분마다 모아서 넣는다)."""
+        if rows:
+            await self._tx(lambda con: con.executemany("INSERT INTO cmd_log(user_id, name, ts) VALUES(?,?,?)", rows))
 
     async def claim_daily(self, user_id: int, reward: int, now_ts: int) -> Tuple[bool, int, int, int, int]:
         """
