@@ -201,6 +201,43 @@ def base_items() -> list[str]:
     return list(CROPS) + list(PRODUCTS)
 
 
+# 3.9.2 계절 · 날씨 · 동물 이름과 친밀도 · 꾸미기 · 농부끼리 교환 (11/23 규완님 D 33 34 35 37 40). 수치는 내 기본값.
+# 계절: 한 주마다 봄 → 여름 → 가을 → 겨울. 제철 작물은 SEASON_FAST 만큼 빨리 자란다.
+SEASONS = (("봄", ("carrot", "cabbage", "strawberry", "peach")), ("여름", ("corn", "tomato", "watermelon", "pineapple", "mango")),
+           ("가을", ("potato", "wheat", "pumpkin", "grape")), ("겨울", ("garlic", "pepper")))
+SEASON_FAST = 0.8
+# 날씨: 하루(KST)마다 모든 농장에 똑같이. key → (이름, 설명, 뽑힐 무게)
+WEATHER = {"sun": ("맑음", "특별한 일이 없어요", 50), "rain": ("비", "작물이 20% 빨리 자라요", 20),
+           "frost": ("서리", "작물이 20% 늦게 자라요", 10), "rainbow": ("무지개", "황금 물건이 두 배 잘 나와요", 10),
+           "wind": ("바람", "거둘 때 상자가 두 배 잘 나와요", 10)}
+WEATHER_GROW = {"rain": 0.8, "frost": 1.2}
+LOVE_MAX = 100                 # 동물 친밀도: 그 동물을 거둘 때마다 +1, 100 이면 만드는 시간 20% 빠르게
+LOVE_FAST = 0.2
+PET_NAME_MAX = 12
+# 꾸미기: 농장 코인으로 사서 (한 번 사면 내 농장 어디에나) 농장마다 하나를 걸어 둔다. 보기만 바뀐다.
+DECOS = {"fence": ("나무 울타리", 50_000), "flower": ("꽃밭", 100_000), "windmill": ("풍차", 300_000),
+         "well": ("우물", 500_000), "barn": ("빨간 헛간", 1_000_000), "statue": ("황금 키코 동상", 5_000_000)}
+TRADE_HOURS = 24               # 교환 제안은 24시간 뒤 만료 (내놓은 물건은 돌려준다)
+
+
+def season_of(now_ts: float) -> tuple[str, tuple]:
+    return SEASONS[week_of(now_ts) % len(SEASONS)]
+
+
+def weather_of(now_ts: float) -> str:
+    keys = list(WEATHER)
+    return random.Random(f"weather:{_kst_day(int(now_ts))}").choices(keys, weights=[WEATHER[k][2] for k in keys])[0]
+
+
+def grow_mult(key: str, now_ts: float) -> float:
+    """3.9.2 작물이 자라는 시간 배수 (계절 × 날씨)."""
+    return (SEASON_FAST if key in season_of(now_ts)[1] else 1.0) * WEATHER_GROW.get(weather_of(now_ts), 1.0)
+
+
+def love_mult(love: int) -> float:
+    return 1 - LOVE_FAST * min(LOVE_MAX, max(0, int(love))) / LOVE_MAX
+
+
 def v392(uid: int, now_ts: Optional[float] = None) -> bool:
     return release.released_392(now_ts) or int(uid) in lobby.TESTERS
 
@@ -431,6 +468,18 @@ class FarmDB(EconomyDB):
                 con.execute("ALTER TABLE farm_fields ADD COLUMN ench INTEGER NOT NULL DEFAULT 0")
             if "auto" not in {r[1] for r in con.execute("PRAGMA table_info(farm_fields)")}:   # 3.9.2 거두지 않고 쌓은 생산품 수
                 con.execute("ALTER TABLE farm_fields ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+            fcols = {r[1] for r in con.execute("PRAGMA table_info(farm_fields)")}
+            if "pet" not in fcols:   # 3.9.2 동물 이름 · 친밀도
+                con.execute("ALTER TABLE farm_fields ADD COLUMN pet TEXT")
+            if "love" not in fcols:
+                con.execute("ALTER TABLE farm_fields ADD COLUMN love INTEGER NOT NULL DEFAULT 0")
+            if "deco" not in cols:   # 3.9.2 걸어 둔 꾸미기
+                con.execute("ALTER TABLE farms ADD COLUMN deco TEXT")
+            con.execute("CREATE TABLE IF NOT EXISTS farm_decos (owner INTEGER NOT NULL, key TEXT NOT NULL, PRIMARY KEY(owner, key))")
+            con.execute("CREATE TABLE IF NOT EXISTS farm_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, from_uid INTEGER NOT NULL, "
+                        "from_fid INTEGER NOT NULL, to_uid INTEGER NOT NULL, give_key TEXT NOT NULL, give_tier INTEGER NOT NULL, "
+                        "give_qty INTEGER NOT NULL, want_key TEXT NOT NULL, want_qty INTEGER NOT NULL, ts INTEGER NOT NULL, "
+                        "status TEXT NOT NULL DEFAULT 'open')")
             con.execute("CREATE TABLE IF NOT EXISTS farm_exch (owner INTEGER PRIMARY KEY, day_key INTEGER NOT NULL, won INTEGER NOT NULL)")
             con.execute("CREATE TABLE IF NOT EXISTS farm_staff (farm_id INTEGER PRIMARY KEY, tier TEXT NOT NULL, hired_ts INTEGER NOT NULL, "
                         "paid_until INTEGER NOT NULL, next_ts INTEGER NOT NULL, work INTEGER NOT NULL DEFAULT 0, "
@@ -516,7 +565,7 @@ class FarmDB(EconomyDB):
     @staticmethod
     def _farm(con, fid: int, now_ts: int) -> Optional[dict]:
         r = con.execute("SELECT land, coins, energy, energy_ts, plots, sickle, whet, c_wood, c_silver, c_gold, plant_n, "
-                        "daily_day, owner, ask, fert_on, scare_until, name, ingot, last_plant FROM farms WHERE id=?", (int(fid),)).fetchone()
+                        "daily_day, owner, ask, fert_on, scare_until, name, ingot, last_plant, deco FROM farms WHERE id=?", (int(fid),)).fetchone()
         if not r or r[0] not in LANDS:
             return None
         res = LANDS[r[0]][3]
@@ -530,10 +579,11 @@ class FarmDB(EconomyDB):
         if purse is not None:
             FarmDB._auto_animals(con, int(fid), res, int(r[5]), now_ts, owner=int(r[12]))
         fields: list[Optional[dict]] = [None] * int(r[4])
-        for slot, kind, key, ready, ench in con.execute("SELECT slot, kind, key, ready_ts, ench FROM farm_fields WHERE farm_id=?", (fid,)):
+        for slot, kind, key, ready, ench, pet, love in con.execute(
+                "SELECT slot, kind, key, ready_ts, ench, pet, love FROM farm_fields WHERE farm_id=?", (fid,)):
             if 0 <= slot < len(fields) and key in (CROPS if kind == "crop" else ANIMALS):
                 fields[slot] = {"kind": kind, "key": key, "ready_ts": int(ready), "ready": now_ts >= int(ready),
-                                "ench": bool(ench) and kind == "crop"}
+                                "ench": bool(ench) and kind == "crop", "pet": pet, "love": int(love or 0)}
         items = [(k, int(t), int(q)) for k, t, q in con.execute(
             "SELECT key, tier, qty FROM farm_items WHERE farm_id=? AND qty>0", (fid,)) if k in ITEMS]
         order = list(ITEMS)
@@ -550,7 +600,7 @@ class FarmDB(EconomyDB):
         if stash is not None:
             r = list(r)
             r[6], r[7], r[8], r[9], r[17] = stash["whet"], stash["c_wood"], stash["c_silver"], stash["c_gold"], stash["ingot"]
-        f = {"id": int(fid), "name": r[16] or None, "seeds": seeds, "eseeds": eseeds, "ingot": int(r[17] or 0), "bag": stash is not None,
+        f = {"id": int(fid), "name": r[16] or None, "deco": r[19] if r[19] in DECOS else None, "seeds": seeds, "eseeds": eseeds, "ingot": int(r[17] or 0), "bag": stash is not None,
              "last_plant": r[18] if r[18] in CROPS or r[18] in ANIMALS else None, "tools": tools, "fert_on": bool(r[14]), "scare_until": int(r[15] or 0),
              "owner": int(r[12]), "land": r[0], "res": res, "coins": int(r[1]) if purse is None else purse,
              "farm_coins": int(r[1]), "v382": purse is not None, "cost": ENERGY_COST_382 if purse is not None else 1,
@@ -721,11 +771,11 @@ class FarmDB(EconomyDB):
         over = FarmDB._over_species(con, owner) if new else set()
         feed = FarmDB._pfeed_have(con, owner) if new else 0
         used_feed = 0
-        for slot, key, ready, auto in con.execute("SELECT slot, key, ready_ts, auto FROM farm_fields WHERE farm_id=? AND kind='animal' "
-                                                  "AND ready_ts<=?", (fid, int(now_ts))).fetchall():
+        for slot, key, ready, auto, love in con.execute("SELECT slot, key, ready_ts, auto, love FROM farm_fields WHERE farm_id=? "
+                                                        "AND kind='animal' AND ready_ts<=?", (fid, int(now_ts))).fetchall():
             if key not in ANIMALS:
                 continue
-            every = max(1, int(ANIMALS[key][4] * time_mult(res["grass"])))
+            every = max(1, int(ANIMALS[key][4] * time_mult(res["grass"]) * (love_mult(love) if new else 1)))
             n = 1 + (int(now_ts) - int(ready)) // every
             if new:
                 if (int(fid), int(slot)) in over:
@@ -737,7 +787,8 @@ class FarmDB(EconomyDB):
                     continue
                 if key in PFEED_ANIMALS:
                     used_feed += n
-                con.execute("UPDATE farm_fields SET auto = auto + ? WHERE farm_id=? AND slot=?", (n, fid, slot))
+                con.execute("UPDATE farm_fields SET auto = auto + ?, love = MIN(?, love + ?) WHERE farm_id=? AND slot=?",
+                            (n, LOVE_MAX, n, fid, slot))   # 3.9.2 친밀도: 만들 때마다 +1
             two = sum(1 for _ in range(n) if rng.random() < hp)
             prod = ANIMALS[key][3]
             if n - two:
@@ -1081,6 +1132,8 @@ class FarmDB(EconomyDB):
             else:
                 sec = (CROPS[key][3] * time_mult(f["res"]["soil"]) / lobby.mult("farm_grow", uid)   # 3.8.2 /로비 공약
                        / burning.mult("farm_grow", uid, now_ts))                                    # 3.8.4 수능 버닝
+                if v392(uid, now_ts):
+                    sec *= grow_mult(key, now_ts)                                                  # 3.9.2 계절 · 날씨
                 n = min(f["plant_n"] or len(empty), len(empty), f["energy"] // cost)
                 if bought:
                     n = min(n, have + ehave)
@@ -1141,6 +1194,7 @@ class FarmDB(EconomyDB):
                 return {"ok": False, "reason": "energy"}
             got: dict = {}
             extra = high = mut = 0
+            wx = weather_of(now_ts) if new else "sun"   # 3.9.2 날씨
             chests = []
             scare = f["scare_until"] > now_ts
             hp = high_p(f["sickle"]) + (SCARE_BONUS if scare else 0)
@@ -1150,17 +1204,19 @@ class FarmDB(EconomyDB):
                     con.execute("DELETE FROM farm_fields WHERE farm_id=? AND slot=?", (fid, slot))
                 else:
                     key = ANIMALS[p["key"]][3]
-                    con.execute("UPDATE farm_fields SET ready_ts=?, auto=0 WHERE farm_id=? AND slot=?",
-                                (int(now_ts + ANIMALS[p["key"]][4] * time_mult(f["res"]["grass"])), fid, slot))
+                    love = min(LOVE_MAX, p.get("love", 0) + 1) if new else p.get("love", 0)   # 3.9.2 친밀도
+                    con.execute("UPDATE farm_fields SET ready_ts=?, auto=0, love=? WHERE farm_id=? AND slot=?",
+                                (int(now_ts + ANIMALS[p["key"]][4] * time_mult(f["res"]["grass"]) * (love_mult(love) if new else 1)),
+                                 love, fid, slot))
                 tier = 2 if rng.random() < hp else 1
                 qty = 2 if rng.random() < extra_p(f["sickle"]) else 1
-                if new and not key.endswith(ENCH) and key + MUT in ITEMS and rng.random() < MUT_P:   # 3.9.2 희귀 변이
+                if new and not key.endswith(ENCH) and key + MUT in ITEMS and rng.random() < MUT_P * (2 if wx == "rainbow" else 1):   # 3.9.2 희귀 변이
                     key += MUT
                     mut += 1
                 high += tier == 2
                 extra += qty == 2
                 got[(key, tier)] = got.get((key, tier), 0) + qty
-                if rng.random() < chest_p(f["res"]["ore"], f["v382"]) * lobby.mult("farm_chest", uid):
+                if rng.random() < chest_p(f["res"]["ore"], f["v382"]) * lobby.mult("farm_chest", uid) * (2 if wx == "wind" else 1):
                     chests.append(rng.choices(list(CHESTS), weights=CHEST_WEIGHTS_382 if f["v382"] else CHEST_WEIGHTS)[0])
             for (key, tier), qty in got.items():
                 self._give(con, fid, key, tier, qty)
@@ -1399,6 +1455,150 @@ class FarmDB(EconomyDB):
                 else:
                     self._give(con, fid, r["key"], r["tier"], r["n"])
             return {"ok": True, "tier": tier, "rewards": rewards, "fee": fee}
+        return await self._tx(fn)
+
+    # ───────────── 3.9.2 동물 이름 ─────────────
+    async def name_pet(self, uid: int, fid: int, slot: int, name: str, now_ts: int) -> dict:
+        """동물에게 이름 (빈 글이면 지운다). reason: none / slot / long."""
+        name = " ".join(str(name).split())
+        def fn(con):
+            f = self._mine(con, uid, fid, now_ts)
+            if not f:
+                return {"ok": False, "reason": "none"}
+            p = f["fields"][slot] if 0 <= slot < len(f["fields"]) else None
+            if not p or p["kind"] != "animal":
+                return {"ok": False, "reason": "slot"}
+            if len(name) > PET_NAME_MAX:
+                return {"ok": False, "reason": "long", "max": PET_NAME_MAX}
+            con.execute("UPDATE farm_fields SET pet=? WHERE farm_id=? AND slot=?", (name or None, int(fid), int(slot)))
+            return {"ok": True, "name": name or None, "key": p["key"]}
+        return await self._tx(fn)
+
+    # ───────────── 3.9.2 꾸미기 ─────────────
+    async def decos(self, owner: int) -> set:
+        return await self._tx(lambda con: {k for (k,) in con.execute("SELECT key FROM farm_decos WHERE owner=?", (int(owner),)) if k in DECOS})
+
+    async def deco(self, uid: int, fid: int, key: Optional[str], now_ts: int) -> dict:
+        """꾸미기 걸기 (없으면 사서 건다, None 이면 떼기). reason: none / key / coins(cost)."""
+        def fn(con):
+            f = self._mine(con, uid, fid, now_ts)
+            if not f:
+                return {"ok": False, "reason": "none"}
+            if key is None:
+                con.execute("UPDATE farms SET deco=NULL WHERE id=?", (int(fid),))
+                return {"ok": True, "key": None, "paid": 0}
+            if key not in DECOS:
+                return {"ok": False, "reason": "key"}
+            paid = 0
+            if not con.execute("SELECT 1 FROM farm_decos WHERE owner=? AND key=?", (int(uid), key)).fetchone():
+                paid = DECOS[key][1]
+                if f["coins"] < paid:
+                    return {"ok": False, "reason": "coins", "cost": paid}
+                self._add_coins(con, fid, -paid)
+                con.execute("INSERT INTO farm_decos(owner, key) VALUES(?,?)", (int(uid), key))
+            con.execute("UPDATE farms SET deco=? WHERE id=?", (key, int(fid)))
+            return {"ok": True, "key": key, "paid": paid}
+        return await self._tx(fn)
+
+    # ───────────── 3.9.2 농부끼리 교환 ─────────────
+    @staticmethod
+    def _take_items(con, fid: int, key: str, qty: int, tier: Optional[int] = None) -> bool:
+        """농장 fid 창고에서 key 를 qty 개 뺀다 (tier None 이면 낮은 등급부터). 모자라면 아무것도 안 빼고 False."""
+        rows = con.execute("SELECT tier, qty FROM farm_items WHERE farm_id=? AND key=? AND qty>0" + (" AND tier=?" if tier else "")
+                           + " ORDER BY tier", (int(fid), key, *((int(tier),) if tier else ()))).fetchall()
+        if sum(int(q) for _, q in rows) < qty:
+            return False
+        left = qty
+        got = []
+        for t, q in rows:
+            use = min(int(q), left)
+            if use <= 0:
+                break
+            con.execute("UPDATE farm_items SET qty = qty - ? WHERE farm_id=? AND key=? AND tier=?", (use, int(fid), key, int(t)))
+            got.append((int(t), use))
+            left -= use
+        con.execute("DELETE FROM farm_items WHERE farm_id=? AND qty <= 0", (int(fid),))
+        return got
+
+    def _expire_trades(self, con, now_ts: int):
+        for tid, fid, k, t, q in con.execute("SELECT id, from_fid, give_key, give_tier, give_qty FROM farm_trades "
+                                             "WHERE status='open' AND ts < ?", (int(now_ts) - TRADE_HOURS * 3600,)).fetchall():
+            self._trade_back(con, tid, fid, k, t, q, "expired")
+
+    def _trade_back(self, con, tid, fid, key, tier, qty, status):
+        own = con.execute("SELECT owner FROM farms WHERE id=?", (int(fid),)).fetchone()
+        frm = con.execute("SELECT from_uid FROM farm_trades WHERE id=?", (int(tid),)).fetchone()
+        to = int(fid) if own and frm and int(own[0]) == int(frm[0]) else self._first_farm(con, int(frm[0]) if frm else 0)
+        if to:
+            self._give(con, to, key, int(tier), int(qty))
+        con.execute("UPDATE farm_trades SET status=? WHERE id=?", (status, int(tid)))
+
+    @staticmethod
+    def _first_farm(con, owner: int) -> Optional[int]:
+        r = con.execute("SELECT id FROM farms WHERE owner=? ORDER BY id LIMIT 1", (int(owner),)).fetchone()
+        return int(r[0]) if r else None
+
+    async def offer_trade(self, uid: int, fid: int, to_uid: int, give_key: str, give_tier: int, give_qty: int,
+                          want_key: str, want_qty: int, now_ts: int) -> dict:
+        """내 창고 물건(give)을 내놓고 상대의 want 를 달라고 제안한다. 내놓은 물건은 바로 빠지고, 거절 · 취소 · 만료되면 돌아온다.
+        reason: none / self / target(상대 농장 없음) / key / amount / few."""
+        def fn(con):
+            f = self._mine(con, uid, fid, now_ts)
+            if not f:
+                return {"ok": False, "reason": "none"}
+            if int(to_uid) == int(uid):
+                return {"ok": False, "reason": "self"}
+            if not self._first_farm(con, to_uid):
+                return {"ok": False, "reason": "target"}
+            if give_key not in ITEMS or want_key not in ITEMS:
+                return {"ok": False, "reason": "key"}
+            if give_qty <= 0 or want_qty <= 0:
+                return {"ok": False, "reason": "amount"}
+            if not self._take_items(con, fid, give_key, int(give_qty), int(give_tier)):
+                return {"ok": False, "reason": "few"}
+            cur = con.execute("INSERT INTO farm_trades(from_uid, from_fid, to_uid, give_key, give_tier, give_qty, want_key, want_qty, ts) "
+                              "VALUES(?,?,?,?,?,?,?,?,?)", (int(uid), int(fid), int(to_uid), give_key, int(give_tier), int(give_qty),
+                                                            want_key, int(want_qty), int(now_ts)))
+            return {"ok": True, "id": int(cur.lastrowid)}
+        return await self._tx(fn)
+
+    async def trades(self, uid: int, now_ts: int) -> dict:
+        """→ {in: [받은 제안], out: [보낸 제안]} (열린 것만)."""
+        def fn(con):
+            self._expire_trades(con, now_ts)
+            cols = ("id", "from_uid", "from_fid", "to_uid", "give_key", "give_tier", "give_qty", "want_key", "want_qty", "ts")
+            rows = [dict(zip(cols, r)) for r in con.execute(
+                f"SELECT {', '.join(cols)} FROM farm_trades WHERE status='open' AND (to_uid=? OR from_uid=?) ORDER BY id",
+                (int(uid), int(uid)))]
+            return {"in": [r for r in rows if r["to_uid"] == int(uid)], "out": [r for r in rows if r["from_uid"] == int(uid)]}
+        return await self._tx(fn)
+
+    async def answer_trade(self, uid: int, fid: int, tid: int, accept: bool, now_ts: int) -> dict:
+        """받은 제안 수락(내 농장 fid 창고에서 want 를 내고 give 를 받는다) · 거절, 또는 보낸 제안 취소(accept False).
+        reason: none / gone / few."""
+        def fn(con):
+            self._expire_trades(con, now_ts)
+            t = con.execute("SELECT from_uid, from_fid, to_uid, give_key, give_tier, give_qty, want_key, want_qty FROM farm_trades "
+                            "WHERE id=? AND status='open'", (int(tid),)).fetchone()
+            if not t or int(uid) not in (int(t[0]), int(t[2])):
+                return {"ok": False, "reason": "gone"}
+            frm, ffid, to, gk, gt, gq, wk, wq = t
+            if not accept:
+                self._trade_back(con, tid, ffid, gk, gt, gq, "cancelled" if int(uid) == int(frm) else "rejected")
+                return {"ok": True, "accepted": False}
+            if int(uid) != int(to) or not self._mine(con, uid, fid, now_ts):
+                return {"ok": False, "reason": "none"}
+            got = self._take_items(con, fid, wk, int(wq))
+            if not got:
+                return {"ok": False, "reason": "few", "key": wk, "qty": int(wq)}
+            back = int(ffid) if (con.execute("SELECT owner FROM farms WHERE id=?", (int(ffid),)).fetchone() or (0,))[0] == int(frm) \
+                else self._first_farm(con, frm)
+            for tier, q in got:
+                if back:
+                    self._give(con, back, wk, tier, q)
+            self._give(con, fid, gk, int(gt), int(gq))
+            con.execute("UPDATE farm_trades SET status='done' WHERE id=?", (int(tid),))
+            return {"ok": True, "accepted": True, "from": int(frm), "give": (gk, int(gt), int(gq)), "want": (wk, int(wq))}
         return await self._tx(fn)
 
     # ───────────── 환전 ─────────────

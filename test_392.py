@@ -242,3 +242,84 @@ def test_level_dex_orders_mutant():
         con.close()
     finally:
         L.TESTERS.clear()
+
+
+def test_season_weather_pets_deco_trade():
+    db = F.FarmDB()
+    A, B = 392000000000041, 392000000000042
+    L.TESTERS.clear()
+    L.TESTERS.update({A, B})
+    try:
+        assert F.season_of(NOW)[0] in {"봄", "여름", "가을", "겨울"} and F.weather_of(NOW) == F.weather_of(NOW + 60)
+        assert {F.season_of(NOW + 7 * 86400 * i)[0] for i in range(4)} == {"봄", "여름", "가을", "겨울"}
+        k = F.season_of(NOW)[1][0]
+        wx = F.WEATHER_GROW.get(F.weather_of(NOW), 1.0)
+        assert abs(F.grow_mult(k, NOW) - F.SEASON_FAST * wx) < 1e-9
+        fa, fb = _farm(db, A, energy=1000, plots=24), _farm(db, B, energy=1000, plots=24)
+        # 동물 이름 · 친밀도
+        con = _con()
+        con.execute("INSERT INTO farm_fields(farm_id, slot, kind, key, ready_ts, love) VALUES(?, 0, 'animal', 'chicken', ?, 99)", (fa, NOW))
+        con.execute("INSERT OR REPLACE INTO farm_purse(owner, coins) VALUES(?, 200000)", (A,))
+        con.commit()
+        con.close()
+        assert run(db.name_pet(A, fa, 0, "꼬꼬", NOW))["ok"] and run(db.name_pet(A, fa, 1, "x", NOW))["reason"] == "slot"
+        f = run(db.get(fa, NOW + 1))   # 저절로 만들어도 친밀도 +1
+        p = f["fields"][0]
+        assert p["pet"] == "꼬꼬" and p["love"] == 100
+        assert p["ready_ts"] - (NOW + 1) <= int(F.ANIMALS["chicken"][4] * F.time_mult(f["res"]["grass"]) * 0.8) + 1
+        # 꾸미기: 처음엔 사고, 다시 걸 땐 공짜
+        assert run(db.deco(A, fa, "statue", NOW))["reason"] == "coins"
+        r = run(db.deco(A, fa, "flower", NOW))
+        assert r["ok"] and r["paid"] == 100_000
+        assert run(db.get(fa, NOW))["deco"] == "flower" and run(db.decos(A)) == {"flower"}
+        assert run(db.deco(A, fa, "flower", NOW))["paid"] == 0
+    finally:
+        L.TESTERS.clear()
+
+
+def test_trade():
+    db = F.FarmDB()
+    A, B = 392000000000051, 392000000000052
+    fa, fb = _farm(db, A), _farm(db, B)
+    con = _con()
+    con.execute("INSERT INTO farm_items(farm_id, key, tier, qty) VALUES(?, 'potato', 1, 10)", (fa,))
+    con.execute("INSERT INTO farm_items(farm_id, key, tier, qty) VALUES(?, 'egg', 2, 3)", (fb,))
+    con.commit()
+    con.close()
+
+    def qty(fid, key):
+        c = _con()
+        r = c.execute("SELECT COALESCE(SUM(qty), 0) FROM farm_items WHERE farm_id=? AND key=?", (fid, key)).fetchone()[0]
+        c.close()
+        return r
+    assert run(db.offer_trade(A, fa, A, "potato", 1, 5, "egg", 3, NOW))["reason"] == "self"
+    assert run(db.offer_trade(A, fa, B, "potato", 1, 11, "egg", 3, NOW))["reason"] == "few"
+    t = run(db.offer_trade(A, fa, B, "potato", 1, 5, "egg", 3, NOW))
+    assert t["ok"] and qty(fa, "potato") == 5
+    assert [x["id"] for x in run(db.trades(B, NOW))["in"]] == [t["id"]]
+    r = run(db.answer_trade(B, fb, t["id"], True, NOW))
+    assert r["ok"] and qty(fb, "potato") == 5 and qty(fa, "egg") == 3 and qty(fb, "egg") == 0
+    # 거절하면 돌아온다, 만료도
+    t2 = run(db.offer_trade(A, fa, B, "potato", 1, 5, "egg", 1, NOW))
+    assert qty(fa, "potato") == 0 and run(db.answer_trade(B, fb, t2["id"], False, NOW))["ok"] and qty(fa, "potato") == 5
+    t3 = run(db.offer_trade(A, fa, B, "potato", 1, 2, "egg", 1, NOW))
+    assert run(db.trades(A, NOW + F.TRADE_HOURS * 3600 + 10))["out"] == [] and qty(fa, "potato") == 5
+    assert run(db.answer_trade(B, fb, t3["id"], True, NOW + F.TRADE_HOURS * 3600 + 20))["reason"] == "gone"
+
+
+def test_help_fits():
+    import cogs.farm as CF
+
+    class U:
+        id = 392000000000061
+        display_name = "x"
+        class display_avatar:
+            url = "https://x"
+        mention = "<@1>"
+    L.TESTERS.clear()
+    L.TESTERS.add(U.id)
+    try:
+        e = CF.help_embed(U(), True, True)
+        assert len(e.fields) <= 25 and len(e) <= 6000
+    finally:
+        L.TESTERS.clear()
