@@ -210,6 +210,8 @@ def hidden_commands(guild_id: Optional[int], now: Optional[float] = None) -> set
     out = out if preview_382(guild_id, now) else out | PREVIEW_382
     out = out if preview_lobby(guild_id, now) else out | PREVIEW_LOBBY
     out = out if preview_384(guild_id, now) else out | PREVIEW_384
+    out = out if preview_392(guild_id, now) else out | PREVIEW_392
+    out = out | LEGACY_392 if preview_392(guild_id, now) else out
     return out if preview_310(guild_id, now) else out | PREVIEW_310
 
 
@@ -381,3 +383,23 @@ def preview_384(guild_id: Optional[int], now: Optional[float] = None) -> bool:
 def ctx_384() -> bool:
     """3.9.1 (코드 이름 384) 이 공개된 서버에서 온 상호작용인가 — 출석 · 스카우트 · 훈련 · 직관 · 낚시 보상 배수 (DB 안쪽에서 쓴다)."""
     return preview_384(GUILD.get())
+
+
+# 3.9.2 (코드 이름 392) — 11/23 규완님 '돈 가치 살리기' + 농사 개편. 공개 전엔 테스트 서버에서만. None = 아직
+# 보상 배수 10배 · 낚시 원래대로 · 송금 수수료 · 큰 돈 세금 · 농사 환전 · 인챈트 · 동물 한도 · 유지비 · 아르바이트생 …
+RELEASE_392_TS: Optional[int] = None
+PREVIEW_392: set[str] = set()
+LEGACY_392: set[str] = {"달팽이", "조정", "양궁", "ufc", "농구", "야구"}   # 11/23 규완님 '삭제해줘'
+
+
+def released_392(now: Optional[float] = None) -> bool:
+    return RELEASE_392_TS is not None and _now(now) >= RELEASE_392_TS
+
+
+def preview_392(guild_id: Optional[int], now: Optional[float] = None) -> bool:
+    return guild_id == TEST_GUILD or released_392(now)
+
+
+def ctx_392() -> bool:
+    """3.9.2 가 공개된 서버에서 온 상호작용인가 (DB 안쪽에서 쓴다)."""
+    return preview_392(GUILD.get())

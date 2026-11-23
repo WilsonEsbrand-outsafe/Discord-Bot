@@ -14,7 +14,7 @@ from services.economy_db import (
     SKIP_ITEMS, shop_open, pay_384,
     TOTO_KEEP, TOTO_REPORT_PROB, TOTO_REPORT_XP, EconomyDB, SCOUT_MAX_LEVEL,
     TRAIN_MAX_LEVEL,
-    BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, transfer_limit, WATCH_MAX_LEVEL, give_item,
+    BOX_CHOICES, ROOKIE_GRIND_MULT, TRANSFER_DAILY_LIMIT, WATCH_DAILY_LIMIT, transfer_limit, transfer_fee, WATCH_MAX_LEVEL, give_item,
 )
 from services.club_db import ClubDB, hidden_tier, steroid_table
 from services import agent, gems
@@ -674,8 +674,10 @@ class Economy(commands.Cog):
         my_bal = await self.db.get_balance(user.id)
         to_bal = await self.db.get_balance(to_user.id)
         left = await self.db.transfer_remaining(user.id, now_ts)
+        fee = transfer_fee(amount)   # 3.9.2 송금 수수료 5%
         e = ui.card("✅ 송금 완료",
                     f"{user.mention} → {to_user.mention}\n\n`금액` **{amount:,}원**\n"
+                    + (f"`수수료` **{fee:,}원** (받는 사람은 **{amount - fee:,}원**)\n" if fee else "") +
                     f"`내 잔액` **{my_bal:,}원**\n`오늘 남은 한도` **{left:,}원** / {transfer_limit():,}원",
                     ui.WIN, user, "💸 송금")
         await interaction.followup.send(embed=e)
@@ -683,7 +685,7 @@ class Economy(commands.Cog):
         dm_embed = discord.Embed(
             title="💸 송금 수신",
             description=(
-                f"**{user.display_name}**님에게서 **{amount:,}원**을 받았습니다.\n"
+                f"**{user.display_name}**님에게서 **{amount - fee:,}원**을 받았습니다.\n"
                 f"현재 잔액: **{to_bal:,}원**"
             ),
             color=0x2ecc71,

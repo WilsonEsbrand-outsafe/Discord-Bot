@@ -16,6 +16,17 @@ from services import burning as B  # noqa: E402
 from services import fishing as FI  # noqa: E402
 from services import lobby as L  # noqa: E402
 
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_392(monkeypatch):
+    """3.9.2 는 test_392.py — 여기서는 3.9.1 규칙만 본다."""
+    import services.farm as _F
+    monkeypatch.setattr(release, "preview_392", lambda *a, **k: False)
+    monkeypatch.setattr(_F, "v392", lambda *a, **k: False)
+
 MID = calendar.timegm((2026, 11, 24, 3, 0, 0))   # 버닝 중
 
 

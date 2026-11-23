@@ -209,7 +209,11 @@ def help_embed(user, v382: bool = False, v384: bool = False) -> discord.Embed:
     for name, value in (
             ("심기", "메뉴에서 작물을 고르면 빈 땅에 심어요.\n시간이 지나면 다 자라요."),
             ("농사 상점", f"씨앗과 동물은 {_shop_link(user)}에서 농장 코인으로 사요.\n당근은 씨앗 없이 바로 심을 수 있어요."),
-            ("동물", f"입양하면 땅 한 칸에 살면서 달걀, 양털, 우유 같은 것을 계속 만들어요.\n땅 {F.ANIMAL_PER_PLOTS}칸마다 1마리까지 기를 수 있어요."),
+            ("동물", f"입양하면 땅 한 칸에 살면서 달걀, 양털, 우유 같은 것을 계속 만들어요.\n땅 {F.ANIMAL_PER_PLOTS}칸마다 1마리까지 기를 수 있어요."
+                    + (f"\n같은 동물은 한 사람당 {F.SPECIES_CAP_392}마리까지예요.\n거두지 않으면 마리당 {F.AUTO_CAP_392}개까지만 쌓여요."
+                       "\n소, 들소, 공작은 하나 만들 때마다 고급 사료를 하나 먹어요." if F.v392(user.id) else "")),
+            *((("유지비", "농장이 두 개 이상이면 매일 0시에 코인이 나가요.\n"
+                         f"두 번째 농장은 하루 {F.UPKEEP_392:,} 코인, 세 번째는 {F.UPKEEP_392 * 2:,} 코인처럼 늘어나요."),) if F.v392(user.id) else ()),
             ("거두기", "다 자란 작물과 동물이 만든 것을 창고로 옮겨요."),
             ("합치기", f"같은 물건 {F.MERGE_NEED}개를 합치면 한 등급 위 1개가 돼요.\n★{F.TIER_MAX}까지 올릴 수 있고, 등급이 높을수록 훨씬 비싸요."),
             ("창고", "물건을 농장 코인으로 팔아요."),
@@ -220,7 +224,8 @@ def help_embed(user, v382: bool = False, v384: bool = False) -> discord.Embed:
             ("땅 넓히기", "코인으로 한 칸씩 넓혀요.\n넓힐 때마다 은 상자를 하나 발견해요."),
             ("낫 강화", "강화할수록 거둘 때 하나 더 나오거나 ★2로 나올 확률이 올라요."),
             ("상자", "거두다 가끔 나오고, 하루 첫 거두기에 하나를 받아요.\n코인, 에너지, 숫돌, 높은 등급 물건이 들어 있어요."),
-            ("환전", f"코인 1개는 축구 봇 돈 {F.RATE:,}원이에요.\n환전하지 않아도 농사는 코인만으로 다 할 수 있어요."),
+            ("환전", f"코인 1개는 축구 봇 돈 {F.rate(user.id):,}원이에요.\n환전하지 않아도 농사는 코인만으로 다 할 수 있어요."
+                    + (f"\n하루에 {F.EXCH_DAY_392 // 100_000_000}억원까지 바꿀 수 있어요." if F.v392(user.id) else "")),
             ("행운", "축구 봇 돈을 쓰면 상자 보상과 낫 강화 확률이 조금 좋아져요.\n안 써도 괜찮아요."),
             ("새 밭 만들기", f"농장 코인이 {F.NEW_FARM_COST:,}개 모이면 그 코인을 내고 새 밭을 하나 더 열 수 있어요."),
             ("인수", "다른 사람 농장 스레드에서 **인수 제안**을 눌러 코인으로 금액을 제안해요.\n"
@@ -358,6 +363,7 @@ class FarmPanel(discord.ui.View):
                     "energy": "에너지가 없어요. 조금 기다리면 다시 차요.",
                     "seeds": f"{what} 없어요. {_shop_link(interaction.user)}에서 사 주세요. 당근은 씨앗 없이 심을 수 있어요.",
                     "cap": f"동물은 땅 {F.ANIMAL_PER_PLOTS}칸당 1마리까지예요 (지금 {r.get('cap', 0)}마리까지). 땅을 넓혀 보세요.",
+                    "species": f"같은 동물은 한 사람당 {F.SPECIES_CAP_392}마리까지 기를 수 있어요.",
                     }.get(r["reason"], "심을 수 없어요.")
         elif r["animal"]:
             _, n, _, prod, _ = F.ANIMALS[key]
@@ -384,7 +390,8 @@ class FarmPanel(discord.ui.View):
         fid = await self._fid(interaction)
         r = await self.cog.db.harvest(interaction.user.id, fid, int(time.time()))
         if not r["ok"]:
-            note = "에너지가 없어요. 조금 기다리면 다시 차요." if r["reason"] == "energy" else "아직 거둘 것이 없어요."
+            note = ("에너지가 없어요. 조금 기다리면 다시 차요." if r["reason"] == "energy" else
+                    "소, 들소, 공작은 고급 사료가 있어야 거둘 수 있어요. 농사 상점에서 사 주세요." if r["reason"] == "nofeed" else "아직 거둘 것이 없어요.")
         else:
             note = f"**{r['count']}칸**을 거뒀어요.\n" + "\n".join(f"{_item(k, t)} {q}개" for (k, t), q in r["got"].items())
             if r["extra"]:
@@ -469,7 +476,7 @@ class FarmPanel(discord.ui.View):
 
     async def _exchange(self, interaction: discord.Interaction):
         f = await self.cog.db.get(await self._fid(interaction), int(time.time()))
-        await interaction.response.send_modal(ExchangeModal(self.cog, f["id"], f["coins"]))
+        await interaction.response.send_modal(ExchangeModal(self.cog, f["id"], f["coins"], interaction.user.id))
 
     async def _help(self, interaction: discord.Interaction):
         f = await self.cog.db.get(await self._fid(interaction), int(time.time()))
@@ -552,7 +559,8 @@ class FieldView(discord.ui.View):
             return await interaction.response.send_message(msg, ephemeral=True)
         r = await self.cog.db.harvest(interaction.user.id, fid, now, slots={i})
         if not r["ok"]:
-            msg = "에너지가 없어요. 조금 기다리면 다시 차요." if r["reason"] == "energy" else "아직 거둘 것이 없어요."
+            msg = ("에너지가 없어요. 조금 기다리면 다시 차요." if r["reason"] == "energy" else
+                   "소, 들소, 공작은 고급 사료가 있어야 거둘 수 있어요. 농사 상점에서 사 주세요." if r["reason"] == "nofeed" else "아직 거둘 것이 없어요.")
             return await interaction.response.send_message(msg, ephemeral=True)
         f = await self.cog.db.get(fid, now)
         await interaction.response.edit_message(content=field_text(f), view=FieldView(self.cog, f))
@@ -921,10 +929,10 @@ class SickleView(_Sub):
 
 
 class ExchangeModal(discord.ui.Modal):
-    def __init__(self, cog: "Farm", fid: int, coins: int):
+    def __init__(self, cog: "Farm", fid: int, coins: int, user_id: int = 0):
         super().__init__(title="농장 코인 환전")
         self.cog, self.fid = cog, fid
-        self.amount = discord.ui.TextInput(label=f"바꿀 코인 (코인 1 = {F.RATE:,}원)"[:45], max_length=12,
+        self.amount = discord.ui.TextInput(label=f"바꿀 코인 (코인 1 = {F.rate(user_id):,}원)"[:45], max_length=12,
                                            placeholder=f"가진 코인 {coins:,}, '전부'라고 적으면 모두 바꿔요")
         self.add_item(self.amount)
 
@@ -939,7 +947,9 @@ class ExchangeModal(discord.ui.Modal):
         if not r["ok"] and r["reason"] == "none":   # 그 사이 농장 주인이 바뀌었다
             return await interaction.response.send_message("내 농장이 아니에요.", ephemeral=True)
         note = (f"{r['coins']:,} 코인을 **{r['won']:,}원**으로 바꿨어요.\n잔액 {r['balance']:,}원" if r["ok"] else
-                f"코인이 모자라요 (가진 코인 {r.get('have', 0):,})." if r["reason"] == "coins" else "1 코인 이상 적어 주세요.")
+                f"코인이 모자라요 (가진 코인 {r.get('have', 0):,})." if r["reason"] == "coins" else
+                f"오늘 환전 한도를 넘어요. 오늘은 {r.get('left', 0):,} 코인까지 더 바꿀 수 있어요." if r["reason"] == "limit" else
+                "1 코인 이상 적어 주세요.")
         await self.cog.show(interaction, self.fid, note)
 
 
@@ -1152,6 +1162,8 @@ SHOP_VER = 5   # 상점 화면을 바꾸면 올린다 — 이미 올라간 상�
 
 def shop_ver(guild_id) -> int:
     """서버의 상점 화면 버전 — 3.8.2 새 작물은 공개 전엔 테스트 서버 상점에만 (공개되면 다른 서버 상점 글도 고친다)."""
+    if release.preview_392(guild_id):
+        return 9   # 9: 3.9.2 고급 사료
     return 8 if release.preview_384(guild_id) else 6 if release.preview_382(guild_id) else SHOP_VER   # 8: 3.9.1 아이템 값
 
 
@@ -1159,6 +1171,12 @@ def _animals_for(guild_id) -> list[str]:
     """3.8.4 새 동물은 공개 전엔 테스트 서버 상점에만."""
     new = guild_id is None or release.preview_384(guild_id)
     return [k for k in F.ANIMALS if new or k not in F.NEW_ANIMALS_384]
+
+
+def _tools_for(guild_id) -> list[str]:
+    """3.9.2 고급 사료는 공개 전엔 테스트 서버 상점에만."""
+    new = guild_id is None or release.preview_392(guild_id)
+    return [k for k in F.TOOLS if new or k != "pfeed"]
 
 
 def _crops_for(guild_id) -> list[str]:
@@ -1178,7 +1196,8 @@ def shop_embeds(guild_id=None) -> list[discord.Embed]:
     for k in _animals_for(guild_id):
         animals.add_field(name=F.ANIMALS[k][1], value=f"{F.ANIMALS[k][2]:,} 코인")
     tools = discord.Embed(title="아이템", description="농장 화면의 **아이템**에서 써요.", color=ui.GOLD)
-    for k, (n, _, what) in F.TOOLS.items():
+    for k in _tools_for(guild_id):
+        n, _, what = F.TOOLS[k]
         tools.add_field(name=n, value=f"**{F.tool_price(k, release.preview_384(guild_id)):,} 코인**\n{what}")   # 3.9.1 5배
     return [head, seeds, animals, tools]
 
@@ -1197,7 +1216,7 @@ def shop_menus(guild_id=None) -> tuple:
     """(custom_id, 메뉴 이름, 물건들) — 종류마다 메뉴 하나 (11/12 '확실하게 분류')."""
     return (("farm:shop:seed", "씨앗 사기", _crops_for(guild_id)),
             ("farm:shop:animal", "동물 사기", _animals_for(guild_id)),
-            ("farm:shop:tool", "아이템 사기", list(F.TOOLS)))
+            ("farm:shop:tool", "아이템 사기", _tools_for(guild_id)))
 
 
 SHOP_MENUS = shop_menus()

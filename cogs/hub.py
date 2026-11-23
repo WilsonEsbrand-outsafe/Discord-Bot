@@ -121,6 +121,17 @@ GAMES = (
         "`/토토` — 축구 · UFC 실제 경기 배당\n`/내베팅` — 내역 · 경기 전 취소")),
 )
 
+# 3.9.2 (11/23 규완님 '/달팽이, /조정, /양궁, /ufc, /농구, /야구 삭제') — 그 서버엔 없앤 게임을 빼고 보여 준다
+GAMES_392 = tuple(
+    g if g[1] not in ("레이스", "한 방 게임", "토토") else {
+        "레이스": ("🏇", "레이스", "경마 · F1", (
+            "`/경마` — 4마리 중 한 마리 · 1·2위 배당 · 막판 대역전\n"
+            "`/f1` — 2026 그리드에서 드라이버를 골라 베팅")),
+        "한 방 게임": ("🎯", "페널티킥", "한 방 게임", "`/페널티킥` — 최대 200배 파넨카 ~ 10배 손실"),
+        "토토": ("🎰", "토토", "실제 경기 베팅", "`/토토` — 축구 실제 경기 배당\n`/내베팅` — 내역 · 경기 전 취소"),
+    }[g[1]]
+    for g in GAMES if g[1] != "양궁")
+
 
 class Hubs(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -231,18 +242,20 @@ class Hubs(commands.Cog):
 
     # ───────────── /게임 ─────────────
     def games_view(self, user, page: int = -1) -> HubView:
+        games = GAMES_392 if release.preview_392(getattr(getattr(user, "guild", None), "id", None)) else GAMES
+
         def render(i):
             async def r(view: HubView) -> discord.Embed:
-                emoji, title, _, body = GAMES[i]
+                emoji, title, _, body = games[i]
                 return ui.card(f"{emoji} {title}", body + "\n\n⚠️ 미니게임은 최소 1,000원 · 큰 손실은 잔액이 마이너스가 될 수 있어요.",
                                ui.INFO, view.user, "🎮 게임")
             return r
         new = release.preview_310(getattr(getattr(user, "guild", None), "id", None))
-        pages = [Page(e, t, render(i), hint) for i, (e, t, hint, _) in enumerate(GAMES)
+        pages = [Page(e, t, render(i), hint) for i, (e, t, hint, _) in enumerate(games)
                  if new or t != "드리블"]   # 3.1.0 /드리블 은 공개 서버에만
         return HubView(user, "게임", "🎮 게임", pages, "/게임", page, home_note="해 보고 싶은 게임을 골라 보세요.")
 
-    @app_commands.command(name="게임", description="🎮 미니게임 모음 — 레이스 · 한 방 게임 · 양궁 · 리그 · 낚시 · 던전 · 토토")
+    @app_commands.command(name="게임", description="🎮 미니게임 모음 — 레이스 · 한 방 게임 · 리그 · 낚시 · 던전 · 토토")
     async def games(self, interaction: discord.Interaction):
         await self.games_view(interaction.user).send(interaction)
 

@@ -91,6 +91,7 @@ TOOLS = {
     "drink": ("에너지 음료", 60, "마시면 에너지가 30 차요"),
     "feed": ("동물 사료", 50, "주면 모든 동물이 다음 생산품을 절반 시간에 만들어요"),
     "scarecrow": ("허수아비", 200, "세우면 10분 동안 거둘 때 ★2가 나올 확률이 15%p 올라가요"),
+    "pfeed": ("고급 사료", 40, "소, 들소, 공작은 생산품 하나를 만들 때마다 하나씩 먹어요"),   # 3.9.2
 }
 FERT_MULT = 0.5               # 비료: 자라는 시간 × 0.5
 DRINK_ENERGY = 30             # 에너지 음료: 에너지 +30 (11/12 규완님: 100 을 넘겨서도 찬다 — 100 한도는 저절로 찰 때만)
@@ -138,6 +139,30 @@ def energy_max(plots: int, v382: bool) -> int:
     return ENERGY_MAX + (max(0, int(plots) - PLOTS_BASE) * ENERGY_PER_PLOT_382 if v382 else 0)
 START_CHESTS = {"wood": 1}            # 시작 선물
 RATE = 1_000                          # 환전: 농장 코인 1 = 축구 봇 돈 1,000원 (코인 → 돈 한쪽으로만)
+
+# ───────────── 3.9.2 농사 돈 줄이기 (11/23 규완님이 고른 것) ─────────────
+# 공개 전엔 테스트 서버 사람만 (lobby.TESTERS) — 농사는 서버를 넘나들어 사람 기준으로 본다
+RATE_392 = 100                        # 환전 1코인 = 100원
+EXCH_DAY_392 = 100_000_000            # 하루(KST) 환전 한도 (원)
+ENCH_MULT_392 = 3                     # 인챈트 값 5배 → 3배
+AUTO_CAP_392 = 10                     # 동물이 거두지 않아도 쌓는 생산품은 마리당 10개까지, 그 뒤로는 거둬야 다시 만든다
+SPECIES_CAP_392 = 5                   # 같은 동물은 한 사람당 5마리까지 (넘는 동물은 만들지 않고, 내보내면 입양 값을 다 돌려준다)
+PFEED_ANIMALS = ("cow", "bison", "peacock")   # 비싼 동물은 생산품 하나에 고급 사료 하나를 먹는다
+UPKEEP_392 = 20_000                   # 농장 유지비: 두 번째 농장부터 하루 (순서 − 1) × 2만 코인 (7개면 하루 42만 코인)
+
+
+def v392(uid: int, now_ts: Optional[float] = None) -> bool:
+    return release.released_392(now_ts) or int(uid) in lobby.TESTERS
+
+
+def rate(uid: int, now_ts: Optional[float] = None) -> int:
+    """환전 비율 (코인 1개 = 원)."""
+    return RATE_392 if v392(uid, now_ts) else RATE
+
+
+def upkeep(n_farms: int) -> int:
+    """농장 n 개의 하루 유지비 (코인)."""
+    return sum(UPKEEP_392 * (i - 1) for i in range(1, int(n_farms) + 1))
 
 
 def expand_cost(plots: int) -> int:
@@ -354,6 +379,10 @@ class FarmDB(EconomyDB):
                 con.execute("ALTER TABLE farms ADD COLUMN ingot INTEGER NOT NULL DEFAULT 0")
             if "ench" not in {r[1] for r in con.execute("PRAGMA table_info(farm_fields)")}:   # 3.8.4 인챈트 씨앗을 심은 칸
                 con.execute("ALTER TABLE farm_fields ADD COLUMN ench INTEGER NOT NULL DEFAULT 0")
+            if "auto" not in {r[1] for r in con.execute("PRAGMA table_info(farm_fields)")}:   # 3.9.2 거두지 않고 쌓은 생산품 수
+                con.execute("ALTER TABLE farm_fields ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+            con.execute("CREATE TABLE IF NOT EXISTS farm_exch (owner INTEGER PRIMARY KEY, day_key INTEGER NOT NULL, won INTEGER NOT NULL)")
+            con.execute("CREATE TABLE IF NOT EXISTS farm_upkeep (owner INTEGER PRIMARY KEY, day_key INTEGER NOT NULL)")
             if "name" not in cols:   # 3.8.2 농장 이름 (주인이 정한다, 없으면 'ㅇㅇ의 농장')
                 con.execute("ALTER TABLE farms ADD COLUMN name TEXT")
             shop_cols = {r[1] for r in con.execute("PRAGMA table_info(farm_shops)")}
@@ -383,6 +412,13 @@ class FarmDB(EconomyDB):
                         "PRIMARY KEY(owner, key))")
             # 3.8.2 사람마다 코인 지갑 하나 (농장마다 따로 두지 않는다)
             con.execute("CREATE TABLE IF NOT EXISTS farm_purse (owner INTEGER PRIMARY KEY, coins INTEGER NOT NULL)")
+            # 3.9.2 코인 흐름 기록 (돈 흐름 기록과 같이, 30일 보관)
+            con.execute("CREATE TABLE IF NOT EXISTS coin_log (owner INTEGER NOT NULL, delta INTEGER NOT NULL, "
+                        "coins INTEGER NOT NULL, ts INTEGER NOT NULL)")
+            con.execute("CREATE INDEX IF NOT EXISTS coin_log_ts ON coin_log(ts)")
+            con.execute("CREATE TRIGGER IF NOT EXISTS coin_log_upd AFTER UPDATE OF coins ON farm_purse "
+                        "WHEN NEW.coins != OLD.coins BEGIN INSERT INTO coin_log(owner, delta, coins, ts) "
+                        "VALUES(NEW.owner, NEW.coins - OLD.coins, NEW.coins, CAST(strftime('%s','now') AS INTEGER)); END")
             # 11/12 베타 보상 상자 · 쿠폰 숫돌도 맡아 둔다 (beta = 베타 보상)
             held_cols = {r[1] for r in con.execute("PRAGMA table_info(farm_held)")}
             for c in ("c_wood", "c_silver", "c_gold", "whet", "beta"):
@@ -434,7 +470,7 @@ class FarmDB(EconomyDB):
         if e < emax:
             e = min(float(emax), e + max(0, now_ts - int(r[3])) / every)
         if purse is not None:
-            FarmDB._auto_animals(con, int(fid), res, int(r[5]), now_ts)
+            FarmDB._auto_animals(con, int(fid), res, int(r[5]), now_ts, owner=int(r[12]))
         fields: list[Optional[dict]] = [None] * int(r[4])
         for slot, kind, key, ready, ench in con.execute("SELECT slot, kind, key, ready_ts, ench FROM farm_fields WHERE farm_id=?", (fid,)):
             if 0 <= slot < len(fields) and key in (CROPS if kind == "crop" else ANIMALS):
@@ -598,16 +634,52 @@ class FarmDB(EconomyDB):
         con.execute("UPDATE farms SET energy=?, energy_ts=? WHERE id=?", (f["energy_f"], int(now_ts), fid))
 
     @staticmethod
-    def _auto_animals(con, fid: int, res: dict, sickle: int, now_ts: int, rng=random):
+    def _over_species(con, owner: int) -> set:
+        """3.9.2 같은 동물 한도(SPECIES_CAP_392)를 넘는 동물 칸들 {(농장 번호, 칸)} — 먼저 연 농장 · 앞 칸부터 한도 안으로 친다."""
+        seen: dict = {}
+        out = set()
+        for fid, slot, key in con.execute("SELECT f.farm_id, f.slot, f.key FROM farm_fields f JOIN farms m ON m.id = f.farm_id "
+                                          "WHERE m.owner=? AND f.kind='animal' ORDER BY m.created_ts, m.id, f.slot", (int(owner),)):
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] > SPECIES_CAP_392:
+                out.add((int(fid), int(slot)))
+        return out
+
+    @staticmethod
+    def _pfeed_have(con, owner: int) -> int:
+        r = con.execute("SELECT qty FROM farm_bag WHERE owner=? AND key='pfeed'", (int(owner),)).fetchone()
+        s = con.execute("SELECT COALESCE(SUM(s.qty), 0) FROM farm_seeds s JOIN farms f ON f.id = s.farm_id "
+                        "WHERE f.owner=? AND s.key='pfeed'", (int(owner),)).fetchone()
+        return (int(r[0]) if r else 0) + int(s[0])
+
+    @staticmethod
+    def _auto_animals(con, fid: int, res: dict, sickle: int, now_ts: int, rng=random, owner: Optional[int] = None):
         """3.8.2 (11/17 규완님 '거두기를 누르지 않아도 생성될 수 있으면'): 동물 생산품은 다 만들어지는 대로 창고에 들어간다.
-        농장을 볼 때마다 그동안 만든 개수를 계산해 넣는다 (에너지 · 상자 없음, ★2 확률은 거둘 때와 같음)."""
+        농장을 볼 때마다 그동안 만든 개수를 계산해 넣는다 (에너지 · 상자 없음, ★2 확률은 거둘 때와 같음).
+        3.9.2 (v392 주인): 거두지 않고 쌓는 건 마리당 AUTO_CAP_392 개까지 (그 뒤로는 다 만든 채로 기다린다 → 거두면 다시),
+        같은 동물 한도를 넘는 동물은 만들지 않고, 소 · 들소 · 공작은 하나 만들 때마다 고급 사료 하나 (없으면 멈춘다)."""
         hp = high_p(sickle)
-        for slot, key, ready in con.execute("SELECT slot, key, ready_ts FROM farm_fields WHERE farm_id=? AND kind='animal' "
-                                            "AND ready_ts<=?", (fid, int(now_ts))).fetchall():
+        new = owner is not None and v392(owner, now_ts)
+        over = FarmDB._over_species(con, owner) if new else set()
+        feed = FarmDB._pfeed_have(con, owner) if new else 0
+        used_feed = 0
+        for slot, key, ready, auto in con.execute("SELECT slot, key, ready_ts, auto FROM farm_fields WHERE farm_id=? AND kind='animal' "
+                                                  "AND ready_ts<=?", (fid, int(now_ts))).fetchall():
             if key not in ANIMALS:
                 continue
             every = max(1, int(ANIMALS[key][4] * time_mult(res["grass"])))
             n = 1 + (int(now_ts) - int(ready)) // every
+            if new:
+                if (int(fid), int(slot)) in over:
+                    continue
+                n = min(n, AUTO_CAP_392 - int(auto))
+                if key in PFEED_ANIMALS:
+                    n = min(n, feed - used_feed)
+                if n <= 0:
+                    continue
+                if key in PFEED_ANIMALS:
+                    used_feed += n
+                con.execute("UPDATE farm_fields SET auto = auto + ? WHERE farm_id=? AND slot=?", (n, fid, slot))
             two = sum(1 for _ in range(n) if rng.random() < hp)
             prod = ANIMALS[key][3]
             if n - two:
@@ -615,6 +687,24 @@ class FarmDB(EconomyDB):
             if two:
                 FarmDB._give(con, fid, prod, 2, two)
             con.execute("UPDATE farm_fields SET ready_ts=? WHERE farm_id=? AND slot=?", (int(ready) + n * every, fid, slot))
+        if used_feed:
+            FarmDB._use_pfeed(con, owner, used_feed)
+
+    @staticmethod
+    def _use_pfeed(con, owner: int, n: int):
+        """고급 사료 n 개를 먹인다 — 보관함(farm_bag)부터, 모자라면 농장마다 사 둔 것에서."""
+        r = con.execute("SELECT qty FROM farm_bag WHERE owner=? AND key='pfeed'", (int(owner),)).fetchone()
+        take = min(n, int(r[0]) if r else 0)
+        if take:
+            con.execute("UPDATE farm_bag SET qty = qty - ? WHERE owner=? AND key='pfeed'", (take, int(owner)))
+        n -= take
+        for fid, q in con.execute("SELECT s.farm_id, s.qty FROM farm_seeds s JOIN farms f ON f.id = s.farm_id "
+                                  "WHERE f.owner=? AND s.key='pfeed' AND s.qty > 0", (int(owner),)).fetchall():
+            if n <= 0:
+                break
+            t = min(n, int(q))
+            con.execute("UPDATE farm_seeds SET qty = qty - ? WHERE farm_id=? AND key='pfeed'", (t, int(fid)))
+            n -= t
 
     @staticmethod
     def _give(con, fid: int, key: str, tier: int, n: int):
@@ -833,6 +923,10 @@ class FarmDB(EconomyDB):
                 sec = ANIMALS[key][4] * time_mult(f["res"]["grass"])
                 if f["animals"] >= f["animal_cap"]:
                     return {"ok": False, "reason": "cap", "cap": f["animal_cap"]}
+                if v392(uid, now_ts) and int(con.execute(
+                        "SELECT COUNT(*) FROM farm_fields f JOIN farms m ON m.id = f.farm_id WHERE m.owner=? AND f.kind='animal' "
+                        "AND f.key=?", (int(uid), key)).fetchone()[0]) >= SPECIES_CAP_392:   # 3.9.2 같은 동물 한 사람당 5마리
+                    return {"ok": False, "reason": "species", "cap": SPECIES_CAP_392}
                 n = 1
             else:
                 sec = (CROPS[key][3] * time_mult(f["res"]["soil"]) / lobby.mult("farm_grow", uid)   # 3.8.2 /로비 공약
@@ -874,8 +968,24 @@ class FarmDB(EconomyDB):
             if not f:
                 return {"ok": False, "reason": "none"}
             ready = [(i, p) for i, p in enumerate(f["fields"]) if p and p["ready"] and (slots is None or i in slots)]   # slots: 칸 버튼으로 그 칸만
+            new = v392(uid, now_ts)
+            hungry = False
+            if new:   # 3.9.2 같은 동물 한도를 넘는 동물은 거두지 못하고, 소 · 들소 · 공작은 고급 사료가 있어야 거둔다
+                over = self._over_species(con, uid)
+                feed = self._pfeed_have(con, uid)
+                keep = []
+                for i, p in ready:
+                    if p["kind"] == "animal" and (fid, i) in over:
+                        continue
+                    if p["kind"] == "animal" and p["key"] in PFEED_ANIMALS:
+                        if feed <= 0:
+                            hungry = True
+                            continue
+                        feed -= 1
+                    keep.append((i, p))
+                ready = keep
             if not ready:
-                return {"ok": False, "reason": "nothing"}
+                return {"ok": False, "reason": "nofeed" if hungry else "nothing"}
             n = min(len(ready), f["energy"] // f["cost"])
             if n <= 0:
                 return {"ok": False, "reason": "energy"}
@@ -890,7 +1000,7 @@ class FarmDB(EconomyDB):
                     con.execute("DELETE FROM farm_fields WHERE farm_id=? AND slot=?", (fid, slot))
                 else:
                     key = ANIMALS[p["key"]][3]
-                    con.execute("UPDATE farm_fields SET ready_ts=? WHERE farm_id=? AND slot=?",
+                    con.execute("UPDATE farm_fields SET ready_ts=?, auto=0 WHERE farm_id=? AND slot=?",
                                 (int(now_ts + ANIMALS[p["key"]][4] * time_mult(f["res"]["grass"])), fid, slot))
                 tier = 2 if rng.random() < hp else 1
                 qty = 2 if rng.random() < extra_p(f["sickle"]) else 1
@@ -901,6 +1011,10 @@ class FarmDB(EconomyDB):
                     chests.append(rng.choices(list(CHESTS), weights=CHEST_WEIGHTS_382 if f["v382"] else CHEST_WEIGHTS)[0])
             for (key, tier), qty in got.items():
                 self._give(con, fid, key, tier, qty)
+            if new:
+                fed = sum(1 for _, p in ready[:n] if p["kind"] == "animal" and p["key"] in PFEED_ANIMALS)
+                if fed:
+                    self._use_pfeed(con, uid, fed)
             daily = f["daily_day"] != _kst_day(now_ts)
             if daily:
                 con.execute("UPDATE farms SET daily_day=? WHERE id=?", (_kst_day(now_ts), fid))
@@ -929,7 +1043,7 @@ class FarmDB(EconomyDB):
             f = self._mine(con, uid, fid, now_ts)
             if not f:
                 return {"ok": False, "reason": "none"}
-            if key not in TOOLS or key == "fert":
+            if key not in TOOLS or key in ("fert", "pfeed"):
                 return {"ok": False, "reason": "key"}
             if f["tools"].get(key, 0) <= 0:
                 return {"ok": False, "reason": "have"}
@@ -989,7 +1103,8 @@ class FarmDB(EconomyDB):
             if not sold:
                 return {"ok": False, "reason": "empty"}
             burn = burning.mult("farm_sell", uid, now_ts)   # 3.8.4 수능 버닝 (인챈트 작물은 빼고)
-            total = int(sum(value(k, t) * q * (1 if k.endswith(ENCH) else burn) for k, t, q in sold)
+            em = ENCH_MULT_392 / ENCH_MULT if v392(uid, now_ts) else 1   # 3.9.2 인챈트 값 5배 → 3배
+            total = int(sum(value(k, t) * q * (em if k.endswith(ENCH) else burn) for k, t, q in sold)
                         * lobby.mult("farm_sell", uid))                                    # 3.8.2 /로비 공약
             for (k, t, q), (_, _, left) in zip(sold, have):
                 if q < left:
@@ -1009,7 +1124,8 @@ class FarmDB(EconomyDB):
             p = f["fields"][slot] if 0 <= slot < len(f["fields"]) else None
             if not p or p["kind"] != "animal":
                 return {"ok": False, "reason": "slot"}
-            back = int(ANIMALS[p["key"]][2] * ANIMAL_REFUND)
+            full = v392(uid, now_ts) and (int(fid), int(slot)) in self._over_species(con, uid)   # 3.9.2 한도를 넘는 동물은 다 돌려준다
+            back = int(ANIMALS[p["key"]][2] * (1 if full else ANIMAL_REFUND))
             con.execute("DELETE FROM farm_fields WHERE farm_id=? AND slot=?", (fid, slot))
             self._add_coins(con, fid, back)
             return {"ok": True, "key": p["key"], "coins": back}
@@ -1142,10 +1258,43 @@ class FarmDB(EconomyDB):
                 return {"ok": False, "reason": "amount"}
             if f["coins"] < coins:
                 return {"ok": False, "reason": "coins", "have": f["coins"]}
+            rt = rate(uid, now_ts)
+            if v392(uid, now_ts):   # 3.9.2 하루 환전 한도
+                r = con.execute("SELECT day_key, won FROM farm_exch WHERE owner=?", (int(uid),)).fetchone()
+                done = int(r[1]) if r and int(r[0]) == _kst_day(now_ts) else 0
+                if done + coins * rt > EXCH_DAY_392:
+                    return {"ok": False, "reason": "limit", "left": max(0, EXCH_DAY_392 - done) // rt, "limit": EXCH_DAY_392}
+                con.execute("INSERT OR REPLACE INTO farm_exch(owner, day_key, won) VALUES(?,?,?)",
+                            (int(uid), _kst_day(now_ts), done + coins * rt))
             self._wallet(con, uid)
             self._add_coins(con, fid, -(coins))
-            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (coins * RATE, uid))
-            return {"ok": True, "coins": coins, "won": coins * RATE, "balance": self._wallet(con, uid), "left": f["coins"] - coins}
+            con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (coins * rt, uid))
+            return {"ok": True, "coins": coins, "won": coins * rt, "balance": self._wallet(con, uid), "left": f["coins"] - coins}
+        return await self._tx(fn)
+
+    async def pay_upkeep(self, now_ts: int, only: Optional[set] = None) -> list[tuple[int, int, int]]:
+        """3.9.2 농장 유지비: 하루(KST) 한 번, 농장이 두 개 이상인 사람의 코인 지갑에서 upkeep(농장 수) 를 낸다.
+        코인이 모자라면 있는 만큼만 낸다 (빚은 남기지 않는다). only = 이 사람들만. → [(주인, 낸 코인, 농장 수)]."""
+        day = _kst_day(now_ts)
+
+        def fn(con):
+            out = []
+            for owner, n in con.execute("SELECT owner, COUNT(*) FROM farms GROUP BY owner HAVING COUNT(*) > 1").fetchall():
+                owner = int(owner)
+                if only is not None and owner not in only:
+                    continue
+                r = con.execute("SELECT day_key FROM farm_upkeep WHERE owner=?", (owner,)).fetchone()
+                if r and int(r[0]) == day:
+                    continue
+                con.execute("INSERT OR REPLACE INTO farm_upkeep(owner, day_key) VALUES(?,?)", (owner, day))
+                purse = self._purse(con, owner)
+                if purse is None:
+                    continue
+                paid = min(max(0, purse), upkeep(int(n)))
+                if paid:
+                    con.execute("UPDATE farm_purse SET coins = coins - ? WHERE owner=?", (paid, owner))
+                out.append((owner, paid, int(n)))
+            return out
         return await self._tx(fn)
 
     # ───────────── 인수 (농장 코인) ─────────────

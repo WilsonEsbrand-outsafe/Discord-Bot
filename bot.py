@@ -15,7 +15,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 import release
-from services import burning, spam
+from services import burning, spam, usage
 from auth import OWNER_ID, collect_owner_commands, is_owner_command, owner_only, owner_only_error
 
 # ───────────────── 설정 ─────────────────
@@ -299,6 +299,7 @@ def _onboard_state(user_id: int) -> str:
 async def _tree_check(interaction: discord.Interaction) -> bool:
     release.GUILD.set(interaction.guild_id)   # 3.6.0 DB 안쪽에서 서버별 공개 여부를 본다 (release.ctx_360)
     burning.touch(interaction.user.id)   # 3.9.1 버닝 미션 플레이 시간
+    usage.record(interaction.user.id, usage.name_of(interaction))   # 3.9.2 명령어 사용 기록
     if interaction.type != discord.InteractionType.application_command or interaction.user.id == OWNER_ID:
         return True
     if release.maintenance():
@@ -340,6 +341,7 @@ def _maint_text() -> str:
 def _maint_blocked(interaction: discord.Interaction) -> bool:
     release.GUILD.set(interaction.guild_id)   # 버튼 · 메뉴 콜백 태스크가 이 값을 물려받는다 (release.ctx_360)
     burning.touch(interaction.user.id)   # 3.9.1 버닝 미션 플레이 시간
+    usage.record(interaction.user.id, usage.name_of(interaction))   # 3.9.2 버튼 · 메뉴 사용 기록
     if interaction.user.id == OWNER_ID or not release.maintenance():
         return False
     asyncio.create_task(interaction.response.send_message(_maint_text(), ephemeral=True))
@@ -379,7 +381,7 @@ async def on_ready():
     ui.BOT_ICON = bot.user.display_avatar.url   # 3.1.0 키코 푸터 아이콘
 
     # 모든 코그를 순회하며 로드하도록 수정
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sports_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub", "cogs.bot_clubs", "cogs.farm", "cogs.lobby", "cogs.burning")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sports_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub", "cogs.bot_clubs", "cogs.farm", "cogs.lobby", "cogs.burning", "cogs.money")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -528,7 +530,7 @@ async def sync_and_reload(interaction: discord.Interaction):
             print(f"⚠️ {_name} 리로드 실패:", repr(e))
 
     # 리로드 대상 목록에 전체 추가
-    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sports_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub", "cogs.bot_clubs", "cogs.farm", "cogs.lobby", "cogs.burning")   # cogs.quiz: 2.2 잠시 폐쇄
+    EXTENSIONS = ("cogs.fixtures", "cogs.economy", "cogs.toto", "cogs.players_market", "cogs.club", "cogs.prospect", "cogs.elite", "cogs.tutorial", "cogs.patch_notes", "cogs.trade", "cogs.notify", "cogs.ufc_toto", "cogs.sports_toto", "cogs.sponsor", "cogs.admin", "cogs.checklist", "cogs.race", "cogs.fishing", "cogs.archery", "cogs.dribble", "cogs.dungeon", "cogs.hub", "cogs.bot_clubs", "cogs.farm", "cogs.lobby", "cogs.burning", "cogs.money")   # cogs.quiz: 2.2 잠시 폐쇄
     for ext in EXTENSIONS:
         try:
             await bot.reload_extension(ext)
