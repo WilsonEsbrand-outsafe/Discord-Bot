@@ -364,3 +364,49 @@ def test_facility_titles_emblems():
         assert CD.facility_max() == 5 and "🏆" not in CD.emblems()
     finally:
         release.GUILD.reset(tok)
+
+
+def test_league_392():
+    import random as _r
+    from cogs.economy import Economy as E
+    w = E.league_weights_392()
+    assert len(w) == 20 and abs(sum(w) - 100) < 1e-9 and w[0] == 1                     # 우승 1%
+    ev = sum(p / 100 * E.league_payout(r, True, True)[0] for r, p in zip(range(1, 21), w))
+    assert abs(ev + 0.05) < 1e-9                                                         # 기대값 -5%
+    rng = _r.Random(5)
+    for rank in (1, 10, 20):
+        for _ in range(300):
+            p = E.league_path_392(rank, 6, rng)
+            assert all(1 <= x <= 20 for x in p) and abs(p[-1] - rank) <= 4
+            assert all(abs(a - b) <= 6 for a, b in zip(p, p[1:]))                        # 한 번에 크게 뛰지 않는다
+    assert "1%" in E.league_odds_text_392() and "·" not in E.league_odds_text_392()
+
+
+def test_open_all_chests():
+    db = F.FarmDB()
+    A = 392000000000081
+    fid = _farm(db, A, c_wood=3, c_silver=2, c_gold=1)
+    r = run(db.open_all(A, fid, NOW))
+    assert r["ok"] and r["opened"] == {"wood": 3, "silver": 2, "gold": 1} and r["rewards"]
+    assert sum(run(db.get(fid, NOW))["chests"].values()) == 0 and run(db.open_all(A, fid, NOW))["reason"] == "empty"
+    # 행운 열기는 돈이 되는 만큼만
+    con = _con()
+    con.execute("UPDATE farms SET c_wood=3 WHERE id=?", (fid,))
+    con.commit()
+    con.close()
+    _set(A, F.LUCKY_FEE["wood"] * 2)
+    r = run(db.open_all(A, fid, NOW, lucky=True))
+    assert r["opened"] == {"wood": 2} and r["stop"] and _bal(A) == 0
+
+
+def test_lobby_short_392():
+    from types import SimpleNamespace
+    from cogs import lobby as CL
+    db = L.LobbyDB()
+    u = SimpleNamespace(id=1, display_name="x", display_avatar=SimpleNamespace(url="https://x"), guild=SimpleNamespace(id=release.TEST_GUILD))
+    s = run(db.state(39201, NOW))
+    short, full = CL.lobby_embed(u, s), CL.lobby_embed(None, s)
+    assert len(short) < len(full) and "당선 확률" in "".join(f.value for f in short.fields)
+    for page in ("cands", "history", "news", "rules"):
+        e = CL.detail_embed(u, s, page)
+        assert len(e) < 6000 and "·" not in (e.description or "") + "".join(f.value for f in e.fields)

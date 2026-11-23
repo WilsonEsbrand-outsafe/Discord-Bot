@@ -1232,10 +1232,28 @@ class ChestView(_Sub):
             b = discord.ui.Button(label=label, style=discord.ButtonStyle.success, disabled=have <= 0, row=0)
             b.callback = self._open(tier)
             self.add_item(b)
+        if F.v392(self.user.id):   # 3.9.2 한 번에 열기
+            a = discord.ui.Button(label=f"모두 열기 ({sum(f['chests'].values())})", style=discord.ButtonStyle.success,
+                                  disabled=sum(f["chests"].values()) <= 0, row=1)
+            a.callback = self._open_all
+            self.add_item(a)
         t = discord.ui.Button(label="행운 열기: 켜짐" if self.lucky else "행운 열기: 꺼짐", row=1,
                               style=discord.ButtonStyle.primary if self.lucky else discord.ButtonStyle.secondary)
         t.callback = self._toggle
         self.add_item(t)
+
+    async def _open_all(self, interaction: discord.Interaction):
+        r = await self.cog.db.open_all(self.user.id, self.fid, int(time.time()), lucky=self.lucky)
+        if not r["ok"]:
+            note = ("축구 봇 돈이 모자라요. 행운 열기를 끄면 그냥 열 수 있어요." if r.get("reason") == "money" else "열 상자가 없어요.")
+            return await self.redraw(interaction, note)
+        names = "\n".join(f"{F.CHESTS[t][1]} {n}개" for t, n in r["opened"].items())
+        got = [{"coins": f"코인 +{x['n']:,}", "energy": f"에너지 +{x['n']}", "whet": f"숫돌 +{x['n']}"}.get(x["kind"])
+               or f"{_item(x['key'], x['tier'])} {x['n']}개" for x in r["rewards"]]
+        note = (f"상자를 한 번에 열었어요" + (f" (행운 -{r['fee']:,}원)" if r["fee"] else "") + f".\n{names}\n\n"
+                + "\n".join(f"**{g}**" for g in got[:20]) + (f"\n그 밖에 {len(got) - 20}가지" if len(got) > 20 else "")
+                + ("\n돈이 모자라서 남은 상자는 그대로 뒀어요." if r["stop"] else ""))
+        await self.redraw(interaction, note[:3500], note[:1500], win=True)
 
     def embed(self, f: dict) -> discord.Embed:
         e = ui.card("상자", (f"{self.note}\n\n" if self.note else "")
