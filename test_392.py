@@ -97,7 +97,16 @@ def test_transfer_fee_tax_redenom_and_log():
     con.close()
     # 숫자 1/100 (빚도)
     _set(B, -12_345_678)
+    con = _con()
+    con.execute("INSERT OR REPLACE INTO inventory(user_id, item, qty) VALUES(?, 'reward_cash', 250000000)", (B,))
+    con.commit()
+    con.close()
     assert run(db.redenominate_392()) and run(db.redenominate_392()) is None
+    con = _con()
+    assert con.execute("SELECT qty FROM inventory WHERE user_id=? AND item='reward_cash'", (B,)).fetchone()[0] == 2_500_000
+    con.execute("DELETE FROM inventory WHERE user_id=? AND item='reward_cash'", (B,))
+    con.commit()
+    con.close()
     assert _bal(A) == 90_000 and _bal(B) == -123_456 and _bal(C) == 29_800_000
 
 
