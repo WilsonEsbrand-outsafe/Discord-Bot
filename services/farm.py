@@ -1692,6 +1692,23 @@ class FarmDB(EconomyDB):
             return bool(con.execute("DELETE FROM farm_staff WHERE farm_id=?", (int(fid),)).rowcount)
         return await self._tx(fn)
 
+    async def dismiss_staff_once(self, key: str, now_ts: int) -> list[tuple[int, int, int]]:
+        """11/24 규완님: 공개 전에 고용된 아르바이트생을 모두 내보내고 그동안 낸 시급을 주인에게 코인으로 돌려준다 (한 번만, gift_once).
+        → [(주인, 농장, 돌려준 코인)]."""
+        def fn(con):
+            con.execute("CREATE TABLE IF NOT EXISTS gift_once (key TEXT PRIMARY KEY, ts INTEGER NOT NULL)")
+            if not con.execute("INSERT OR IGNORE INTO gift_once(key, ts) VALUES(?, ?)", (key, int(now_ts))).rowcount:
+                return []
+            out = []
+            for fid, wages in con.execute("SELECT farm_id, wages FROM farm_staff").fetchall():
+                r = con.execute("SELECT owner FROM farms WHERE id=?", (int(fid),)).fetchone()
+                if r and int(wages) > 0:
+                    self._add_coins(con, int(fid), int(wages))
+                out.append((int(r[0]) if r else 0, int(fid), int(wages) if r else 0))
+            con.execute("DELETE FROM farm_staff")
+            return out
+        return await self._tx(fn)
+
     async def staff_due(self, now_ts: int) -> list[dict]:
         """일할 차례가 된 아르바이트생들. 시급 낼 때가 됐으면 주인 코인에서 내고, 모자라면 그만둔다 (quit=True).
         → [{fid, owner, tier, jobs, quit}]. 일한 다음엔 staff_done 을 부른다."""
