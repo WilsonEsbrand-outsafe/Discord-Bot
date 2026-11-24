@@ -488,3 +488,14 @@ def test_dismiss_staff_once():
         assert run(db._tx(lambda con: con.execute("SELECT coins FROM farms WHERE id=?", (fid,)).fetchone()[0])) == 45000
     finally:
         run(db._tx(lambda con: con.execute("DELETE FROM gift_once WHERE key=?", (key,))))
+
+
+def test_feed_off_shop_392():
+    from cogs import farm as CF
+    assert "feed" not in CF._tools_for(release.TEST_GUILD) and "pfeed" in CF._tools_for(release.TEST_GUILD)
+    assert "feed" in CF._tools_for(1) and "pfeed" not in CF._tools_for(1)
+    db = F.FarmDB()
+    O = 392000000000097
+    fid = _farm(db, O, coins=10_000)
+    assert run(db.buy(O, fid, "feed", 1, NOW))["reason"] == "key"
+    assert run(db.buy(O, fid, "drink", 1, NOW))["ok"]
