@@ -152,6 +152,8 @@ ENCH_MULT_392 = 3                     # 인챈트 값 5배 → 3배
 AUTO_CAP_392 = 10                     # 동물이 거두지 않아도 쌓는 생산품은 마리당 10개까지, 그 뒤로는 거둬야 다시 만든다
 SPECIES_CAP_392 = 5                   # 같은 동물은 한 사람당 5마리까지 (넘는 동물은 만들지 않고, 내보내면 입양 값을 다 돌려준다)
 PFEED_ANIMALS = ("cow", "bison", "peacock")   # 비싼 동물은 생산품 하나에 고급 사료 하나를 먹는다
+# 11/24 규완님 '유지비 코인만 환불': 공개 전에 본섭에서 잘못 걷힌 농장 유지비 (11/23 09:02, 11/24 00:00 KST 두 번)
+REFUNDS_392 = (("refund-392-upkeep-a", 930254019975344218, 400_000), ("refund-392-upkeep-b", 1146659618790051960, 840_000))
 UPKEEP_392 = 20_000                   # 농장 유지비: 두 번째 농장부터 하루 (순서 − 1) × 2만 코인 (7개면 하루 42만 코인)
 
 
@@ -1730,6 +1732,26 @@ class FarmDB(EconomyDB):
     async def staff_done(self, fid: int, n: int):
         if n:
             await self._tx(lambda con: con.execute("UPDATE farm_staff SET work = work + ? WHERE farm_id=?", (int(n), int(fid))))
+
+    async def refund_coins_once(self, refunds, now_ts: int) -> list[tuple[int, int]]:
+        """(키, 주인, 코인) 마다 한 번만 코인 지갑에 돌려준다 (gift_once 표, 재시작해도 한 번). 지갑이 없으면 첫 농장에.
+        → 이번에 준 [(주인, 코인)]."""
+        def fn(con):
+            con.execute("CREATE TABLE IF NOT EXISTS gift_once (key TEXT PRIMARY KEY, ts INTEGER NOT NULL)")
+            out = []
+            for key, owner, coins in refunds:
+                if not con.execute("INSERT OR IGNORE INTO gift_once(key, ts) VALUES(?, ?)", (key, int(now_ts))).rowcount:
+                    continue
+                if self._purse(con, owner) is not None:
+                    con.execute("UPDATE farm_purse SET coins = coins + ? WHERE owner=?", (int(coins), int(owner)))
+                else:
+                    r = con.execute("SELECT id FROM farms WHERE owner=? ORDER BY id LIMIT 1", (int(owner),)).fetchone()
+                    if not r:
+                        continue
+                    con.execute("UPDATE farms SET coins = coins + ? WHERE id=?", (int(coins), int(r[0])))
+                out.append((int(owner), int(coins)))
+            return out
+        return await self._tx(fn)
 
     async def pay_upkeep(self, now_ts: int, only: Optional[set] = None) -> list[tuple[int, int, int]]:
         """3.9.2 농장 유지비: 하루(KST) 한 번, 농장이 두 개 이상인 사람의 코인 지갑에서 upkeep(농장 수) 를 낸다.

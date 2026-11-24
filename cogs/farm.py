@@ -1924,6 +1924,11 @@ class Farm(commands.Cog):
         self.purse_loop.start()
         self.live_loop.start()
         self.staff_loop.start()
+        try:
+            for owner, coins in await self.db.refund_coins_once(F.REFUNDS_392, int(time.time())):
+                print(f"[농사] 유지비 환불 {owner} +{coins:,} 코인")
+        except Exception as e:
+            print(f"[농사] 유지비 환불 오류: {e!r}")
 
     def cog_unload(self):
         self.live_loop.cancel()
