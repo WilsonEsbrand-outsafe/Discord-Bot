@@ -123,11 +123,11 @@ def test_farm_392():
         con.execute("INSERT OR REPLACE INTO farm_purse(owner, coins) VALUES(?, 5000000)", (A,))
         con.commit()
         con.close()
-        # 환전: 100원 · 하루 1억원까지
+        # 환전: 100원 · 하루 한도 없음 (11/24 규완님 '하루 환전 한도 없애줘')
         r = run(db.exchange(A, fid, 1000, NOW))
         assert r["ok"] and r["won"] == 100_000
-        r = run(db.exchange(A, fid, 1_000_000, NOW))
-        assert not r["ok"] and r["reason"] == "limit" and r["left"] == 999_000
+        r = run(db.exchange(A, fid, 2000, NOW))
+        assert r["ok"] and r["won"] == 200_000
         # 같은 동물 5마리까지
         con = _con()
         con.execute("INSERT INTO farm_seeds(farm_id, key, qty) VALUES(?, 'chicken', 10)", (fid,))
