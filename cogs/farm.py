@@ -1928,6 +1928,11 @@ class Farm(commands.Cog):
                 print(f"[농사] 유지비 환불 {owner} +{coins:,} 코인")
         except Exception as e:
             print(f"[농사] 유지비 환불 오류: {e!r}")
+        try:   # 11/24 규완님: 본섭에 새어 나갈 때 고용된 아르바이트생 내보내고 시급 환불 (한 번만)
+            for owner, fid, coins in await self.db.dismiss_staff_once("refund-392-staff", int(time.time())):
+                print(f"[알바] 공개 전 고용 정리: {owner} 농장 {fid} 내보냄, 시급 +{coins:,} 코인 환불")
+        except Exception as e:
+            print(f"[알바] 공개 전 고용 정리 오류: {e!r}")
 
     def cog_unload(self):
         self.live_loop.cancel()

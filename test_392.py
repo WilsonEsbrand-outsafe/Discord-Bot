@@ -458,3 +458,24 @@ def test_refund_coins_once():
             con.execute("DELETE FROM farm_purse WHERE owner=?", (O,))
             con.execute("DELETE FROM gift_once WHERE key=?", (key,))
         run(db._tx(clean))
+
+
+def test_dismiss_staff_once():
+    db = F.FarmDB()
+    O = 392000000000098
+    key = f"test-staff-{O}"
+    fid = _farm(db, O, coins=0)
+
+    def setup(con):
+        con.execute("DELETE FROM farm_staff")
+        con.execute("DELETE FROM gift_once WHERE key=?", (key,)) if con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='gift_once'").fetchone() else None
+        con.execute("INSERT INTO farm_staff(farm_id, tier, hired_ts, paid_until, next_ts, work, wages) VALUES(?, 'skilled', 0, 0, 0, 0, 45000)", (fid,))
+    run(db._tx(setup))
+    try:
+        assert run(db.dismiss_staff_once(key, NOW)) == [(O, fid, 45000)]
+        assert run(db.dismiss_staff_once(key, NOW)) == []
+        assert run(db._tx(lambda con: con.execute("SELECT COUNT(*) FROM farm_staff").fetchone()[0])) == 0
+        assert run(db._tx(lambda con: con.execute("SELECT coins FROM farms WHERE id=?", (fid,)).fetchone()[0])) == 45000
+    finally:
+        run(db._tx(lambda con: con.execute("DELETE FROM gift_once WHERE key=?", (key,))))
