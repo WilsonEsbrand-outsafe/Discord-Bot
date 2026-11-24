@@ -1578,7 +1578,7 @@ SHOP_VER = 5   # 상점 화면을 바꾸면 올린다 — 이미 올라간 상�
 def shop_ver(guild_id) -> int:
     """서버의 상점 화면 버전 — 3.8.2 새 작물은 공개 전엔 테스트 서버 상점에만 (공개되면 다른 서버 상점 글도 고친다)."""
     if release.preview_392(guild_id):
-        return 9   # 9: 3.9.2 고급 사료
+        return 10   # 9: 3.9.2 고급 사료, 10: 동물 사료 뺌
     return 8 if release.preview_384(guild_id) else 6 if release.preview_382(guild_id) else SHOP_VER   # 8: 3.9.1 아이템 값
 
 
@@ -1589,9 +1589,11 @@ def _animals_for(guild_id) -> list[str]:
 
 
 def _tools_for(guild_id) -> list[str]:
-    """3.9.2 고급 사료는 공개 전엔 테스트 서버 상점에만."""
-    new = guild_id is None or release.preview_392(guild_id)
-    return [k for k in F.TOOLS if new or k != "pfeed"]
+    """3.9.2 고급 사료는 공개 전엔 테스트 서버 상점에만. 동물 사료는 3.9.2 부터 상점에서 뺀다 (11/25 규완님 '상점에서 빼자')."""
+    if guild_id is None:
+        return list(F.TOOLS)
+    new = release.preview_392(guild_id)
+    return [k for k in F.TOOLS if (k != "feed" if new else k != "pfeed")]
 
 
 def _crops_for(guild_id) -> list[str]:

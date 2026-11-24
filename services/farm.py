@@ -1090,7 +1090,7 @@ class FarmDB(EconomyDB):
             if not f:
                 return {"ok": False, "reason": "none"}
             price = shop_price(key)
-            if price is None:
+            if price is None or (key == "feed" and release.ctx_392()):   # 3.9.2 동물 사료는 상점에서 뺐다 (11/25 규완님)
                 return {"ok": False, "reason": "key"}
             if n <= 0:
                 return {"ok": False, "reason": "amount"}
