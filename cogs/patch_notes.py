@@ -13,7 +13,7 @@ from discord.ext import commands, tasks
 
 import release
 from auth import owner_only
-from patch_notes_data import NOTICES, PATCH_NOTES, THREAD_NOTICES
+from patch_notes_data import GUILD_NOTICES, NOTICES, PATCH_NOTES, THREAD_NOTICES
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "economy.sqlite3"
 # 패치노트(@everyone)를 알림 채널 대신 보낼 스레드: 서버 ID → 스레드 ID (점검 안내 등 다른 공지는 원래 채널로)
@@ -110,6 +110,10 @@ class PatchNotesCog(commands.Cog):
             await self._thread_notices(now)
         except Exception as e:
             print(f"[스레드 공지] 오류: {e!r}")
+        try:
+            await self._guild_notices(now)
+        except Exception as e:
+            print(f"[서버 공지] 오류: {e!r}")
         for key, ts, title, content in NOTICES:
             if ts > now or key in self._notices_done:
                 continue
@@ -123,6 +127,33 @@ class PatchNotesCog(commands.Cog):
                 es[-1].timestamp = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
                 ok, fail = await self.send_all(es, everyone=key.startswith(("patch-", "elect-")), thread=True)   # 3.9.1 대선 공지도 @everyone
                 print(f"[공지] {key} 성공 {ok} / 실패 {fail}")
+
+    async def _guild_notices(self, now: int):
+        """GUILD_NOTICES — 한 서버의 알림 채널에만 보내는 한 번짜리 글 (패치노트는 @everyone)."""
+        for key, ts, gid, title, content in GUILD_NOTICES:
+            if ts > now or key in self._notices_done:
+                continue
+            guild = self.bot.get_guild(gid)
+            if guild is None:
+                continue
+            self._notices_done.add(key)
+            if not await asyncio.to_thread(self._claim_notice, key):
+                continue
+            ch = await asyncio.to_thread(self._pick_channel, guild)
+            if ch is None:
+                print(f"[서버 공지] {key} 실패 — 쓸 수 있는 채널이 없음")
+                continue
+            parts = content if isinstance(content, list) else [("", content)]
+            es = [discord.Embed(title=f"{title} · {sub}" if sub else title, description=body, color=0xE67E22) for sub, body in parts]
+            es[-1].timestamp = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
+            try:
+                if "patch-" in key:
+                    await ch.send(content="@everyone", embeds=es, allowed_mentions=discord.AllowedMentions(everyone=True))
+                else:
+                    await ch.send(embeds=es)
+                print(f"[서버 공지] {key} 성공 ({gid} #{ch.name})")
+            except discord.HTTPException as e:
+                print(f"[서버 공지] {key} 실패: {e!r}")
 
     async def _thread_notices(self, now: int):
         """THREAD_NOTICES — 패치 스레드(PATCH_THREADS)에만 보내는 한 번짜리 글 (원래 채널로 대신 보내지 않는다)."""
