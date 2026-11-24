@@ -436,3 +436,25 @@ def test_v392_only_in_test_guild():
             release.GUILD.reset(tok)
     finally:
         L.TESTERS.clear()
+
+
+def test_refund_coins_once():
+    db = F.FarmDB()
+    O = 392000000000099
+    now = 1_800_000_000
+    key = f"test-refund-{O}"
+
+    def setup(con):
+        con.execute("DELETE FROM gift_once WHERE key=?", (key,)) if con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='gift_once'").fetchone() else None
+        con.execute("INSERT OR REPLACE INTO farm_purse(owner, coins) VALUES(?, ?)", (O, 100))
+    run(db._tx(setup))
+    try:
+        assert run(db.refund_coins_once(((key, O, 40),), now)) == [(O, 40)]
+        assert run(db.refund_coins_once(((key, O, 40),), now)) == []
+        assert run(db._tx(lambda con: con.execute("SELECT coins FROM farm_purse WHERE owner=?", (O,)).fetchone()[0])) == 140
+    finally:
+        def clean(con):
+            con.execute("DELETE FROM farm_purse WHERE owner=?", (O,))
+            con.execute("DELETE FROM gift_once WHERE key=?", (key,))
+        run(db._tx(clean))
