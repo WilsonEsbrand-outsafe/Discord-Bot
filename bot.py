@@ -794,6 +794,21 @@ CATEGORY_ORDER: list[str] = [
     "🧩 기타",
 ]
 
+# 3.9.2 (11/25 규완님 '/명령어 정리하자'): 하는 일별로 나눈다 (공개 전엔 테스트 서버만). 없는 이름은 원래 방식(모듈)으로
+CATEGORY_ORDER_392: list[str] = ["💵 돈 벌기", "👛 내 돈", "🏟️ 구단", "⚽ 선수 & 이적시장", "🤝 트레이드",
+                                 "🌾 농사 & 로비", "🎰 토토", "📅 경기 정보", "🧩 기타"]
+CATEGORY_392: dict[str, str] = {
+    **{n: "💵 돈 벌기" for n in ("출석", "훈련", "직관", "스카우트", "원석", "낚시", "낚시시세", "던전", "드리블", "페널티킥",
+                                "경마", "리그", "f1", "퀴즈", "오늘의퀴즈", "버닝", "쿠폰")},
+    **{n: "👛 내 돈" for n in ("지갑", "가방", "송금", "파산신청", "랭킹")},
+    **{n: "🏟️ 구단" for n in ("구단생성", "구단명변경", "구단삭제", "구단", "포메이션", "선발", "자동편성", "주장", "친선경기",
+                              "공식경기", "공식순위", "감독", "의료진", "명문구단", "스쿼드", "시설", "구단꾸미기", "스폰서",
+                              "스폰서계약", "유망주", "유망주은퇴", "영구결번", "오늘", "게임")},
+    **{n: "🌾 농사 & 로비" for n in ("농사", "로비")},
+    **{n: "🧩 기타" for n in ("튜토리얼", "루키미션", "알림설정", "패치노트", "알림채널", "퀴즈랭킹", "퀴즈프로필")},
+}
+
+
 def _guess_category_from_module(cmd: app_commands.Command) -> str:
     cb = getattr(cmd, "callback", None)
     mod = getattr(cb, "__module__", "") if cb else ""
@@ -839,16 +854,24 @@ def build_user_help_embeds(bot: commands.Bot, guild_id: Optional[int] = None) ->
         if not is_owner_command(c) and c.name not in HIDDEN_COMMANDS and c.name not in gone
     ]
 
+    new = release.preview_392(guild_id)
     buckets: dict[str, list[tuple[str, str]]] = {}
     for name, desc, cmd in filtered:
         cat = _guess_category_from_module(cmd)
+        if new:
+            root = getattr(getattr(cmd, "root_parent", None), "name", None) or cmd.name
+            cat = CATEGORY_392.get(root, cat)
+            if cat == "💰 경제":
+                cat = "💵 돈 벌기"
+            elif cat == "🏟️ 클럽":
+                cat = "🏟️ 구단"
         buckets.setdefault(cat, []).append((name, desc))
 
     for cat in buckets:
         buckets[cat].sort(key=lambda x: x[0])
 
     embeds: list[discord.Embed] = []
-    for cat in CATEGORY_ORDER:
+    for cat in (CATEGORY_ORDER_392 if new else CATEGORY_ORDER):
         if cat not in buckets:
             continue
 
