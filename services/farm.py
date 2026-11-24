@@ -147,7 +147,6 @@ RATE = 1_000                          # 환전: 농장 코인 1 = 축구 봇 돈
 # ───────────── 3.9.2 농사 돈 줄이기 (11/23 규완님이 고른 것) ─────────────
 # 공개 전엔 테스트 서버 사람만 (lobby.TESTERS) — 농사는 서버를 넘나들어 사람 기준으로 본다
 RATE_392 = 100                        # 환전 1코인 = 100원
-EXCH_DAY_392 = 100_000_000            # 하루(KST) 환전 한도 (원)
 ENCH_MULT_392 = 3                     # 인챈트 값 5배 → 3배
 AUTO_CAP_392 = 10                     # 동물이 거두지 않아도 쌓는 생산품은 마리당 10개까지, 그 뒤로는 거둬야 다시 만든다
 SPECIES_CAP_392 = 5                   # 같은 동물은 한 사람당 5마리까지 (넘는 동물은 만들지 않고, 내보내면 입양 값을 다 돌려준다)
@@ -1651,13 +1650,6 @@ class FarmDB(EconomyDB):
             if f["coins"] < coins:
                 return {"ok": False, "reason": "coins", "have": f["coins"]}
             rt = rate(uid, now_ts)
-            if v392(uid, now_ts):   # 3.9.2 하루 환전 한도
-                r = con.execute("SELECT day_key, won FROM farm_exch WHERE owner=?", (int(uid),)).fetchone()
-                done = int(r[1]) if r and int(r[0]) == _kst_day(now_ts) else 0
-                if done + coins * rt > EXCH_DAY_392:
-                    return {"ok": False, "reason": "limit", "left": max(0, EXCH_DAY_392 - done) // rt, "limit": EXCH_DAY_392}
-                con.execute("INSERT OR REPLACE INTO farm_exch(owner, day_key, won) VALUES(?,?,?)",
-                            (int(uid), _kst_day(now_ts), done + coins * rt))
             self._wallet(con, uid)
             self._add_coins(con, fid, -(coins))
             con.execute("UPDATE wallets SET balance = balance + ? WHERE user_id=?", (coins * rt, uid))
