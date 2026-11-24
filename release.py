@@ -390,6 +390,7 @@ def ctx_384() -> bool:
 RELEASE_392_TS: Optional[int] = None
 PREVIEW_392: set[str] = set()
 LEGACY_392: set[str] = {"달팽이", "조정", "양궁", "ufc", "농구", "야구"}   # 11/23 규완님 '삭제해줘'
+LEGACY_392 |= {"2군", "유스경기", "봇구단"}   # 11/25 규완님 '2군, 유스 없애든 단순화하든 하자' · '/봇구단도 없애자'
 
 
 def released_392(now: Optional[float] = None) -> bool:

@@ -1762,6 +1762,36 @@ class FarmDB(EconomyDB):
             return out
         return await self._tx(fn)
 
+    async def refund_feed_392(self, now_ts: int) -> Optional[list[tuple[int, int, int]]]:
+        """3.9.2 공개 때 한 번 (11/25 규완님 '동물 사료 상점에서 빼자' → '코인으로 돌려주고'):
+        가진 동물 사료를 모두 없애고 상점 값(개당 tool_price)으로 코인을 돌려준다. → [(주인, 개수, 코인)] (이미 했으면 None)."""
+        price = tool_price("feed", True)
+
+        def fn(con):
+            con.execute("CREATE TABLE IF NOT EXISTS gift_once (key TEXT PRIMARY KEY, ts INTEGER NOT NULL)")
+            if not con.execute("INSERT OR IGNORE INTO gift_once(key, ts) VALUES('refund-392-feed', ?)", (int(now_ts),)).rowcount:
+                return None
+            have: dict[int, int] = {}
+            for owner, q in con.execute("SELECT owner, qty FROM farm_bag WHERE key='feed' AND qty > 0").fetchall():
+                have[int(owner)] = have.get(int(owner), 0) + int(q)
+            for owner, q in con.execute("SELECT f.owner, s.qty FROM farm_seeds s JOIN farms f ON f.id = s.farm_id "
+                                        "WHERE s.key='feed' AND s.qty > 0").fetchall():
+                have[int(owner)] = have.get(int(owner), 0) + int(q)
+            con.execute("DELETE FROM farm_bag WHERE key='feed'")
+            con.execute("DELETE FROM farm_seeds WHERE key='feed'")
+            out = []
+            for owner, q in have.items():
+                if self._purse(con, owner) is not None:
+                    con.execute("UPDATE farm_purse SET coins = coins + ? WHERE owner=?", (q * price, owner))
+                else:
+                    r = con.execute("SELECT id FROM farms WHERE owner=? ORDER BY id LIMIT 1", (owner,)).fetchone()
+                    if not r:
+                        continue
+                    con.execute("UPDATE farms SET coins = coins + ? WHERE id=?", (q * price, int(r[0])))
+                out.append((owner, q, q * price))
+            return out
+        return await self._tx(fn)
+
     async def pay_upkeep(self, now_ts: int, only: Optional[set] = None) -> list[tuple[int, int, int]]:
         """3.9.2 농장 유지비: 하루(KST) 한 번, 농장이 두 개 이상인 사람의 코인 지갑에서 upkeep(농장 수) 를 낸다.
         코인이 모자라면 있는 만큼만 낸다 (빚은 남기지 않는다). only = 이 사람들만. → [(주인, 낸 코인, 농장 수)]."""

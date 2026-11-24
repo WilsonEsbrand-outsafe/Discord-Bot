@@ -24,6 +24,9 @@ class Money(commands.Cog):
         now = int(time.time())
         if release.released_392(now) and not getattr(self, "_redenom", False):
             try:
+                feed = await self.farm.refund_feed_392(now)   # 리디노미네이션 전에 (돌려준 코인도 같이 1/100)
+                for owner, q, coins in feed or []:
+                    print(f"[3.9.2] 동물 사료 환불: {owner} {q:,}개 → {coins:,} 코인")
                 n = await self.db.redenominate_392()
                 self._redenom = True
                 if n is not None:

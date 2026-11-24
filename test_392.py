@@ -499,3 +499,29 @@ def test_feed_off_shop_392():
     fid = _farm(db, O, coins=10_000)
     assert run(db.buy(O, fid, "feed", 1, NOW))["reason"] == "key"
     assert run(db.buy(O, fid, "drink", 1, NOW))["ok"]
+
+
+def test_refund_feed_392():
+    db = F.FarmDB()
+    O = 392000000000096
+    fid = _farm(db, O, coins=0)
+
+    def setup(con):
+        con.execute("DELETE FROM gift_once WHERE key='refund-392-feed'") if con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='gift_once'").fetchone() else None
+        con.execute("DELETE FROM farm_bag WHERE key='feed'")
+        con.execute("DELETE FROM farm_seeds WHERE key='feed'")
+        con.execute("INSERT INTO farm_seeds(farm_id, key, qty) VALUES(?, 'feed', 4)", (fid,))
+    run(db._tx(setup))
+    try:
+        assert run(db.refund_feed_392(NOW)) == [(O, 4, 4 * F.tool_price("feed", True))]
+        assert run(db.refund_feed_392(NOW)) is None
+        assert run(db._tx(lambda con: con.execute("SELECT coins FROM farms WHERE id=?", (fid,)).fetchone()[0])) == 1000
+    finally:
+        run(db._tx(lambda con: con.execute("DELETE FROM gift_once WHERE key='refund-392-feed'")))
+
+
+def test_legacy_392_commands():
+    hid = release.hidden_commands(release.TEST_GUILD)
+    assert {"2군", "유스경기", "봇구단", "달팽이"} <= hid
+    assert "봇구단" not in release.hidden_commands(1)
