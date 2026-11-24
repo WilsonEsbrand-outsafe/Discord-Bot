@@ -725,9 +725,17 @@ class EconomyDB:
             if not con.execute("INSERT OR IGNORE INTO eco_migrations(name) VALUES('redenom-392')").rowcount:
                 return None
             n = con.execute("UPDATE wallets SET balance = CAST(balance / 100 AS INTEGER) WHERE balance != 0").rowcount
-            for t, c in (("farm_purse", "coins"), ("farms", "coins"), ("farm_held", "coins"), ("toto_held", "amount")):
+            # 11/24 공개 전 점검: 아직 돈으로 바뀌지 않은 금액도 같이 1/100 (안 그러면 공개 뒤 정산 · 사용 때 100배)
+            # 가방 현금 아이템 · 정산 전 베팅 · 받기 전 인수 제안
+            for t, c, where in (("farm_purse", "coins", ""), ("farms", "coins", ""), ("farm_held", "coins", ""),
+                                ("toto_held", "amount", ""),
+                                ("inventory", "qty", " AND item IN ('gem_cash', 'beta_cash', 'reward_cash')"),
+                                ("toto_bets", "amount", " AND settled = 0"), ("sports_bets", "amount", " AND settled = 0"),
+                                ("ufc_bets", "amount", " AND settled = 0"), ("elect_bets", "amount", " AND paid IS NULL"),
+                                ("elect_votes", "paid", ""),
+                                ("elite_offers", "amount", " AND status = 'open'"), ("farm_offers", "amount", " AND status = 'open'")):
                 if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone():
-                    con.execute(f"UPDATE {t} SET {c} = CAST({c} / 100 AS INTEGER) WHERE {c} != 0")
+                    con.execute(f"UPDATE {t} SET {c} = CAST({c} / 100 AS INTEGER) WHERE {c} != 0{where}")
             return n
         return await self._tx(fn)
 
