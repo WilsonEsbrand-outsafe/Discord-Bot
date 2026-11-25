@@ -474,6 +474,8 @@ RESERVE_AMATEURS = [(f"{RESERVE_ID}{g}_{i:02d}", n, g) for g, names in (
 
 def in_reserve(p: dict) -> bool:
     """3.6.0 2군 유망주인가: 기본 OVR 이 1군 승격 기준(PROMOTE_OVR) 밑이고 강화 단계 0."""
+    if release.ctx_392():   # 3.9.2 (11/25 규완님 '2군, 유스 없애자'): 2군이 없어져 유망주는 처음부터 1군
+        return False
     return p["ovr"] < PROMOTE_OVR and not p.get("enh")
 
 

@@ -525,3 +525,14 @@ def test_legacy_392_commands():
     hid = release.hidden_commands(release.TEST_GUILD)
     assert {"2군", "유스경기", "봇구단", "달팽이"} <= hid
     assert "봇구단" not in release.hidden_commands(1)
+
+
+def test_no_reserve_392():
+    from services.club_db import in_reserve
+    p = {"ovr": 52, "enh": 0}
+    assert not in_reserve(p)
+    tok = release.GUILD.set(1)
+    try:
+        assert in_reserve(p)
+    finally:
+        release.GUILD.reset(tok)
