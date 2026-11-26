@@ -536,3 +536,12 @@ def test_no_reserve_392():
         assert in_reserve(p)
     finally:
         release.GUILD.reset(tok)
+
+
+def test_dungeon_coins_392():
+    import random
+    import services.dungeon as D
+    s = {"atk": 80, "mob": 80, "dfn": 80, "luck": 80}
+    a = D.simulate(s, n=300, rng=random.Random(3), v311=True)["coins"]
+    b = D.simulate(s, n=300, rng=random.Random(3), v311=True, v392=True)["coins"]
+    assert abs(b / a - D.COIN_392) < 0.5
