@@ -153,6 +153,9 @@ SPECIES_CAP_392 = 5                   # 같은 동물은 한 사람당 5마리�
 PFEED_ANIMALS = ("cow", "bison", "peacock")   # 비싼 동물은 생산품 하나에 고급 사료 하나를 먹는다
 # 11/24 규완님 '유지비 코인만 환불': 공개 전에 본섭에서 잘못 걷힌 농장 유지비 (11/23 09:02, 11/24 00:00 KST 두 번)
 REFUNDS_392 = (("refund-392-upkeep-a", 930254019975344218, 400_000), ("refund-392-upkeep-b", 1146659618790051960, 840_000))
+# 11/26 4.0.1 공개 직후(12:30 KST) 걷힌 유지비 (서버 로그 '[농장 유지비]') — restore_coins_401 이 코인을 되돌린 뒤 돌려준다
+UPKEEP_REFUND_401 = ((725662872327159838, 62), (733634487073636352, 142_973), (930254019975344218, 420_000),
+                     (1146659618790051960, 420_000), (1356105918793777354, 360))
 UPKEEP_392 = 20_000                   # 농장 유지비: 두 번째 농장부터 하루 (순서 − 1) × 2만 코인 (7개면 하루 42만 코인)
 
 
@@ -1760,6 +1763,29 @@ class FarmDB(EconomyDB):
                     con.execute("UPDATE farms SET coins = coins + ? WHERE id=?", (int(coins), int(r[0])))
                 out.append((int(owner), int(coins)))
             return out
+        return await self._tx(fn)
+
+    async def restore_coins_401(self, now_ts: int) -> Optional[int]:
+        """11/26 규완님 '코인은 왜 1/100을 한 거야': 4.0.1 공개 때 1/100 한 농장 코인을 한 번만 100배로 되돌리고,
+        공개 직후(12:30 KST) 걷힌 유지비(UPKEEP_REFUND_401, 원래 단위)를 돌려준다. → 바꾼 코인 지갑 수 (이미 했으면 None)."""
+        def fn(con):
+            con.execute("CREATE TABLE IF NOT EXISTS gift_once (key TEXT PRIMARY KEY, ts INTEGER NOT NULL)")
+            if not con.execute("INSERT OR IGNORE INTO gift_once(key, ts) VALUES('restore-401-coins', ?)", (int(now_ts),)).rowcount:
+                return None
+            n = 0
+            for t, c, where in (("farm_purse", "coins", ""), ("farms", "coins", ""), ("farm_held", "coins", ""),
+                                ("farm_offers", "amount", " AND status = 'open'")):
+                if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone():
+                    k = con.execute(f"UPDATE {t} SET {c} = {c} * 100 WHERE {c} != 0{where}").rowcount
+                    n += k if t == "farm_purse" else 0
+            for owner, coins in UPKEEP_REFUND_401:
+                if self._purse(con, owner) is not None:
+                    con.execute("UPDATE farm_purse SET coins = coins + ? WHERE owner=?", (int(coins), int(owner)))
+                else:
+                    r = con.execute("SELECT id FROM farms WHERE owner=? ORDER BY id LIMIT 1", (int(owner),)).fetchone()
+                    if r:
+                        con.execute("UPDATE farms SET coins = coins + ? WHERE id=?", (int(coins), int(r[0])))
+            return n
         return await self._tx(fn)
 
     async def refund_feed_392(self, now_ts: int) -> Optional[list[tuple[int, int, int]]]:

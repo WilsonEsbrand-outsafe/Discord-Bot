@@ -545,3 +545,25 @@ def test_dungeon_coins_392():
     a = D.simulate(s, n=300, rng=random.Random(3), v311=True)["coins"]
     b = D.simulate(s, n=300, rng=random.Random(3), v311=True, v392=True)["coins"]
     assert abs(b / a - D.COIN_392) < 0.5
+
+
+def test_restore_coins_401():
+    import asyncio
+    import services.farm as F
+    db = F.FarmDB()
+    con = F.FarmDB._con() if hasattr(F.FarmDB, "_con") else None
+    owner = 730000000000000401
+    async def go():
+        def setup(c):
+            c.execute("DELETE FROM farm_purse WHERE owner=?", (owner,))
+            c.execute("INSERT INTO farm_purse(owner, coins) VALUES(?, 5)", (owner,))
+            c.execute("DELETE FROM gift_once WHERE key='restore-401-coins'") if c.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='gift_once'").fetchone() else None
+        await db._tx(setup)
+        first = await db.restore_coins_401(1)
+        again = await db.restore_coins_401(2)
+        coins = await db._tx(lambda c: F.FarmDB._purse(c, owner))
+        await db._tx(lambda c: c.execute("DELETE FROM farm_purse WHERE owner=?", (owner,)))
+        return first, again, coins
+    first, again, coins = asyncio.run(go())
+    assert first is not None and again is None and coins == 500

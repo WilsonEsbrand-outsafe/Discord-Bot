@@ -1925,6 +1925,12 @@ class Farm(commands.Cog):
         self.purse_loop.start()
         self.live_loop.start()
         self.staff_loop.start()
+        try:   # 11/26 규완님 '코인은 왜 1/100을 한 거야' → 농장 코인 원래대로 + 공개 직후 유지비 환불 (한 번만)
+            n = await self.db.restore_coins_401(int(time.time()))
+            if n is not None:
+                print(f"[농사] 코인 100배로 되돌림: 지갑 {n}개, 유지비 환불 {len(F.UPKEEP_REFUND_401)}명")
+        except Exception as e:
+            print(f"[농사] 코인 되돌리기 오류: {e!r}")
         try:
             for owner, coins in await self.db.refund_coins_once(F.REFUNDS_392, int(time.time())):
                 print(f"[농사] 유지비 환불 {owner} +{coins:,} 코인")
