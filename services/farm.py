@@ -1766,6 +1766,31 @@ class FarmDB(EconomyDB):
             return out
         return await self._tx(fn)
 
+    async def release_over_401(self, now_ts: int) -> Optional[list[tuple[int, int, int]]]:
+        """11/26 규완님 결정 '넘는 동물 자동으로 돌려주기': 같은 동물 한도(SPECIES_CAP_392)를 넘는 동물을 한 번만 모두 내보내고
+        입양 값을 다 돌려준다 (sell_animal 의 한도 넘는 동물과 같은 값). → [(주인, 마리 수, 코인)] (이미 했으면 None)."""
+        def fn(con):
+            con.execute("CREATE TABLE IF NOT EXISTS gift_once (key TEXT PRIMARY KEY, ts INTEGER NOT NULL)")
+            if not con.execute("INSERT OR IGNORE INTO gift_once(key, ts) VALUES('release-401-over', ?)", (int(now_ts),)).rowcount:
+                return None
+            out = []
+            for (owner,) in con.execute("SELECT DISTINCT m.owner FROM farm_fields f JOIN farms m ON m.id = f.farm_id "
+                                        "WHERE f.kind='animal'").fetchall():
+                n = coins = 0
+                for fid, slot in sorted(self._over_species(con, owner)):
+                    r = con.execute("SELECT key FROM farm_fields WHERE farm_id=? AND slot=?", (fid, slot)).fetchone()
+                    if not r or r[0] not in ANIMALS:
+                        continue
+                    back = int(ANIMALS[r[0]][2])
+                    con.execute("DELETE FROM farm_fields WHERE farm_id=? AND slot=?", (fid, slot))
+                    self._add_coins(con, fid, back)
+                    n += 1
+                    coins += back
+                if n:
+                    out.append((int(owner), n, coins))
+            return out
+        return await self._tx(fn)
+
     async def restore_coins_401(self, now_ts: int) -> Optional[int]:
         """11/26 규완님 '코인은 왜 1/100을 한 거야': 4.0.1 공개 때 1/100 한 농장 코인을 한 번만 100배로 되돌리고,
         공개 직후(12:30 KST) 걷힌 유지비(UPKEEP_REFUND_401, 원래 단위)를 돌려준다. → 바꾼 코인 지갑 수 (이미 했으면 None)."""

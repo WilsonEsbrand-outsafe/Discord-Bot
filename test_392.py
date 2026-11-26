@@ -567,3 +567,20 @@ def test_restore_coins_401():
         return first, again, coins
     first, again, coins = asyncio.run(go())
     assert first is not None and again is None and coins == 500
+
+
+def test_release_over_401():
+    import asyncio
+    import services.farm as F
+    db = F.FarmDB()
+    async def go():
+        def count(c):
+            return c.execute("SELECT m.owner, f.key, COUNT(*) FROM farm_fields f JOIN farms m ON m.id=f.farm_id "
+                             "WHERE f.kind='animal' GROUP BY 1, 2 HAVING COUNT(*) > ?", (F.SPECIES_CAP_392,)).fetchall()
+        await db._tx(lambda c: c.execute("DELETE FROM gift_once WHERE key='release-401-over'") if c.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='gift_once'").fetchone() else None)
+        r1 = await db.release_over_401(1)
+        r2 = await db.release_over_401(2)
+        return r1, r2, await db._tx(count)
+    r1, r2, left = asyncio.run(go())
+    assert r1 is not None and r2 is None and left == []
