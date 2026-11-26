@@ -261,6 +261,11 @@ def _replant_label(f: Optional[dict]) -> str:
 
 
 # ───────────── 농장 화면 (봇이 재시작해도 눌리는 버튼) ─────────────
+
+# 4.0.1 같은 동물 한도를 넘어서 멈춘 동물만 남았을 때
+CAPPED_NOTE = (f"같은 동물은 한 사람당 {F.SPECIES_CAP_392}마리까지만 만들고 거둘 수 있어요.\n"
+               "넘는 동물은 멈춰 있어요. 내보내면 입양 값을 모두 돌려받아요.")
+
 class FarmPanel(discord.ui.View):
     def __init__(self, cog: "Farm", f: Optional[dict] = None):
         super().__init__(timeout=None)
@@ -403,7 +408,8 @@ class FarmPanel(discord.ui.View):
         r = await self.cog.db.harvest(interaction.user.id, fid, int(time.time()))
         if not r["ok"]:
             note = ("에너지가 없어요. 조금 기다리면 다시 차요." if r["reason"] == "energy" else
-                    "소, 들소, 공작은 고급 사료가 있어야 거둘 수 있어요. 농사 상점에서 사 주세요." if r["reason"] == "nofeed" else "아직 거둘 것이 없어요.")
+                    "소, 들소, 공작은 고급 사료가 있어야 거둘 수 있어요. 농사 상점에서 사 주세요." if r["reason"] == "nofeed" else
+                    CAPPED_NOTE if r["reason"] == "capped" else "아직 거둘 것이 없어요.")
         else:
             note = f"**{r['count']}칸**을 거뒀어요.\n" + "\n".join(f"{_item(k, t)} {q}개" for (k, t), q in r["got"].items())
             if r["extra"]:
@@ -579,7 +585,8 @@ class FieldView(discord.ui.View):
         r = await self.cog.db.harvest(interaction.user.id, fid, now, slots={i})
         if not r["ok"]:
             msg = ("에너지가 없어요. 조금 기다리면 다시 차요." if r["reason"] == "energy" else
-                   "소, 들소, 공작은 고급 사료가 있어야 거둘 수 있어요. 농사 상점에서 사 주세요." if r["reason"] == "nofeed" else "아직 거둘 것이 없어요.")
+                   "소, 들소, 공작은 고급 사료가 있어야 거둘 수 있어요. 농사 상점에서 사 주세요." if r["reason"] == "nofeed" else
+                    CAPPED_NOTE if r["reason"] == "capped" else "아직 거둘 것이 없어요.")
             return await interaction.response.send_message(msg, ephemeral=True)
         f = await self.cog.db.get(fid, now)
         await interaction.response.edit_message(content=field_text(f), view=FieldView(self.cog, f))
