@@ -301,7 +301,8 @@ class Dungeon(commands.Cog):
         new = release.preview_2101(interaction.guild_id)   # 2.10.1 던전 난이도 · 보상 (테스트 서버 먼저)
         r = await self.db.start(interaction.user.id, team_stats(team["lineup"], new), int(time.time()), torch, self.rng, new,
                                 v311=release.preview_311(interaction.guild_id),   # 3.1.1 보상 · 난이도 너프
-                                v374=release.preview_374(interaction.guild_id))   # 3.7.4 보물방 변호사 선임권
+                                v374=release.preview_374(interaction.guild_id),   # 3.7.4 보물방 변호사 선임권
+                                v392=release.preview_392(interaction.guild_id))   # 3.9.2 돈 보상 20배
         if not r["ok"]:
             return await self.show_entry(interaction, edit=True,
                                          note="⏸️ 이미 진행 중이에요." if r["reason"] == "active" else "😴 오늘은 다 들어갔어요.")

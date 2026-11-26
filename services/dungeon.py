@@ -55,6 +55,7 @@ POWER_311, BOSS_311, TRAP_311 = 1.15, (44, 70), (14, 2.4)   # 몬스터 힘 × �
 LOOT_RARE_311 = {k: v for k, v in LOOT_RARE.items() if k not in ("bow_pro", "windbreaker", "focus")}
 LAWYER_374 = (0.03, 0.10)       # 3.7.4 보물방에서 ⚖️ 변호사 선임권: 그냥 상자 3% · 열쇠로 연 금고 10%
 COIN = (3_000, 12_000)          # 보물 · 전투에서 나오는 돈 (층 × 이만큼)
+COIN_392 = 20                   # 3.9.2 (11/26 규완님 '던전 보상 구리다' → 20배 ㄱㄱ): 판마다 st["v392"]
 XP_PER_FLOOR = 4                # 훈련 경험치 (층마다 진행 보상)
 FIRST_CLEAR = {"dungeon_ticket": 1, "skip_piece": 2, "first_team": 1}   # 테마마다 처음 10층을 깨면
 # 2.10.1 공개 전 서버(테스트 서버 말고)에서 시작한 판은 예전 값 — 판마다 st["v2101"] 로 고른다 (release.preview_2101)
@@ -169,7 +170,7 @@ def _roll_loot(st: dict, rng, rolls: int, rare_p: float) -> list[str]:
         item = _pick(table, rng)
         _gain(st, item)
         got.append(item)
-    coins = round(rng.randint(*COIN) * st["floor"] * mult, -2)
+    coins = round(rng.randint(*COIN) * st["floor"] * mult * (COIN_392 if st.get("v392") else 1), -2)
     st["coins"] += coins
     return got + [f"coins:{coins}"]
 
@@ -414,7 +415,7 @@ class DungeonDB(EconomyDB):
         return await self._tx(fn)
 
     async def start(self, uid: int, stats: dict, now_ts: int, use_torch: bool, rng=random, new: bool = True,
-                    v311: bool = False, v374: bool = False) -> dict:
+                    v311: bool = False, v374: bool = False, v392: bool = False) -> dict:
         """입장. reason: active(진행 중) / done(오늘 다 함)."""
         day = _kst_day(now_ts)
 
@@ -429,6 +430,7 @@ class DungeonDB(EconomyDB):
             st = new_run(stats, theme_of(now_ts), rng, torch=torch, meal=_cook_buff(con, uid, now_ts, "eel_rice"), new=new,
                          v311=v311)
             st["v374"] = v374   # 3.7.4 보물방에서 가끔 변호사 선임권
+            st["v392"] = v392   # 3.9.2 돈 보상 20배
             if torch:
                 st["used"]["torch"] = 1
             self._load_inv(con, uid, st)
@@ -564,12 +566,14 @@ class DungeonDB(EconomyDB):
         return await self._tx(lambda con: {t for (t,) in con.execute("SELECT theme FROM dungeon_clears WHERE user_id=?", (uid,))})
 
 
-def simulate(stats: dict, n: int = 2000, rng=None, policy: str = "greedy", new: bool = True, v311: bool = False) -> dict:
+def simulate(stats: dict, n: int = 2000, rng=None, policy: str = "greedy", new: bool = True, v311: bool = False,
+             v392: bool = False) -> dict:
     """밸런스 확인용: 정해진 방식으로 끝까지(체력 35 아래면 귀환). {clear, dead, avg_floor, avg_items, avg_coins}."""
     rng = rng or random.Random(7)
     res = {"clear": 0, "dead": 0, "floor": 0, "items": 0, "coins": 0}
     for _ in range(n):
         st = new_run(stats, rng.randrange(7), rng, new=new, v311=v311)
+        st["v392"] = v392
         while st["phase"] not in ("clear", "dead", "return"):
             if st["phase"] == "doors":
                 if st["hp"] < 35 and st["floor"] not in BOSS_FLOORS:
