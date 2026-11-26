@@ -1178,13 +1178,14 @@ class FarmDB(EconomyDB):
                 return {"ok": False, "reason": "none"}
             ready = [(i, p) for i, p in enumerate(f["fields"]) if p and p["ready"] and (slots is None or i in slots)]   # slots: 칸 버튼으로 그 칸만
             new = v392(uid, now_ts)
-            hungry = False
+            hungry = capped = False
             if new:   # 3.9.2 같은 동물 한도를 넘는 동물은 거두지 못하고, 소 · 들소 · 공작은 고급 사료가 있어야 거둔다
                 over = self._over_species(con, uid)
                 feed = self._pfeed_have(con, uid)
                 keep = []
                 for i, p in ready:
                     if p["kind"] == "animal" and (fid, i) in over:
+                        capped = True
                         continue
                     if p["kind"] == "animal" and p["key"] in PFEED_ANIMALS:
                         if feed <= 0:
@@ -1194,7 +1195,7 @@ class FarmDB(EconomyDB):
                     keep.append((i, p))
                 ready = keep
             if not ready:
-                return {"ok": False, "reason": "nofeed" if hungry else "nothing"}
+                return {"ok": False, "reason": "nofeed" if hungry else "capped" if capped else "nothing"}
             n = min(len(ready), f["energy"] // f["cost"])
             if n <= 0:
                 return {"ok": False, "reason": "energy"}
