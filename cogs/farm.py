@@ -1932,6 +1932,11 @@ class Farm(commands.Cog):
         self.purse_loop.start()
         self.live_loop.start()
         self.staff_loop.start()
+        try:   # 11/26 규완님 결정 '넘는 동물 자동으로 돌려주기' (한 번만)
+            for owner, n, coins in await self.db.release_over_401(int(time.time())) or []:
+                print(f"[농사] 한도 넘는 동물 내보냄: {owner} {n}마리 +{coins:,} 코인")
+        except Exception as e:
+            print(f"[농사] 한도 넘는 동물 내보내기 오류: {e!r}")
         try:   # 11/26 규완님 '코인은 왜 1/100을 한 거야' → 농장 코인 원래대로 + 공개 직후 유지비 환불 (한 번만)
             n = await self.db.restore_coins_401(int(time.time()))
             if n is not None:
